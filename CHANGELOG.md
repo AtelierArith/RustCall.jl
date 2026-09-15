@@ -76,8 +76,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   removed in v0.5. And **nothing builds under the old name any more**:
   `native_product_filename(:rustcall_helpers)` names the new file, there is no
   `:rust_helpers` product, and `deps/build.jl` needed no change of its own
-  because it asks `src/native_layout.jl` (#258). The planned prebuilt package is
-  `RustCallHelpers_jll` (#404), written against this name.
+  because it asks `src/native_layout.jl` (#258). The prebuilt package once
+  planned under this name, `RustCallHelpers_jll` (#404), is withdrawn — see
+  the entry above: RustToolChain.jl already provides the toolchain that builds
+  the helpers.
 
 ### Fixed
 - **A crate module's generation record is published atomically**
