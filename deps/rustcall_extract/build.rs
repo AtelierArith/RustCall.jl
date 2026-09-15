@@ -167,6 +167,44 @@ fn overrides_sources(manifest: &Path) -> bool {
     doc.contains_key("patch") || doc.contains_key("replace")
 }
 
+/// Whether Cargo's configuration overrides a dependency's source with a
+/// local checkout — the `paths = [...]` key of any `.cargo/config.toml` (or
+/// `config`) from the extractor's directory up, or of `$CARGO_HOME`'s. Such
+/// an override compiles sources no manifest and no lockfile names, so a build
+/// under one reports no source digest and is identified by its bytes. The
+/// files that exist are registered as rerun triggers.
+fn config_overrides_sources(dir: &Path) -> bool {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    let start = fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let mut ancestor = Some(start.as_path());
+    while let Some(here) = ancestor {
+        candidates.push(here.join(".cargo").join("config.toml"));
+        candidates.push(here.join(".cargo").join("config"));
+        ancestor = here.parent();
+    }
+    println!("cargo:rerun-if-env-changed=CARGO_HOME");
+    let cargo_home = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")));
+    if let Some(home) = cargo_home {
+        candidates.push(home.join("config.toml"));
+        candidates.push(home.join("config"));
+    }
+    let mut overrides = false;
+    for file in candidates {
+        if !file.is_file() {
+            continue;
+        }
+        println!("cargo:rerun-if-changed={}", file.display());
+        let has_paths = fs::read_to_string(&file)
+            .ok()
+            .and_then(|text| text.parse::<toml::Table>().ok())
+            .is_some_and(|doc| doc.contains_key("paths"));
+        overrides |= has_paths;
+    }
+    overrides
+}
+
 /// Whether a manifest inherits anything from a workspace — a dependency or a
 /// package field spelled `{ workspace = true }`, or an explicit
 /// `[package] workspace = "..."`. Such a crate's inputs are not knowable from
@@ -397,7 +435,8 @@ fn main() {
     // `rustcall_core`, a workspace member whose `path` lives in
     // `[workspace.dependencies]`, a `[patch]` that swaps a registry crate for
     // a local one, a checkout inside a workspace whose root lockfile decides
-    // the build, a build script or target root selected by the manifest —
+    // the build, a build script or target root selected by the manifest, a
+    // Cargo configuration whose `paths` override swaps in a local checkout —
     // has inputs this script cannot enumerate
     // from the manifests, and claiming a digest for it would let an edit
     // it does not see keep a stale cache alive. Such a binary reports
@@ -412,7 +451,8 @@ fn main() {
         && !named
             .iter()
             .any(|(_, dir)| nondefault_targets(&dir.join("Cargo.toml")))
-        && !inside_workspace(&here);
+        && !inside_workspace(&here)
+        && !config_overrides_sources(&here);
     let versions: BTreeMap<String, String> = named
         .iter()
         .filter(|(name, _)| release.contains(name))
