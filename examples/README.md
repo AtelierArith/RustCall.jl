@@ -348,8 +348,10 @@ using RustToolChain; run(`$(RustToolChain.rustc()) --version`)
 
 Remedies: make the artifact download possible (network access, a writable
 depot) and retry; or install Rust yourself from [rustup.rs](https://rustup.rs/)
-so a `rustc` is on `PATH` (it then takes precedence). On Windows either route
-also needs the MSVC build tools — see `docs/src/platforms/windows.md`.
+so a `rustc` is on `PATH` (it then takes precedence). On Windows the MSVC
+target — RustCall's default, and the only one the artifact toolchain
+provides — also needs the MSVC build tools; the GNU route that avoids them is
+described in `docs/src/platforms/windows.md`.
 
 ### Library build fails
 
