@@ -367,10 +367,13 @@ fn main() {
 
         // A build script is part of what the crate compiles to. Its own
         // inputs beyond the crate's manifest and sources cannot be known
-        // here; this tree's scripts read only those.
+        // here; this tree's scripts read only those. The rerun trigger is
+        // registered only for a script that exists: Cargo treats a missing
+        // `rerun-if-changed` path as always changed and would rerun this
+        // script — and rebuild the extractor — on every build.
         let build_script = krate.join("build.rs");
-        println!("cargo:rerun-if-changed={}", build_script.display());
         if build_script.is_file() {
+            println!("cargo:rerun-if-changed={}", build_script.display());
             hasher.update(name.as_bytes());
             hasher.update(b"\0build.rs\0");
             hasher.update(fs::read(&build_script).unwrap_or_default());
