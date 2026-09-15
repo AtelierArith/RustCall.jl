@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **The extractor's identity comes from Cargo's view of its build, not from
+  the binary's own report**
+  ([#409](https://github.com/AtelierArith/RustCall.jl/issues/409)).
+  `deps/build.jl` now computes the source digest right after building the
+  extractor — the package set from `cargo tree`, the workspace from
+  `cargo locate-project`, the configuration files Cargo discovered and the
+  `RUSTFLAGS` family — and stores it beside the binary keyed by the binary's
+  SHA-256 (`rustcall-extract.identity.toml`). `extractor_source_digest` reads
+  that record and trusts it only while the binary still matches; every other
+  binary is identified by its bytes. The digest is byte-compatible with what
+  v0.4.0's `build.rs` embedded for this tree's layout, so the upgrade keeps
+  every cache key; `build.rs` still embeds it as a cross-check the tests
+  assert and is removed in v0.5.
+
 ## [0.4.0] - 2026-09-15
 
 ### Added

@@ -31,6 +31,7 @@ using RustToolChain: rustc, cargo
 # The one place that knows where these products live; `src/RustCall.jl`
 # includes the same file, so the build and the lookup cannot drift apart.
 include(joinpath(@__DIR__, "..", "src", "native_layout.jl"))
+include(joinpath(@__DIR__, "..", "src", "extractor_identity.jl"))
 
 """
     check_rust_toolchain() -> Bool
@@ -133,6 +134,18 @@ function build_native_product(kind::Symbol, what::AbstractString)
         """)
     end
     println("  ✓ Built: $path ($(filesize(path)) bytes)")
+    if kind === :extractor
+        # The build's identity, from Cargo's view of it, beside the binary and
+        # keyed by the binary's bytes (#409). Computed here — in the directory
+        # the build ran in, under the environment it ran with — because that
+        # is the only place both are known.
+        identity = write_extractor_identity!(crate_dir, path; cargo = cargo(), env = build_env)
+        if identity.canonical
+            println("  ✓ Source identity: $(identity.digest)")
+        else
+            println("  ℹ Source identity not claimed ($(identity.reason)); the binary is identified by its bytes")
+        end
+    end
     return path
 end
 
