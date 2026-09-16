@@ -95,7 +95,9 @@ fn corpus_matches_golden_files() {
 /// The expanded inline flavour of the corpus sources that exercise the struct
 /// wrappers must be Rust that `rustc` accepts as a `cdylib`: `struct_wrappers`
 /// for the `Result` / `Option` / string shapes, `cross_module_impl` for method
-/// wrappers whose impl block sits in another module than the struct (#315).
+/// wrappers whose impl block sits in another module than the struct (#315),
+/// `callbacks` for wrappers that take a C-ABI function pointer as written
+/// (#296).
 #[test]
 fn compilable_wrappers_build_as_cdylib() {
     if Command::new("rustc").arg("--version").output().is_err() {
@@ -103,7 +105,7 @@ fn compilable_wrappers_build_as_cdylib() {
         return;
     }
 
-    for stem in ["struct_wrappers", "cross_module_impl"] {
+    for stem in ["struct_wrappers", "cross_module_impl", "callbacks"] {
         let source_path = corpus_dir().join(format!("{stem}.rs"));
         let source = fs::read_to_string(&source_path).expect("failed to read compilation corpus");
         let expanded = rustcall_core::expand::expand(&source).expect("failed to expand corpus");

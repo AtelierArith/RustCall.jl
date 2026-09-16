@@ -141,6 +141,10 @@ use serde::{Deserialize, Serialize};
 /// * **13** adds [`Struct::python_owned_handle`], the wrapper generator's
 ///   authoritative handle decision. Consumers must not re-infer it after
 ///   skipped methods have been filtered from the binding surface.
+/// * **0.4.x** (additive, #296): [`Arg::abi`] gains `"callback"`, with
+///   [`Arg::callback_args`] / [`Arg::callback_return`] carrying the function
+///   pointer's signature. A consumer that does not know the column sees an
+///   argument it cannot describe and fails closed, as before.
 pub const SCHEMA_VERSION: &str = "0.4";
 
 #[cfg(test)]
@@ -347,9 +351,20 @@ pub struct Arg {
     pub rust_type: String,
     /// How the wrapper receives the argument: `""` as written (`rust_type`),
     /// `"string"` (`String`: `(ptr, len)` bytes copied into an owned String),
-    /// `"str"` (`&str`, any lifetime: `(ptr, len)` bytes borrowed).
+    /// `"str"` (`&str`, any lifetime: `(ptr, len)` bytes borrowed),
+    /// `"callback"` (a C-ABI function pointer, passed as written; #296).
     #[serde(default)]
     pub abi: String,
+    /// For `abi == "callback"`: the parameter spellings of the function
+    /// pointer (`extern "C" fn(i64, f64) -> i64` → `["i64", "f64"]`), so the
+    /// consumer builds the callback from the manifest rather than from Rust
+    /// syntax (#264). Empty otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub callback_args: Vec<String>,
+    /// For `abi == "callback"`: the return spelling of the function pointer,
+    /// `""` for a unit or absent return. Empty otherwise.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub callback_return: String,
     /// Rust expression from `#[pyo3(signature = (...))]` / `#[args(...)]`.
     /// It is never evaluated by a manifest consumer; an empty value means the
     /// Python argument is required.

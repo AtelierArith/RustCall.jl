@@ -1686,16 +1686,16 @@ function _generate_crate_function_wrapper(func::RustFunctionSignature)
 
     # Build converted arguments (string arguments become (ptr, len) pairs kept
     # alive with GC.@preserve, see `_string_arg_plan`)
-    bindings, preserved, converted_args = _string_arg_plan(func, identity)
+    bindings, preserved, converted_args, frame = _string_arg_plan(func, identity)
 
     # Result<T, E> / Option<T> returns are reported by the manifest
     if func.return_kind == :result
-        return _generate_result_function_wrapper(func, arg_syms, bindings, preserved, converted_args)
+        return _generate_result_function_wrapper(func, arg_syms, bindings, preserved, converted_args, frame)
     elseif func.return_kind == :py_result
         return _generate_py_result_function_wrapper(func, arg_syms, bindings, preserved,
-                                                    converted_args)
+                                                    converted_args, frame)
     elseif func.return_kind == :option
-        return _generate_option_function_wrapper(func, arg_syms, bindings, preserved, converted_args)
+        return _generate_option_function_wrapper(func, arg_syms, bindings, preserved, converted_args, frame)
     elseif _uses_string_ffi(func)
         return _generate_string_function_wrapper(func, arg_syms)
     else
@@ -1733,7 +1733,7 @@ function _generate_string_function_wrapper(func::RustFunctionSignature, arg_syms
     # The Julia wrapper keeps the Rust name; the exported symbol it calls is
     # `rustcall_<name>` since #279 (the helper types stay name-derived).
     symbol_str = func.symbol
-    bindings, preserved, call_args = _string_arg_plan(func, identity)
+    bindings, preserved, call_args, frame = _string_arg_plan(func, identity)
     # The helper types are named after the Rust item's FFI name, so that is the
     # owner and the contract derives `free_symbol` from it (#276, #300).
     c = ffi_return_contract(func.return_type; abi = func.return_abi, owner = func.ffi_name)
@@ -1765,9 +1765,9 @@ function _generate_string_function_wrapper(func::RustFunctionSignature, arg_syms
         function $func_name($(arg_syms...))
             $target
             $(bindings...)
-            GC.@preserve $(preserved...) begin
+            $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) begin
                 $call
-            end
+            end)))
         end
         export $func_name
     end
@@ -1780,7 +1780,8 @@ Generate a Julia wrapper for a function that returns Result<T, E>.
 The wrapper will return RustResult{T, E}.
 """
 function _generate_result_function_wrapper(func::RustFunctionSignature, arg_syms::Vector{Symbol},
-                                           bindings::Vector, preserved::Vector, converted_args::Vector)
+                                           bindings::Vector, preserved::Vector, converted_args::Vector,
+                                           frame::Union{Nothing, Symbol} = nothing)
     func_name = Symbol(func.name)
     func_name_str = func.name
     # The Julia wrapper keeps the Rust name; the exported symbol it calls is
@@ -1828,7 +1829,7 @@ function _generate_result_function_wrapper(func::RustFunctionSignature, arg_syms
             # `func_ptr`, so the pointer local is resolved only afterwards.
             $(bindings...)
             $target
-            $c_sym = GC.@preserve $(preserved...) call_rust_function($ptr_sym, $c_result_struct_name, $(converted_args...))
+            $c_sym = $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) call_rust_function($ptr_sym, $c_result_struct_name, $(converted_args...)))))
             # A panic returns `CResult::panicked()` — the Err discriminant with
             # an uninitialized payload — so the channel is read before the
             # payload is decoded, and resolved before the call (#244).
@@ -1881,7 +1882,8 @@ and the panic crossing `extern "C"` would abort the process.
 """
 function _generate_py_result_function_wrapper(func::RustFunctionSignature, arg_syms::Vector{Symbol},
                                               bindings::Vector, preserved::Vector,
-                                              converted_args::Vector)
+                                              converted_args::Vector,
+                                              frame::Union{Nothing, Symbol} = nothing)
     func_name = Symbol(func.name)
     func_name_str = func.name
     symbol_str = func.symbol
@@ -1918,7 +1920,7 @@ function _generate_py_result_function_wrapper(func::RustFunctionSignature, arg_s
         function $func_name($(arg_syms...))
             $(bindings...)
             $target
-            $c_sym = GC.@preserve $(preserved...) call_rust_function($ptr_sym, $c_result_struct_name, $(converted_args...))
+            $c_sym = $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) call_rust_function($ptr_sym, $c_result_struct_name, $(converted_args...)))))
             # A panic returns the Err discriminant with an uninitialized
             # payload, so the channel is read before anything is decoded (#244).
             _guard_panic(nothing, $channel_sym, $func_name_str)
@@ -1939,7 +1941,8 @@ Generate a Julia wrapper for a function that returns Option<T>.
 The wrapper will return RustOption{T}.
 """
 function _generate_option_function_wrapper(func::RustFunctionSignature, arg_syms::Vector{Symbol},
-                                           bindings::Vector, preserved::Vector, converted_args::Vector)
+                                           bindings::Vector, preserved::Vector, converted_args::Vector,
+                                           frame::Union{Nothing, Symbol} = nothing)
     func_name = Symbol(func.name)
     func_name_str = func.name
     # The Julia wrapper keeps the Rust name; the exported symbol it calls is
@@ -1978,7 +1981,7 @@ function _generate_option_function_wrapper(func::RustFunctionSignature, arg_syms
             # `func_ptr`, so the pointer local is resolved only afterwards.
             $(bindings...)
             $target
-            $c_sym = GC.@preserve $(preserved...) call_rust_function($ptr_sym, $c_option_struct_name, $(converted_args...))
+            $c_sym = $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) call_rust_function($ptr_sym, $c_option_struct_name, $(converted_args...)))))
             _guard_panic(nothing, $channel_sym, $func_name_str)
             # Convert to RustOption
             if $c_sym.is_some == 1
@@ -2399,7 +2402,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     # (see `_string_arg_plan`); the other arguments are converted to the Julia
     # type of the Rust parameter. The pointer local must not shadow an
     # argument of the same name.
-    bindings, preserved, converted_args = _string_arg_plan(method, identity)
+    bindings, preserved, converted_args, frame = _string_arg_plan(method, identity)
     ptr_sym = _generated_local("func_ptr", method.arg_names)
 
     # Crate method wrappers return strings through per-method buffers:
@@ -2422,7 +2425,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     # is built whole rather than as one `call` expression (#275 Phase 2).
     if method.return_kind === :py_result
         return _generate_py_result_method_wrapper(info, method, arg_syms, bindings, preserved,
-                                                  converted_args, wrapper_name; bare = bare)
+                                                  converted_args, wrapper_name; bare = bare, frame)
     end
     # Definitions the wrapper needs next to it: the `#[repr(C)]` mirror of a
     # `CResult_<Struct>_<method>` / `COption_<Struct>_<method>` aggregate (#268).
@@ -2440,9 +2443,9 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
         payload_body = quote
             $(bindings...)
             $payload_target
-            $c_sym = $(_quote_preserved(preserved,
+            $c_sym = $(_in_callback_frame(frame, _quote_preserved(preserved,
                                         :(call_rust_function($ptr_sym, $(plan.struct_name),
-                                                             $(all_args...)))))
+                                                             $(all_args...))))))
             # A panic returns the `panicked()` sentinel — the Err / None
             # discriminant with an uninitialized payload — so the channel is
             # read *before* anything is decoded (#244).
@@ -2479,7 +2482,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     body = payload_body !== nothing ? payload_body : quote
         $(bindings...)
         $target
-        _guard_panic($(_quote_preserved(preserved, call)), $channel_sym, $method_label)
+        _guard_panic($(_in_callback_frame(frame, _quote_preserved(preserved, call))), $channel_sym, $method_label)
     end
 
     definition = if method.is_static && method.is_constructor
@@ -2633,7 +2636,8 @@ generator gives it.
 function _generate_py_result_method_wrapper(info::RustStructInfo, method::RustMethod,
                                             arg_syms::Vector{Symbol}, bindings::Vector,
                                             preserved::Vector, converted_args::Vector,
-                                            wrapper_name::String; bare::Bool = true)
+                                            wrapper_name::String; bare::Bool = true,
+                                            frame::Union{Nothing, Symbol} = nothing)
     struct_name = Symbol(info.name)
     struct_name_str = info.name
     method_name = Symbol(method.name)
@@ -2681,9 +2685,9 @@ function _generate_py_result_method_wrapper(info::RustStructInfo, method::RustMe
     body = quote
         $(bindings...)
         $target
-        $c_sym = $(_quote_preserved(preserved,
+        $c_sym = $(_in_callback_frame(frame, _quote_preserved(preserved,
                                     :(call_rust_function($ptr_sym, $c_result_struct_name,
-                                                         $(all_args...)))))
+                                                         $(all_args...))))))
         _guard_panic(nothing, $channel_sym, $method_label)
         if $c_sym.is_ok == 1
             RustResult{$ok_julia_type, String}(true, $ok_value)
@@ -4130,17 +4134,29 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
 end
 
 """
-    _emit_string_arg_plan(func_or_method) -> (bindings_str, preserve_str, converted_args_str)
+    _emit_string_arg_plan(func_or_method) -> (bindings_str, preserve_str, converted_args_str, frame_str)
 
 Source-text counterpart of `_string_arg_plan` for the file emitter (free
 functions and struct methods alike).
 """
 function _emit_string_arg_plan(func::Union{RustFunctionSignature, RustMethod})
-    bindings, preserved, call_args = _string_arg_plan(func, identity)
+    bindings, preserved, call_args, frame = _string_arg_plan(func, identity)
     bindings_str = join(("    " * string(b) for b in bindings), "\n")
     preserve_str = join(string.(preserved), " ")
     converted_args_str = join(string.(call_args), ", ")
-    return bindings_str, preserve_str, converted_args_str
+    frame_str = frame === nothing ? "" : string(frame)
+    return bindings_str, preserve_str, converted_args_str, frame_str
+end
+
+"""
+    _emit_in_callback_frame(frame_str, code) -> String
+
+Source-text twin of `_in_callback_frame` (#296): `code`, or `code` inside a
+`try … finally` that pops the `CallbackFrame` named by `frame_str`.
+"""
+function _emit_in_callback_frame(frame_str::AbstractString, code::AbstractString)
+    isempty(frame_str) && return String(code)
+    return "(try $(code) finally RustCall._pop_callback_frame!($(frame_str)) end)"
 end
 
 """
@@ -4167,23 +4183,23 @@ function _emit_function_code(func::RustFunctionSignature; strict::Symbol = FFI_S
 
     # Build argument conversions (string arguments become (ptr, len) pairs)
     arg_syms = join(arg_names, ", ")
-    bindings_str, preserve_str, converted_args_str = _emit_string_arg_plan(func)
+    bindings_str, preserve_str, converted_args_str, frame_str = _emit_string_arg_plan(func)
     prologue = isempty(bindings_str) ? "" : bindings_str * "\n"
 
     # Result/Option return types are reported by the manifest
     if func.return_kind == :result
-        return _emit_result_function_code(func, arg_syms, converted_args_str; prologue, preserve_str, strict)
+        return _emit_result_function_code(func, arg_syms, converted_args_str; prologue, preserve_str, strict, frame_str)
     elseif func.return_kind == :py_result
         return _emit_py_result_function_code(func, arg_syms, converted_args_str; prologue,
-                                             preserve_str, strict)
+                                             preserve_str, strict, frame_str)
     elseif func.return_kind == :option
-        return _emit_option_function_code(func, arg_syms, converted_args_str; prologue, preserve_str, strict)
+        return _emit_option_function_code(func, arg_syms, converted_args_str; prologue, preserve_str, strict, frame_str)
     elseif ffi_owned_string_return(_ffi_function_return(func))
         return """
 $(_target_cache_source(:fn, sym))
 function $func_name($arg_syms)
 $(prologue)    $ptr_var, $channel_var, $free_var = _call_target($cache_var, "$sym", "$(_ffi_function_return(func).free_symbol)")
-    _guard_panic($(_emit_preserved(preserve_str, "_call_rust_owned_string_ptr($ptr_var, $free_var, $converted_args_str)")), $channel_var, "$func_name")
+    _guard_panic($(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "_call_rust_owned_string_ptr($ptr_var, $free_var, $converted_args_str)"))), $channel_var, "$func_name")
 end
 export $func_name"""
     elseif ffi_borrowed_string_return(_ffi_function_return(func))
@@ -4191,7 +4207,7 @@ export $func_name"""
 $(_target_cache_source(:fn, sym))
 function $func_name($arg_syms)
 $(prologue)    $ptr_var, $channel_var = _call_target($cache_var, "$sym")
-    _guard_panic($(_emit_preserved(preserve_str, "_call_rust_borrowed_string_ptr($ptr_var, $converted_args_str)")), $channel_var, "$func_name")
+    _guard_panic($(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "_call_rust_borrowed_string_ptr($ptr_var, $converted_args_str)"))), $channel_var, "$func_name")
 end
 export $func_name"""
     else
@@ -4202,7 +4218,7 @@ export $func_name"""
 $(_target_cache_source(:fn, sym))
 function $func_name($arg_syms)
 $(prologue)    $ptr_var, $channel_var = _call_target($cache_var, "$sym")
-    _guard_panic($(_emit_preserved(preserve_str, "call_rust_function($ptr_var, $ret_type_str, $converted_args_str)")), $channel_var, "$func_name")
+    _guard_panic($(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "call_rust_function($ptr_var, $ret_type_str, $converted_args_str)"))), $channel_var, "$func_name")
 end
 export $func_name"""
     end
@@ -4210,7 +4226,7 @@ end
 
 function _emit_result_function_code(func::RustFunctionSignature, arg_syms::String, converted_args_str::String;
                                     prologue::String = "", preserve_str::String = "",
-                                    strict::Symbol = FFI_STRICT[])
+                                    strict::Symbol = FFI_STRICT[], frame_str::String = "")
     func_name = func.name
     ctx = _ffi_context(func)
     # The payload fields carry the C slot; see `_generate_result_function_wrapper`.
@@ -4243,7 +4259,7 @@ end
 
 function $func_name($arg_syms)
 $(prologue)    $target
-    $c_var = $(_emit_preserved(preserve_str, "call_rust_function($ptr_var, $c_result_struct_name, $converted_args_str)"))
+    $c_var = $(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "call_rust_function($ptr_var, $c_result_struct_name, $converted_args_str)")))
     _guard_panic(nothing, $channel_var, "$func_name")
     if $c_var.is_ok == 1
         RustResult{$ok_type_str, $err_type_str}(true, _result_payload($ok_type_str, $c_var.ok_value, $free_expr))
@@ -4263,7 +4279,7 @@ Phase 2).
 function _emit_py_result_function_code(func::RustFunctionSignature, arg_syms::String,
                                        converted_args_str::String;
                                        prologue::String = "", preserve_str::String = "",
-                                       strict::Symbol = FFI_STRICT[])
+                                       strict::Symbol = FFI_STRICT[], frame_str::String = "")
     func_name = func.name
     ok_type_str, ok_slot_str, is_unit =
         _py_result_types(func.ok_type, func.ok_abi, _ffi_context(func); strict = strict)
@@ -4293,7 +4309,7 @@ end
 
 function $func_name($arg_syms)
 $(prologue)    $target
-    $c_var = $(_emit_preserved(preserve_str, "call_rust_function($ptr_var, $c_result_struct_name, $converted_args_str)"))
+    $c_var = $(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "call_rust_function($ptr_var, $c_result_struct_name, $converted_args_str)")))
     _guard_panic(nothing, $channel_var, "$func_name")
     if $c_var.is_ok == 1
         RustResult{$ok_type_str, String}(true, $ok_value)
@@ -4306,7 +4322,7 @@ end
 
 function _emit_option_function_code(func::RustFunctionSignature, arg_syms::String, converted_args_str::String;
                                     prologue::String = "", preserve_str::String = "",
-                                    strict::Symbol = FFI_STRICT[])
+                                    strict::Symbol = FFI_STRICT[], frame_str::String = "")
     func_name = func.name
     inner_surface, inner_slot =
         ffi_payload_symbols(func.inner_type, func.inner_abi, _ffi_context(func); strict = strict)
@@ -4334,7 +4350,7 @@ end
 
 function $func_name($arg_syms)
 $(prologue)    $target
-    $c_var = $(_emit_preserved(preserve_str, "call_rust_function($ptr_var, $c_option_struct_name, $converted_args_str)"))
+    $c_var = $(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "call_rust_function($ptr_var, $c_option_struct_name, $converted_args_str)")))
     _guard_panic(nothing, $channel_var, "$func_name")
     if $c_var.is_some == 1
         RustOption{$inner_type_str}(true, _result_payload($inner_type_str, $c_var.value, $free_expr))
@@ -4517,7 +4533,7 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
     # Same shape as `_generate_crate_method_wrapper`: string arguments are
     # (ptr, len) pairs under GC.@preserve, string results come back through
     # the per-method `<Struct>_<method>_RustCallOwnedString` buffer.
-    bindings_str, preserve_str, converted_args_str = _emit_string_arg_plan(method)
+    bindings_str, preserve_str, converted_args_str, frame_str = _emit_string_arg_plan(method)
     prologue = isempty(bindings_str) ? "" : bindings_str * "\n"
     # `self` is preserved too: a borrowed `&str` result points into the Rust
     # object, which the finalizer of a temporary could free mid-call.
@@ -4539,7 +4555,7 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
     release_alive = _python_owned_handle(struct_info) ? "Ref(true)" : string(alive_var)
     if method.return_kind === :py_result
         return _emit_py_result_method_code(struct_info, method, arg_syms, converted_args_str,
-                                           wrapper_name; prologue, preserve_str, strict, bare)
+                                           wrapper_name; prologue, preserve_str, strict, bare, frame_str)
     end
     method_label = "$(struct_name)::$(method_name)"
     # `Result` / `Option` returns are lowered like a free function's (#268):
@@ -4554,7 +4570,7 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
         free_expr = isempty(plan.free_symbol) ? "C_NULL" : string(free_var)
         payload_body = """
 $(prologue)    $payload_target
-    $c_var = $(_emit_preserved(preserve_str, "call_rust_function($ptr_var, $(plan.struct_name), $args_str)"))
+    $c_var = $(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "call_rust_function($ptr_var, $(plan.struct_name), $args_str)")))
     _guard_panic(nothing, $channel_var, "$method_label")
 $(_emit_payload_decode(plan, c_var, free_expr))"""
         return _emit_method_definition(struct_name, method, arg_syms, payload_body;
@@ -4578,7 +4594,7 @@ $(_emit_payload_decode(plan, c_var, free_expr))"""
     end
     body = """
 $(prologue)    $target
-    _guard_panic($(_emit_preserved(preserve_str, call)), $channel_var, "$method_label")"""
+    _guard_panic($(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, call))), $channel_var, "$method_label")"""
 
     # The call site's snapshot cache, declared at module scope beside the
     # wrapper that uses it (#253).
@@ -4656,7 +4672,8 @@ function _emit_py_result_method_code(info::RustStructInfo, method::RustMethod,
                                      wrapper_name::String;
                                      prologue::AbstractString = "",
                                      preserve_str::AbstractString = "",
-                                     strict::Symbol = FFI_STRICT[], bare::Bool = true)
+                                     strict::Symbol = FFI_STRICT[], bare::Bool = true,
+                                     frame_str::AbstractString = "")
     struct_name = info.name
     method_name = method.name
     boxed = method.returns_boxed_struct
@@ -4701,7 +4718,7 @@ function _emit_py_result_method_code(info::RustStructInfo, method::RustMethod,
 
     body = """
 $(prologue)    $target
-    $c_var = $(_emit_preserved(preserve_str, "call_rust_function($ptr_var, $c_result_struct_name, $args_str)"))
+    $c_var = $(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "call_rust_function($ptr_var, $c_result_struct_name, $args_str)")))
     _guard_panic(nothing, $channel_var, "$method_label")
     if $c_var.is_ok == 1
         RustResult{$ok_type_str, String}(true, $ok_value)

@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Callbacks: a Julia function can be passed to Rust as an `extern "C" fn`
+  argument** ([#296](https://github.com/AtelierArith/RustCall.jl/issues/296)).
+  `#[julia] fn apply(f: extern "C" fn(i64) -> i64, x: i64)` is driven by
+  `apply(x -> 2x, 20)`, closures included. The manifest reports the pointer's
+  signature (`Arg.abi = "callback"`, `callback_args`, `callback_return`; an
+  additive column) and the wrapper builds the `@cfunction` from it, so Julia
+  reads no Rust syntax; the FFI contract decides at wrapper generation which
+  parameter and return types a callback may have (one-slot by-value and raw
+  pointer types with slot = surface; `&str`, `String`, `char` and aggregates
+  are refused with a `RustError` naming the argument). No closure
+  `@cfunction` is involved — Rust gets a constant slot-function pointer and
+  the Julia function rides in a task-local frame for the call, so this works
+  on aarch64 too. Synchronous borrow, same-thread invocation, and a
+  Julia exception that never unwinds through Rust: the trampoline stores it
+  for the task and returns a sentinel, and the panic guard re-raises the
+  same exception after the Rust call returns. Argument position only, not in
+  generic functions. See `docs/src/type_contract.md`.
+
 ### Removed
 - **The one-release compatibility fallbacks and deprecated entry points**
   ([#417](https://github.com/AtelierArith/RustCall.jl/issues/417)), all of

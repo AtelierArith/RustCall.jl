@@ -337,11 +337,161 @@ end
     return String(@view buffer[1:min(Int(got), len)])
 end
 
+# ============================================================================
+# Callbacks: a Julia function handed to Rust as `extern "C" fn` (#296)
+# ============================================================================
+
+"""
+    CallbackTrampoline{R}(f)
+
+The callable a generated wrapper wraps a user's function in (#296): it calls
+`f`, converts the result to the C slot type `R` (`nothing` for `Cvoid`), and
+**never lets a Julia exception escape** — the frames below it are Rust's, and
+unwinding through them is undefined behaviour. An exception is stored for the
+task (`_store_callback_error!`) and a zero of `R` is returned as a sentinel;
+the wrapper that made the call re-raises the exception once the Rust call has
+returned (`guard_rust_panic_ptr`). Only the first exception of a call is kept.
+
+# How a Julia function becomes a C function pointer without a closure
+
+`@cfunction(\$f, ...)` — a closure trampoline — is not available on every
+platform Julia runs on (aarch64 raises `cfunction: closures are not supported
+on this platform`), so no generated wrapper uses one. Instead the wrapper
+pushes a `CallbackFrame` holding the call's trampolines onto a **task-local
+stack** for the duration of the call, and passes Rust a constant pointer to
+one of the plain slot functions `_callback_slot_1` … `_callback_slot_N`
+(`CALLBACK_SLOTS`), each compiled by `@cfunction` for the exact slot types of
+that argument. Slot `k` calls the `k`-th trampoline of the frame on top of the
+stack. Nested calls push their own frames and pop them on return, so the top
+is always the innermost call in progress — which is the one Rust is running
+right now, because a callback may only be invoked while the call that passed
+it is on the stack (synchronous borrow) and on the thread that made the call.
+"""
+struct CallbackTrampoline{R, F}
+    f::F
+end
+CallbackTrampoline{R}(f::F) where {R, F} = CallbackTrampoline{R, F}(f)
+
+function (t::CallbackTrampoline{R})(args...) where {R}
+    try
+        v = t.f(args...)
+        return R === Cvoid ? nothing : convert(R, v)::R
+    catch e
+        _store_callback_error!(e, catch_backtrace())
+        return R === Cvoid ? nothing : zero(R)
+    end
+end
+
+"""
+    CallbackFrame
+
+The trampolines of one call in progress, slot by slot; see
+`CallbackTrampoline`. Pushed by the wrapper before the call
+(`_push_callback_frame!`), popped in its `finally` (`_pop_callback_frame!`).
+"""
+struct CallbackFrame
+    trampolines::Vector{Any}
+end
+
+const _CALLBACK_FRAMES_KEY = :__rustcall_callback_frames
+
+"""
+    CALLBACK_SLOTS
+
+How many callback arguments one `#[julia]` function or method may take: one
+plain slot function exists per position, and a wrapper with more callback
+parameters than this is refused at generation.
+"""
+const CALLBACK_SLOTS = 8
+
+function _callback_frames()
+    tls = task_local_storage()
+    stack = get(tls, _CALLBACK_FRAMES_KEY, nothing)
+    stack === nothing || return stack::Vector{CallbackFrame}
+    fresh = CallbackFrame[]
+    tls[_CALLBACK_FRAMES_KEY] = fresh
+    return fresh
+end
+
+function _push_callback_frame!(trampolines...)
+    frame = CallbackFrame(Any[trampolines...])
+    push!(_callback_frames(), frame)
+    return frame
+end
+
+# Pops `frame` — normally the top; by identity otherwise, so a frame can never
+# be left behind or a neighbour's taken by mistake.
+function _pop_callback_frame!(frame::CallbackFrame)
+    stack = _callback_frames()
+    if !isempty(stack) && stack[end] === frame
+        pop!(stack)
+    else
+        i = findlast(f -> f === frame, stack)
+        i === nothing || deleteat!(stack, i)
+    end
+    return nothing
+end
+
+# The trampoline Rust is calling: slot `k` of the innermost call in progress.
+@inline function _callback_trampoline(k::Int)
+    stack = _callback_frames()
+    isempty(stack) && error("RustCall: a callback was invoked after the call that passed it returned (#296)")
+    return @inbounds stack[end].trampolines[k]
+end
+
+# One plain function per slot, each `@cfunction`-able without a closure. The
+# trampoline it calls converts the result and catches every exception.
+for k in 1:CALLBACK_SLOTS
+    name = Symbol("_callback_slot_", k)
+    @eval $name(args...) = _callback_trampoline($k)(args...)
+end
+
+# How many tasks currently hold a stored callback exception. The guard on
+# every FFI return reads this atomic first, so the hot path pays one load and
+# consults task-local storage only when some callback has actually failed.
+const _CALLBACK_ERRORS_PENDING = Threads.Atomic{Int}(0)
+const _CALLBACK_ERROR_KEY = :__rustcall_callback_error
+
+# Task-local, because a callback runs on the task that made the Rust call and
+# the exception belongs to that call: two tasks driving callbacks at once
+# each get their own.
+function _store_callback_error!(e, bt)
+    tls = task_local_storage()
+    haskey(tls, _CALLBACK_ERROR_KEY) && return nothing   # the first one wins
+    tls[_CALLBACK_ERROR_KEY] = (e, bt)
+    Threads.atomic_add!(_CALLBACK_ERRORS_PENDING, 1)
+    return nothing
+end
+
+function _take_callback_error()
+    tls = task_local_storage()
+    haskey(tls, _CALLBACK_ERROR_KEY) || return nothing
+    stored = pop!(tls, _CALLBACK_ERROR_KEY)
+    Threads.atomic_sub!(_CALLBACK_ERRORS_PENDING, 1)
+    return stored
+end
+
+# Re-raise the exception a callback stored during the call that just
+# returned, after draining a panic the Rust side may have raised on the
+# sentinel the callback returned — the exception is the root cause, and a
+# message left in the thread-local channel would be charged to the next call.
+function _rethrow_callback_error!(channel::Ptr{Cvoid})
+    stored = _take_callback_error()
+    stored === nothing && return nothing
+    if channel != C_NULL
+        len = ccall(channel, Csize_t, (Ptr{UInt8}, Csize_t), C_NULL, 0)
+        len == 0 || _fetch_rust_panic(channel, Int(len))
+    end
+    throw(first(stored))
+end
+
 """
     guard_rust_panic_ptr(value, channel::Ptr{Cvoid}, func_name)
 
 `value`, unless the wrapper whose channel is `channel` panicked — in which case
-the sentinel `value` is discarded and `RustPanicError` is raised.
+the sentinel `value` is discarded and `RustPanicError` is raised — or a
+callback the call drove threw a Julia exception, which is re-raised here, as
+itself, once the Rust frames are gone (#296).
 
 # Why the channel is a pointer and not a `(library, symbol)` pair
 
@@ -367,6 +517,9 @@ site uses is
 `#[no_mangle]` function the user wrote), and the guard is then a no-op.
 """
 function guard_rust_panic_ptr(value, channel::Ptr{Cvoid}, func_name::AbstractString)
+    # One atomic load on the common path; the task-local lookup only when a
+    # callback somewhere has failed (#296).
+    _CALLBACK_ERRORS_PENDING[] == 0 || _rethrow_callback_error!(channel)
     channel == C_NULL && return value
     len = ccall(channel, Csize_t, (Ptr{UInt8}, Csize_t), C_NULL, 0)
     len == 0 && return value

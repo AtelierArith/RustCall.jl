@@ -33,6 +33,9 @@ source text.
 - `ok_abi`/`err_abi`/`inner_abi`: how each `Result`/`Option` payload travels —
   `"string"` for an owned `<fn>_RustCallOwnedString` buffer, `""` as written
   (manifest schema 6, #268)
+- `callback_args` / `callback_returns`: per argument, for an `arg_abis` entry
+  of `"callback"`, the parameter and return spellings of the C-ABI function
+  pointer (`Arg.callback_args` / `Arg.callback_return`, #296); empty otherwise
 """
 struct RustFunctionSignature
     name::String
@@ -85,6 +88,11 @@ struct RustFunctionSignature
     # `rustcall_<ffi_name>`, `<ffi_name>_free_rust_string`. Equal to `name`
     # for a crate-root item; module-qualified inside modules.
     ffi_name::String
+    # Callbacks (#296), aligned with `arg_names`: the function pointer's
+    # parameter spellings and return spelling for an argument whose `abi` is
+    # `"callback"`, empty for every other argument.
+    callback_args::Vector{Vector{String}}
+    callback_returns::Vector{String}
 end
 
 function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_types::Vector{String},
@@ -109,20 +117,24 @@ function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_type
                                inner_abi::String = _default_payload_abi(inner_type),
                                python_defaults::Vector{String} = fill("", length(arg_names)),
                                python_kinds::Vector{String} = fill("", length(arg_names)),
-                               ffi_name::String = name)
+                               ffi_name::String = name,
+                               callback_args::Vector{Vector{String}} = Vector{String}[String[] for _ in arg_names],
+                               callback_returns::Vector{String} = fill("", length(arg_names)))
     length(arg_abis) == length(arg_types) ||
         throw(ArgumentError("arg_abis must have one entry per argument"))
     length(python_defaults) == length(arg_names) ||
         throw(ArgumentError("python_defaults must have one entry per argument"))
     length(python_kinds) == length(arg_names) ||
         throw(ArgumentError("python_kinds must have one entry per argument"))
+    length(callback_args) == length(arg_names) && length(callback_returns) == length(arg_names) ||
+        throw(ArgumentError("callback_args and callback_returns must have one entry per argument"))
     RustFunctionSignature(name, arg_names, arg_types, return_type, is_generic, type_params,
                           symbol, attribute, exported, return_kind, ok_type, err_type, inner_type,
                           source, constraints, module_path, body_has_cfg,
                           has_owned_string_helper, has_borrowed_string_helper, arg_abis,
                           return_abi, vis, skip_reason, python_name, cfg_features,
                           ok_abi, err_abi, inner_abi, python_defaults, python_kinds,
-                          isempty(ffi_name) ? name : ffi_name)
+                          isempty(ffi_name) ? name : ffi_name, callback_args, callback_returns)
 end
 
 """
@@ -153,39 +165,69 @@ manifest is `"string"` or `"str"`; covers `&'a str` and other spellings).
 _is_string_abi(abi::AbstractString) = abi in ("string", "str")
 
 """
-    _string_arg_plan(sig) -> (bindings, preserved, call_args)
+    _string_arg_plan(sig) -> (bindings, preserved, call_args, frame)
 
 How the Julia wrapper of `sig` passes its arguments: `bindings` converts each
 argument (`String(x)` for string arguments, `Int32(x)` and friends for
 primitives), `preserved` lists the string bindings to keep alive during the
 call, and `call_args` are the expressions handed to the `ccall` (`pointer(s),
-sizeof(s)` for strings). `escape` wraps user-visible symbols (`esc` in macro
-context, `identity` inside a generated module).
+sizeof(s)` for strings, a constant slot-function pointer for a callback).
+`frame` is `nothing`, or — when the signature has callback arguments (#296) —
+the symbol of the `CallbackFrame` the last binding pushes for the call; the
+site wraps the call with `_in_callback_frame(frame, call)`, whose `finally`
+pops it. `escape` wraps user-visible symbols (`esc` in macro context,
+`identity` inside a generated module).
 """
 function _string_arg_plan(sig::RustFunctionSignature, escape::Function)
     return _string_arg_plan(sig.arg_names, sig.arg_types, sig.arg_abis, escape;
-                            context = sig.name)
+                            context = sig.name,
+                            callbacks = collect(zip(sig.callback_args, sig.callback_returns)))
 end
 
 # Same plan for a struct method (`RustMethod`), whose arguments follow `self`.
 function _string_arg_plan(method::RustMethod, escape::Function)
     return _string_arg_plan(method.arg_names, method.arg_types, method.arg_abis, escape;
-                            context = method.name)
+                            context = method.name,
+                            callbacks = collect(zip(method.callback_args, method.callback_returns)))
 end
 
 function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
                           arg_abis::Vector{String}, escape::Function;
-                          context::AbstractString = "")
+                          context::AbstractString = "",
+                          callbacks = Tuple{Vector{String}, String}[(String[], "") for _ in arg_names])
     bindings = Expr[]
     preserved = Symbol[]
     call_args = Any[]
     prefix = _string_temp_prefix(arg_names)
-    for (name, rust_type, abi) in zip(arg_names, arg_types, arg_abis)
+    trampolines = Any[]
+    for (name, rust_type, abi, callback) in zip(arg_names, arg_types, arg_abis, callbacks)
         arg_sym = escape(Symbol(name))
         # The contract, not the spelling, decides how many C slots this
         # position occupies and what goes in them (#276).
         c = ffi_argument_contract(rust_type; abi = abi)
-        if c.abi === :ptr_len || c.abi === :ptr_len_cap
+        if c.abi === :callback
+            # A Julia function handed to Rust as `extern "C" fn` (#296). The
+            # pointer's own signature comes from the manifest, and the
+            # contract decides whether it can be built — at wrapper
+            # generation, never at call time. Rust receives a constant
+            # pointer to the plain slot function for this position, compiled
+            # for exactly these slot types; the user's function travels in
+            # the `CallbackFrame` the last binding pushes for the call (no
+            # closure `@cfunction`, which not every platform has). The
+            # trampoline keeps any Julia exception from unwinding through
+            # Rust; the guard after the call re-raises it.
+            plan = ffi_callback_plan(first(callback), last(callback),
+                                     "argument `$(name)` of `$(context)`")
+            k = length(trampolines) + 1
+            k <= CALLBACK_SLOTS || throw(RustError(
+                "`$(context)` takes more than $(CALLBACK_SLOTS) callback arguments (`$(name)` is " *
+                "number $(k)); at most $(CALLBACK_SLOTS) are supported (#296)."))
+            push!(trampolines,
+                  :($(GlobalRef(@__MODULE__, :CallbackTrampoline)){$(plan.ret_expr)}($arg_sym)))
+            slot = GlobalRef(@__MODULE__, Symbol("_callback_slot_", k))
+            push!(call_args, Expr(:macrocall, :(Base.var"@cfunction"), nothing,
+                                  slot, plan.ret_expr, Expr(:tuple, plan.arg_exprs...)))
+        elseif c.abi === :ptr_len || c.abi === :ptr_len_cap
             # `(ptr, len)` — and, should an owned buffer ever be taken by
             # value, `(ptr, len, cap)`. Slot-count driven, so a new multi-word
             # ABI needs no new branch here.
@@ -217,7 +259,33 @@ function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
             push!(call_args, arg_sym)
         end
     end
-    return bindings, preserved, call_args
+    frame = nothing
+    if !isempty(trampolines)
+        # Last, after every conversion that can raise (a string that is not
+        # UTF-8): nothing may throw between the push and the call's `finally`.
+        frame = Symbol(_callback_temp_prefix(arg_names), "frame")
+        push!(bindings, :($frame = $(GlobalRef(@__MODULE__, :_push_callback_frame!))($(trampolines...))))
+    end
+    return bindings, preserved, call_args, frame
+end
+
+"""
+    _in_callback_frame(frame, call::Expr) -> Expr
+
+`call`, or — when the plan pushed a `CallbackFrame` — `call` inside a
+`try … finally` that pops it, so the frame is gone whether the call returns,
+panics or raises (#296). Every wrapper generator wraps the expression that
+performs the `ccall` with this; the source-text emitter's twin is
+`_emit_in_callback_frame`.
+"""
+function _in_callback_frame(frame::Union{Nothing, Symbol}, call::Expr)
+    frame === nothing && return call
+    pop = GlobalRef(@__MODULE__, :_pop_callback_frame!)
+    return :(try
+                 $call
+             finally
+                 $pop($frame)
+             end)
 end
 
 """
@@ -228,6 +296,15 @@ temporary can collide with a Rust argument called, say, `__rustcall_str_s`.
 """
 function _string_temp_prefix(arg_names)
     prefix = "__rustcall_str_"
+    while any(startswith(n, prefix) for n in arg_names)
+        prefix *= "_"
+    end
+    return prefix
+end
+
+# The same for the `CallbackFrame` local of a call with callbacks (#296).
+function _callback_temp_prefix(arg_names)
+    prefix = "__rustcall_cb_"
     while any(startswith(n, prefix) for n in arg_names)
         prefix *= "_"
     end
@@ -300,15 +377,16 @@ _ffi_field_context(info, field_name::AbstractString, field_type::AbstractString)
 """
     _uses_string_ffi(sig) -> Bool
 
-Whether the wrapper of `sig` needs the string ABI (string arguments or a
-`String` / `&str` return).
+Whether the wrapper of `sig` needs the preserving wrapper: string arguments, a
+`String` / `&str` return, or a callback argument whose `CFunction` must stay
+rooted for the call (#296). The plain wrapper has no `GC.@preserve` region.
 """
 function _uses_string_ffi(sig::RustFunctionSignature)
     ffi_return_contract(sig.return_type; abi = sig.return_abi).aggregate_type === nothing ||
         return true
     return any(zip(sig.arg_types, sig.arg_abis)) do (rust_type, abi)
         c = ffi_argument_contract(rust_type; abi = abi)
-        c.abi === :ptr_len || c.abi === :ptr_len_cap
+        c.abi === :ptr_len || c.abi === :ptr_len_cap || c.abi === :callback
     end
 end
 
@@ -374,12 +452,12 @@ function _generate_single_wrapper(sig::RustFunctionSignature)
     # Build argument list with conversion (string arguments become (ptr, len)
     # pairs kept alive with GC.@preserve, see `_string_arg_plan`)
     arg_syms = [esc(Symbol(name)) for name in sig.arg_names]
-    bindings, preserved, converted_args = _string_arg_plan(sig, esc)
+    bindings, preserved, converted_args, frame = _string_arg_plan(sig, esc)
 
     if sig.return_kind == :result
-        return _generate_inline_result_wrapper(sig, func_name, symbol_str, arg_syms, bindings, preserved, converted_args)
+        return _generate_inline_result_wrapper(sig, func_name, symbol_str, arg_syms, bindings, preserved, converted_args, frame)
     elseif sig.return_kind == :option
-        return _generate_inline_option_wrapper(sig, func_name, symbol_str, arg_syms, bindings, preserved, converted_args)
+        return _generate_inline_option_wrapper(sig, func_name, symbol_str, arg_syms, bindings, preserved, converted_args, frame)
     elseif _uses_string_ffi(sig)
         return _generate_inline_string_wrapper(sig, func_name, symbol_str, arg_syms)
     end
@@ -426,7 +504,7 @@ end
 # `<fn>_RustCallOwnedString` released through `<fn>_free_rust_string`, a `&str`
 # return a borrowed `<fn>_RustCallBorrowedString`.
 function _generate_inline_string_wrapper(sig, func_name, symbol_str, arg_syms)
-    bindings, preserved, call_args = _string_arg_plan(sig, esc)
+    bindings, preserved, call_args, frame = _string_arg_plan(sig, esc)
     lib_sym = _generated_local("lib_name", sig.arg_names)
     # The string helpers are named after the Rust item's FFI name, not the
     # symbol; the contract turns that owner into `free_symbol` (#300).
@@ -461,9 +539,9 @@ function _generate_inline_string_wrapper(sig, func_name, symbol_str, arg_syms)
             # target (#253).
             $channel_sym = RustCall.cached_call_target($string_cache, @__MODULE__, $symbol_str)
             $lib_sym = $channel_sym.lib_name
-            GC.@preserve $(preserved...) begin
+            $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) begin
                 $call
-            end
+            end)))
         end
     end
 end
@@ -471,7 +549,8 @@ end
 # Result<T, E> / Option<T> returning #[julia] functions in inline blocks: the
 # extractor generates `CResult_<fn>` / `COption_<fn>` on the Rust side; the
 # wrapper reads that struct and converts it to RustResult / RustOption.
-function _generate_inline_result_wrapper(sig, func_name, symbol_str, arg_syms, bindings, preserved, converted_args)
+function _generate_inline_result_wrapper(sig, func_name, symbol_str, arg_syms, bindings, preserved, converted_args,
+                                         frame::Union{Nothing, Symbol} = nothing)
     ctx = _ffi_context(sig)
     # The payloads are FIELDS of a `#[repr(C)]` aggregate, so they are declared
     # with the type Rust stored — the C slot — and converted to the surface type
@@ -493,7 +572,7 @@ function _generate_inline_result_wrapper(sig, func_name, symbol_str, arg_syms, b
             $channel_sym =
                 RustCall.resolve_call_target(RustCall.module_symbol_library(@__MODULE__, $symbol_str), $symbol_str;
                                              free_symbol = $free_sym)
-            $c_sym = GC.@preserve $(preserved...) RustCall.call_rust_function($channel_sym.func_ptr, RustCall.CResultType{$ok_slot, $err_slot}, $(converted_args...))
+            $c_sym = $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) RustCall.call_rust_function($channel_sym.func_ptr, RustCall.CResultType{$ok_slot, $err_slot}, $(converted_args...)))))
             # A panic returns `CResult::panicked()` — the Err discriminant with
             # an uninitialized payload — so the channel must be read before the
             # payload is decoded, and resolved before the call (#244).
@@ -504,7 +583,8 @@ function _generate_inline_result_wrapper(sig, func_name, symbol_str, arg_syms, b
     end
 end
 
-function _generate_inline_option_wrapper(sig, func_name, symbol_str, arg_syms, bindings, preserved, converted_args)
+function _generate_inline_option_wrapper(sig, func_name, symbol_str, arg_syms, bindings, preserved, converted_args,
+                                         frame::Union{Nothing, Symbol} = nothing)
     ctx = _ffi_context(sig)
     inner_t, inner_slot = ffi_payload_symbols(sig.inner_type, sig.inner_abi, ctx)
     free_sym = _payload_free_symbol(sig.ffi_name, (sig.inner_abi,))
@@ -517,7 +597,7 @@ function _generate_inline_option_wrapper(sig, func_name, symbol_str, arg_syms, b
             $channel_sym =
                 RustCall.resolve_call_target(RustCall.module_symbol_library(@__MODULE__, $symbol_str), $symbol_str;
                                              free_symbol = $free_sym)
-            $c_sym = GC.@preserve $(preserved...) RustCall.call_rust_function($channel_sym.func_ptr, RustCall.COptionType{$inner_slot}, $(converted_args...))
+            $c_sym = $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) RustCall.call_rust_function($channel_sym.func_ptr, RustCall.COptionType{$inner_slot}, $(converted_args...)))))
             RustCall.check_rust_panic_ptr($channel_sym.channel, $rust_name)
             RustCall.convert_c_option_to_rust_option($c_sym, $inner_t,
                                                      $channel_sym.free_ptr)
