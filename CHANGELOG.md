@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **The one-release compatibility fallbacks and deprecated entry points**
+  ([#417](https://github.com/AtelierArith/RustCall.jl/issues/417)), all of
+  which were announced with the release that made them redundant:
+  - the pre-v0.4 helper library name (`deps/rust_helpers`, `librust_helpers`)
+    as a lookup fallback and the `RUSTCALL_RUST_HELPERS` alias (#387): an
+    installed tree built by v0.3.x is rebuilt once with `Pkg.build("RustCall")`;
+  - `deps/rustcall_extract/build.rs` and `rustcall-extract source-digest`
+    (#372 → #409): the extractor's identity is the record `deps/build.jl`
+    writes beside the binary, and the binary reports nothing about itself.
+    The digest algorithm is unchanged, but the extractor crate no longer has
+    a build script, so the digest of a plain build moves — as every cache key
+    does on a minor release anyway (the schema identifier is now `0.5`);
+  - the `RUSTCALL_DLOPEN_GLOBAL` escape hatch (#250, #277 Phase B2): every
+    policy is `RTLD_LOCAL | RTLD_NOW` with no override;
+  - `call_rust_function_infer` (#276), which had only raised since 0.3.0;
+  - the `@rust_crate_static` error stub;
+  - the `#[julia_pyo3]` migration table in `docs/src/pyo3.md` (the attribute
+    itself was removed in 0.3.0, #312); the table stays readable in the v0.4.2
+    documentation.
+
 ## [0.4.2] - 2026-09-16
 
 ### Changed

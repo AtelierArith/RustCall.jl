@@ -83,19 +83,19 @@ _toolchain_required() =
         withenv("RUSTCALL_HELPERS" => probe, "RUSTCALL_RUST_HELPERS" => nothing) do
             @test first(RustCall.native_product_candidates(:rustcall_helpers)) == probe
         end
-        # The pre-v0.4 variable is a deprecated alias: honoured when the new one
-        # is unset, and it says so once (#387).
+        # The pre-v0.4 variable and file name (#387) were a one-release
+        # fallback and are gone since v0.5 (#417): the alias is ignored
+        # silently, and no `librust_helpers` / `rust_helpers` path is offered.
         legacy_probe = joinpath(mktempdir(), "librust_helpers.so")
         withenv("RUSTCALL_HELPERS" => nothing, "RUSTCALL_RUST_HELPERS" => legacy_probe) do
-            candidates = @test_logs (:warn, r"RUSTCALL_RUST_HELPERS is deprecated") match_mode=:any begin
+            candidates = @test_logs begin   # nothing logged, no warning
                 RustCall.native_product_candidates(:rustcall_helpers)
             end
-            @test first(candidates) == legacy_probe
+            @test legacy_probe ∉ candidates
+            @test !any(c -> occursin("rust_helpers", c) && !occursin("rustcall_helpers", c), candidates)
         end
-        # ...and it never shadows the new one.
-        withenv("RUSTCALL_HELPERS" => probe, "RUSTCALL_RUST_HELPERS" => legacy_probe) do
-            @test first(RustCall.native_product_candidates(:rustcall_helpers)) == probe
-        end
+        @test !isdefined(RustCall, :LEGACY_HELPERS)
+        @test !isdefined(RustCall, :native_legacy_helpers_filename)
         # An empty value is not an override: the checkout's own build wins.
         withenv("RUSTCALL_EXTRACT" => "") do
             @test first(RustCall.native_product_candidates(:extractor)) ==
@@ -170,67 +170,23 @@ _toolchain_required() =
                   candidates)
     end
 
-    @testset "the pre-v0.4 helper name is still found, after the current one (#387)" begin
+    @testset "the pre-v0.4 helper name is no longer looked for (#387 → #417)" begin
         # `deps/rust_helpers` / `librust_helpers` became `deps/rustcall_helpers` /
-        # `librustcall_helpers` in v0.4.0. The file name is what a deployment
-        # sees, so an installed tree built by v0.3.x — and not rebuilt since —
-        # must keep loading for one release, from every place the current name
-        # is looked for, and always *after* the current name.
+        # `librustcall_helpers` in v0.4.0 and stayed a lookup fallback for one
+        # release. Since v0.5 nothing under the old name is a candidate: a
+        # tree built by v0.3.x is rebuilt once.
         new_file = RustCall.native_product_filename(:rustcall_helpers)
-        old_file = RustCall.native_legacy_helpers_filename()
-        @test old_file == replace(new_file, "rustcall_helpers" => "rust_helpers")
+        old_file = replace(new_file, "rustcall_helpers" => "rust_helpers")
         @test old_file != new_file
-
         withenv("RUSTCALL_HELPERS" => nothing, "RUSTCALL_RUST_HELPERS" => nothing) do
             candidates = RustCall.native_product_candidates(:rustcall_helpers)
-            news = findall(c -> basename(c) == new_file, candidates)
-            olds = findall(c -> basename(c) == old_file, candidates)
-            @test !isempty(news)
-            @test !isempty(olds)
-            # Every current-name candidate precedes every legacy-name one.
-            @test maximum(news) < minimum(olds)
-            # A checkout: the legacy crate directory's own build is searched.
-            @test joinpath(RustCall.native_package_root(), "deps", "rust_helpers",
-                           "target", "release", old_file) in candidates
+            @test any(c -> basename(c) == new_file, candidates)
+            @test !any(c -> basename(c) == old_file, candidates)
+            @test !any(c -> occursin(joinpath("deps", "rust_helpers"), c), candidates)
             # Nothing is ever *built* under the old name: no product is keyed by it.
             @test !haskey(RustCall.NATIVE_PRODUCTS, :rust_helpers)
             @test_throws ArgumentError RustCall.native_target_dir(:rust_helpers)
         end
-
-        # An installed tree exactly as v0.3.x left it: only the old file exists,
-        # in the old crate's scratch directory. It resolves.
-        depot = mktempdir()
-        pkg = joinpath(depot, "packages", "RustCall", "AbCdE")
-        mkpath(joinpath(pkg, "src"))
-        for crate in ("rustcall_helpers", "rustcall_extract", "rust_helpers")
-            mkpath(joinpath(pkg, "deps", crate))
-            write(joinpath(pkg, "deps", crate, "Cargo.toml"), "")
-        end
-        cp(joinpath(_REPO_ROOT, "src", "native_layout.jl"),
-           joinpath(pkg, "src", "native_layout.jl"))
-        old_build = joinpath(depot, "scratchspaces", string(RustCall.RUSTCALL_UUID),
-                             RustCall.NATIVE_SCRATCH_NAME, "AbCdE", "rust_helpers", "release")
-        mkpath(old_build)
-        write(joinpath(old_build, old_file), "built by v0.3.x")
-        script = """
-        import Scratch
-        empty!(DEPOT_PATH)
-        push!(DEPOT_PATH, $(repr(depot)))
-        m = Module(:NativeLayoutProbe)
-        Base.include(m, $(repr(joinpath(pkg, "src", "native_layout.jl"))))
-        println(something(m.native_product_path(:rustcall_helpers), "nothing"))
-        println(first(m.native_product_candidates(:rustcall_helpers)))
-        """
-        out = withenv("RUSTCALL_HELPERS" => nothing, "RUSTCALL_RUST_HELPERS" => nothing) do
-            read(`$(Base.julia_cmd()) --project=$(_REPO_ROOT) --startup-file=no -e $script`,
-                 String)
-        end
-        resolved, preferred = split(strip(out), '\n')
-        @test resolved == joinpath(old_build, old_file)
-        # ...but a rebuild lands under the new name and would win.
-        @test preferred == joinpath(depot, "scratchspaces", string(RustCall.RUSTCALL_UUID),
-                                    RustCall.NATIVE_SCRATCH_NAME, "AbCdE",
-                                    "rustcall_helpers", "release", new_file)
     end
 
     @testset "a read-only depot in front cannot shadow the build" begin

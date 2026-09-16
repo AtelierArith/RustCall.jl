@@ -4749,29 +4749,5 @@ end
 export $method_name"""
 end
 
-"""
-    @rust_crate_static(lib_path, module_name)
-
-Load a pre-generated Rust crate binding with a specific library path.
-
-This macro is for loading bindings that were generated with `write_bindings_to_file`
-where the library was placed at a known location.
-
-# Arguments
-- `lib_path`: Path to the compiled shared library
-- `module_name`: Name of the module to create
-
-# Example
-```julia
-# In a precompiled package
-const _RUST_LIB = joinpath(@__DIR__, "..", "deps", "libmycrate.so")
-@rust_crate_static _RUST_LIB MyCrate
-```
-"""
-macro rust_crate_static(lib_path, module_name)
-    quote
-        # This is a simplified loader for precompiled bindings
-        # The full module should be included from a generated file
-        error("@rust_crate_static is deprecated. Use write_bindings_to_file and include the generated file instead.")
-    end
-end
+# `@rust_crate_static`, an error stub since the `write_bindings_to_file`
+# migration, was removed in v0.5 (#417): include the generated file instead.

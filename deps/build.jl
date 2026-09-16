@@ -99,9 +99,8 @@ function build_native_product(kind::Symbol, what::AbstractString)
         println("  Running: $(cargo()) $args")
         # Run *in* the crate directory: Cargo discovers its configuration
         # (`.cargo/config.toml`, walking up) from the directory it is invoked
-        # in, not from the manifest's, and the extractor's `build.rs` reports a
-        # source digest only for a build whose configuration it can see —
-        # the one discovered from the crate directory up (#372).
+        # in, not from the manifest's, and the identity written below (#409)
+        # describes the build whose configuration is discovered from there.
         run(setenv(`$(cargo()) $args`, build_env; dir = crate_dir))
         println("  ✓ Cargo build completed successfully")
     catch e

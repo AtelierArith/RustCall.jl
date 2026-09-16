@@ -610,11 +610,10 @@ const _MANIFEST_CRATES = ("rustcall_core", "rustcall_extract",
         # A selected extractor that cannot report a source digest is identified
         # by its bytes — never by this checkout's sources, which say nothing
         # about what that executable emits (#372 review). Played with a real
-        # executable that fails the subcommand: the Julia binary itself, which
-        # exits non-zero on `source-digest` (no such file). A text file dressed
-        # as an `.exe` is not used — spawning one hung the Windows CI job.
-        # Only the fingerprint input is read, so the schema check the stub
-        # would also fail is not reached.
+        # executable that has no identity record beside it: the Julia binary
+        # itself. A text file dressed as an `.exe` is not used — spawning one
+        # hung the Windows CI job. Only the fingerprint input is read, so the
+        # schema check the stub would also fail is not reached.
         stub = joinpath(Sys.BINDIR, Base.julia_exename())
         @test isfile(stub)
         RustCall._reset_extractor_state!()
@@ -648,15 +647,9 @@ const _MANIFEST_CRATES = ("rustcall_core", "rustcall_extract",
             @test fresh_line == "extractor=binary:$(RustCall.extractor_digest())"
         else
             @test fresh_line == "extractor=$(record["source_digest"])"
-            # The v0.4.0 cross-check: the record's digest is what the binary's
-            # own `build.rs` embedded. A canonical build has no input beyond
-            # the sources (#413), so nothing gates this.
+            # A canonical build has no input beyond the sources (#413); the
+            # binary's own `source-digest` self-report is gone (#417).
             @test all(i -> startswith(i, "crate:") || i == "lockfile", record["inputs"])
-            if RustCall.check_rustc_available()
-                reported = strip(read(`$(RustCall.extractor_path()) source-digest`, String))
-                @test occursin(r"^[0-9a-f]{64}$", reported)
-                @test record["source_digest"] == reported
-            end
         end
         @test length(RustCall.toolchain_fingerprint()) == 64
     end

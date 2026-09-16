@@ -2,7 +2,8 @@
 #
 # Which sources an extractor binary was built from decides what it emits, and
 # every artifact identity folds that in (`toolchain_fingerprint`, #372). Until
-# #409 the binary reported it about itself, from a `build.rs` that walked the
+# #409 the binary reported it about itself, from a `build.rs` (gone since v0.5,
+# #417) that walked the
 # manifests — and review of #408 kept finding inputs Cargo honours that no
 # manifest walk can see (workspace membership, `[patch]`, `paths` overrides in
 # configuration discovered from the invocation directory, ...). This file
@@ -14,8 +15,9 @@
 # Included by `src/RustCall.jl` **and** by `deps/build.jl`, which runs before
 # the module exists: only `Base`, `SHA` and `TOML` may be used here.
 #
-# The digest reproduces, byte for byte, what the v0.4.0 `build.rs` embedded for
-# this tree's own layout, so the upgrade keeps every cache key. It covers the
+# The digest algorithm is the one the v0.4.x `build.rs` embedded for this
+# tree's own layout (kept so the v0.4 → v0.5 comparison is by algorithm, not
+# by accident; the script itself is gone, #417). It covers the
 # sources and nothing else, because a digest is claimed only for a *plain*
 # build — one nothing outside the sources could have shaped (the closed rule,
 # #413, below); any other build is identified by its bytes.

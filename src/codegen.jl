@@ -777,36 +777,10 @@ function call_rust_function(func_ptr::Ptr{Cvoid}, ret_type::Type, argt::Type{<:T
     return _call_rust_function(func_ptr, ret_type, argt, args...)
 end
 
-"""
-    call_rust_function_infer(func_ptr::Ptr{Cvoid}, args...)
-
-!!! warning "Deprecated (#276)"
-    This function guessed the **return** type from the type of the **first
-    argument**, defaulting to `Int64` and reading a string argument as a
-    `Cstring` return. Neither is derivable from an argument, and reading a
-    return slot at the wrong width is undefined behaviour, not a fallback
-    (#245, #246). It now always raises.
-
-    Call `call_rust_function(func_ptr, T, args...)` with the return type, or
-    annotate the call site: `@rust f(x)::T`. A `#[julia]` function needs
-    neither — its return type comes from the manifest.
-
-Always throws a [`RustError`](@ref) naming the caller-visible fix.
-"""
-function call_rust_function_infer(func_ptr::Ptr{Cvoid}, args...)
-    Base.depwarn(
-        "call_rust_function_infer guesses the return type from the first " *
-        "argument and is deprecated (#276); pass the return type explicitly, " *
-        "e.g. call_rust_function(func_ptr, T, args...) or `@rust f(x)::T`.",
-        :call_rust_function_infer)
-    guessed = isempty(args) ? "Cvoid" : ffi_describe(juliatype_to_rust_or_name(typeof(first(args))))
-    throw(RustError(
-        "cannot call a Rust function without a return type: the return type " *
-        "was previously guessed from the first argument " *
-        "($(isempty(args) ? "no arguments" : guessed)), which is not " *
-        "derivable from it (#245, #246). Annotate the call site with " *
-        "`::T`, or call `call_rust_function(func_ptr, T, args...)`."))
-end
+# `call_rust_function_infer`, which guessed the return type from the first
+# argument, was deprecated in #276 (it only ever raised after that) and
+# removed in v0.5 (#417). Pass the return type: `call_rust_function(func_ptr,
+# T, args...)` or `@rust f(x)::T`.
 
 # The Rust spelling of a Julia argument type, for the message above; falls back
 # to the Julia name when there is no Rust counterpart, so `ffi_describe` still

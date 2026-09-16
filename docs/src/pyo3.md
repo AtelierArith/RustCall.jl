@@ -807,51 +807,9 @@ to (the test suite keeps its own copy as `test/fixtures/sample_crate_pyo3`).
 
 `#[julia_pyo3]` was deprecated in 0.2.0
 ([#275](https://github.com/AtelierArith/RustCall.jl/issues/275) Phase 3) and
-**removed in 0.3.0** ([#312](https://github.com/AtelierArith/RustCall.jl/issues/312)).
-The proc-macro is gone from `rustcall_julia_macros`, so a crate that still uses it
-fails to build with ``cannot find attribute `julia_pyo3` `` at every use site;
-the extractor no longer knows the attribute either (manifest schema 7), so
-nothing binds such an item. This section stays for one release to say what to
-write instead.
-
-The reason is #279: `#[julia]` is **additive**. It keeps the annotated item
-exactly as written and emits the `extern "C"` entry point next to it under a
-distinct symbol, so PyO3's own attributes — which likewise keep the item — can
-sit on the same definition. What `#[julia_pyo3]` did by guessing (a
-`#[pyfunction]` per function, `#[pyclass(get_all, set_all)]` per struct, a
-`#[new]` on anything called `new`) PyO3's attributes do with their full option
-surface, and the Julia half is exactly `#[julia]`. One definition still gives
-both bindings; there is simply no RustCall-specific way to spell the Python
-half any more.
-
-| you wrote | write instead |
-| --- | --- |
-| `#[julia_pyo3] fn add(a: i32, b: i32) -> i32` | `#[julia] #[cfg_attr(feature = "python", pyo3::pyfunction)] fn add(a: i32, b: i32) -> i32` |
-| `#[julia_pyo3] pub struct Point { pub x: f64, pub y: f64 }` | `#[julia] #[cfg_attr(feature = "python", pyo3::pyclass(get_all, set_all))] pub struct Point { pub x: f64, pub y: f64 }` |
-| `#[julia_pyo3] impl Point { pub fn new(..) -> Self; pub fn norm(&self) -> f64 }` | `#[julia] impl Point { #[julia] pub fn new(..) -> Self; #[julia] pub fn norm(&self) -> f64 }` **and** a `#[cfg(feature = "python")] #[pyo3::pymethods] impl Point { #[new] fn py_new(..) -> Self { Point::new(..) } #[pyo3(name = "norm")] fn py_norm(&self) -> f64 { self.norm() } }` |
-
-Two things to know about the impl-block row:
-
-* **pyo3's inner attributes cannot be gated.** `#[cfg_attr(feature = "python", new)]`
-  fails with `cannot find attribute 'new' in this scope` (see "Making pyo3
-  optional" above), so a crate that keeps pyo3 optional writes the
-  `#[pymethods]` block as a separate, `#[cfg(feature = "python")]`-gated impl.
-  A crate whose pyo3 dependency is mandatory can instead put `#[julia]` and
-  `#[pymethods]` on **one** impl block and `#[julia]` next to `#[new]` on each
-  method — both attributes leave the methods in place.
-* **A type has one inherent method of a given name.** The Python impl therefore
-  names its methods differently in Rust (`py_norm`) and restores the Python
-  name with `#[pyo3(name = "norm")]`; the bodies are one-line delegations.
-
-The Julia surface does not change: `#[julia_pyo3] fn add` and `#[julia] fn add`
-both export `rustcall_add`, and the struct helpers (`Point_free`,
-`Point_get_x`, …) are the same. What does change is the string and
-`Result`/`Option` lowering: `#[julia_pyo3]` exported such signatures **as
-written** (a `String` argument arrived as a Rust `String` the caller could not
-produce), while `#[julia]` lowers them to the `(ptr, len)` / `CResult_*` ABI
-like everywhere else — which is the ABI divergence #269 described, and the
-reason the attribute was removed rather than extended.
-
-`examples/SampleCratePyO3.jl/deps/sample_crate_pyo3` shows the migrated shape
-end to end, including the Python-side impl block; its `README.md` walks through
-it.
+removed in 0.3.0 ([#312](https://github.com/AtelierArith/RustCall.jl/issues/312));
+the migration table that stood here through v0.4.x is in the
+[v0.4.2 documentation](https://github.com/AtelierArith/RustCall.jl/blob/v0.4.2/docs/src/pyo3.md#migrating-from-julia_pyo3).
+In one line: write `#[julia]` next to PyO3's own attributes on the same
+definition — `#[julia]` is additive (#279) — and spell the Python half with
+PyO3's full attribute surface.

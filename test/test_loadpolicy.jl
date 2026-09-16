@@ -291,35 +291,20 @@ end
     end
 
     # -----------------------------------------------------------------
-    # The deprecated RTLD_GLOBAL escape hatch (#250, one release).
+    # The RTLD_GLOBAL escape hatch (#250) is gone since v0.5 (#417): the
+    # policy's flags are the flags, whatever the environment says.
     # -----------------------------------------------------------------
-    @testset "RUSTCALL_DLOPEN_GLOBAL escape hatch" begin
+    @testset "no RUSTCALL_DLOPEN_GLOBAL escape hatch (#417)" begin
         policy = RustCall.inline_rustc_policy()
-        previous = RustCall.DLOPEN_GLOBAL_OVERRIDE[]
-        try
-            @test !RustCall._init_dlopen_global_override!(Dict{String, String}())
+        withenv("RUSTCALL_DLOPEN_GLOBAL" => "1") do
             @test RustCall.dlopen_flags(policy) == policy.dlopen_flags
-
-            @test RustCall._init_dlopen_global_override!(
-                Dict("RUSTCALL_DLOPEN_GLOBAL" => "1"))
-            # One warning, naming the issue, then silence.
-            flags = @test_logs (:warn, r"RUSTCALL_DLOPEN_GLOBAL") match_mode = :any begin
-                RustCall.dlopen_flags(policy)
-            end
-            @test flags == policy.dlopen_flags | UInt32(Libdl.RTLD_GLOBAL)
-            @test RustCall.dlopen_flags(policy) == flags   # no second warning
-            # The *policy* still says LOCAL: the override is not a policy.
+            @test RustCall.dlopen_flags(policy) & UInt32(Libdl.RTLD_GLOBAL) == 0
             @test !RustCall.uses_global_symbols(policy)
-
-            # Only an affirmative value turns it on.
-            @test !RustCall._init_dlopen_global_override!(
-                Dict("RUSTCALL_DLOPEN_GLOBAL" => "0"))
-            @test !RustCall._init_dlopen_global_override!(
-                Dict("RUSTCALL_DLOPEN_GLOBAL" => ""))
-        finally
-            RustCall._init_dlopen_global_override!(Dict{String, String}())
-            RustCall.DLOPEN_GLOBAL_OVERRIDE[] = previous
         end
+        @test !isdefined(RustCall, :DLOPEN_GLOBAL_OVERRIDE)
+        @test !isdefined(RustCall, :_init_dlopen_global_override!)
+        src = read(joinpath(dirname(pathof(RustCall)), "loadpolicy.jl"), String)
+        @test !occursin("RUSTCALL_DLOPEN_GLOBAL\"", src)
     end
 
     # Symbols of a LOCAL artifact are reachable through its handle and NOT

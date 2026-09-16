@@ -303,10 +303,6 @@ function __init__()
     # one (#253, #390 review).
     global SESSION_TOKEN = SessionToken()
 
-    # The deprecated RTLD_GLOBAL escape hatch (#250, #277 Phase B2), read once:
-    # a load policy must not change halfway through a session.
-    _init_dlopen_global_override!()
-
     # Check for rustc availability
     if !check_rustc_available()
         @warn """

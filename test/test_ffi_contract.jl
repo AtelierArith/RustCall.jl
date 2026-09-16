@@ -697,20 +697,11 @@ const ALL_SPELLINGS = vcat(
         # `call_rust_function_infer` derived the RETURN type from the FIRST
         # ARGUMENT — `Float64` for `fn f(x: f64) -> i32`, `Cstring` for a string
         # argument (the ABI-broken path of #246), and `Int64` for everything
-        # else. None of that is derivable from an argument, and reading a return
-        # slot at the wrong width is undefined behaviour, not a fallback. It now
-        # deprecation-warns and raises.
-        for arg in (1.0, Int32(1), true, C_NULL, "s")
-            @test_throws RustCall.RustError RustCall.call_rust_function_infer(C_NULL, arg)
-        end
-        @test_throws RustCall.RustError RustCall.call_rust_function_infer(C_NULL)
-        err = try
-            RustCall.call_rust_function_infer(C_NULL, 1.0)
-            nothing
-        catch e
-            e
-        end
-        @test occursin("Annotate the call site", sprint(showerror, err))
+        # else. None of that is derivable from an argument. It raised from
+        # 0.3.0 on and was removed in v0.5 (#417): the name no longer exists,
+        # and `call_rust_function` needs the return type.
+        @test !isdefined(RustCall, :call_rust_function_infer)
+        @test_throws MethodError RustCall.call_rust_function(C_NULL, 1.0)
 
         # The contract has no such path: an unknown return type has no type.
         @test RustCall.ffi_return_contract("i32").ccall_types == Type[Int32]
