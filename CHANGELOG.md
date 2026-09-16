@@ -17,8 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reads no Rust syntax; the FFI contract decides at wrapper generation which
   parameter and return types a callback may have (one-slot by-value and raw
   pointer types with slot = surface; `&str`, `String`, `char` and aggregates
-  are refused with a `RustError` naming the argument). Synchronous borrow
-  (the `CFunction` is rooted for the call), same-thread invocation, and a
+  are refused with a `RustError` naming the argument). No closure
+  `@cfunction` is involved — Rust gets a constant slot-function pointer and
+  the Julia function rides in a task-local frame for the call, so this works
+  on aarch64 too. Synchronous borrow, same-thread invocation, and a
   Julia exception that never unwinds through Rust: the trampoline stores it
   for the task and returns a sentinel, and the panic guard re-raises the
   same exception after the Rust call returns. Argument position only, not in

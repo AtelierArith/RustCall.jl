@@ -344,19 +344,28 @@ end
 """
     CallbackTrampoline{R}(f)
 
-The callable a generated wrapper wraps a user's function in before handing it
-to `@cfunction` (#296): it calls `f`, converts the result to the C slot type
-`R` (`nothing` for `Cvoid`), and **never lets a Julia exception escape** —
-the frames below it are Rust's, and unwinding through them is undefined
-behaviour. An exception is stored for the task (`_store_callback_error!`) and
-a zero of `R` is returned as a sentinel; the wrapper that made the call
-re-raises the exception once the Rust call has returned
-(`guard_rust_panic_ptr`). Only the first exception of a call is kept.
+The callable a generated wrapper wraps a user's function in (#296): it calls
+`f`, converts the result to the C slot type `R` (`nothing` for `Cvoid`), and
+**never lets a Julia exception escape** — the frames below it are Rust's, and
+unwinding through them is undefined behaviour. An exception is stored for the
+task (`_store_callback_error!`) and a zero of `R` is returned as a sentinel;
+the wrapper that made the call re-raises the exception once the Rust call has
+returned (`guard_rust_panic_ptr`). Only the first exception of a call is kept.
 
-A callback may be invoked only while the call that passed it is on the stack
-(synchronous borrow: the `CFunction` is rooted by `GC.@preserve` for exactly
-that long) and only on the thread that made the call: a `@cfunction` entered
-from a thread Julia does not know about takes the process down.
+# How a Julia function becomes a C function pointer without a closure
+
+`@cfunction(\$f, ...)` — a closure trampoline — is not available on every
+platform Julia runs on (aarch64 raises `cfunction: closures are not supported
+on this platform`), so no generated wrapper uses one. Instead the wrapper
+pushes a `CallbackFrame` holding the call's trampolines onto a **task-local
+stack** for the duration of the call, and passes Rust a constant pointer to
+one of the plain slot functions `_callback_slot_1` … `_callback_slot_N`
+(`CALLBACK_SLOTS`), each compiled by `@cfunction` for the exact slot types of
+that argument. Slot `k` calls the `k`-th trampoline of the frame on top of the
+stack. Nested calls push their own frames and pop them on return, so the top
+is always the innermost call in progress — which is the one Rust is running
+right now, because a callback may only be invoked while the call that passed
+it is on the stack (synchronous borrow) and on the thread that made the call.
 """
 struct CallbackTrampoline{R, F}
     f::F
@@ -371,6 +380,70 @@ function (t::CallbackTrampoline{R})(args...) where {R}
         _store_callback_error!(e, catch_backtrace())
         return R === Cvoid ? nothing : zero(R)
     end
+end
+
+"""
+    CallbackFrame
+
+The trampolines of one call in progress, slot by slot; see
+`CallbackTrampoline`. Pushed by the wrapper before the call
+(`_push_callback_frame!`), popped in its `finally` (`_pop_callback_frame!`).
+"""
+struct CallbackFrame
+    trampolines::Vector{Any}
+end
+
+const _CALLBACK_FRAMES_KEY = :__rustcall_callback_frames
+
+"""
+    CALLBACK_SLOTS
+
+How many callback arguments one `#[julia]` function or method may take: one
+plain slot function exists per position, and a wrapper with more callback
+parameters than this is refused at generation.
+"""
+const CALLBACK_SLOTS = 8
+
+function _callback_frames()
+    tls = task_local_storage()
+    stack = get(tls, _CALLBACK_FRAMES_KEY, nothing)
+    stack === nothing || return stack::Vector{CallbackFrame}
+    fresh = CallbackFrame[]
+    tls[_CALLBACK_FRAMES_KEY] = fresh
+    return fresh
+end
+
+function _push_callback_frame!(trampolines...)
+    frame = CallbackFrame(Any[trampolines...])
+    push!(_callback_frames(), frame)
+    return frame
+end
+
+# Pops `frame` — normally the top; by identity otherwise, so a frame can never
+# be left behind or a neighbour's taken by mistake.
+function _pop_callback_frame!(frame::CallbackFrame)
+    stack = _callback_frames()
+    if !isempty(stack) && stack[end] === frame
+        pop!(stack)
+    else
+        i = findlast(f -> f === frame, stack)
+        i === nothing || deleteat!(stack, i)
+    end
+    return nothing
+end
+
+# The trampoline Rust is calling: slot `k` of the innermost call in progress.
+@inline function _callback_trampoline(k::Int)
+    stack = _callback_frames()
+    isempty(stack) && error("RustCall: a callback was invoked after the call that passed it returned (#296)")
+    return @inbounds stack[end].trampolines[k]
+end
+
+# One plain function per slot, each `@cfunction`-able without a closure. The
+# trampoline it calls converts the result and catches every exception.
+for k in 1:CALLBACK_SLOTS
+    name = Symbol("_callback_slot_", k)
+    @eval $name(args...) = _callback_trampoline($k)(args...)
 end
 
 # How many tasks currently hold a stored callback exception. The guard on

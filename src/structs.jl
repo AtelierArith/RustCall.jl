@@ -608,7 +608,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
         # with GC.@preserve (see `_string_arg_plan`); the temporaries are
         # hygienic here, the user's arguments are escaped. `self` is preserved
         # as well: a borrowed `&str` result points into the Rust object.
-        bindings, preserved, expanded_call_args = _string_arg_plan(m, esc)
+        bindings, preserved, expanded_call_args, frame = _string_arg_plan(m, esc)
 
         if m.is_static
             if is_ctor
@@ -619,14 +619,14 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                         # One snapshot for the whole construction: the wrapper
                         # that allocates, its panic channel, and the destructor
                         # and liveness flag the object will carry (#277).
-                        ptr, tgt = GC.@preserve $(preserved...) _call_rust_constructor(lib, $wrapper_name, $struct_stem, $(expanded_call_args...))
+                        ptr, tgt = $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) _call_rust_constructor(lib, $wrapper_name, $struct_stem, $(expanded_call_args...)))))
                         return $esc_struct(ptr, tgt.lib_name, tgt.free_ptr, tgt.alive, tgt.free_channel)
                     end
                 end)
             elseif m.return_kind === :result || m.return_kind === :option
                 push!(exprs, _inline_method_payload_wrapper(
                     info, m, fname, wrapper_name, esc_args, bindings, preserved,
-                    expanded_call_args; self = nothing, static_type = esc_struct))
+                    expanded_call_args; self = nothing, static_type = esc_struct, frame))
             else
                 mc = ffi_return_contract(m.return_type; abi = m.return_abi,
                                          owner = _method_string_owner(m, struct_stem))
@@ -636,7 +636,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                         function $fname(::Type{$esc_struct}, $(esc_args...))
                             $(bindings...)
                             lib = get_current_library()
-                            return GC.@preserve $(preserved...) _call_rust_owned_string(lib, $wrapper_name, $free_fn, $(expanded_call_args...))
+                            return $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) _call_rust_owned_string(lib, $wrapper_name, $free_fn, $(expanded_call_args...)))))
                         end
                     end)
                 elseif ffi_borrowed_string_return(mc)
@@ -644,7 +644,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                         function $fname(::Type{$esc_struct}, $(esc_args...))
                             $(bindings...)
                             lib = get_current_library()
-                            return GC.@preserve $(preserved...) _call_rust_borrowed_string(lib, $wrapper_name, $(expanded_call_args...))
+                            return $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) _call_rust_borrowed_string(lib, $wrapper_name, $(expanded_call_args...)))))
                         end
                     end)
                 else
@@ -657,7 +657,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                         function $fname(::Type{$esc_struct}, $(esc_args...))
                             $(bindings...)
                             lib = get_current_library()
-                            return GC.@preserve $(preserved...) _call_rust_method(lib, $wrapper_name, C_NULL, $jl_ret_type, $(expanded_call_args...))
+                            return $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) _call_rust_method(lib, $wrapper_name, C_NULL, $jl_ret_type, $(expanded_call_args...)))))
                         end
                     end)
                 end
@@ -676,7 +676,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
         elseif m.return_kind === :result || m.return_kind === :option
             push!(exprs, _inline_method_payload_wrapper(
                 info, m, fname, wrapper_name, esc_args, bindings, preserved,
-                expanded_call_args; self = esc_struct))
+                expanded_call_args; self = esc_struct, frame))
         else
             mc = ffi_return_contract(m.return_type; abi = m.return_abi,
                                      owner = _method_string_owner(m, struct_stem))
@@ -685,14 +685,14 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                 push!(exprs, quote
                     function $fname(self::$esc_struct, $(esc_args...))
                         $(bindings...)
-                        return GC.@preserve self $(preserved...) _call_rust_owned_string(self.lib_name, $wrapper_name, $free_fn, self.ptr, $(expanded_call_args...))
+                        return $(_in_callback_frame(frame, :(GC.@preserve self $(preserved...) _call_rust_owned_string(self.lib_name, $wrapper_name, $free_fn, self.ptr, $(expanded_call_args...)))))
                     end
                 end)
             elseif ffi_borrowed_string_return(mc)
                 push!(exprs, quote
                     function $fname(self::$esc_struct, $(esc_args...))
                         $(bindings...)
-                        return GC.@preserve self $(preserved...) _call_rust_borrowed_string(self.lib_name, $wrapper_name, self.ptr, $(expanded_call_args...))
+                        return $(_in_callback_frame(frame, :(GC.@preserve self $(preserved...) _call_rust_borrowed_string(self.lib_name, $wrapper_name, self.ptr, $(expanded_call_args...)))))
                     end
                 end)
             else
@@ -709,10 +709,10 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                             # A `Self`-returning method allocates, so its result
                             # is bound to the generation that ran it, exactly
                             # like a constructor (#277).
-                            res, tgt = GC.@preserve self $(preserved...) _call_rust_constructor(self.lib_name, $wrapper_name, $struct_stem, self.ptr, $(expanded_call_args...))
+                            res, tgt = $(_in_callback_frame(frame, :(GC.@preserve self $(preserved...) _call_rust_constructor(self.lib_name, $wrapper_name, $struct_stem, self.ptr, $(expanded_call_args...)))))
                             return $esc_struct(res, tgt.lib_name, tgt.free_ptr, tgt.alive, tgt.free_channel)
                         else
-                            return GC.@preserve self $(preserved...) _call_rust_method(self.lib_name, $wrapper_name, self.ptr, $jl_ret_type, $(expanded_call_args...))
+                            return $(_in_callback_frame(frame, :(GC.@preserve self $(preserved...) _call_rust_method(self.lib_name, $wrapper_name, self.ptr, $jl_ret_type, $(expanded_call_args...)))))
                         end
                     end
                 end)
@@ -868,7 +868,8 @@ method itself for one whose `#[julia] impl` block sits in another module (#342).
 function _inline_method_payload_wrapper(info::RustStructInfo, m::RustMethod, fname,
                                         wrapper_name::AbstractString, esc_args, bindings,
                                         preserved, call_args; self = nothing,
-                                        static_type = nothing)
+                                        static_type = nothing,
+                                        frame::Union{Nothing, Symbol} = nothing)
     ctx = _ffi_context(m, info.name)
     # The manifest says which buffers this wrapper uses: the struct's when it
     # was emitted next to the struct, its own when it was emitted at a
@@ -894,8 +895,8 @@ function _inline_method_payload_wrapper(info::RustStructInfo, m::RustMethod, fna
     body(lib, leading_args, preserve) = quote
         $(bindings...)
         $tgt = RustCall.resolve_call_target($lib, $wrapper_name; free_symbol = $free_sym)
-        $c = GC.@preserve $(preserve...) RustCall.call_rust_function(
-            $tgt.func_ptr, $aggregate, $(leading_args...), $(call_args...))
+        $c = $(_in_callback_frame(frame, :(GC.@preserve $(preserve...) RustCall.call_rust_function(
+            $tgt.func_ptr, $aggregate, $(leading_args...), $(call_args...)))))
         # The `panicked()` sentinel carries an uninitialized payload, so the
         # channel is read before anything is decoded (#244).
         RustCall.check_rust_panic_ptr($tgt.channel, $label)

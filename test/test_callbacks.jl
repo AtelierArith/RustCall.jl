@@ -66,9 +66,46 @@ const _CB_REPO = normpath(joinpath(@__DIR__, ".."))
                                               arg_abis = ["callback", ""], callback_args = [["i64"], String[]],
                                               callback_returns = ["i64", ""])
         src = RustCall._emit_function_code(good)
-        @test occursin("Base.@cfunction", src) && occursin("CallbackTrampoline{Int64}", src)
-        @test occursin("GC.@preserve", src) && occursin("Base.unsafe_convert(Ptr{Cvoid}", src)
+        @test occursin("Base.@cfunction RustCall._callback_slot_1 Int64 (Int64,)", src)
+        @test occursin("CallbackTrampoline{Int64}", src)
+        @test occursin("RustCall._push_callback_frame!", src) && occursin("RustCall._pop_callback_frame!", src)
+        @test occursin("try", src) && occursin("finally", src)
         @test Meta.parseall(src) isa Expr
+        # More callback arguments than there are slots is refused at generation.
+        many = RustCall.RustFunctionSignature("g", ["f$i" for i in 1:9], fill("extern \"C\" fn(i64) -> i64", 9), "i64",
+                                              false, String[]; arg_abis = fill("callback", 9),
+                                              callback_args = [["i64"] for _ in 1:9], callback_returns = fill("i64", 9))
+        err = try RustCall.emit_julia_function_wrappers([many]); nothing catch e; e end
+        @test err isa RustCall.RustError && occursin("more than $(RustCall.CALLBACK_SLOTS)", sprint(showerror, err))
+    end
+
+    @testset "callback frames" begin
+        # No closure cfunction anywhere: each slot is a plain function with a
+        # constant pointer, and the frame on top of the task's stack says
+        # which Julia function it stands for.
+        p1 = @cfunction(RustCall._callback_slot_1, Int64, (Int64,))
+        @test p1 isa Ptr{Cvoid} && p1 != C_NULL
+        @test p1 != @cfunction(RustCall._callback_slot_2, Int64, (Int64,))
+        f1 = RustCall._push_callback_frame!(RustCall.CallbackTrampoline{Int64}(x -> x + 1))
+        @test ccall(p1, Int64, (Int64,), 41) == 42
+        # A nested frame shadows the outer one for the duration, and popping
+        # it restores the outer — LIFO, whatever the pointer.
+        f2 = RustCall._push_callback_frame!(RustCall.CallbackTrampoline{Int64}(x -> x * 100))
+        @test ccall(p1, Int64, (Int64,), 2) == 200
+        RustCall._pop_callback_frame!(f2)
+        @test ccall(p1, Int64, (Int64,), 2) == 3
+        # Popping by identity: a frame that is not on top is still removed.
+        f3 = RustCall._push_callback_frame!(RustCall.CallbackTrampoline{Int64}(x -> -x))
+        RustCall._pop_callback_frame!(f1)
+        @test ccall(p1, Int64, (Int64,), 5) == -5
+        RustCall._pop_callback_frame!(f3)
+        @test isempty(RustCall._callback_frames())
+        # Slot with no frame: an error inside the trampoline lookup, which the
+        # slot function turns into a stored exception rather than an unwind
+        # through the C frame? No — there is no trampoline to store into, so
+        # this is the one misuse (a callback invoked after its call returned)
+        # the docs call undefined; the lookup at least names it.
+        @test_throws ErrorException RustCall._callback_trampoline(1)
     end
 
     @testset "the trampoline never lets an exception out" begin
@@ -180,6 +217,11 @@ const _CB_REPO = normpath(joinpath(@__DIR__, ".."))
         @test CbAcc(7).fold(x -> x * x) == 49
         # A callback that yields is still on this task when it resumes.
         @test cb_apply(x -> (yield(); x), 3) == 4
+        # Nested: a callback that itself drives a callback through the same
+        # slot; the inner frame is pushed and popped inside the outer call.
+        @test cb_apply(x -> cb_apply(y -> y * 10, x), 2) == 22   # (2*10+1)+1
+        @test cb_apply(x -> cb_apply(y -> y, 0) + x, 5) == 7       # inner 1, +5, +1
+        @test isempty(RustCall._callback_frames())
 
         # An exception inside the callback surfaces at the call site as the
         # same object, and the Rust frames were left cleanly: the next call
@@ -194,6 +236,7 @@ const _CB_REPO = normpath(joinpath(@__DIR__, ".."))
         @test err === boom
         @test cb_apply(x -> x, 1) == 2
         @test RustCall._CALLBACK_ERRORS_PENDING[] == 0
+        @test isempty(RustCall._callback_frames())   # popped on the error path too
         # A wrong return type is a conversion failure inside the callback.
         @test_throws MethodError cb_apply(x -> "s", 1)
         @test cb_apply(x -> x, 1) == 2
@@ -203,8 +246,8 @@ const _CB_REPO = normpath(joinpath(@__DIR__, ".."))
         @test_throws ErrorException cb_each(5, (i, v) -> (calls[] += 1; i == 1 && error("second")))
         @test calls[] == 5
 
-        # The CFunction stays rooted for the call however hard the callback
-        # allocates or collects (synchronous borrow).
+        # The frame (and through it the user's function) stays reachable for
+        # the call however hard the callback allocates or collects.
         for _ in 1:20
             @test cb_apply(x -> (GC.gc(); sum(rand(10_000)) > -1 ? x : x), 3) == 4
         end

@@ -227,8 +227,13 @@ has no owner for it — and not in generic functions.
 Three rules come with the feature:
 
 * **Synchronous borrow.** Rust may call the pointer while the call that
-  passed it is on the stack, and not after: the `CFunction` is rooted with
-  `GC.@preserve` for exactly that long. A Rust side that wants to *keep* a
+  passed it is on the stack, and not after. The pointer Rust receives is a
+  constant — one plain slot function per callback position, compiled for
+  those slot types — and the Julia function it stands for lives in a frame
+  the wrapper pushes onto a task-local stack for exactly the duration of the
+  call (no closure `@cfunction`, which Julia does not offer on every
+  platform). Invoking the pointer after the call returned is undefined
+  behaviour, as it would be in C. A Rust side that wants to *keep* a
   callback — a registered handler, a `Box<dyn Fn>` stored in a struct — must
   not take it this way; keep the Julia object alive yourself and pass an
   opaque handle instead.
