@@ -18,11 +18,34 @@
 # `test/test_hot_reload.jl`.
 
 using Aqua
+using Pkg
 using RustCall
 using Test
 
 @testset "Aqua quality assurance" begin
     Aqua.test_all(RustCall; persistent_tasks = false)
+end
+
+# Pkg warns, once per load, when a `[compat]` entry for a non-upgradable
+# stdlib does not admit the version shipped with the running Julia
+# (`check_stdlib_compat` in Pkg's Operations.jl). The motivating defect:
+# `SHA = "0.7"` while Julia 1.13 ships SHA 1.0.0, so every `Pkg.build` /
+# `Pkg.resolve` of a user environment printed
+# "Ignoring incompatible compat entry `SHA = "0.7"`". The bound must track the
+# running stdlib, which is not a fixed number across supported Julia versions;
+# this test derives it from the loaded module instead.
+@testset "stdlib [compat] admits the running version" begin
+    project = RustCall.TOML.parsefile(joinpath(pkgdir(RustCall), "Project.toml"))
+    for name in keys(project["deps"])
+        compat = get(project["compat"], name, nothing)
+        compat === nothing && continue
+        isdefined(RustCall, Symbol(name)) || continue
+        mod = getfield(RustCall, Symbol(name))
+        mod isa Module || continue
+        version = pkgversion(mod)
+        version === nothing && continue
+        @test version in Pkg.Types.semver_spec(compat)
+    end
 end
 
 @testset "BenchmarkTools is not a runtime dependency (#260)" begin
