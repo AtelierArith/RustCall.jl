@@ -321,12 +321,12 @@ Path to the ownership helper library built by `Pkg.build("RustCall")`, or
 `nothing` when no copy of it exists.
 
 Every candidate location, and their order, is `native_product_candidates`
-(#258): `RUSTCALL_HELPERS` first (`RUSTCALL_RUST_HELPERS` is accepted as a
-deprecated alias, #387), then this package tree's own build directory — a
-scratch space for an installed package, `deps/rustcall_helpers/target` for a
-checkout — then the legacy in-package locations a pre-v0.3.5 build left behind,
-and finally the pre-v0.4 file name `librust_helpers` in each of those places, so
-an installed tree built by v0.3.x still loads until it is rebuilt.
+(#258): `RUSTCALL_HELPERS` first, then this package tree's own build directory
+— a scratch space for an installed package, `deps/rustcall_helpers/target` for
+a checkout — then the legacy in-package locations a pre-v0.3.5 build left
+behind. The pre-v0.4 name `librust_helpers` and the alias `RUSTCALL_RUST_HELPERS`
+(#387) stopped being looked for in v0.5 (#417): a tree built by v0.3.x is
+rebuilt once with `Pkg.build("RustCall")`.
 """
 get_rust_helpers_lib_path() = native_product_path(:rustcall_helpers)
 

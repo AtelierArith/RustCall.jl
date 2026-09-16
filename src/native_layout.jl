@@ -65,21 +65,6 @@ const NATIVE_PRODUCTS = (
 )
 
 """
-    LEGACY_HELPERS
-
-What the ownership helper library was called through v0.3.x (#387): the crate
-directory `deps/rust_helpers`, the file `librust_helpers.{so,dylib}` /
-`rust_helpers.dll`, and the override `RUSTCALL_RUST_HELPERS`.
-
-The rename is a visible break — the file name is what a deployment sees — so
-for one release the old name stays a **lookup** fallback: an installed tree
-built by v0.3.x and not rebuilt since still loads, and the old variable is
-accepted as a deprecated alias of `RUSTCALL_HELPERS`. Nothing *builds* under the
-old name any more. Remove this in v0.5.
-"""
-const LEGACY_HELPERS = (crate = "rust_helpers", env = "RUSTCALL_RUST_HELPERS")
-
-"""
     native_package_root() -> String
 
 The RustCall package directory — the parent of the `src/` this file lives in,
@@ -105,14 +90,6 @@ end
 _cdylib_filename(crate::AbstractString) =
     Sys.iswindows() ? "$(crate).dll" :
     Sys.isapple() ? "lib$(crate).dylib" : "lib$(crate).so"
-
-"""
-    native_legacy_helpers_filename() -> String
-
-The pre-v0.4 file name of the ownership helper library on this platform
-(`LEGACY_HELPERS`), searched after every location of the current name.
-"""
-native_legacy_helpers_filename() = _cdylib_filename(LEGACY_HELPERS.crate)
 
 """
     native_crate_dir(kind::Symbol) -> String
@@ -293,8 +270,8 @@ end
 Every path `kind` may be found at, most authoritative first:
 
 1. its environment override (`RUSTCALL_EXTRACT` / `RUSTCALL_HELPERS`), when
-   set to a non-empty value — for the helpers, `RUSTCALL_RUST_HELPERS` is still
-   honoured as a deprecated alias when the new variable is unset (#387);
+   set to a non-empty value (the v0.3.x alias `RUSTCALL_RUST_HELPERS` was
+   honoured through v0.4.x and is ignored since v0.5, #417);
 2. **`native_target_dir(kind)` — the directory a build would write to right
    now.** Asking the same function the build asks is what keeps the two from
    drifting: with a read-only `DEPOT_PATH[1]` in front of a writable depot,
@@ -306,10 +283,12 @@ Every path `kind` may be found at, most authoritative first:
    behind another still finds its products;
 4. the legacy in-package location `deps/<crate>/target/release`, for an
    installed tree built by RustCall ≤ v0.3.4 and not rebuilt since;
-5. for the extractor only, the `debug` profile of each directory above;
-6. for the helpers only, every directory above again under the **pre-v0.4
-   name** (`deps/rust_helpers`, `librust_helpers`), so an installed tree built
-   by v0.3.x still loads until it is rebuilt (#387, `LEGACY_HELPERS`).
+5. for the extractor only, the `debug` profile of each directory above.
+
+The pre-v0.4 name (`deps/rust_helpers`, `librust_helpers`) was a lookup
+fallback through v0.4.x (#387) and is not searched since v0.5 (#417): an
+installed tree built by v0.3.x has to be rebuilt once (`Pkg.build("RustCall")`),
+which `require_rust_helpers` says when nothing is found.
 
 Paths are returned whether or not they exist; callers filter. Deciding (2) for
 an installed package probes each depot for writability, which creates that
@@ -320,14 +299,6 @@ function native_product_candidates(kind::Symbol)
     file = native_product_filename(kind)
     out = String[]
     env = get(ENV, NATIVE_PRODUCTS[kind].env, "")
-    if isempty(env) && kind === :rustcall_helpers
-        legacy = get(ENV, LEGACY_HELPERS.env, "")
-        if !isempty(legacy)
-            @warn "$(LEGACY_HELPERS.env) is deprecated; set " *
-                  "$(NATIVE_PRODUCTS[kind].env) instead (#387)." maxlog = 1
-            env = legacy
-        end
-    end
     isempty(env) || push!(out, env)
 
     # Only the extractor has ever been used from a `debug` build.
@@ -339,14 +310,6 @@ function native_product_candidates(kind::Symbol)
     if kind === :rustcall_helpers
         # Even older: a library dropped straight into deps/.
         push!(out, joinpath(native_package_root(), "deps", file))
-        # The pre-v0.4 name, in every place the current one is looked for,
-        # after all of them: a tree built by v0.3.x keeps working until it is
-        # rebuilt, and a rebuild under the new name is always preferred.
-        legacy_file = native_legacy_helpers_filename()
-        for dir in _native_build_dirs(LEGACY_HELPERS.crate)
-            push!(out, joinpath(dir, "release", legacy_file))
-        end
-        push!(out, joinpath(native_package_root(), "deps", legacy_file))
     end
     return unique!(out)
 end

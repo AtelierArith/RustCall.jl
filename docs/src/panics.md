@@ -225,11 +225,11 @@ another block — the search walks the loaded libraries by handle
 Before this, a dependency-free block was `RTLD_LOCAL` and the *same* block with
 a `// cargo-deps:` line was `RTLD_GLOBAL`. That is the divergence that is gone.
 
-!!! warning "Deprecated escape hatch"
-    `RUSTCALL_DLOPEN_GLOBAL=1` restores the old process-global behaviour for
-    one minor release, with a warning. It exists only so code that accidentally
-    relied on global symbol resolution has time to move to `@rust`. It will be
-    removed.
+`RUSTCALL_DLOPEN_GLOBAL=1`, the escape hatch that restored the old
+process-global behaviour for one minor release, was removed in v0.5
+([#417](https://github.com/AtelierArith/RustCall.jl/issues/417)); calling
+across blocks goes through `@rust`, which searches the loaded libraries by
+handle.
 
 On Windows there is nothing to configure: `LoadLibrary` has no LOCAL/GLOBAL
 distinction, and RustCall's behaviour there is unchanged.

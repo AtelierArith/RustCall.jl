@@ -67,8 +67,8 @@ Before B2 the rule was exactly inverted — leaf artifacts were mostly
 inline blocks ran along the dependency axis: no `// cargo-deps:` meant
 `RTLD_LOCAL`, `// cargo-deps:` meant `RTLD_GLOBAL`, for the same construct.
 
-`RUSTCALL_DLOPEN_GLOBAL=1` restores the old process-global behaviour for one
-release; see `dlopen_flags`.
+(`RUSTCALL_DLOPEN_GLOBAL=1` restored the old process-global behaviour through
+v0.4.x and is ignored since v0.5, #417.)
 """
 const SYMBOL_VISIBILITY_RULE = """
 RTLD_GLOBAL is for libraries whose symbols other libraries resolve against; \
@@ -528,73 +528,22 @@ const ALL_LOAD_POLICIES = (
 # ---------------------------------------------------------------------------
 
 """
-    DLOPEN_GLOBAL_OVERRIDE
-
-Whether `RUSTCALL_DLOPEN_GLOBAL` was set in the environment at `__init__`.
-
-**Deprecated escape hatch, for one minor release.**  Before #277 Phase B2 most
-artifacts were opened `RTLD_GLOBAL`, so a block could reach another block's
-`#[no_mangle]` symbol through the process-global namespace rather than through
-its own handle.  That is exactly the shadowing #250 is about, and it is not a
-supported way to call across blocks — `_resolve_call`'s cross-library search
-is.  Code that depended on it can set `RUSTCALL_DLOPEN_GLOBAL=1` to get the old
-behaviour while it is being fixed; a single `@warn` names the issue.
-
-Read once, at `__init__`: a load policy must not change halfway through a
-session, or two artifacts of one program would disagree about the namespace
-they published into.
-"""
-const DLOPEN_GLOBAL_OVERRIDE = _state_view(:dlopen_global_override, Ref(false))
-const _DLOPEN_GLOBAL_WARNED = _state_view(:dlopen_global_warned, Ref(false))
-
-# Called from `RustCall.__init__`.
-function _init_dlopen_global_override!(env = ENV)
-    value = strip(String(get(env, "RUSTCALL_DLOPEN_GLOBAL", "")))
-    DLOPEN_GLOBAL_OVERRIDE[] = value in ("1", "true", "TRUE", "yes", "on")
-    _DLOPEN_GLOBAL_WARNED[] = false
-    return DLOPEN_GLOBAL_OVERRIDE[]
-end
-
-"""
     dlopen_flags(policy::LoadPolicy) -> UInt32
 
 The flag set to hand to `Libdl.dlopen`: `policy.dlopen_flags`, which is
 `RTLD_LOCAL | RTLD_NOW` for every policy since #277 Phase B2
-(`SYMBOL_VISIBILITY_RULE`).
-
-`RTLD_GLOBAL` is ORed in when `RUSTCALL_DLOPEN_GLOBAL` was set at `__init__`,
-with one `@warn` per session naming the issue.  On Windows `LoadLibrary` has no
-LOCAL/GLOBAL distinction, so neither the flag nor the override changes anything
-there.
+(`SYMBOL_VISIBILITY_RULE`). Nothing overrides it: the `RUSTCALL_DLOPEN_GLOBAL`
+escape hatch of #250 lasted one minor release and was removed in v0.5 (#417).
+On Windows `LoadLibrary` has no LOCAL/GLOBAL distinction, so the flag changes
+nothing there.
 """
-function dlopen_flags(policy::LoadPolicy)
-    DLOPEN_GLOBAL_OVERRIDE[] || return policy.dlopen_flags
-    if !_DLOPEN_GLOBAL_WARNED[]
-        _DLOPEN_GLOBAL_WARNED[] = true
-        @warn """
-        RUSTCALL_DLOPEN_GLOBAL is set: every compiled artifact is being opened \
-        RTLD_GLOBAL, publishing its symbols into the process-global namespace.
-
-        That is the pre-#250 behaviour, in which two `rust\"\"\"` blocks that \
-        both export `f` shadow one another and which one a call reaches depends \
-        on load order. It is deprecated and will be removed in a future \
-        release. Calling across blocks does not need it — `@rust f(...)` \
-        searches the loaded libraries by handle.
-
-        See https://github.com/AtelierArith/RustCall.jl/issues/250
-        """
-    end
-    return policy.dlopen_flags | UInt32(Libdl.RTLD_GLOBAL)
-end
+dlopen_flags(policy::LoadPolicy) = policy.dlopen_flags
 
 """
     uses_global_symbols(policy::LoadPolicy) -> Bool
 
-Whether this policy publishes the artifact's symbols process-globally.
-
-`false` for every policy since #277 Phase B2 (`SYMBOL_VISIBILITY_RULE`). This
-reports the *policy*, not the deprecated `RUSTCALL_DLOPEN_GLOBAL` override,
-which `dlopen_flags` applies on top.
+Whether this policy publishes the artifact's symbols process-globally:
+`false` for every policy since #277 Phase B2 (`SYMBOL_VISIBILITY_RULE`).
 """
 uses_global_symbols(policy::LoadPolicy) = policy.global_symbols
 

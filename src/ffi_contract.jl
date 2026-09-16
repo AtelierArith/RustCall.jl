@@ -56,8 +56,8 @@ exactly one return type. [`FFIContract`](@ref) records both — `ccall_types` fo
 the calling convention, `layout` for the word list.
 
 `:unknown` exists so that callers can *fail closed* (issue #276 acceptance
-criterion 2) rather than fall back to a guess the way
-`call_rust_function_infer` (`src/codegen.jl:304`) does today.
+criterion 2) rather than fall back to a guess, the way the removed
+`call_rust_function_infer` once did (#417).
 """
 const FFI_ABI_KINDS = (:void, :by_value, :pointer, :ptr_len, :ptr_len_cap, :unknown)
 

@@ -1,6 +1,6 @@
-# The extractor's build identity comes from Cargo's view of the build, is
-# stored beside the binary keyed by its bytes, and is byte-compatible with
-# what v0.4.0's build.rs embedded (#409).
+# The extractor's build identity comes from Cargo's view of the build and is
+# stored beside the binary keyed by its bytes (#409); the binary reports
+# nothing about itself since v0.5 (#417).
 
 using RustCall
 using Test
@@ -322,23 +322,12 @@ end
             # `sources=` fingerprint line, not of this binary).
             @test Set(filter(startswith("crate:"), identity.inputs)) ==
                   Set(["crate:rustcall_extract", "crate:rustcall_core"])
-            # Byte-compatible with what the v0.4.0 build.rs embeds — the
-            # cross-check that keeps every cache key across the upgrade. A
-            # canonical build has no other input (#413), so this is
-            # unconditional.
-            @test identity.inputs == ["crate:rustcall_core", "crate:rustcall_extract", "lockfile"] ||
-                  Set(identity.inputs) == Set(["crate:rustcall_core", "crate:rustcall_extract", "lockfile"])
+            # A canonical build has no input beyond the sources (#413)...
+            @test Set(identity.inputs) == Set(["crate:rustcall_core", "crate:rustcall_extract", "lockfile"])
+            # ...and the binary no longer reports a digest of its own (#417):
+            # the record beside it is the only source of the identity.
             binary = RustCall.extractor_path()
-            reported = try
-                strip(read(`$binary source-digest`, String))
-            catch
-                ""
-            end
-            if occursin(r"^[0-9a-f]{64}$", reported)
-                @test identity.digest == reported
-            else
-                @info "source-digest cross-check not applicable" reported
-            end
+            @test !success(pipeline(`$binary source-digest`; stdout = devnull, stderr = devnull))
             # `write_extractor_identity!` produces a record `read_extractor_identity` accepts.
             mktempdir() do dir
                 fake = joinpath(dir, "rustcall-extract"); write(fake, "bytes")
