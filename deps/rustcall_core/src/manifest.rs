@@ -12,7 +12,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The manifest compatibility identifier: the **`MAJOR.MINOR` of the RustCall
-/// release** this crate ships in, so `"0.4"` for every v0.4.x. Julia derives
+/// release** this crate ships in, so `"0.5"` for every v0.5.x. Julia derives
 /// the same string from its `Project.toml` and refuses a manifest whose
 /// `schema_version` differs (#372).
 ///
@@ -145,7 +145,7 @@ use serde::{Deserialize, Serialize};
 ///   [`Arg::callback_args`] / [`Arg::callback_return`] carrying the function
 ///   pointer's signature. A consumer that does not know the column sees an
 ///   argument it cannot describe and fails closed, as before.
-pub const SCHEMA_VERSION: &str = "0.4";
+pub const SCHEMA_VERSION: &str = "0.5";
 
 #[cfg(test)]
 mod schema_version_tests {
