@@ -19,8 +19,8 @@ use crate::manifest::{
 use crate::model::{impl_has_julia, wrapped_methods, StructModel};
 use crate::paths::{imports_of_use, locate, ImplHeader, Located, ScannedImport, Unresolved};
 use crate::types::{
-    extract_option_type, extract_result_type, generics_to_type_params, has_impl_trait,
-    has_type_params, is_ffi_compatible_type, is_str_ref_type, is_string_type,
+    callback_signature, extract_option_type, extract_result_type, generics_to_type_params,
+    has_impl_trait, has_type_params, is_ffi_compatible_type, is_str_ref_type, is_string_type,
     needs_clone_for_getter, return_type_to_string, type_to_string,
 };
 
@@ -45,19 +45,36 @@ pub fn fn_args(sig: &syn::Signature) -> Vec<Arg> {
     sig.inputs
         .iter()
         .filter_map(|a| match a {
-            FnArg::Typed(pt) => Some(Arg {
-                name: match pt.pat.as_ref() {
-                    Pat::Ident(pi) => pi.ident.to_string(),
-                    other => quote::quote!(#other).to_string(),
-                },
-                rust_type: type_to_string(&pt.ty),
-                abi: arg_abi(&pt.ty).to_string(),
-                python_default: String::new(),
-                python_kind: String::new(),
-            }),
+            FnArg::Typed(pt) => Some(typed_arg(pt)),
             FnArg::Receiver(_) => None,
         })
         .collect()
+}
+
+/// The manifest entry of one typed parameter: its name, spelling and `abi`,
+/// plus — for a callback (#296) — the parameter and return spellings of the
+/// function pointer, so a consumer can build the callback without reading
+/// Rust syntax (#264).
+pub fn typed_arg(pt: &syn::PatType) -> Arg {
+    let (callback_args, callback_return) = match callback_signature(&pt.ty) {
+        Some((inputs, output)) => (
+            inputs.iter().map(type_to_string).collect(),
+            output.as_ref().map(type_to_string).unwrap_or_default(),
+        ),
+        None => (Vec::new(), String::new()),
+    };
+    Arg {
+        name: match pt.pat.as_ref() {
+            Pat::Ident(pi) => pi.ident.to_string(),
+            other => quote::quote!(#other).to_string(),
+        },
+        rust_type: type_to_string(&pt.ty),
+        abi: arg_abi(&pt.ty).to_string(),
+        callback_args,
+        callback_return,
+        python_default: String::new(),
+        python_kind: String::new(),
+    }
 }
 
 /// The return kind of a wrapper that does no `Result`/`Option` lowering:
@@ -141,6 +158,8 @@ pub fn arg_abi(ty: &syn::Type) -> &'static str {
         "string"
     } else if is_str_ref_type(ty) {
         "str"
+    } else if callback_signature(ty).is_some() {
+        "callback"
     } else {
         ""
     }

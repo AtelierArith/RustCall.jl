@@ -1,0 +1,183 @@
+schema_version = "0.4"
+mode = "crate"
+
+[[functions]]
+name = "apply"
+ffi_name = "apply"
+symbol = "rustcall_apply"
+attribute = "julia"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = true
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "i64"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 6
+module_path = []
+
+[[functions.args]]
+name = "f"
+rust_type = 'extern "C" fn(i64) -> i64'
+abi = "callback"
+callback_args = ["i64"]
+callback_return = "i64"
+
+[[functions.args]]
+name = "x"
+rust_type = "i64"
+abi = ""
+
+[[functions]]
+name = "each"
+ffi_name = "each"
+symbol = "rustcall_each"
+attribute = "julia"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = true
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "()"
+return_kind = "unit"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 11
+module_path = []
+
+[[functions.args]]
+name = "n"
+rust_type = "u32"
+abi = ""
+
+[[functions.args]]
+name = "visit"
+rust_type = 'unsafe extern "C" fn(u32, f64)'
+abi = "callback"
+callback_args = ["u32", "f64"]
+
+[[functions]]
+name = "probe"
+ffi_name = "probe"
+symbol = "rustcall_probe"
+attribute = "julia"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = true
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "bool"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 18
+module_path = []
+
+[[functions.args]]
+name = "cb"
+rust_type = 'extern "C" fn(*const u8) -> bool'
+abi = "callback"
+callback_args = ["*const u8"]
+callback_return = "bool"
+
+[[functions]]
+name = "rust_abi"
+ffi_name = "rust_abi"
+symbol = "rustcall_rust_abi"
+attribute = "julia"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = true
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "i64"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 25
+module_path = []
+
+[[functions.args]]
+name = "f"
+rust_type = "fn(i64) -> i64"
+abi = ""
+
+[[structs]]
+name = "Acc"
+ffi_name = "Acc"
+attribute = "julia"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+cfg = ""
+cfg_features = []
+type_params = []
+methods = []
+derives = []
+has_clone = false
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+context_source = ""
+generic_wrappers = []
+line = 30
+module_path = []
+
+[[structs.fields]]
+name = "total"
+rust_type = "i64"
+abi = ""
+ffi_compatible = true
+getter = "Acc_get_total"
+setter = "Acc_set_total"
+python_name = ""
+vis = ""

@@ -18,8 +18,8 @@ use syn::{GenericParam, Item, ItemFn, Path, PathArguments, Type, WherePredicate}
 
 use crate::cfg::body_has_cfg;
 use crate::codegen::{function_symbol, plain_function_wrapper};
-use crate::manifest::{Arg, Attribute, Function, Manifest, Mode, ReturnKind};
-use crate::types::{return_type_to_string, type_to_string};
+use crate::manifest::{Attribute, Function, Manifest, Mode, ReturnKind};
+use crate::types::return_type_to_string;
 
 #[derive(Debug)]
 pub enum SpecializeError {
@@ -467,16 +467,7 @@ fn function_entry(func: &ItemFn, module_path: &[String]) -> Function {
         .inputs
         .iter()
         .filter_map(|a| match a {
-            syn::FnArg::Typed(pt) => Some(Arg {
-                name: match pt.pat.as_ref() {
-                    syn::Pat::Ident(pi) => pi.ident.to_string(),
-                    other => quote::quote!(#other).to_string(),
-                },
-                rust_type: type_to_string(&pt.ty),
-                abi: crate::extract::arg_abi(&pt.ty).to_string(),
-                python_default: String::new(),
-                python_kind: String::new(),
-            }),
+            syn::FnArg::Typed(pt) => Some(crate::extract::typed_arg(pt)),
             syn::FnArg::Receiver(_) => None,
         })
         .collect();

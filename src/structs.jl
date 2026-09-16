@@ -74,6 +74,9 @@ struct RustMethod
     # Schema 12 PyO3 signature data, aligned with `arg_names`.
     python_defaults::Vector{String}
     python_kinds::Vector{String}
+    # Callbacks (#296), aligned with `arg_names`; see `RustFunctionSignature`.
+    callback_args::Vector{Vector{String}}
+    callback_returns::Vector{String}
 end
 
 function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::Vector{String},
@@ -94,16 +97,21 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
                     string_owner::String = "",
                     attribute::Symbol = :none,
                     python_defaults::Vector{String} = fill("", length(arg_names)),
-                    python_kinds::Vector{String} = fill("", length(arg_names)))
+                    python_kinds::Vector{String} = fill("", length(arg_names)),
+                    callback_args::Vector{Vector{String}} = Vector{String}[String[] for _ in arg_names],
+                    callback_returns::Vector{String} = fill("", length(arg_names)))
     length(python_defaults) == length(arg_names) ||
         throw(ArgumentError("python_defaults must have one entry per argument"))
     length(python_kinds) == length(arg_names) ||
         throw(ArgumentError("python_kinds must have one entry per argument"))
+    length(callback_args) == length(arg_names) && length(callback_returns) == length(arg_names) ||
+        throw(ArgumentError("callback_args and callback_returns must have one entry per argument"))
     RustMethod(name, is_static, is_mutable, arg_names, arg_types, return_type,
                symbol, is_constructor, generic_wrapper, arg_abis, return_abi,
                returns_boxed_struct, vis, skip_reason, python_name, accessor,
                return_kind, ok_type, err_type, inner_type, ok_abi, err_abi, inner_abi,
-               string_owner, attribute, python_defaults, python_kinds)
+               string_owner, attribute, python_defaults, python_kinds,
+               callback_args, callback_returns)
 end
 
 """

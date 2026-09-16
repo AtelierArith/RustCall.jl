@@ -385,3 +385,14 @@ The consequence for your own code: never hand a pointer obtained from one
 `RustBox`-family value without the helper library — doing so raises
 immediately, with the `Pkg.build("RustCall")` instruction, rather than
 producing a value that will crash later.
+
+## The reverse direction: a Julia exception inside a callback
+
+A Julia function passed to Rust as an `extern "C" fn` argument
+([#296](https://github.com/AtelierArith/RustCall.jl/issues/296)) runs below
+Rust frames, and a Julia exception must not unwind through them. The wrapper's
+trampoline catches it, returns a zero sentinel to Rust, and the wrapper
+re-raises the exception — the same object — after the Rust call has returned;
+a panic Rust raised on the sentinel is consumed as a consequence, not reported.
+The rules and an example are in the
+[type contract](type_contract.md#callbacks-passing-a-julia-function-to-rust).

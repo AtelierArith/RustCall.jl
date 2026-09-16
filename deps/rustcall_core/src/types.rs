@@ -110,6 +110,41 @@ pub fn is_ffi_compatible_type(ty: &Type) -> bool {
     }
 }
 
+/// The signature of a C-ABI function pointer type — `extern "C" fn(A...) -> R`,
+/// optionally `unsafe`, `"C-unwind"` included — as `(inputs, output)`, with
+/// `None` for a unit or absent return. `None` for anything else: a Rust-ABI
+/// `fn(..)`, a variadic, a higher-ranked `for<'a>` pointer.
+///
+/// This decides only the *shape* (#296): the manifest reports the parameter
+/// and return spellings and the consumer's contract decides whether it can
+/// build a callback for them, so a callback taking `&str` is reported as a
+/// callback and refused on the Julia side with a reason, not silently passed
+/// through as an opaque argument.
+pub fn callback_signature(ty: &Type) -> Option<(Vec<Type>, Option<Type>)> {
+    let Type::BareFn(f) = unparen(ty) else {
+        return None;
+    };
+    let c_abi = match &f.abi {
+        // `extern fn` with no literal is `extern "C" fn`.
+        Some(abi) => abi
+            .name
+            .as_ref()
+            .map(|n| matches!(n.value().as_str(), "C" | "C-unwind"))
+            .unwrap_or(true),
+        None => false,
+    };
+    if !c_abi || f.variadic.is_some() || f.lifetimes.is_some() {
+        return None;
+    }
+    let inputs = f.inputs.iter().map(|a| a.ty.clone()).collect();
+    let output = match &f.output {
+        ReturnType::Default => None,
+        ReturnType::Type(_, t) if type_to_string(t) == "()" => None,
+        ReturnType::Type(_, t) => Some((**t).clone()),
+    };
+    Some((inputs, output))
+}
+
 /// Check if a type needs cloning for a getter (`String`, `Vec`).
 pub fn needs_clone_for_getter(ty: &Type) -> bool {
     last_ident(ty)

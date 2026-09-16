@@ -47,6 +47,7 @@ The C ABI forms a Rust value can take when it crosses the boundary.
 | `:pointer`       | one, `Ptr{T}`                        | raw pointers, opaque handles |
 | `:ptr_len`       | `Ptr{UInt8}` + `Csize_t`             | `&str` and `&[T]` slices |
 | `:ptr_len_cap`   | `Ptr{UInt8}` + 2 × `Csize_t`         | an owned Rust `String` / `Vec<T>` buffer |
+| `:callback`      | `Ptr{Cvoid}`                         | a C-ABI function pointer built from a Julia function, argument position only (#296) |
 | `:unknown`       | undefined                            | the type is not in the contract |
 
 The two multi-word kinds reach a `ccall` differently depending on direction:
@@ -59,7 +60,7 @@ the calling convention, `layout` for the word list.
 criterion 2) rather than fall back to a guess, the way the removed
 `call_rust_function_infer` once did (#417).
 """
-const FFI_ABI_KINDS = (:void, :by_value, :pointer, :ptr_len, :ptr_len_cap, :unknown)
+const FFI_ABI_KINDS = (:void, :by_value, :pointer, :ptr_len, :ptr_len_cap, :callback, :unknown)
 
 """
     FFI_OWNERSHIP_KINDS
@@ -554,12 +555,15 @@ The column is a small closed vocabulary of strings:
 
 | column     | argument     | return          |
 | ---------- | ------------ | --------------- |
-| `""`       | as written   | as written      |
-| `"string"` | `:ptr_len`   | `:ptr_len_cap`  |
-| `"str"`    | `:ptr_len`   | `:ptr_len`      |
+| `""`         | as written   | as written      |
+| `"string"`   | `:ptr_len`   | `:ptr_len_cap`  |
+| `"str"`      | `:ptr_len`   | `:ptr_len`      |
+| `"callback"` | `:callback`  | *refused*       |
 
 `""` means "the Rust type spelling decides", and is returned as `nothing`.
-An unrecognised column value is an error rather than a fallback.
+An unrecognised column value is an error rather than a fallback, and so is
+`"callback"` in return position: a Rust function handing a function pointer
+*back* to Julia has no owner for it (#296).
 """
 function ffi_manifest_abi_kind(abi::AbstractString, direction::Symbol)
     _ffi_check_direction(direction)
@@ -569,8 +573,11 @@ function ffi_manifest_abi_kind(abi::AbstractString, direction::Symbol)
         return direction === :return ? :ptr_len_cap : :ptr_len
     elseif column == "str"
         return :ptr_len
+    elseif column == "callback"
+        direction === :argument && return :callback
+        throw(ArgumentError("a callback (C-ABI function pointer) is supported in argument position only (#296)"))
     end
-    throw(ArgumentError("unknown manifest abi column \"$column\"; expected \"\", \"string\" or \"str\""))
+    throw(ArgumentError("unknown manifest abi column \"$column\"; expected \"\", \"string\", \"str\" or \"callback\""))
 end
 
 function _ffi_check_direction(direction::Symbol)
@@ -595,6 +602,8 @@ function ffi_slots(abi::Symbol)
         return Type[Ptr{UInt8}, Csize_t]
     elseif abi === :ptr_len_cap
         return Type[Ptr{UInt8}, Csize_t, Csize_t]
+    elseif abi === :callback
+        return Type[Ptr{Cvoid}]
     elseif abi === :void
         return Type[]
     end
@@ -808,7 +817,7 @@ function _ffi_contract(rust_type::AbstractString, direction::Symbol, abi::Abstra
         # The manifest named the ABI even though the spelling is unknown to the
         # table: the manifest wins, which is the whole point of #270.
         ownership = _ffi_ownership_for(override, direction)
-        surface = direction === :argument ? String :
+        surface = direction === :argument ? (override === :callback ? Function : String) :
             (override === :ptr_len_cap ? RustString : RustStr)
         return _ffi_positional(key, direction, override, surface, ownership, owner,
                                nothing, stated...)
@@ -859,6 +868,10 @@ function _ffi_positional(key, direction, kind, surface, ownership, owner,
         Type[]
     elseif kind === :by_value || kind === :pointer
         Type[scalar_type === nothing ? Ptr{Cvoid} : scalar_type]
+    elseif kind === :callback
+        # The function pointer itself, one word; what it points at is built
+        # by the wrapper from `Arg.callback_args` / `callback_return`.
+        Type[Ptr{Cvoid}]
     elseif aggregate !== nothing
         # One return type, not N words: `ccall` has a single return slot.
         Type[aggregate]
@@ -917,6 +930,61 @@ function _ffi_ownership_for(kind::Symbol, direction::Symbol)
     # derived — a raw pointer never is.
     kind === :ptr_len && return :borrowed
     return :unknown
+end
+
+"""
+    ffi_callback_plan(callback_args, callback_return, ctx) -> NamedTuple
+
+What a generated wrapper needs to build the `@cfunction` for a callback
+argument (#296): `ret_expr` and `arg_exprs`, the Julia spellings of the C
+**slot** types of the pointer's return and parameters (`:Int64`, `:Cvoid`,
+`:(Ptr{UInt8})`), and `ret_type`, the return slot as a `Type`, for the
+trampoline's conversion.
+
+`callback_args` / `callback_return` are the manifest's `Arg.callback_args` /
+`Arg.callback_return` — the Rust spellings the extractor reported for the
+`extern "C" fn(A...) -> R` type; Julia never reads that syntax itself (#264).
+`ctx` names the position for the error.
+
+The decision is the contract's, and it fails closed: every parameter and the
+return must be a type the contract passes **by value or as a raw pointer in
+one slot whose slot type is its surface type** — the numeric primitives,
+`bool`, `usize`/`isize`, `*const T` / `*mut T`, and `()` for the return.
+Refused with a `RustError` naming the position: strings (`&str`, `String`),
+`char` (its slot is a `UInt32` code point, not a `Char`), aggregates, and any
+spelling outside the table. A refused signature fails at wrapper generation,
+never at call time.
+"""
+function ffi_callback_plan(callback_args::AbstractVector{<:AbstractString},
+                           callback_return::AbstractString, ctx::AbstractString)
+    refuse(what, why) = throw(RustError(
+        "cannot build a callback for $(ctx): $(what) — $(why). A callback's parameters " *
+        "and return must be types the FFI contract passes by value or as a raw pointer " *
+        "(numeric primitives, bool, usize/isize, *const T / *mut T; `()` for the return)."))
+    arg_exprs = Union{Symbol, Expr}[]
+    for (i, t) in enumerate(callback_args)
+        c = ffi_argument_contract(t)
+        c.known || refuse("parameter $(i) `$(t)`", "not in the FFI contract")
+        (c.abi === :by_value || c.abi === :pointer) && length(c.ccall_types) == 1 ||
+            refuse("parameter $(i) `$(t)`", "not passed in one slot by value")
+        slot = only(c.ccall_types)
+        slot === c.surface_type || refuse("parameter $(i) `$(t)`",
+            "its C slot ($(slot)) is not its Julia type ($(c.surface_type))")
+        push!(arg_exprs, ffi_type_expr(slot))
+    end
+    ret = strip(callback_return)
+    if isempty(ret) || ret == "()"
+        ret_type = Cvoid
+    else
+        c = ffi_return_contract(ret)
+        c.known || refuse("return `$(ret)`", "not in the FFI contract")
+        (c.abi === :by_value || c.abi === :pointer) && length(c.ccall_types) == 1 ||
+            refuse("return `$(ret)`", "not returned in one slot by value")
+        ret_type = only(c.ccall_types)
+        ret_type === c.surface_type || refuse("return `$(ret)`",
+            "its C slot ($(ret_type)) is not its Julia type ($(c.surface_type))")
+    end
+    return (; ret_expr = ffi_type_expr(ret_type), arg_exprs, ret_type)
 end
 
 """
