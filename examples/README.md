@@ -25,6 +25,7 @@ Before running the examples, ensure you have:
 | [SampleCratePyO3.jl](./SampleCratePyO3.jl/) | Julia package with a dual Julia/Python crate embedded under `deps/sample_crate_pyo3/` | Advanced | PyO3 integration, feature flags |
 | [SampleCratePyO3Only.jl](./SampleCratePyO3Only.jl/) | Julia package with a **PyO3-only** crate (no RustCall attribute, no `pub`) embedded under `deps/sample_crate_pyo3_only/`, bound through RustCall's Python-host path | Advanced | `#[pyfunction]` / `#[pyclass]` without `#[julia]`, the crate built as the Python extension it is and imported through PythonCall, `PyResult` → `RustResult` with the real message |
 | [RustCrateMacroPyO3Only.jl](./RustCrateMacroPyO3Only.jl/) | The same **PyO3-only** shape, embedded under `deps/macro_pyo3_only/`, bound with the **`@rust_crate` macro** at the package's top level | Advanced | `@rust_crate ... submodule="Bindings" pyo3_host=true` in a package, bindings generated while the package is precompiled, the crate built and imported lazily on first call, nothing generated in the repository |
+| [Pyo3HostImport.jl](./Pyo3HostImport.jl/) | Two **PyO3-only** crates under `deps/macro_crate/` and `deps/direct_crate/`, bound through the host path with the **`@rust_crate` macro** and with **`RustCall.pyo3_host_import`** respectively | Advanced | The two host-path front doors side by side; the direct import plus an explicit inner constructor work around a one-argument `#[new]` the macro cannot bind ([#433](https://github.com/AtelierArith/RustCall.jl/issues/433)) |
 | [pluto/hello.jl](./pluto/hello.jl) | Pluto notebook with a `// cargo-deps:` block | Beginner | Inline Rust in Pluto, run headlessly in CI |
 
 Every `*.jl` directory is a Julia package: `Pkg.test()` runs its tests, and the
@@ -36,8 +37,8 @@ guide prescribes). Most keep Rust and Julia in separate files; the inline
 `SampleCrate.jl` and `RustCrateMacro.jl` use it deliberately beside a crate to
 show the two front doors coexisting. The only reference an example makes outside
 its own directory is the `rustcall_julia_macros` path dependency in its
-`Cargo.toml`, because it is not on crates.io yet — and the two
-PyO3-only packages, `SampleCratePyO3Only.jl` and `RustCrateMacroPyO3Only.jl`,
+`Cargo.toml`, because it is not on crates.io yet — and the PyO3-only packages,
+`SampleCratePyO3Only.jl`, `RustCrateMacroPyO3Only.jl` and `Pyo3HostImport.jl`,
 make none at all: their crates depend on pyo3 alone, and RustCall generates no
 wrapper crate for them — it builds each crate as the Python extension it is and
 imports it through PythonCall
@@ -47,7 +48,7 @@ not the examples.)
 
 ```bash
 # any of MyExample.jl, SampleCrate.jl, RustCrateMacro.jl, SampleCratePyO3.jl,
-# SampleCratePyO3Only.jl, RustCrateMacroPyO3Only.jl
+# SampleCratePyO3Only.jl, RustCrateMacroPyO3Only.jl, Pyo3HostImport.jl
 cd examples/SampleCrate.jl
 julia --project=. -e 'using Pkg; Pkg.develop(path="../.."); Pkg.test()'
 ```
@@ -313,6 +314,53 @@ c = Counter(Int64(10), Int64(2)); bump(c)   # 12
 safe_div(7, 2)                  # 3; safe_div(1, 0) throws DivideError
 ```
 
+### Pyo3HostImport.jl
+
+The two host-path **front doors** side by side, each over its own PyO3-only
+crate. `deps/macro_crate/` is bound with the **`@rust_crate` macro**
+(`@rust_crate ... submodule="MacroBindings" pyo3_host=true`) and
+`deps/direct_crate/` with **`RustCall.pyo3_host_import`** — the build/import the
+macro is built on, called directly. The two crates are otherwise the same shape
+(no RustCall attribute, no `rustcall_julia_macros`, no `pub`, `cdylib` +
+`extension-module`); the difference that decides the front door is one line:
+
+```rust
+#[new] fn new(start: i64) -> Self        // macro_crate: scalar -> Julia `Integer`, works
+#[new] fn new(obj: Py<PyAny>) -> ...     // direct_crate: -> Julia `Any`, macro cannot bind it
+```
+
+A single `Py<PyAny>` argument makes the macro generate `Sized(obj::Any)`, which
+overwrites Julia's default untyped single-field constructor of the host handle
+struct, and precompilation rejects that
+([#433](https://github.com/AtelierArith/RustCall.jl/issues/433)).
+`RustCall.pyo3_host_import` generates nothing, so the class is wrapped by hand —
+and the wrapper defines an explicit inner constructor, which suppresses the
+default constructors that caused the collision.
+
+**Features demonstrated:**
+- `@rust_crate ... submodule=... pyo3_host=true` and `RustCall.pyo3_host_import`
+  as the two front doors to the same host path
+- A `#[new]` shape the macro cannot currently bind, and the direct-import
+  workaround for it
+- Why an explicit inner constructor matters: without it, a hand-written
+  `Sized(obj)` collides exactly as the generated one did
+- Lazy build/import on the first call for both front doors
+
+**How to use from Julia:**
+```bash
+cd examples/Pyo3HostImport.jl
+julia --project=. -e 'using Pkg; Pkg.develop(path="../.."); Pkg.test()'
+```
+```julia
+using Pyo3HostImport
+# macro front door
+scale(Int32(3), Int32(4))                    # 12
+a = Accumulator(Int64(10)); add(a, Int64(5)) # 15, mutates `a`
+# direct-import front door
+item_count(Sized(Dict("a" => 1, "b" => 2)))  # 2
+item_count(Sized([10, 20, 30, 40]))          # 4
+```
+
 ### pluto/hello.jl
 
 A [Pluto](https://plutojl.org/) notebook that compiles a `rust"""..."""` block with a
@@ -381,7 +429,14 @@ We recommend learning RustCall.jl in this order:
    - See what a package that generates nothing looks like: bindings in the
      precompile image, the crate built and imported lazily on the first call
 
-7. **Read the documentation**
+7. **Compare the two front doors with Pyo3HostImport.jl** (optional)
+   - `@rust_crate ... pyo3_host=true` and `RustCall.pyo3_host_import` over two
+     PyO3-only crates, in one package
+   - A `#[new]` shape the macro cannot bind, and the direct-import workaround
+     plus explicit inner constructor that binds it
+     ([#433](https://github.com/AtelierArith/RustCall.jl/issues/433))
+
+8. **Read the documentation**
    - [Tutorial](../docs/src/tutorial.md)
    - [Crate Bindings (Phase 6)](../docs/src/crate_bindings.md)
    - [Troubleshooting](../docs/src/troubleshooting.md)
