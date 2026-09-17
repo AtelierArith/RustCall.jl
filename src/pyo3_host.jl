@@ -753,8 +753,18 @@ function _pyo3_host_struct_exprs(s::RustStructInfo, classes::AbstractDict)
     jname = Symbol(s.name)
     pyclass = _pyo3_host_python_name(s.name, s.python_name)
     class_base = _pyo3_host_python_attr(:(_pyo3_module()), s.python_path, pyclass)
-    out = Any[Expr(:struct, false, jname,
-                   Expr(:block, Expr(:(::), :_rustcall_py, :(PythonCall.Py))))]
+    # An explicit inner constructor suppresses the constructors Julia would
+    # otherwise synthesize for this one-field struct — including the untyped
+    # `Class(x)` a one-argument `#[new]` mapping to `Any` (`Py<PyAny>`, a
+    # class-typed argument) would overwrite, which is a hard error during
+    # module precompilation (#433). The wrapping path still needs
+    # `Class(::PythonCall.Py)`, which the field type gives it, and defining an
+    # inner constructor also means any outer constructor the emitter adds is a
+    # new method rather than a redefinition.
+    field = Expr(:(::), :_rustcall_py, :(PythonCall.Py))
+    inner = Expr(:(=), Expr(:call, jname, field),
+                 Expr(:call, :new, :_rustcall_py))
+    out = Any[Expr(:struct, false, jname, Expr(:block, field, inner))]
     for m in s.methods
         m.is_constructor || continue
         _pyo3_host_async(m) && continue

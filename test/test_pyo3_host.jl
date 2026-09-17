@@ -164,6 +164,31 @@ end
     @test !occursin("later", text)
 end
 
+@testset "a one-argument #[new] cannot overwrite the default constructor (#433)" begin
+    info = RustCall.scan_crate(PYO3_HOST_CRATE)
+    wrapper = only(filter(s -> s.name == "Wrapper", info.pyo3_structs))
+    classes = Dict{String, Symbol}("Wrapper" => :Wrapper)
+    exprs = RustCall._pyo3_host_struct_exprs(wrapper, classes)
+    struct_expr = only(filter(e -> e isa Expr && e.head === :struct, exprs))
+    body = struct_expr.args[3]
+    # The field, then an explicit inner constructor. Defining *any* inner
+    # constructor stops Julia from synthesizing the untyped `Wrapper(x)` that
+    # the emitted `Wrapper(obj::Any)` would otherwise overwrite — a hard error
+    # during module precompilation (#433).
+    @test length(body.args) >= 2
+    inner = body.args[2]
+    @test inner isa Expr && inner.head === :(=)
+    @test inner.args[1] isa Expr && inner.args[1].head === :call &&
+          inner.args[1].args[1] === :Wrapper
+    @test inner.args[2] isa Expr && inner.args[2].head === :call &&
+          inner.args[2].args[1] === :new
+    # The public one-argument constructor is still emitted, as an outer method
+    # rather than a redefinition.
+    @test any(e -> e isa Expr && e.head === :function &&
+                    e.args[1] isa Expr && e.args[1].head === :call &&
+                    e.args[1].args[1] === :Wrapper, exprs)
+end
+
 @testset "PyO3 Python-host import (#424 Phase 1)" begin
     if !RustCall.pyo3_host_available()
         @info "skipping the PyO3 Python-host import testset" reason =
@@ -295,6 +320,15 @@ end
     # `#[pyo3(pass_module)]`: PyO3 injects the module, so the binding takes no
     # argument for it (#424).
     @test bindings.module_name() == "sample_crate_pyo3_host"
+
+    # A one-argument `#[new]` mapping to `Any` (#433): the public constructor
+    # reaches the class, and no synthesized constructor is overwritten. Through
+    # the generated module, which is type-transparent (the proxy re-wraps).
+    made = bindings.module_ref.Wrapper(41)
+    @test made.is_ok
+    wrapper = made.value
+    @test wrapper.value == 41
+    @test bindings.module_ref.tag(wrapper) == "wrapper:41"
 end
 
 @testset "PyO3 Python-host declarative modules (#424)" begin
@@ -336,4 +370,52 @@ end
     Host = @rust_crate PYO3_HOST_CRATE pyo3_host = true
     @test Host.add(Int32(2), Int32(3)) == 5
     @test Host.Point(3.0, 4.0).x == 3.0
+end
+
+@testset "a one-argument #[new] precompiles (#433)" begin
+    if !RustCall.pyo3_host_available()
+        @info "skipping the one-argument #[new] precompile testset" reason =
+            "PythonCall is not loaded; `using PythonCall` enables RustCallPyO3HostExt"
+        return
+    end
+    # Overwriting a method is only a warning outside precompilation; Julia
+    # *refuses* it while precompiling a package. So the regression this fixes
+    # has to be a package that is actually precompiled — asserting on the
+    # emitted expression alone would not have caught it.
+    root = mktempdir()
+    pkg_name = "PyO3HostOneArg433_$(basename(root))"
+    pkg_uuid = "8f0c5e2a-6b41-4d7e-9a3c-2e5b7c1d4f60"
+    pkgdir_ = joinpath(root, pkg_name)
+    mkpath(joinpath(pkgdir_, "src"))
+    write(joinpath(pkgdir_, "Project.toml"), """
+    name = "$pkg_name"
+    uuid = "$pkg_uuid"
+    version = "0.1.0"
+
+    [deps]
+    PythonCall = "$(Base.PkgId(PythonCall).uuid)"
+    RustCall = "$(Base.PkgId(RustCall).uuid)"
+    """)
+    write(joinpath(pkgdir_, "src", "$pkg_name.jl"), """
+    module $pkg_name
+    using RustCall
+    using PythonCall
+    @rust_crate $(repr(abspath(PYO3_HOST_CRATE))) submodule="Bindings" pyo3_host=true
+    using .Bindings: Wrapper
+    export Wrapper
+    end
+    """)
+    # The temp package is a package-directory environment on the load path; the
+    # active project supplies RustCall and PythonCall (this testset only runs
+    # when PythonCall is loaded).
+    project = dirname(Base.active_project())
+    sep = Sys.iswindows() ? ";" : ":"
+    out = withenv("JULIA_LOAD_PATH" => join((project, root, "@stdlib"), sep)) do
+        readchomp(pipeline(`$(Base.julia_cmd()) --startup-file=no -e $("""
+            using $pkg_name
+            w = Wrapper(41)
+            print(w.value.value, " ", Base.isprecompiled(Base.identify_package($(repr(pkg_name)))))
+            """)`; stderr = stderr))
+    end
+    @test out == "41 true"
 end

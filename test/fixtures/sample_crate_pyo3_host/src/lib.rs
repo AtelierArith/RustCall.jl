@@ -95,6 +95,30 @@ struct Point {
     y: f64,
 }
 
+/// A one-argument `#[new]` whose argument maps to the untyped Julia `Any`
+/// (#433): the emitted `Wrapper(obj::Any)` used to overwrite Julia's
+/// synthesized single-field constructor `Wrapper(x)`, which is a hard error
+/// during precompilation. The handle struct now carries an explicit inner
+/// constructor, so Julia synthesizes none and the emitted one is a new method.
+#[pyclass]
+struct Wrapper {
+    #[pyo3(get)]
+    value: i32,
+}
+
+#[pymethods]
+impl Wrapper {
+    #[new]
+    fn new(obj: Py<PyAny>) -> PyResult<Self> {
+        let value: i32 = Python::attach(|py| obj.bind(py).extract().unwrap_or(0));
+        Ok(Wrapper { value })
+    }
+
+    fn tag(&self) -> String {
+        format!("wrapper:{}", self.value)
+    }
+}
+
 #[pymethods]
 impl Point {
     #[new]
@@ -160,5 +184,6 @@ fn sample_crate_pyo3_host(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(echo_object, m)?)?;
     m.add_function(wrap_pyfunction!(module_name, m)?)?;
     m.add_class::<Point>()?;
+    m.add_class::<Wrapper>()?;
     Ok(())
 }
