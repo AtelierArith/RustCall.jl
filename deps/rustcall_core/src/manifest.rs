@@ -12,7 +12,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The manifest compatibility identifier: the **`MAJOR.MINOR` of the RustCall
-/// release** this crate ships in, so `"0.5"` for every v0.5.x. Julia derives
+/// release** this crate ships in, so `"0.6"` for every v0.6.x. Julia derives
 /// the same string from its `Project.toml` and refuses a manifest whose
 /// `schema_version` differs (#372).
 ///
