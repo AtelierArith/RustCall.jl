@@ -55,6 +55,12 @@ jobs:
         with:
           toolchain: ${{ matrix.rust }}
           components: clippy, rustfmt
+      # Cache ~/.cargo and each crate's `target`, keyed by the lockfile and
+      # rustc version. The crates share syn/quote/proc-macro2, so a cold
+      # `cargo test` spends most of its time compiling dependencies.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: deps/${{ matrix.crate }} -> target
       - name: Check formatting
         run: cargo fmt --check
       - name: Run clippy
@@ -111,6 +117,18 @@ jobs:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
       - uses: julia-actions/cache@v2
+      # `deps/build.jl` (via julia-buildpkg) runs `cargo build --release
+      # --locked` for the helpers library and the extractor. Without a Cargo
+      # cache every run recompiles their whole dependency graph; cache it, and
+      # put a `rustc` on PATH so `RustToolChain` uses it rather than downloading
+      # its artifact. The toolchain is installed *before* the cache action,
+      # which keys on `rustc -vV` and on every Cargo.lock in the tree.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            deps/rustcall_helpers -> target
+            deps/rustcall_extract -> target
       - uses: julia-actions/julia-buildpkg@v1
       - name: Bounds-checked state and mixed reload stress
         if: matrix.threads == '4'
@@ -143,6 +161,11 @@ jobs:
           version: '1'
       - uses: dtolnay/rust-toolchain@stable
       - uses: julia-actions/cache@v2
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            deps/rustcall_helpers -> target
+            deps/rustcall_extract -> target
       - uses: julia-actions/julia-buildpkg@v1
       - name: Build the release extractor
         working-directory: deps/rustcall_extract
