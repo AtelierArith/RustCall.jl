@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Generation copies are owned by a lease, not by a pid**
+  ([#321](https://github.com/AtelierArith/RustCall.jl/issues/321)). Two
+  processes that share a library's volume and its hostname but run in
+  different pid namespaces — two containers over one bind mount — could hold
+  the same pid and generation counter, pick one copy path, and take each
+  other's live copy for abandoned. The copy name now carries a per-process
+  instance token (`<lib>.rustcall.<host>.<pid>.<instance>.<n>.<ext>`), and
+  beside every copy the owner keeps `<copy>.lease` open and locked
+  (`flock` / `LockFileEx`) for its whole life; the stale-copy sweep removes a
+  copy only when it can lock that lease — no owner anywhere on the volume —
+  and falls back to the process table only where there is no lease to ask.
+  v0.5.x copies without a token are still swept by pid for one release.
+
 ## [0.5.0] - 2026-09-16
 
 ### Added
