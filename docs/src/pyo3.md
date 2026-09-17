@@ -81,7 +81,35 @@ for a `PyResult` with no Python around) are wanted.
 
 A crate that is not `cdylib` is no obstacle — the build selects `cdylib`
 explicitly — but it must have a `#[pymodule]`: that initializer is what is
-imported, and only what it registers is reachable.
+imported, and only what it registers is reachable. That includes a
+**declarative** module (`#[pymodule] mod name { ... }`, PyO3's own shape): the
+bindings follow the declarative nesting, so a direct item is `Sample.f` and one
+in a nested `#[pymodule] mod inner` is `Sample.inner.g`.
+
+The host path reads the Rust parameter and return spellings, so the shapes a
+PyO3 crate actually uses are handled rather than reported as skips:
+
+* **numpy arrays.** A `PyReadonlyArray*` / `PyArray*` parameter is typed
+  `AbstractArray` and converted with `numpy.asarray` before the call, because
+  pyo3-numpy extracts from a real `numpy.ndarray` and a Julia array otherwise
+  reaches Python as a `juliacall.VectorValue`. A numpy return is converted back
+  to a Julia `Array`.
+* **Python callables.** A parameter with no Julia equivalent stays `Any`; a
+  Julia function passed there arrives as a Python callable (PythonCall wraps
+  it), and a `Py<PyAny>` argument or return stays a Python object.
+* **`#[classmethod]`.** Python's bound descriptor passes the class, so the
+  binding drops that argument from the Julia signature and calls through the
+  class object. `#[pyo3(pass_module)]` is the same: the injected module is not
+  a Julia argument.
+* **Field direction.** A get-only `#[pyo3(get)]` field is readable and not
+  assignable; `setproperty!` raises a Julia `ArgumentError` naming it.
+* **`async fn` is refused.** The host path has no event loop to drive the
+  coroutine, so the extractor's `async_fn` refusal is honoured and no binding is
+  emitted, rather than handing Julia an awaitable that never runs.
+
+`PyResult<T>` remains `RustResult{T, String}` on this path too; the `Err` payload
+is the interpreter's own message, so a caller keeps one error surface whether
+the crate was bound from outside or imported as the extension it is.
 
 ## Which pyo3 versions work
 

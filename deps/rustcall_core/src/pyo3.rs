@@ -243,6 +243,8 @@ impl Pyo3Scan {
             enclosing_cfg,
             manifest,
             &mut pending,
+            &[],
+            false,
         );
         pending
     }
@@ -257,6 +259,8 @@ impl Pyo3Scan {
         enclosing_cfg: &[syn::Attribute],
         manifest: &mut Manifest,
         pending: &mut Vec<PendingModule>,
+        python_path: &[String],
+        inside_pymodule: bool,
     ) {
         for item in items {
             match item {
@@ -281,6 +285,7 @@ impl Pyo3Scan {
                                 Attribute::PyFunction,
                                 true,
                                 module_path,
+                                python_path,
                                 enclosing_cfg,
                             );
                             self.intrinsic_skips.insert(
@@ -297,6 +302,7 @@ impl Pyo3Scan {
                                 Attribute::PyFunction,
                                 reachable,
                                 module_path,
+                                python_path,
                                 enclosing_cfg,
                             ));
                         }
@@ -306,6 +312,7 @@ impl Pyo3Scan {
                                 Attribute::PyModule,
                                 reachable,
                                 module_path,
+                                &[],
                                 enclosing_cfg,
                             ));
                         }
@@ -319,9 +326,21 @@ impl Pyo3Scan {
                     if pyo3_marker(&s.attrs) == Some(Pyo3Marker::Class) {
                         self.classes.push(ScannedClass {
                             module_path: module_path.clone(),
-                            entry: class_entry(s, reachable, module_path, enclosing_cfg),
-                            reachable_fields: class_entry(s, true, module_path, enclosing_cfg)
-                                .fields,
+                            entry: class_entry(
+                                s,
+                                reachable,
+                                module_path,
+                                python_path,
+                                enclosing_cfg,
+                            ),
+                            reachable_fields: class_entry(
+                                s,
+                                true,
+                                module_path,
+                                python_path,
+                                enclosing_cfg,
+                            )
+                            .fields,
                             visibility: s.vis.clone(),
                             cfg: enclosing_cfg.to_vec(),
                         });
@@ -356,6 +375,58 @@ impl Pyo3Scan {
                 Item::Mod(m) => {
                     let inner_reachable = reachable && matches!(m.vis, syn::Visibility::Public(_));
                     let inner_cfg = crate::cfg::effective_cfg_attrs(enclosing_cfg, &m.attrs);
+                    // `#[pymodule] mod name { ... }` is PyO3's declarative
+                    // module: PyO3 registers its direct items itself, so the
+                    // Python attribute path of an item is the declarative
+                    // nesting below the imported module (#424). It is not a
+                    // RustCall module and has no `PendingModule`.
+                    if pyo3_marker(&m.attrs) == Some(Pyo3Marker::Module) {
+                        manifest
+                            .functions
+                            .push(module_entry(m, module_path, enclosing_cfg));
+                        // The outermost declarative module *is* the imported
+                        // module, so its name is not part of the path below it;
+                        // a nested one contributes its Python name (#424).
+                        let inner_python = if inside_pymodule {
+                            let mut path = python_path.to_vec();
+                            path.push(_pyo3_module_python_name(&m.attrs, &m.ident));
+                            path
+                        } else {
+                            Vec::new()
+                        };
+                        module_path.push(m.ident.to_string());
+                        if let Some((_, inner)) = &m.content {
+                            dir_components.push(m.ident.to_string());
+                            self.level(
+                                inner,
+                                module_path,
+                                dir_components,
+                                inner_reachable,
+                                &inner_cfg,
+                                manifest,
+                                pending,
+                                &inner_python,
+                                true,
+                            );
+                            dir_components.pop();
+                        } else {
+                            // `#[pymodule] mod name;` — the body lives in
+                            // another file, which the caller follows without a
+                            // Python scope (an out-of-line declarative module is
+                            // not handled). Record it as an ordinary pending
+                            // module so its items are still scanned.
+                            pending.push(PendingModule {
+                                module_path: module_path.clone(),
+                                reachable: inner_reachable,
+                                name: m.ident.to_string(),
+                                path_attr: path_attribute(&m.attrs),
+                                dir_components: dir_components.clone(),
+                                cfg: inner_cfg,
+                            });
+                        }
+                        module_path.pop();
+                        continue;
+                    }
                     module_path.push(m.ident.to_string());
                     match &m.content {
                         Some((_, inner)) => {
@@ -368,6 +439,8 @@ impl Pyo3Scan {
                                 &inner_cfg,
                                 manifest,
                                 pending,
+                                python_path,
+                                inside_pymodule,
                             );
                             dir_components.pop();
                         }
@@ -1311,12 +1384,69 @@ fn path_attribute(attrs: &[syn::Attribute]) -> Option<String> {
     None
 }
 
+/// The Python-visible name of a declarative `#[pymodule] mod`: `name = "..."`
+/// when given, otherwise the Rust module's own name (#424).
+fn _pyo3_module_python_name(attrs: &[syn::Attribute], ident: &syn::Ident) -> String {
+    let named = pyo3_name(attrs);
+    if named.is_empty() {
+        ident.to_string()
+    } else {
+        named
+    }
+}
+
+/// Manifest entry of a declarative `#[pymodule] mod name { ... }` (#424). Only
+/// its name matters to a consumer: it is what CPython imports, so the host path
+/// reads it with [`function_entry`]'s `PyModule` origin. Its items carry their
+/// own [`Function::python_path`] / [`Struct::python_path`].
+fn module_entry(
+    item: &syn::ItemMod,
+    module_path: &[String],
+    enclosing_cfg: &[syn::Attribute],
+) -> Function {
+    let name = item.ident.to_string();
+    let effective_cfg = crate::cfg::effective_cfg_attrs(enclosing_cfg, &item.attrs);
+    Function {
+        name: name.clone(),
+        ffi_name: crate::codegen::symbol_stem(module_path, &name),
+        symbol: crate::codegen::function_symbol(module_path, &name),
+        attribute: Attribute::PyModule,
+        vis: visibility_string(&item.vis),
+        skip_reason: skip_reason::PYMODULE.to_string(),
+        python_name: pyo3_name(&item.attrs),
+        python_path: Vec::new(),
+        exported: false,
+        cfg: predicate_string(&effective_cfg),
+        cfg_features: crate::cfg::predicate_features(&effective_cfg),
+        is_generic: false,
+        type_params: Vec::new(),
+        args: Vec::new(),
+        return_type: String::new(),
+        return_kind: ReturnKind::Unit,
+        return_abi: String::new(),
+        ok_type: String::new(),
+        err_type: String::new(),
+        inner_type: String::new(),
+        ok_abi: String::new(),
+        err_abi: String::new(),
+        inner_abi: String::new(),
+        has_owned_string_helper: false,
+        has_borrowed_string_helper: false,
+        source: String::new(),
+        body_has_cfg: false,
+        line: item.span().start().line,
+        module_path: module_path.to_vec(),
+        callable_path: Vec::new(),
+    }
+}
+
 /// Manifest entry of a `#[pyfunction]` (or a `#[pymodule]` initialiser).
 fn function_entry(
     func: &ItemFn,
     attribute: Attribute,
     reachable: bool,
     module_path: &[String],
+    python_path: &[String],
     enclosing_cfg: &[syn::Attribute],
 ) -> Function {
     let name = func.sig.ident.to_string();
@@ -1342,6 +1472,7 @@ fn function_entry(
         vis: visibility_string(&func.vis),
         skip_reason: reason,
         python_name: pyo3_name(&func.attrs),
+        python_path: python_path.to_vec(),
         exported: false,
         cfg: predicate_string(&effective_cfg),
         cfg_features: crate::cfg::predicate_features(&effective_cfg),
@@ -1378,6 +1509,7 @@ fn class_entry(
     item: &ItemStruct,
     reachable: bool,
     module_path: &[String],
+    python_path: &[String],
     enclosing_cfg: &[syn::Attribute],
 ) -> Struct {
     let effective_cfg = crate::cfg::effective_cfg_attrs(enclosing_cfg, &item.attrs);
@@ -1461,6 +1593,10 @@ fn class_entry(
                 },
                 python_name: access.python_name,
                 vis: visibility_string(&f.vis),
+                // What PyO3 exposes through the object, independent of the
+                // `ffi_compatible` decision a wrapper crate needs (#424).
+                pyo3_get: access.get,
+                pyo3_set: access.set,
                 // Whatever `#[cfg]` survived pruning is one the scan could not
                 // decide; the generator refuses the accessors under a lenient
                 // scan (#307 review).
@@ -1477,6 +1613,7 @@ fn class_entry(
         vis: visibility_string(&item.vis),
         skip_reason: reason,
         python_name: pyo3_name(&item.attrs),
+        python_path: python_path.to_vec(),
         pyo3_extends: options.extends,
         pyo3_options,
         python_owned_handle: false,
@@ -1548,6 +1685,7 @@ fn method_entry(
         is_static: receiver.is_none(),
         is_mutable: receiver.map(|r| r.mutability.is_some()).unwrap_or(false),
         is_constructor,
+        is_classmethod: has(Pyo3MethodMarker::ClassMethod),
         vis: visibility_string(&func.vis),
         skip_reason: reason,
         python_name: pyo3_name(&func.attrs),

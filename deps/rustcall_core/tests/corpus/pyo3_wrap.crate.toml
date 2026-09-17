@@ -504,6 +504,8 @@ getter = "rustcall_geometry__Rect_get_w"
 setter = "rustcall_geometry__Rect_set_w"
 python_name = ""
 vis = "pub"
+pyo3_get = true
+pyo3_set = true
 
 [[structs.fields]]
 name = "depth"
@@ -514,6 +516,7 @@ getter = ""
 setter = "rustcall_geometry__Rect_set_depth"
 python_name = ""
 vis = "pub"
+pyo3_set = true
 
 [[structs.fields]]
 name = "extra"
@@ -525,6 +528,7 @@ setter = ""
 python_name = ""
 vis = "pub"
 cfg = 'feature = "extra"'
+pyo3_get = true
 
 [[structs.fields]]
 name = "name"
@@ -535,6 +539,7 @@ getter = "rustcall_geometry__Rect_get_name"
 setter = ""
 python_name = ""
 vis = "pub"
+pyo3_get = true
 
 [[structs.fields]]
 name = "tags"
@@ -547,6 +552,7 @@ getter = "rustcall_geometry__Rect_get_tags"
 setter = ""
 python_name = ""
 vis = "pub"
+pyo3_get = true
 
 [[structs.methods]]
 name = "new"

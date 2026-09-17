@@ -93,6 +93,10 @@ struct RustFunctionSignature
     # `"callback"`, empty for every other argument.
     callback_args::Vector{Vector{String}}
     callback_returns::Vector{String}
+    # Manifest schema 0.6 additive (#424): the Python attribute path of an item
+    # of a **declarative** PyO3 module (`#[pymodule] mod outer { ... }`), below
+    # the imported module. Empty for a function-form crate or a direct item.
+    python_path::Vector{String}
 end
 
 function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_types::Vector{String},
@@ -119,7 +123,8 @@ function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_type
                                python_kinds::Vector{String} = fill("", length(arg_names)),
                                ffi_name::String = name,
                                callback_args::Vector{Vector{String}} = Vector{String}[String[] for _ in arg_names],
-                               callback_returns::Vector{String} = fill("", length(arg_names)))
+                               callback_returns::Vector{String} = fill("", length(arg_names)),
+                               python_path::Vector{String} = String[])
     length(arg_abis) == length(arg_types) ||
         throw(ArgumentError("arg_abis must have one entry per argument"))
     length(python_defaults) == length(arg_names) ||
@@ -134,7 +139,8 @@ function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_type
                           has_owned_string_helper, has_borrowed_string_helper, arg_abis,
                           return_abi, vis, skip_reason, python_name, cfg_features,
                           ok_abi, err_abi, inner_abi, python_defaults, python_kinds,
-                          isempty(ffi_name) ? name : ffi_name, callback_args, callback_returns)
+                          isempty(ffi_name) ? name : ffi_name, callback_args,
+                          callback_returns, python_path)
 end
 
 """

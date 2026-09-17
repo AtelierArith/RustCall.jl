@@ -77,6 +77,10 @@ struct RustMethod
     # Callbacks (#296), aligned with `arg_names`; see `RustFunctionSignature`.
     callback_args::Vector{Vector{String}}
     callback_returns::Vector{String}
+    # Manifest schema 0.6 additive (#424): the method carries `#[classmethod]`,
+    # so Python's call passes the class as the first argument. `is_static` is
+    # true for it too (neither takes `self`).
+    is_classmethod::Bool
 end
 
 function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::Vector{String},
@@ -99,7 +103,8 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
                     python_defaults::Vector{String} = fill("", length(arg_names)),
                     python_kinds::Vector{String} = fill("", length(arg_names)),
                     callback_args::Vector{Vector{String}} = Vector{String}[String[] for _ in arg_names],
-                    callback_returns::Vector{String} = fill("", length(arg_names)))
+                    callback_returns::Vector{String} = fill("", length(arg_names)),
+                    is_classmethod::Bool = false)
     length(python_defaults) == length(arg_names) ||
         throw(ArgumentError("python_defaults must have one entry per argument"))
     length(python_kinds) == length(arg_names) ||
@@ -111,7 +116,7 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
                returns_boxed_struct, vis, skip_reason, python_name, accessor,
                return_kind, ok_type, err_type, inner_type, ok_abi, err_abi, inner_abi,
                string_owner, attribute, python_defaults, python_kinds,
-               callback_args, callback_returns)
+               callback_args, callback_returns, is_classmethod)
 end
 
 """
@@ -217,6 +222,14 @@ struct RustStructInfo
     derive_options::Dict{String, Bool}
     field_getters::Dict{String, String}
     field_setters::Dict{String, String}
+    # Manifest schema 0.6 additive (#424): whether PyO3 exposes a getter /
+    # setter for the field (`#[pyo3(get, set)]`, `get_all`/`set_all`),
+    # independent of `field_getters`/`field_setters`, which need a
+    # `pub` field a wrapper crate can name. The Python-host path reads through
+    # the object, so a private field is readable here. A field absent from the
+    # dict is not exposed.
+    field_pyo3_get::Dict{String, Bool}
+    field_pyo3_set::Dict{String, Bool}
     has_clone::Bool
     has_owned_string_helper::Bool
     has_borrowed_string_helper::Bool
@@ -231,6 +244,10 @@ struct RustStructInfo
     vis::String
     skip_reason::String
     python_name::String
+    # Manifest schema 0.6 additive (#424): the Python attribute path of a class
+    # of a **declarative** PyO3 module (`#[pymodule] mod outer { ... }`), below
+    # the imported module; empty for a function-form crate or a direct class.
+    python_path::Vector{String}
     # PyO3 object shape. A non-empty base requires a Python-owned handle;
     # flattening `PyClassInitializer` into `Box{T}` loses the base object.
     pyo3_extends::String
@@ -256,6 +273,8 @@ function RustStructInfo(name::String, type_params::Vector{String}, methods::Vect
                         field_free_symbols::Dict{String, String} = Dict{String, String}(),
                         field_getters::Dict{String, String} = Dict{String, String}(),
                         field_setters::Dict{String, String} = Dict{String, String}(),
+                        field_pyo3_get::Dict{String, Bool} = Dict{String, Bool}(),
+                        field_pyo3_set::Dict{String, Bool} = Dict{String, Bool}(),
                         has_clone::Bool = get(derive_options, "Clone", false),
                         has_owned_string_helper::Bool = false,
                         has_borrowed_string_helper::Bool = false,
@@ -264,6 +283,7 @@ function RustStructInfo(name::String, type_params::Vector{String}, methods::Vect
                         module_path::Vector{String} = String[],
                         attribute::Symbol = :julia, vis::String = "pub",
                         skip_reason::String = "", python_name::String = "",
+                        python_path::Vector{String} = String[],
                         pyo3_extends::String = "",
                         pyo3_options::Vector{String} = String[],
                         python_owned_handle::Bool = false,
@@ -272,9 +292,10 @@ function RustStructInfo(name::String, type_params::Vector{String}, methods::Vect
     RustStructInfo(name, type_params, methods, context_code, fields, field_abis,
                    field_vec_elements, field_free_symbols,
                    has_derive_julia_struct,
-                   derive_options, field_getters, field_setters, has_clone,
+                   derive_options, field_getters, field_setters,
+                   field_pyo3_get, field_pyo3_set, has_clone,
                    has_owned_string_helper, has_borrowed_string_helper, generic_wrappers, constraints,
-                   module_path, attribute, vis, skip_reason, python_name,
+                   module_path, attribute, vis, skip_reason, python_name, python_path,
                    pyo3_extends, pyo3_options, python_owned_handle, cfg_features,
                    isempty(ffi_name) ? name : ffi_name)
 end

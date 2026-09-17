@@ -516,12 +516,15 @@ end
 # stopped at the first keyword-only parameter (a keyword-only argument cannot be
 # forwarded positionally, which is all this emitter does).
 function _pyo3_host_args(arg_names, arg_types, python_defaults, python_kinds,
-                         classes::AbstractDict)
+                         classes::AbstractDict; drop_leading::Bool = false)
     syms = Symbol[]
     sig = Any[]
     conv = Any[]
     defaults = Bool[]
     for (i, (name, type)) in enumerate(zip(arg_names, arg_types))
+        # A `#[classmethod]`'s first argument is the class Python passes; it is
+        # not part of the Julia signature (#424).
+        drop_leading && i == 1 && continue
         _pyo3_host_injected_arg(type) && continue
         kind = i <= length(python_kinds) ? String(python_kinds[i]) : ""
         kind == "keyword_only" && break
@@ -615,28 +618,46 @@ function _pyo3_host_defs(name::Symbol, fixed_sig::Vector{Any}, var_sig::Vector{A
     return out
 end
 
+# The Python attribute expression of an item reached under a declarative
+# module path: `module.inner.g`; a function-form or direct item is `module.g`
+# (#424).
+function _pyo3_host_python_attr(base, python_path, python_name::AbstractString)
+    for segment in python_path
+        base = _pyo3_host_attr(base, segment)
+    end
+    return _pyo3_host_attr(base, python_name)
+end
+
 function _pyo3_host_function_expr(f::RustFunctionSignature, classes::AbstractDict)
     _, sig, conv, defaults = _pyo3_host_args(f.arg_names, f.arg_types,
                                              f.python_defaults, f.python_kinds, classes)
     python = _pyo3_host_python_name(f.name, f.python_name)
-    callof = convs -> Expr(:call, _pyo3_host_attr(:(_pyo3_module()), python), convs...)
+    base = _pyo3_host_python_attr(:(_pyo3_module()), f.python_path, python)
+    callof = convs -> Expr(:call, base, convs...)
     rust_type = f.return_kind === :py_result ? f.ok_type : f.return_type
     return _pyo3_host_defs(Symbol(f.name), Any[], sig, conv, defaults, callof,
                            f.return_kind, rust_type, nothing, classes)
 end
 
-function _pyo3_host_method_expr(jname::Symbol, pyclass::AbstractString, m::RustMethod,
+# `class_base` is the expression for the class object itself (with the
+# declarative module path, when any); a constructor calls it, a static or class
+# method calls an attribute of it, and an instance method calls an attribute of
+# the Python object the Julia handle holds.
+function _pyo3_host_method_expr(jname::Symbol, class_base::Expr, m::RustMethod,
                                 classes::AbstractDict)
     _, sig, conv, defaults = _pyo3_host_args(m.arg_names, m.arg_types,
-                                             m.python_defaults, m.python_kinds, classes)
+                                             m.python_defaults, m.python_kinds, classes;
+                                             drop_leading = m.is_classmethod)
     python = _pyo3_host_python_name(m.name, m.python_name)
     rust_type = m.return_kind === :py_result ? m.ok_type : m.return_type
     if m.is_constructor
-        callof = convs -> Expr(:call, _pyo3_host_attr(:(_pyo3_module()), pyclass), convs...)
+        callof = convs -> Expr(:call, class_base, convs...)
         return _pyo3_host_defs(jname, Any[], sig, conv, defaults, callof,
                                m.return_kind, rust_type, jname, classes)
-    elseif m.is_static
-        base = _pyo3_host_attr(_pyo3_host_attr(:(_pyo3_module()), pyclass), python)
+    elseif m.is_static || m.is_classmethod
+        # `#[classmethod]`'s class argument is dropped above: Python's bound
+        # descriptor supplies it (#424).
+        base = _pyo3_host_attr(class_base, python)
         callof = convs -> Expr(:call, base, convs...)
         return _pyo3_host_defs(Symbol(m.name), Any[], sig, conv, defaults, callof,
                                m.return_kind, rust_type, jname, classes)
@@ -665,17 +686,38 @@ function _pyo3_host_needs_numpy(info::CrateInfo)
     return false
 end
 
+# Whether PyO3 exposes a getter / setter for the field, per the manifest. A
+# manifest from before `Field.pyo3_get` (schema 0.6 additive, #424) records
+# neither, so an absent column keeps the previous "every listed field is
+# readable and writable" behaviour.
+_pyo3_host_field_readable(s::RustStructInfo, field::AbstractString) =
+    isempty(s.field_pyo3_get) || get(s.field_pyo3_get, String(field), false)
+
+_pyo3_host_field_writable(s::RustStructInfo, field::AbstractString) =
+    isempty(s.field_pyo3_set) || get(s.field_pyo3_set, String(field), false)
+
 # `#[pyo3(get)]` / `#[pyo3(set)]` install the descriptor inside the crate, so
-# the object answers; the manifest types the value.
+# the object answers; the manifest types the value and says which directions
+# PyO3 exposed (#424).
 function _pyo3_host_property_expr(jname::Symbol, s::RustStructInfo)
     conversions = Any[]
     for (field, rust_type) in s.fields
+        _pyo3_host_field_readable(s, field) || continue
         jt = _pyo3_host_value_type(rust_type)
         jt === nothing && continue
         push!(conversions,
               :(s === $(QuoteNode(Symbol(field))) && return PythonCall.pyconvert($jt, v)))
     end
-    names = [Symbol(field) for (field, _) in s.fields]
+    names = [Symbol(field) for (field, _) in s.fields if _pyo3_host_field_readable(s, field)]
+    # A read-only field raises a Julia error naming it instead of the raw
+    # Python `AttributeError` a descriptor would.
+    read_only = Any[]
+    for (field, _) in s.fields
+        _pyo3_host_field_writable(s, field) && continue
+        push!(read_only,
+              :(s === $(QuoteNode(Symbol(field))) &&
+                throw(ArgumentError($(string("field `", field, "` is read-only"))))))
+    end
     getbody = quote
         s === :_rustcall_py && return getfield(p, :_rustcall_py)
         v = PythonCall.pygetattr(getfield(p, :_rustcall_py), String(s))
@@ -684,6 +726,7 @@ function _pyo3_host_property_expr(jname::Symbol, s::RustStructInfo)
     end
     setbody = quote
         s === :_rustcall_py && throw(ArgumentError("_rustcall_py is not assignable"))
+        $(read_only...)
         PythonCall.pysetattr(getfield(p, :_rustcall_py), String(s), v)
         return v
     end
@@ -698,21 +741,32 @@ function _pyo3_host_property_expr(jname::Symbol, s::RustStructInfo)
     end
 end
 
+# The host path cannot await. An `async fn` binding would hand Julia the
+# interpreter's coroutine object, which never runs unless an event loop drives
+# it; the extractor already refuses the item (`async_fn`), and the generator
+# honours that rather than emitting a silently-unawaited binding (#424).
+_pyo3_host_async(f::RustFunctionSignature) =
+    partition_skip_reason(f.skip_reason)[1] == "async_fn"
+_pyo3_host_async(m::RustMethod) = partition_skip_reason(m.skip_reason)[1] == "async_fn"
+
 function _pyo3_host_struct_exprs(s::RustStructInfo, classes::AbstractDict)
     jname = Symbol(s.name)
     pyclass = _pyo3_host_python_name(s.name, s.python_name)
+    class_base = _pyo3_host_python_attr(:(_pyo3_module()), s.python_path, pyclass)
     out = Any[Expr(:struct, false, jname,
                    Expr(:block, Expr(:(::), :_rustcall_py, :(PythonCall.Py))))]
     for m in s.methods
         m.is_constructor || continue
-        append!(out, _pyo3_host_method_expr(jname, pyclass, m, classes))
+        _pyo3_host_async(m) && continue
+        append!(out, _pyo3_host_method_expr(jname, class_base, m, classes))
     end
     # `#[getter]`/`#[setter]` methods are Python properties; `getproperty`
     # above already reaches them, so they are not bound as functions.
     push!(out, _pyo3_host_property_expr(jname, s))
     for m in s.methods
         (m.is_constructor || !isempty(m.accessor)) && continue
-        append!(out, _pyo3_host_method_expr(jname, pyclass, m, classes))
+        _pyo3_host_async(m) && continue
+        append!(out, _pyo3_host_method_expr(jname, class_base, m, classes))
     end
     return out
 end
@@ -769,6 +823,7 @@ function generate_pyo3_host_bindings(crate_path::AbstractString;
                                    for s in info.pyo3_structs if s.attribute === :py_class)
     for f in info.pyo3_functions
         f.attribute === :py_function || continue
+        _pyo3_host_async(f) && continue
         append!(body.args, _pyo3_host_function_expr(f, classes))
     end
     for s in info.pyo3_structs
