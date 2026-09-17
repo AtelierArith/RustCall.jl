@@ -13,7 +13,8 @@ _filter_storage(view::StateView, value) =
 
 # Caller holds STATE. Tokens identify original vector occurrences, not values:
 # removing an occurrence and adding an identical value gives it token zero.
-function _observe_state_mutation!(watch::StateFilterWatch, value, op::Symbol, args)
+function _observe_state_mutation!(watch::StateFilterWatch, @nospecialize(value),
+                                  op::Symbol, @nospecialize(args))
     if watch.kind === :vector
         if op === :empty!
             empty!(watch.positions)
@@ -51,7 +52,7 @@ end
 
 # All state-container writes, including the deferred queue and module metadata,
 # pass through this helper. Mutation bookkeeping shares their transaction.
-function _state_mutate_storage!(value, op::Symbol, args...)
+function _state_mutate_storage!(@nospecialize(value), op::Symbol, @nospecialize(args...))
     watches = get(_state_value(STATE_FILTERS), value, ())
     for watch in watches
         _observe_state_mutation!(watch, value, op, args)
@@ -83,9 +84,24 @@ function _state_mutate_storage!(value, op::Symbol, args...)
     end
 end
 
-_state_mutate(view::StateView, op::Symbol, args...) = _state_read(view) do value
-    _state_mutate_storage!(_filter_storage(view, value), op, args...)
+# A named callable rather than a `do`-block closure. The closure form was keyed
+# by the concrete state-container type, so every distinct registry (`Dict` of
+# handles, of liveness flags, a `Ref`, the deferred-drop vector) cost a separate
+# 40–80 ms compile the first time it was written — and `__init__` writes them
+# all at `using`. `@nospecialize` keeps one method for all containers; writes
+# are off the call path, so the dynamic dispatch costs nothing that matters.
+struct _StateMutation <: Function
+    view::StateView
+    op::Symbol
+    args::Tuple
 end
+
+function (m::_StateMutation)(@nospecialize(value))
+    _state_mutate_storage!(_filter_storage(m.view, value), m.op, m.args...)
+end
+
+_state_mutate(view::StateView, op::Symbol, args...) =
+    _state_read(view, _StateMutation(view, op, args))
 
 function _filter_state!(predicate::Function, view::StateView)
     value, entries, watch = _state_read(view) do raw
