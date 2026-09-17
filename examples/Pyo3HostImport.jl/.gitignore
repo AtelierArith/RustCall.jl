@@ -1,0 +1,8 @@
+# Cargo's output for the embedded crates, which RustCall builds in place.
+/deps/macro_crate/target/
+/deps/macro_crate/Cargo.lock
+/deps/direct_crate/target/
+/deps/direct_crate/Cargo.lock
+# PythonCall's Conda environment for this package.
+/.CondaPkg/
+/Manifest.toml

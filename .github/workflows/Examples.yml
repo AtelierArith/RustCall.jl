@@ -40,14 +40,15 @@ jobs:
           - SampleCratePyO3.jl
           - SampleCratePyO3Only.jl
           - RustCrateMacroPyO3Only.jl
+          - Pyo3HostImport.jl
     steps:
       - uses: actions/checkout@v6
-      # SampleCratePyO3Only.jl and RustCrateMacroPyO3Only.jl bind a PyO3-only
-      # crate through RustCall's Python-host path (#424): the crate is built as
-      # the Python extension it is and imported. The interpreter is PythonCall's
-      # — CondaPkg provides one and RustCall pins pyo3's build to it — so no
-      # `setup-python` step is needed here. The dual example
-      # (SampleCratePyO3.jl) never puts pyo3 in its Julia build's graph.
+      # SampleCratePyO3Only.jl, RustCrateMacroPyO3Only.jl and Pyo3HostImport.jl
+      # bind a PyO3-only crate through RustCall's Python-host path (#424): the
+      # crate is built as the Python extension it is and imported. The
+      # interpreter is PythonCall's — CondaPkg provides one and RustCall pins
+      # pyo3's build to it — so no `setup-python` step is needed here. The dual
+      # example (SampleCratePyO3.jl) never puts pyo3 in its Julia build's graph.
       - uses: julia-actions/setup-julia@v2
         with:
           version: '1'
