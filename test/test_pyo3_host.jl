@@ -163,6 +163,31 @@ end
 
     scaled = bindings.scaled(point, 0.5)
     @test scaled.is_ok
+
+    # PyO3's default is supplied by its own dispatcher: one Julia method per
+    # arity, so the omitted argument is never invented here.
+    @test bindings.add_default(5) == 15
+    @test bindings.add_default(5, 1) == 6
+
+    # The type-level behaviour, through the generated module directly (what a
+    # package reaches with `using .Bindings: Point, ...`; the `CrateBindings`
+    # proxy re-wraps objects and is not type-transparent).
+    M = bindings.module_ref
+    p34 = M.Point(3.0, 4.0)                           # norm 5
+    @test M.scaled_by(p34, 2.0).value == 10.0
+    @test M.scaled_by(p34, 2.0, 1.0).value == 11.0
+
+    # A class-typed return is wrapped into the Julia struct, and a class-typed
+    # argument is passed as the Python object the handle holds.
+    p64 = M.Point(6.0, 4.0)
+    mirrored = M.mirrored(p64)
+    @test mirrored isa M.Point
+    @test (mirrored.x, mirrored.y) == (-6.0, -4.0)
+    @test M.distance_to(p64, M.origin()) == sqrt(52)
+    @test M.distance_to(p64, mirrored) == sqrt(208)
+
+    # A `Vec` of class references.
+    @test M.total_norm([p34, M.origin()]) == 5.0
 end
 
 @testset "PyO3 Python-host @rust_crate dispatch (#424 Phase 3)" begin

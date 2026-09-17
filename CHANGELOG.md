@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-17
+
+### Fixed
+- **The PyO3 host path handles PyO3's default arguments, and class-typed
+  returns and arguments** ([#424](https://github.com/AtelierArith/RustCall.jl/issues/424)).
+  A `#[pyo3(signature = (dim, tags = None, plev = 0))]` constructor is now one
+  Julia method per arity, so `Index(2)` reaches PyO3's own dispatcher instead of
+  falling through to the struct's inner constructor and failing to convert;
+  a return or argument that spells a scanned `#[pyclass]` (`PyTensor`,
+  `Py<PyTensor>`, `Bound<'_, PyTensor>`, `&Point`, `Vec<PyRef<'_, Point>>`) is
+  that Julia struct rather than a raw `Py`, and a class argument is passed as
+  the Python object the handle holds. Found while binding `tensor4all-py` end
+  to end (private `#[pyclass]`es, `Python<'_>`, NumPy buffers, a Julia function
+  as the TreeTCI `evaluate` callable).
+
 ## [0.6.0] - 2026-09-17
 
 ### Added
@@ -2037,7 +2052,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration tests for Rust helpers library
 - Documentation examples tests
 
-[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/atelierarith/RustCall.jl/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/atelierarith/RustCall.jl/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/atelierarith/RustCall.jl/compare/v0.4.2...v0.5.0

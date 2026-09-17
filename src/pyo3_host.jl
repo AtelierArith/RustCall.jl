@@ -365,23 +365,87 @@ _pyo3_host_attr(base, name::AbstractString) = Expr(:., base, QuoteNode(Symbol(na
 _pyo3_host_python_name(name, python_name) =
     isempty(python_name) ? String(name) : String(python_name)
 
-# `(arg symbols, typed signature entries)` with the injected parameters dropped.
-function _pyo3_host_args(arg_names, arg_types)
-    syms = Symbol[]
-    sig = Any[]
-    for (name, type) in zip(arg_names, arg_types)
-        _pyo3_host_injected_arg(type) && continue
-        sym = Symbol(name)
-        push!(syms, sym)
-        push!(sig, :($sym::$(_pyo3_host_arg_type(type))))
-    end
-    return syms, sig
+# The last identifier of a type spelling: `Py` in `Py<T>`, `T` in
+# `Bound<'_, T>`, `PyIndex` in `PyRef<'_, PyIndex>`.
+function _pyo3_host_last_ident(text::AbstractString)
+    found = match(r"([A-Za-z_][A-Za-z0-9_]*)\s*>?\s*$", strip(text))
+    return found === nothing ? nothing : String(found.captures[1])
 end
 
-# The call's result, converted (or wrapped into the class type for `Self`).
+# The Julia class a value of this Rust type corresponds to, or `nothing`:
+# `Self` (the enclosing class), the class's Rust name, or `Py<T>` /
+# `Bound<'_, T>` / `PyRef<T>` around it. A `Vec`/`Option` is not a single
+# class and is left alone.
+function _pyo3_host_struct_target(rust_type::AbstractString, classes::AbstractDict,
+                                  jstruct::Union{Symbol, Nothing} = nothing)
+    t = strip(rust_type)
+    t == "Self" && return jstruct
+    haskey(classes, t) && return classes[t]
+    (startswith(t, "Vec<") || startswith(t, "Option<")) && return nothing
+    name = _pyo3_host_last_ident(t)
+    name === nothing && return nothing
+    return get(classes, name, nothing)
+end
+
+# For an argument: `(class, is_vector)` when it names a scanned `#[pyclass]` (a
+# direct reference or a `Vec` of them), otherwise `nothing`. A class argument is
+# passed as the Python object the Julia handle holds, not as the handle.
+function _pyo3_host_struct_arg(rust_type::AbstractString, classes::AbstractDict)
+    t = strip(rust_type)
+    if startswith(t, "Vec<") && endswith(t, ">")
+        inner = strip(t[nextind(t, 5):prevind(t, lastindex(t))])
+        name = _pyo3_host_last_ident(inner)
+        name !== nothing && haskey(classes, name) && return (classes[name], true)
+        return nothing
+    end
+    haskey(classes, t) && return (classes[t], false)
+    name = _pyo3_host_last_ident(t)
+    name !== nothing && haskey(classes, name) && return (classes[name], false)
+    return nothing
+end
+
+# `(arg symbols, typed signature entries, call expressions, has-default flags)`
+# for the positional prefix, with injected parameters dropped and the list
+# stopped at the first keyword-only parameter (a keyword-only argument cannot be
+# forwarded positionally, which is all this emitter does).
+function _pyo3_host_args(arg_names, arg_types, python_defaults, python_kinds,
+                         classes::AbstractDict)
+    syms = Symbol[]
+    sig = Any[]
+    conv = Any[]
+    defaults = Bool[]
+    for (i, (name, type)) in enumerate(zip(arg_names, arg_types))
+        _pyo3_host_injected_arg(type) && continue
+        kind = i <= length(python_kinds) ? String(python_kinds[i]) : ""
+        kind == "keyword_only" && break
+        sym = Symbol(name)
+        target = _pyo3_host_struct_arg(type, classes)
+        if target === nothing
+            push!(sig, :($sym::$(_pyo3_host_arg_type(type))))
+            push!(conv, sym)
+        else
+            jname, isvector = target
+            if isvector
+                push!(sig, :($sym::AbstractVector))
+                push!(conv,
+                      :([x isa PythonCall.Py ? x : getfield(x, :_rustcall_py) for x in $sym]))
+            else
+                push!(sig, :($sym))
+                push!(conv,
+                      :($sym isa PythonCall.Py ? $sym : getfield($sym, :_rustcall_py)))
+            end
+        end
+        push!(defaults, i <= length(python_defaults) && !isempty(python_defaults[i]))
+        push!(syms, sym)
+    end
+    return syms, sig, conv, defaults
+end
+
+# The call's result, converted, or wrapped into the class it belongs to.
 function _pyo3_host_value_expr(call::Expr, rust_type::AbstractString,
-                               jstruct::Union{Symbol, Nothing})
-    rust_type == "Self" && jstruct !== nothing && return :($jstruct($call))
+                               jstruct::Union{Symbol, Nothing}, classes::AbstractDict)
+    target = _pyo3_host_struct_target(rust_type, classes, jstruct)
+    target !== nothing && return :($target($call))
     jt = _pyo3_host_value_type(rust_type)
     jt === nothing && return call
     return :(PythonCall.pyconvert($jt, $call))
@@ -389,12 +453,13 @@ end
 
 # One `function` definition, shaped by the return kind. `:py_result` catches the
 # interpreter's exception and reports it as the `Err` payload.
-function _pyo3_host_def(name::Symbol, sig::Vector{Any}, call::Expr, return_kind::Symbol,
-                        rust_type::AbstractString, jstruct::Union{Symbol, Nothing})
+function _pyo3_host_single_def(name::Symbol, sig::Vector{Any}, call::Expr, return_kind::Symbol,
+                               rust_type::AbstractString, jstruct::Union{Symbol, Nothing},
+                               classes::AbstractDict)
     if return_kind === :py_result
-        valued = _pyo3_host_value_expr(call, rust_type, jstruct)
-        jt = rust_type == "Self" && jstruct !== nothing ? jstruct :
-             _pyo3_host_value_type(rust_type)
+        target = _pyo3_host_struct_target(rust_type, classes, jstruct)
+        valued = _pyo3_host_value_expr(call, rust_type, jstruct, classes)
+        jt = target !== nothing ? target : _pyo3_host_value_type(rust_type)
         jt === nothing && (jt = :Any)
         body = quote
             try
@@ -413,36 +478,64 @@ function _pyo3_host_def(name::Symbol, sig::Vector{Any}, call::Expr, return_kind:
         return Expr(:function, Expr(:call, name, sig...), body)
     else
         return Expr(:function, Expr(:call, name, sig...),
-                    Expr(:block, _pyo3_host_value_expr(call, rust_type, jstruct)))
+                    Expr(:block, _pyo3_host_value_expr(call, rust_type, jstruct, classes)))
     end
 end
 
-function _pyo3_host_function_expr(f::RustFunctionSignature)
-    syms, sig = _pyo3_host_args(f.arg_names, f.arg_types)
-    python = _pyo3_host_python_name(f.name, f.python_name)
-    call = Expr(:call, _pyo3_host_attr(:(_pyo3_module()), python), syms...)
-    rust_type = f.return_kind === :py_result ? f.ok_type : f.return_type
-    return _pyo3_host_def(Symbol(f.name), sig, call, f.return_kind, rust_type, nothing)
+# One definition per *arity* the call accepts: PyO3's trailing defaults are
+# supplied by its own dispatcher, so a call passes only the arguments the caller
+# gave and the generated method for that arity forwards exactly those. Without
+# this `Index(2)` matched only the struct's inner constructor and failed
+# (`#[pyo3(signature = (dim, tags = None, plev = 0))]`).
+function _pyo3_host_defs(name::Symbol, fixed_sig::Vector{Any}, var_sig::Vector{Any},
+                         var_conv::Vector{Any}, defaults::Vector{Bool}, callof,
+                         return_kind::Symbol, rust_type::AbstractString,
+                         jstruct::Union{Symbol, Nothing}, classes::AbstractDict)
+    count = length(var_sig)
+    first_default = findfirst(identity, defaults)
+    minarity = first_default === nothing ? count : first_default - 1
+    out = Any[]
+    for arity in minarity:count
+        call = callof(var_conv[1:arity])
+        push!(out, _pyo3_host_single_def(name, vcat(copy(fixed_sig), var_sig[1:arity]), call,
+                                         return_kind, rust_type, jstruct, classes))
+    end
+    return out
 end
 
-function _pyo3_host_method_expr(jname::Symbol, pyclass::AbstractString, m::RustMethod)
-    syms, sig = _pyo3_host_args(m.arg_names, m.arg_types)
+function _pyo3_host_function_expr(f::RustFunctionSignature, classes::AbstractDict)
+    _, sig, conv, defaults = _pyo3_host_args(f.arg_names, f.arg_types,
+                                             f.python_defaults, f.python_kinds, classes)
+    python = _pyo3_host_python_name(f.name, f.python_name)
+    callof = convs -> Expr(:call, _pyo3_host_attr(:(_pyo3_module()), python), convs...)
+    rust_type = f.return_kind === :py_result ? f.ok_type : f.return_type
+    return _pyo3_host_defs(Symbol(f.name), Any[], sig, conv, defaults, callof,
+                           f.return_kind, rust_type, nothing, classes)
+end
+
+function _pyo3_host_method_expr(jname::Symbol, pyclass::AbstractString, m::RustMethod,
+                                classes::AbstractDict)
+    _, sig, conv, defaults = _pyo3_host_args(m.arg_names, m.arg_types,
+                                             m.python_defaults, m.python_kinds, classes)
     python = _pyo3_host_python_name(m.name, m.python_name)
     rust_type = m.return_kind === :py_result ? m.ok_type : m.return_type
     if m.is_constructor
-        call = Expr(:call, _pyo3_host_attr(:(_pyo3_module()), pyclass), syms...)
-        return _pyo3_host_def(jname, sig, call, m.return_kind, rust_type, jname)
+        callof = convs -> Expr(:call, _pyo3_host_attr(:(_pyo3_module()), pyclass), convs...)
+        return _pyo3_host_defs(jname, Any[], sig, conv, defaults, callof,
+                               m.return_kind, rust_type, jname, classes)
     elseif m.is_static
         base = _pyo3_host_attr(_pyo3_host_attr(:(_pyo3_module()), pyclass), python)
-        call = Expr(:call, base, syms...)
-        return _pyo3_host_def(Symbol(m.name), sig, call, m.return_kind, rust_type, jname)
+        callof = convs -> Expr(:call, base, convs...)
+        return _pyo3_host_defs(Symbol(m.name), Any[], sig, conv, defaults, callof,
+                               m.return_kind, rust_type, jname, classes)
     else
         # An instance method: the object is the first Julia argument, and the
         # Python object it holds is the receiver. A `&mut self` method mutates
         # that same object, so no extra step is needed.
-        call = Expr(:call, _pyo3_host_attr(:(getfield(obj, :_rustcall_py)), python), syms...)
-        return _pyo3_host_def(Symbol(m.name), vcat(Any[:(obj::$jname)], sig), call,
-                              m.return_kind, rust_type, jname)
+        receiver = _pyo3_host_attr(:(getfield(obj, :_rustcall_py)), python)
+        callof = convs -> Expr(:call, receiver, convs...)
+        return _pyo3_host_defs(Symbol(m.name), Any[:(obj::$jname)], sig, conv, defaults,
+                               callof, m.return_kind, rust_type, jname, classes)
     end
 end
 
@@ -479,21 +572,21 @@ function _pyo3_host_property_expr(jname::Symbol, s::RustStructInfo)
     end
 end
 
-function _pyo3_host_struct_exprs(s::RustStructInfo)
+function _pyo3_host_struct_exprs(s::RustStructInfo, classes::AbstractDict)
     jname = Symbol(s.name)
     pyclass = _pyo3_host_python_name(s.name, s.python_name)
     out = Any[Expr(:struct, false, jname,
                    Expr(:block, Expr(:(::), :_rustcall_py, :(PythonCall.Py))))]
     for m in s.methods
         m.is_constructor || continue
-        push!(out, _pyo3_host_method_expr(jname, pyclass, m))
+        append!(out, _pyo3_host_method_expr(jname, pyclass, m, classes))
     end
     # `#[getter]`/`#[setter]` methods are Python properties; `getproperty`
     # above already reaches them, so they are not bound as functions.
     push!(out, _pyo3_host_property_expr(jname, s))
     for m in s.methods
         (m.is_constructor || !isempty(m.accessor)) && continue
-        push!(out, _pyo3_host_method_expr(jname, pyclass, m))
+        append!(out, _pyo3_host_method_expr(jname, pyclass, m, classes))
     end
     return out
 end
@@ -532,13 +625,19 @@ function generate_pyo3_host_bindings(crate_path::AbstractString;
             return m
         end
     end)
+    # The scanned classes, by their Rust name: a return or argument spelling them
+    # (or `Py<T>` / `Bound<'_, T>` around one) is that Julia struct, not a
+    # `Py`. Local, not module-level: `test_state.jl`'s guard forbids a mutable
+    # registry in `RustCall` (#251).
+    classes = Dict{String, Symbol}(s.name => Symbol(s.name)
+                                   for s in info.pyo3_structs if s.attribute === :py_class)
     for f in info.pyo3_functions
         f.attribute === :py_function || continue
-        push!(body.args, _pyo3_host_function_expr(f))
+        append!(body.args, _pyo3_host_function_expr(f, classes))
     end
     for s in info.pyo3_structs
         s.attribute === :py_class || continue
-        append!(body.args, _pyo3_host_struct_exprs(s))
+        append!(body.args, _pyo3_host_struct_exprs(s, classes))
     end
     return Expr(:module, true, mod_name, body)
 end
