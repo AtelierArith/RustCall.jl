@@ -1,10 +1,18 @@
 using SampleCratePyO3Only
-using RustCall: RustResult, RustError, is_ok, is_err, unwrap, PYO3_OPAQUE_ERROR
+using RustCall: RustResult, is_ok, is_err, unwrap
 using Test
+import PythonCall
 
-# Every binding below reaches a crate that has no RustCall attribute anywhere:
-# the module under test is the generated wrapper's binding (#275 Phase 2).
+# Every binding below reaches a crate that has no RustCall attribute anywhere
+# and no `pub` on any item: the module under test is the host path's typed
+# surface over the crate imported as a Python extension (#424).
 @testset "SampleCratePyO3Only.jl" begin
+    @testset "the typed bindings are a submodule of this package" begin
+        @test SampleCratePyO3Only.Bindings isa Module
+        @test parentmodule(SampleCratePyO3Only.Bindings) === SampleCratePyO3Only
+        @test nameof(SampleCratePyO3Only.Bindings) === :Bindings
+    end
+
     @testset "#[pyfunction]" begin
         @test add(Int32(2), Int32(3)) == 5
         @test add(Int32(-1), Int32(1)) == 0
@@ -12,7 +20,7 @@ using Test
         @test shout("") == "!"
     end
 
-    @testset "PyResult<i32> -> RustResult{Int32, String}, opaque error" begin
+    @testset "PyResult<i32> -> RustResult{Int32, String}, real message" begin
         ok = SampleCratePyO3Only.Bindings.parse("42")
         @test ok isa RustResult{Int32, String}
         @test is_ok(ok)
@@ -21,10 +29,9 @@ using Test
 
         bad = SampleCratePyO3Only.Bindings.parse("not a number")
         @test is_err(bad)
-        # The `PyErr` is never rendered (that needs an interpreter): the error
-        # payload is RustCall's fixed sentence, not pyo3's message.
-        @test bad.value == PYO3_OPAQUE_ERROR
-        @test !occursin("invalid digit", bad.value)
+        # The host path has an interpreter, so this is pyo3's own message, not
+        # the C-ABI path's fixed opaque sentence.
+        @test occursin("invalid digit", bad.value)
 
         # The Julia layer: a value, or an ArgumentError naming the input.
         @test parse_int("42") == 42
@@ -38,31 +45,29 @@ using Test
         p = Point(3.0, 4.0)
         @test p isa Point
 
-        # `#[staticmethod] origin` is a module-level function, in both forms
-        # the generator emits: typed and bare.
-        o = origin(Point)
+        # `#[staticmethod] origin` is a Julia function.
+        o = origin()
         @test o isa Point
         @test (o.x, o.y) == (0.0, 0.0)
-        @test norm(origin()) == 0.0
+        @test norm(o) == 0.0
 
-        # Fields, through the generated `rustcall_Point_get_x` / `_set_x`.
+        # Fields, through the Python object's descriptors.
         @test (p.x, p.y) == (3.0, 4.0)
         @test propertynames(p) == (:x, :y)
         p.x = 6.0
         @test p.x == 6.0
-        p.y = 8                        # converted to the field's f64
+        p.y = 8                        # converted to the field's f64 by pyo3
         @test p.y == 8.0
-        @test_throws ErrorException p.z
+        @test_throws PythonCall.PyException p.z
         p.x, p.y = 3.0, 4.0
 
-        # `&self` and `&mut self` methods.
+        # `&self` and `&mut self` methods; the handle is the same Python object.
         @test norm(p) == 5.0
         translate(p, 1.0, 2.0)          # mutates in place
         @test (p.x, p.y) == (4.0, 6.0)
         translate(p, -1.0, -2.0)
 
-        # A `String`-returning method: the owned buffer comes back as a
-        # Julia String.
+        # A `String`-returning method.
         @test label(p) == "(3, 4)"
 
         # A `PyResult` method, both ways.
@@ -71,19 +76,10 @@ using Test
         @test is_ok(good) && unwrap(good) == 10.0
         bad = scaled(p, Inf)
         @test is_err(bad)
-        @test bad.value == PYO3_OPAQUE_ERROR
+        @test occursin("factor must be finite", bad.value)
 
         # The Julia-side convenience.
         @test distance(p, origin()) == 5.0
         @test distance(Point(1.0, 1.0), Point(4.0, 5.0)) == 5.0
-    end
-
-    @testset "Point_free runs the Rust destructor" begin
-        p = Point(1.0, 2.0)
-        finalize(p)
-        # After `finalize`, the handle is gone and a call is refused rather
-        # than handed to Rust.
-        @test_throws RustError norm(p)
-        @test_throws RustError p.x
     end
 end

@@ -1,20 +1,22 @@
 using RustCrateMacroPyO3Only
-using RustCall: RustResult, RustError, is_ok, is_err, unwrap, PYO3_OPAQUE_ERROR
+using RustCall: RustResult, is_ok, is_err, unwrap
 using Test
+import PythonCall
 
-# Every binding below reaches a crate that has no RustCall attribute anywhere,
-# through the module `@rust_crate` generated at this package's top level
-# (#275 Phase 2 for the wrapper, #339 for the macro in a precompiled package).
+# Every binding below reaches a crate that has no RustCall attribute anywhere
+# and no `pub` on any item, through the module `@rust_crate` generated at this
+# package's top level (#424 for the host path, #339 for the macro in a
+# precompiled package).
 @testset "RustCrateMacroPyO3Only.jl" begin
     @testset "the bindings are a submodule of this package" begin
         B = RustCrateMacroPyO3Only.Bindings
         @test B isa Module
         @test parentmodule(B) === RustCrateMacroPyO3Only
         @test nameof(B) === :Bindings
-        # Loaded from the package's precompile image, not re-generated on
-        # `using`: the library the module opened is a copy of the durable path
-        # it carries.
-        @test isfile(B._LIB_PATH)
+        # The module was compiled into the package's precompile image, not
+        # regenerated on `using`; the crate is built and imported lazily, on the
+        # first call (`_pyo3_module()`).
+        @test B._PYO3_CRATE_PATH == joinpath(pkgdir(RustCrateMacroPyO3Only), "deps", "macro_pyo3_only")
     end
 
     @testset "#[pyfunction]" begin
@@ -24,7 +26,7 @@ using Test
         @test join_words("  a  ", "  b  ") == "a b"
     end
 
-    @testset "PyResult<i32> -> RustResult{Int32, String}, opaque error" begin
+    @testset "PyResult<i32> -> RustResult{Int32, String}, real message" begin
         ok = checked_div(Int32(7), Int32(2))
         @test ok isa RustResult{Int32, String}
         @test is_ok(ok)
@@ -32,10 +34,9 @@ using Test
 
         bad = checked_div(Int32(1), Int32(0))
         @test is_err(bad)
-        # The `PyErr` is never rendered (that needs an interpreter): the error
-        # payload is RustCall's fixed sentence, not pyo3's message.
-        @test bad.value == PYO3_OPAQUE_ERROR
-        @test !occursin("division by zero", bad.value)
+        # The host path has an interpreter, so this is the exception's own
+        # message, not the C-ABI path's fixed opaque sentence.
+        @test occursin("division by zero", bad.value)
 
         # The other way an i32 division fails: the quotient of
         # `typemin(Int32) ÷ -1` does not fit. Rust's `/` panics on it even in
@@ -43,7 +44,6 @@ using Test
         # like the zero divisor, not a panic.
         overflow = checked_div(typemin(Int32), Int32(-1))
         @test is_err(overflow)
-        @test overflow.value == PYO3_OPAQUE_ERROR
 
         # The Julia layer: a value, or a DivideError.
         @test safe_div(7, 2) == 3
@@ -57,30 +57,28 @@ using Test
         c = Counter(Int64(10), Int64(2))
         @test c isa Counter
 
-        # `#[staticmethod] zeroed` is a module-level function, in both forms
-        # the generator emits: typed and bare.
-        z = zeroed(Counter)
+        # `#[staticmethod] zeroed` is a Julia function.
+        z = zeroed()
         @test z isa Counter
         @test (z.value, z.step) == (0, 1)
-        @test current(zeroed()) == 0
+        @test current(z) == 0
 
-        # Fields, through the generated `rustcall_Counter_get_value` / `_set_value`.
+        # Fields, through the Python object's descriptors.
         @test (c.value, c.step) == (10, 2)
         @test propertynames(c) == (:value, :step)
         c.value = 20
         @test c.value == 20
-        c.step = 3                      # converted to the field's i64
+        c.step = 3                      # converted to the field's i64 by pyo3
         @test c.step == 3
-        @test_throws ErrorException c.missing_field
+        @test_throws PythonCall.PyException c.missing_field
         c.value, c.step = 10, 2
 
-        # `&self` and `&mut self` methods.
+        # `&self` and `&mut self` methods; the handle is the same Python object.
         @test current(c) == 10
         @test bump(c) == 12             # mutates in place
         @test current(c) == 12
 
-        # A `String`-returning method: the owned buffer comes back as a
-        # Julia String.
+        # A `String`-returning method.
         @test describe(c) == "12 (+2)"
 
         # A `PyResult` method, both ways.
@@ -89,16 +87,7 @@ using Test
         @test is_ok(good) && unwrap(good) == 18
         bad = advance(c, Int64(-1))
         @test is_err(bad)
-        @test bad.value == PYO3_OPAQUE_ERROR
+        @test occursin("times must not be negative", bad.value)
         @test current(c) == 18          # refused, so unchanged
-    end
-
-    @testset "Counter_free runs the Rust destructor" begin
-        c = Counter(Int64(1), Int64(1))
-        finalize(c)
-        # After `finalize`, the handle is gone and a call is refused rather
-        # than handed to Rust.
-        @test_throws RustError current(c)
-        @test_throws RustError c.value
     end
 end

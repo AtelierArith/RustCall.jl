@@ -1,0 +1,544 @@
+# ============================================================================
+# The PyO3 Python-host path (#424, Phase 1)
+# ============================================================================
+#
+# The existing PyO3 support binds a crate *from outside*: it generates a second
+# crate that calls the target's `pub`, interpreter-free items through a C ABI
+# and links libpython. That is exactly the subset a PyO3 crate does not use.
+# PyO3's own convention is the opposite — `#[pyfunction]` / `#[pyclass]` need no
+# `pub`, and real APIs are written in terms of `Python<'_>`, `Py<T>`, numpy
+# arrays and Python callables — so the items the wrapper refuses (`not_public`,
+# `pyo3_type:<T>`, `unsupported_*`) are the ones a crate actually exposes.
+#
+# The host path does not lower anything to a C ABI. It builds the crate **as
+# the Python extension it already is** — the `extension-module` cdylib the link
+# plan calls `:unlinkable`, which is the right build when CPython is the one
+# that loads it — and lets a Python implementation `import` it. An item a
+# wrapper crate cannot *name* is reachable, because PyO3 registered it from
+# inside the crate.
+#
+# Nothing in this file starts a Python interpreter: the caller names one
+# (`python`), and the module that imports the artifact lives in the
+# `RustCallPyO3HostExt` package extension, which needs PythonCall. RustCall
+# therefore stays interpreter-free, and a session that never loads a PyO3 host
+# never pays for one. This is Phase 1 of #424 (build + cache); the typed Julia
+# surface is Phase 2 and the `@rust_crate` dispatch is Phase 3.
+
+"""
+    PyO3Extension
+
+The artifact of building a PyO3 crate as the Python extension it already is
+(#424). Returned by [`build_pyo3_extension`](@ref).
+
+# Fields
+- `module_name::String`: the name CPython imports — the `#[pymodule]` initializer's
+  name, or its `name = "..."` option.
+- `lib_path::String`: the importable file, `<module_name><ext_suffix>`, inside `dir`.
+- `dir::String`: the directory to put on `sys.path` before importing.
+- `ext_suffix::String`: the interpreter's `EXT_SUFFIX`, which the file name must carry.
+- `interpreter::String`: the Python the crate was built against (`PYO3_PYTHON`).
+- `fingerprint::String`: what that interpreter reports about itself; part of the cache key.
+- `key::String`: the artifact cache key.
+"""
+struct PyO3Extension
+    module_name::String
+    lib_path::String
+    dir::String
+    ext_suffix::String
+    interpreter::String
+    fingerprint::String
+    key::String
+end
+
+"""
+    pyo3_host_import(crate_path; features, default_features, release, cache_enabled) -> Py
+
+Build `crate_path` as a Python extension and `import` it, returning the Python
+module object (as a `PythonCall.Py`).
+
+This is a **hook**: RustCall does not depend on a Python implementation, so
+RustCall defines no method here. Load PythonCall and the
+`RustCallPyO3HostExt` package extension defines it, using
+`PythonCall.python_executable_path()` as the interpreter and PythonCall's own
+importer. `RustCall.pyo3_host_available()` says whether it is defined.
+
+The crate is built unmodified. A `#[pyfunction] fn f(...)` that is **not `pub`**,
+a signature using `Python<'_>` or `pyo3::Bound`, numpy arrays and Python
+callables all become reachable, because the call goes through CPython and the
+crate's own `#[pymodule]` registration rather than through a Rust path.
+"""
+function pyo3_host_import end
+
+"""
+    pyo3_host_available() -> Bool
+
+Whether a Python host for PyO3 crates is loaded — i.e. whether
+`RustCallPyO3HostExt` has defined [`pyo3_host_import`](@ref). Load PythonCall
+(`using PythonCall`) to enable it.
+"""
+pyo3_host_available() = hasmethod(pyo3_host_import, Tuple{AbstractString})
+
+"""
+    build_pyo3_extension(crate_path; python, features, default_features, release, cache_enabled) -> PyO3Extension
+
+Build the PyO3 crate at `crate_path` as a Python extension module, without
+modifying the crate, and return where the result lives
+([`PyO3Extension`](@ref)).
+
+`python` names the interpreter the module is built for; it is passed to pyo3's
+build configuration as `PYO3_PYTHON`, and its `sysconfig` `EXT_SUFFIX` names the
+output file. Pass the interpreter of the Python implementation that will import
+the result — for PythonCall, `PythonCall.python_executable_path()`.
+
+The crate must declare `#[pymodule]` (there is nothing to import otherwise); a
+`[lib] crate-type` that does not include `"cdylib"` is not a problem, because
+the build selects a cdylib explicitly. Unlike the wrapper path's `rlib`
+requirement, an rlib-only crate is fine here.
+
+The build runs `cargo rustc --crate-type cdylib` in the crate's own directory,
+so the crate's `.cargo/config.toml`, lockfile and `[patch]` tables apply as they
+do to the crate itself, and its dependency outputs are shared with the user's
+own builds. The platform's extension-module link flags (macOS
+`-undefined dynamic_lookup`, which pyo3's build script cannot deliver to the
+final cdylib) travel as trailing rustc arguments, not through `RUSTFLAGS`.
+
+The result is cached under `RustCall.get_cache_dir()/cargo/pyo3-host/`, keyed by
+the crate path, the feature set, the profile, the module name and the
+interpreter's fingerprint; `cache_enabled = false` builds every time.
+"""
+function build_pyo3_extension(crate_path::AbstractString;
+                              python::AbstractString,
+                              features::Vector{String} = String[],
+                              default_features::Bool = true,
+                              release::Bool = true,
+                              cache_enabled::Bool = true)
+    path = abspath(String(crate_path))
+    isdir(path) || throw(RustError("Crate path does not exist: $(crate_path)"))
+    manifest_path = joinpath(path, "Cargo.toml")
+    isfile(manifest_path) || throw(RustError("Cargo.toml not found in: $(crate_path)"))
+    isempty(python) && throw(RustError(
+        "The PyO3 host path needs the Python interpreter to build against — " *
+        "one the resulting module can be imported into. With PythonCall loaded, " *
+        "that is `PythonCall.python_executable_path()`."))
+
+    cargo_toml = parse_cargo_toml(manifest_path)
+    info = scan_crate(path)
+    module_name = _pyo3_extension_module_name(info)
+    isempty(module_name) && throw(RustError(
+        "No `#[pymodule]` initializer was found in `$(crate_path)`. The host path " *
+        "builds the crate as a Python extension and imports it, so a crate without " *
+        "one has nothing to import."))
+    ext_suffix = _pyo3_extension_ext_suffix(python)
+    isempty(ext_suffix) && throw(RustError(
+        "The interpreter `$(python)` did not report a sysconfig `EXT_SUFFIX`, so " *
+        "the extension module cannot be named. Is it a runnable CPython?"))
+    fingerprint = _python_interpreter_fingerprint(python)
+
+    # The crate's own content is in the key (`compute_crate_hash` digests the
+    # source, the path dependency graph and the Cargo configuration), so an
+    # edited crate rebuilds instead of reusing an artifact of its old self; the
+    # interpreter's path *and* fingerprint are added, as the `.link_libpython`
+    # wrapper keys them.
+    key = compute_crate_hash(info; release = release, kind = "pyo3-host",
+                             features = features, default_features = default_features,
+                             build_env = Pair{String, String}[
+                                 "PYO3_PYTHON" => String(python),
+                                 "interpreter-fingerprint" => fingerprint,
+                                 "module" => module_name])
+    # Its own tree, not the Cargo cache: an extension module is not a cached
+    # cdylib, and `test_cargo` asserts the Cargo cache holds exactly one entry
+    # (#287). Both `clear_cache()` and this directory's owner are one place.
+    dir = joinpath(get_cache_dir(), "pyo3-host", artifact_short_id(key))
+    lib_path = joinpath(dir, module_name * ext_suffix)
+    artifact = PyO3Extension(module_name, lib_path, dir, ext_suffix, String(python),
+                             fingerprint, key)
+
+    if cache_enabled && isfile(lib_path)
+        @debug "Using cached PyO3 extension module" key = artifact_short_id(key, 8)
+        return artifact
+    end
+
+    built = _build_pyo3_extension_library(path, cargo_toml, module_name;
+                                          python = python, features = features,
+                                          default_features = default_features,
+                                          release = release)
+    # Publish, never overwrite (#394): two sessions may build one key at once.
+    published = _publish_cache_file(built, lib_path)
+    return PyO3Extension(module_name, published.path, dir, ext_suffix, String(python),
+                         fingerprint, key)
+end
+
+# The `#[pymodule]` initializer's Python name: `name = "..."` when given,
+# otherwise the function's own name. A lenient scan, deliberately: the marker is
+# what is wanted, and deciding it under a feature set would mean the plan
+# machinery this path exists to avoid.
+_pyo3_extension_module_name(crate_path::AbstractString) =
+    _pyo3_extension_module_name(scan_crate(String(crate_path)))
+
+function _pyo3_extension_module_name(info::CrateInfo)
+    for f in info.pyo3_functions
+        f.attribute === :py_module || continue
+        return isempty(f.python_name) ? String(f.name) : String(f.python_name)
+    end
+    return ""
+end
+
+# `sysconfig.get_config_var('EXT_SUFFIX')` of `python`; "" when it cannot run.
+# Unlike `_python_interpreter_fingerprint` this value names the artifact, so the
+# caller must treat "" as a refusal rather than guess a suffix.
+function _pyo3_extension_ext_suffix(python::AbstractString)
+    code = "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX') or '')"
+    try
+        return String(strip(read(`$python -c $code`, String)))
+    catch
+        return ""
+    end
+end
+
+# `[lib] name` when set, otherwise Cargo's default: the package name with `-`
+# replaced by `_`. This is the stem Cargo puts in the file name.
+function _crate_lib_name(cargo_toml::AbstractDict)
+    lib = get(cargo_toml, "lib", nothing)
+    if lib isa AbstractDict
+        name = get(lib, "name", nothing)
+        name === nothing || return String(name)
+    end
+    package = get(cargo_toml, "package", Dict{String, Any}())
+    return replace(String(get(package, "name", "")), "-" => "_")
+end
+
+# What Cargo names a cdylib on this platform.
+function _pyo3_extension_filename(lib_name::AbstractString)
+    Sys.iswindows() && return "$(lib_name).dll"
+    Sys.isapple() && return "lib$(lib_name).dylib"
+    return "lib$(lib_name).so"
+end
+
+# The extension-module link flags the *final* cdylib needs. pyo3's build script
+# emits `cargo:rustc-cdylib-link-arg`, which applies to pyo3's own build and not
+# to a crate that merely depends on it — nor to the target crate's own cdylib
+# link, since the directive belongs to the package that emitted it. maturin
+# passes these itself for exactly this reason. On macOS the undefined Python
+# data symbols (`_PyBaseObject_Type`, `PyExc_*`) bind eagerly, so the dynamic
+# lookup is required; ELF and PE need nothing here.
+function _pyo3_extension_link_args()
+    Sys.isapple() || return String[]
+    return String["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
+end
+
+"""
+    _build_pyo3_extension_library(crate_path, cargo_toml, module_name; kwargs...) -> String
+
+Run `cargo rustc --crate-type cdylib` in the crate's own directory and return
+the built extension file, which is a temporary Cargo output — copy it out
+before the next build replaces it.
+"""
+function _build_pyo3_extension_library(crate_path::AbstractString, cargo_toml::AbstractDict,
+                                       module_name::AbstractString;
+                                       python::AbstractString,
+                                       features::Vector{String} = String[],
+                                       default_features::Bool = true,
+                                       release::Bool = true)
+    package = String(get(get(cargo_toml, "package", Dict{String, Any}()), "name", ""))
+    isempty(package) && throw(RustError(
+        "`$(crate_path)` has no `[package] name`, so Cargo cannot select it."))
+
+    args = String["rustc"]
+    release && push!(args, "--release")
+    push!(args, "-p", package, "--crate-type", "cdylib")
+    default_features || push!(args, "--no-default-features")
+    isempty(features) || push!(args, "--features", join(features, ","))
+    link_args = _pyo3_extension_link_args()
+
+    # The dependency outputs are shared with the crate's own `target/`, so the
+    # build reuses the user's dependency artifacts; an ambient `CARGO_TARGET_DIR`
+    # would send the library somewhere this function never looks (and apart from
+    # the user's own builds), so it is pinned as `build_cargo_project` does.
+    target_dir = joinpath(crate_path, "target")
+    env = Dict{String, String}(ENV)
+    env["PYO3_PYTHON"] = String(python)
+    env["CARGO_TARGET_DIR"] = target_dir
+
+    cmd = isempty(link_args) ? `$(cargo()) $args` : `$(cargo()) $args -- $link_args`
+    stderr_io = IOBuffer()
+    stdout_io = IOBuffer()
+    ok = cd(crate_path) do
+        proc = run(pipeline(setenv(cmd, env), stdout = stdout_io, stderr = stderr_io),
+                   wait = false)
+        wait(proc)
+        success(proc)
+    end
+    if !ok
+        stderr_str = String(take!(stderr_io))
+        close(stderr_io); close(stdout_io)
+        throw(CargoBuildError(
+            "Building `$(package)` as a Python extension module failed", stderr_str, crate_path))
+    end
+    close(stderr_io); close(stdout_io)
+
+    lib_name = _crate_lib_name(cargo_toml)
+    profile_dir = release ? "release" : "debug"
+    built = joinpath(target_dir, profile_dir, _pyo3_extension_filename(lib_name))
+    isfile(built) || throw(RustError(
+        "Cargo reported success but `$(built)` is missing. The crate's `[lib] name` " *
+        "(`$(lib_name)`) or its `crate-type` may differ from what the host path expects."))
+    return built
+end
+
+# ============================================================================
+# Phase 2: typed Julia bindings over the imported module (#424)
+# ============================================================================
+#
+# The surface is generated from the same manifest the scan already produces, but
+# nothing is lowered to a C ABI: every binding calls the Python module. A
+# `PyResult` becomes `RustResult{T, String}` carrying the **interpreter's own**
+# message — the C-ABI path's opaque `PYO3_OPAQUE_ERROR` exists only because that
+# path has no interpreter to render a `PyErr` with.
+#
+# Field access goes through the Python object, not the manifest's wrapper
+# symbols. `#[pyo3(get)]` / `#[pyo3(set)]` install a descriptor inside the crate,
+# so it works for a private field and for a private struct — exactly the cases
+# the manifest's `getter`/`setter` symbols are blank for. The manifest still
+# lists the struct's fields with their Rust types, which is what types the
+# getter; a field PyO3 does not expose raises at access, as it would in Python.
+
+# A function, not a `const Dict`: a module-level mutable registry is what
+# `test_state.jl`'s guard forbids (#251), and this table never changes.
+function _pyo3_host_scalar_type(t::AbstractString)
+    t == "i8" && return :Int8
+    t == "i16" && return :Int16
+    t == "i32" && return :Int32
+    t == "i64" && return :Int64
+    t == "isize" && return :Int
+    t == "u8" && return :UInt8
+    t == "u16" && return :UInt16
+    t == "u32" && return :UInt32
+    t == "u64" && return :UInt64
+    t == "usize" && return :UInt
+    t == "f32" && return :Float32
+    t == "f64" && return :Float64
+    t == "bool" && return :Bool
+    return nothing
+end
+
+# The Julia type a Python value is converted into, or `nothing` for "leave it as
+# a Python object" (a `Py<T>`, `Bound<...>`, `PyObject`, or a type this path has
+# no mapping for).
+function _pyo3_host_value_type(rust_type::AbstractString)
+    t = strip(rust_type)
+    t == "()" && return :Nothing
+    scalar = _pyo3_host_scalar_type(t)
+    scalar === nothing || return scalar
+    t == "String" && return :String
+    (startswith(t, "&") && endswith(t, "str")) && return :String
+    if startswith(t, "Vec<") && endswith(t, ">")
+        elem = _pyo3_host_value_type(strip(t[nextind(t, 5):prevind(t, lastindex(t))]))
+        elem === nothing && return nothing
+        return :(Vector{$elem})
+    end
+    return nothing
+end
+
+# The Julia type a binding accepts for an argument. Abstract on purpose: a
+# Python host is duck-typed, and `Integer` lets both `Int32(2)` and `2` reach
+# `add`, as they would in Python.
+function _pyo3_host_arg_type(rust_type::AbstractString)
+    t = strip(rust_type)
+    if _pyo3_host_scalar_type(t) !== nothing
+        t == "bool" && return :Bool
+        (t == "f32" || t == "f64") && return :Real
+        return :Integer
+    end
+    t == "String" && return :AbstractString
+    (startswith(t, "&") && endswith(t, "str")) && return :AbstractString
+    startswith(t, "Vec<") && return :AbstractVector
+    return :Any
+end
+
+# The interpreter supplies these to the callee; they are not part of the Python
+# call and are dropped from the Julia signature.
+_pyo3_host_injected_arg(rust_type::AbstractString) =
+    occursin("Python<", rust_type) || occursin("PyModule", rust_type)
+
+_pyo3_host_attr(base, name::AbstractString) = Expr(:., base, QuoteNode(Symbol(name)))
+
+_pyo3_host_python_name(name, python_name) =
+    isempty(python_name) ? String(name) : String(python_name)
+
+# `(arg symbols, typed signature entries)` with the injected parameters dropped.
+function _pyo3_host_args(arg_names, arg_types)
+    syms = Symbol[]
+    sig = Any[]
+    for (name, type) in zip(arg_names, arg_types)
+        _pyo3_host_injected_arg(type) && continue
+        sym = Symbol(name)
+        push!(syms, sym)
+        push!(sig, :($sym::$(_pyo3_host_arg_type(type))))
+    end
+    return syms, sig
+end
+
+# The call's result, converted (or wrapped into the class type for `Self`).
+function _pyo3_host_value_expr(call::Expr, rust_type::AbstractString,
+                               jstruct::Union{Symbol, Nothing})
+    rust_type == "Self" && jstruct !== nothing && return :($jstruct($call))
+    jt = _pyo3_host_value_type(rust_type)
+    jt === nothing && return call
+    return :(PythonCall.pyconvert($jt, $call))
+end
+
+# One `function` definition, shaped by the return kind. `:py_result` catches the
+# interpreter's exception and reports it as the `Err` payload.
+function _pyo3_host_def(name::Symbol, sig::Vector{Any}, call::Expr, return_kind::Symbol,
+                        rust_type::AbstractString, jstruct::Union{Symbol, Nothing})
+    if return_kind === :py_result
+        valued = _pyo3_host_value_expr(call, rust_type, jstruct)
+        jt = rust_type == "Self" && jstruct !== nothing ? jstruct :
+             _pyo3_host_value_type(rust_type)
+        jt === nothing && (jt = :Any)
+        body = quote
+            try
+                return RustCall.RustResult{$jt, String}(true, $valued)
+            catch err
+                err isa PythonCall.PyException || rethrow()
+                return RustCall.RustResult{$jt, String}(false, sprint(showerror, err))
+            end
+        end
+        return Expr(:function, Expr(:call, name, sig...), body)
+    elseif return_kind === :unit || strip(rust_type) == "()"
+        body = quote
+            $call
+            return nothing
+        end
+        return Expr(:function, Expr(:call, name, sig...), body)
+    else
+        return Expr(:function, Expr(:call, name, sig...),
+                    Expr(:block, _pyo3_host_value_expr(call, rust_type, jstruct)))
+    end
+end
+
+function _pyo3_host_function_expr(f::RustFunctionSignature)
+    syms, sig = _pyo3_host_args(f.arg_names, f.arg_types)
+    python = _pyo3_host_python_name(f.name, f.python_name)
+    call = Expr(:call, _pyo3_host_attr(:(_pyo3_module()), python), syms...)
+    rust_type = f.return_kind === :py_result ? f.ok_type : f.return_type
+    return _pyo3_host_def(Symbol(f.name), sig, call, f.return_kind, rust_type, nothing)
+end
+
+function _pyo3_host_method_expr(jname::Symbol, pyclass::AbstractString, m::RustMethod)
+    syms, sig = _pyo3_host_args(m.arg_names, m.arg_types)
+    python = _pyo3_host_python_name(m.name, m.python_name)
+    rust_type = m.return_kind === :py_result ? m.ok_type : m.return_type
+    if m.is_constructor
+        call = Expr(:call, _pyo3_host_attr(:(_pyo3_module()), pyclass), syms...)
+        return _pyo3_host_def(jname, sig, call, m.return_kind, rust_type, jname)
+    elseif m.is_static
+        base = _pyo3_host_attr(_pyo3_host_attr(:(_pyo3_module()), pyclass), python)
+        call = Expr(:call, base, syms...)
+        return _pyo3_host_def(Symbol(m.name), sig, call, m.return_kind, rust_type, jname)
+    else
+        # An instance method: the object is the first Julia argument, and the
+        # Python object it holds is the receiver. A `&mut self` method mutates
+        # that same object, so no extra step is needed.
+        call = Expr(:call, _pyo3_host_attr(:(getfield(obj, :_rustcall_py)), python), syms...)
+        return _pyo3_host_def(Symbol(m.name), vcat(Any[:(obj::$jname)], sig), call,
+                              m.return_kind, rust_type, jname)
+    end
+end
+
+# `#[pyo3(get)]` / `#[pyo3(set)]` install the descriptor inside the crate, so
+# the object answers; the manifest types the value.
+function _pyo3_host_property_expr(jname::Symbol, s::RustStructInfo)
+    conversions = Any[]
+    for (field, rust_type) in s.fields
+        jt = _pyo3_host_value_type(rust_type)
+        jt === nothing && continue
+        push!(conversions,
+              :(s === $(QuoteNode(Symbol(field))) && return PythonCall.pyconvert($jt, v)))
+    end
+    names = [Symbol(field) for (field, _) in s.fields]
+    getbody = quote
+        s === :_rustcall_py && return getfield(p, :_rustcall_py)
+        v = PythonCall.pygetattr(getfield(p, :_rustcall_py), String(s))
+        $(conversions...)
+        return v
+    end
+    setbody = quote
+        s === :_rustcall_py && throw(ArgumentError("_rustcall_py is not assignable"))
+        PythonCall.pysetattr(getfield(p, :_rustcall_py), String(s), v)
+        return v
+    end
+    return quote
+        function Base.getproperty(p::$jname, s::Symbol)
+            $getbody
+        end
+        function Base.setproperty!(p::$jname, s::Symbol, v)
+            $setbody
+        end
+        Base.propertynames(::$jname) = $(Tuple(names))
+    end
+end
+
+function _pyo3_host_struct_exprs(s::RustStructInfo)
+    jname = Symbol(s.name)
+    pyclass = _pyo3_host_python_name(s.name, s.python_name)
+    out = Any[Expr(:struct, false, jname,
+                   Expr(:block, Expr(:(::), :_rustcall_py, :(PythonCall.Py))))]
+    for m in s.methods
+        m.is_constructor || continue
+        push!(out, _pyo3_host_method_expr(jname, pyclass, m))
+    end
+    # `#[getter]`/`#[setter]` methods are Python properties; `getproperty`
+    # above already reaches them, so they are not bound as functions.
+    push!(out, _pyo3_host_property_expr(jname, s))
+    for m in s.methods
+        (m.is_constructor || !isempty(m.accessor)) && continue
+        push!(out, _pyo3_host_method_expr(jname, pyclass, m))
+    end
+    return out
+end
+
+"""
+    generate_pyo3_host_bindings(crate_path; module_name, features, default_features, release) -> Expr
+
+The module expression `@rust_crate ... pyo3_host=true` evaluates: a typed Julia
+surface over the crate's imported Python module. Core and interpreter-free to
+build — the import itself is lazy and lives in `pyo3_host_import`.
+"""
+function generate_pyo3_host_bindings(crate_path::AbstractString;
+                                     module_name::Union{String, Nothing} = nothing,
+                                     features::Vector{String} = String[],
+                                     default_features::Bool = true,
+                                     release::Bool = true)
+    path = abspath(String(crate_path))
+    info = scan_crate(path)
+    mod_name = Symbol(module_name === nothing ? snake_to_pascal(info.name) : module_name)
+    body = Expr(:block)
+    push!(body.args, :(import RustCall))
+    push!(body.args, :(import PythonCall))
+    push!(body.args, :(const _PYO3_CRATE_PATH = $path))
+    push!(body.args, :(const _PYO3_FEATURES = $(collect(String, features))))
+    push!(body.args, :(const _PYO3_DEFAULT_FEATURES = $default_features))
+    push!(body.args, :(const _PYO3_RELEASE = $release))
+    push!(body.args, :(const _PYO3_MODULE = Base.RefValue{Any}(nothing)))
+    push!(body.args, quote
+        function _pyo3_module()
+            m = _PYO3_MODULE[]
+            m === nothing || return m
+            m = RustCall.pyo3_host_import(_PYO3_CRATE_PATH; features = _PYO3_FEATURES,
+                                          default_features = _PYO3_DEFAULT_FEATURES,
+                                          release = _PYO3_RELEASE)
+            _PYO3_MODULE[] = m
+            return m
+        end
+    end)
+    for f in info.pyo3_functions
+        f.attribute === :py_function || continue
+        push!(body.args, _pyo3_host_function_expr(f))
+    end
+    for s in info.pyo3_structs
+        s.attribute === :py_class || continue
+        append!(body.args, _pyo3_host_struct_exprs(s))
+    end
+    return Expr(:module, true, mod_name, body)
+end

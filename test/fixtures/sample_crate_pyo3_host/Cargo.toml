@@ -1,0 +1,19 @@
+# A crate written for PyO3 only, and shaped like a real extension module: it is
+# a `cdylib` (no `rlib`), and pyo3 enables `extension-module`, which is the
+# build the wrapper path calls `:unlinkable` and this one requires.
+#
+# It is the fixture of the Python-host path (#424 Phase 1). Its `#[pymodule]`
+# deliberately registers a **private** `#[pyfunction]` and a `Python<'_>` one,
+# because that is what the host path can reach and a wrapper crate cannot:
+# `not_public` (rustc E0603) and `pyo3_type:Python<'_>` are skip reasons there.
+[package]
+name = "sample_crate_pyo3_host"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "sample_crate_pyo3_host"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.29", default-features = false, features = ["macros", "extension-module"] }

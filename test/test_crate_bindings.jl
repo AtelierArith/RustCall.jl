@@ -1271,3 +1271,23 @@ end
         end
     end
 end
+
+# The `CrateBindings` proxy forwards property access to the wrapped object; it
+# must not reserve a Rust type's own field names. `sample_crate`'s `Counter` has
+# a field literally called `value`, which used to come back as the proxy's
+# wrapped object instead of the field (#424).
+@testset "CrateBindings proxy forwards a field named value (#424)" begin
+    RustCall.check_rustc_available() || return
+    B = @rust_crate SAMPLE_CRATE_PATH name="SampleCrateProxyFields"
+
+    c = B.Counter(Int32(5))
+    @test c.value == 5
+    @test B.get(c) == Int32(5)
+
+    c.value = Int32(100)
+    @test c.value == 100
+
+    B.increment(c)
+    @test c.value == Int32(101)
+    @test B.get(c) == Int32(101)
+end
