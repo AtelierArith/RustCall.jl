@@ -1,6 +1,6 @@
 [package]
 name = "rustcall_extract"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 description = "Extractor CLI for RustCall.jl: FFI manifests, inline expansion and generic specialization"
 license = "MIT"
