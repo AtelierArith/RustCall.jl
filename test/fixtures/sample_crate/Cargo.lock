@@ -60,7 +60,7 @@ dependencies = [
 
 [[package]]
 name = "rustcall_core"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "prettyplease",
  "proc-macro2",
@@ -72,14 +72,14 @@ dependencies = [
 
 [[package]]
 name = "rustcall_julia_macros"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "rustcall_julia_macros_impl",
 ]
 
 [[package]]
 name = "rustcall_julia_macros_impl"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "proc-macro2",
  "quote",
