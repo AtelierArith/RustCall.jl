@@ -2,9 +2,11 @@
 
 A Julia **package** with the Rust crate [`deps/sample_crate_pyo3`](./deps/sample_crate_pyo3/)
 embedded in it: a crate with **dual bindings**, `#[julia]` for Julia and PyO3's
-own attributes for Python, on one definition of each item. This package is the
-Julia consumer; the Python consumer is `deps/sample_crate_pyo3/main.py`, built
-with maturin. Both call the same Rust and get the same results.
+own attributes for Python, on one definition of each item. Nothing is `pub`:
+each macro emits or registers its public entry point *inside* the crate, which
+is how a real crate of either kind is written. This package is the Julia
+consumer; the Python consumer is `deps/sample_crate_pyo3/main.py`, built with
+maturin. Both call the same Rust and get the same results.
 
 The example is **self-contained**: everything it builds and tests is inside
 this directory. The one reference outside it is the `rustcall_julia_macros` path

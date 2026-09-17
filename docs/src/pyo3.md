@@ -20,6 +20,69 @@ This page describes what is available today:
   link plan, and bind the result. **This is the part you use**; the two above
   are what it is built on, and what you reach for when it refuses.
 
+## The Python host path (`pyo3_host=true`, #424)
+
+Everything from "Using it" down binds a PyO3 crate **from outside**: a generated
+wrapper crate calls the target's `pub`, interpreter-free items through a C ABI
+and links libpython. That is the opposite of how a real PyO3 crate is written —
+`#[pyfunction]`/`#[pyclass]` need no `pub`, and real APIs are written in terms
+of `Python<'_>`, `Py<T>`, numpy arrays and Python callables — so the scan reports
+`not_public` (rustc E0603) and `pyo3_type:<T>` for exactly the items the crate
+intends to expose.
+
+`pyo3_host=true` binds such a crate **as-is**. It builds the crate as the Python
+extension it already is — the `extension-module` build the link plan calls
+`:unlinkable`, which is the right build when CPython is the one that loads it —
+imports it through [PythonCall](https://github.com/JuliaPy/PythonCall.jl), and
+calls the imported module:
+
+```julia
+using RustCall
+using PythonCall            # enables the RustCallPyO3HostExt package extension
+
+Sample = @rust_crate "path/to/pyo3_crate" pyo3_host=true
+Sample.add(Int32(2), Int32(3))
+Sample.Point(3.0, 4.0).x
+```
+
+What changes:
+
+* **No `pub` is needed, and no wrapper crate is generated.** PyO3 registered the
+  item inside the crate, so importing reaches it; a Rust path is never taken.
+* **`Python<'_>`, `Py<T>`, numpy and callables are ordinary.** The value bridge,
+  the GIL and object lifetime are PythonCall's.
+* **`PyResult<T>` carries the real message.** It is still
+  `RustResult{T, String}`, but the `Err` payload is the exception's own text —
+  the C-ABI path's `PYO3_OPAQUE_ERROR` exists only because *it* has no
+  interpreter to render a `PyErr` with.
+* **Fields go through the Python object.** `#[pyo3(get, set)]` installs the
+  descriptor inside the crate, so a private field of a private struct works.
+* **Python owns lifetime.** There is no generated `<Class>_free` and no
+  `finalize`.
+* **The crate is built lazily**, on the first call: pyo3's build is pinned with
+  `PYO3_PYTHON = PythonCall.python_executable_path()`, and a Python interpreter
+  may not be started during precompilation. The crate's sources and that
+  interpreter are part of the artifact cache key.
+
+Three examples use it, and one shows why it exists:
+
+```julia
+Sample = @rust_crate "examples/SampleCratePyO3Only.jl/deps/sample_crate_pyo3_only" \
+    submodule="Bindings" pyo3_host=true
+```
+
+The crate there has no `pub` on any item and is `crate-type = ["cdylib"]` with
+pyo3's `extension-module`; `examples/RustCrateMacroPyO3Only.jl` binds the same
+shape, and `examples/SampleCratePyO3.jl` carries `#[julia]` and PyO3 attributes
+on one definition (also with no `pub`). The older C-ABI path remains for the
+crate that is `pub` and interpreter-free, and for the cases where a wrapper
+crate's runtime guarantees (panic containment, generation/liveness, `RustResult`
+for a `PyResult` with no Python around) are wanted.
+
+A crate that is not `cdylib` is no obstacle — the build selects `cdylib`
+explicitly — but it must have a `#[pymodule]`: that initializer is what is
+imported, and only what it registers is reachable.
+
 ## Which pyo3 versions work
 
 Most of what RustCall generates for a PyO3 crate calls the crate's own functions

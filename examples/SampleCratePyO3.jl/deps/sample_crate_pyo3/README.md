@@ -52,14 +52,18 @@ does not mention pyo3 at all.
 ```rust
 #[julia]
 #[cfg_attr(feature = "python", pyo3::pyclass(get_all, set_all))]
-pub struct Point {
-    pub x: f64,
-    pub y: f64,
+struct Point {
+    x: f64,
+    y: f64,
 }
 ```
 
 - **Julia**: `#[repr(C)]` plus `Point_free`, `Point_get_x`, `Point_set_x`, …
 - **Python**: `#[pyclass(get_all, set_all)]` exposes the same fields.
+
+Neither attribute needs `pub`: `#[julia]` emits a `pub extern "C"` entry point
+next to the item, and PyO3 registers the item from inside the module. The fields
+stay private — each macro generates its accessor in-crate.
 
 ### Methods
 
@@ -67,9 +71,9 @@ pub struct Point {
 #[julia]
 impl Point {
     #[julia]
-    pub fn new(x: f64, y: f64) -> Self { Point { x, y } }
+    fn new(x: f64, y: f64) -> Self { Point { x, y } }
     #[julia]
-    pub fn distance_from_origin(&self) -> f64 { ... }
+    fn distance_from_origin(&self) -> f64 { ... }
 }
 
 #[cfg(feature = "python")]
@@ -223,8 +227,8 @@ in. (RustCall can also bind a crate that has *only* PyO3 attributes and no
 | you wrote | write instead |
 |-----------|---------------|
 | `#[julia_pyo3] fn add(...)` | `#[julia] #[cfg_attr(feature = "python", pyo3::pyfunction)] fn add(...)` |
-| `#[julia_pyo3] pub struct Point {...}` | `#[julia] #[cfg_attr(feature = "python", pyo3::pyclass(get_all, set_all))] pub struct Point {...}` |
-| `#[julia_pyo3] impl Point {...}` | `#[julia] impl Point { #[julia] pub fn ... }` plus a `#[cfg(feature = "python")] #[pyo3::pymethods] impl Point { ... }` as above |
+| `#[julia_pyo3] pub struct Point {...}` | `#[julia] #[cfg_attr(feature = "python", pyo3::pyclass(get_all, set_all))] struct Point {...}` |
+| `#[julia_pyo3] impl Point {...}` | `#[julia] impl Point { #[julia] fn ... }` plus a `#[cfg(feature = "python")] #[pyo3::pymethods] impl Point { ... }` as above |
 
 `#[julia_pyo3]` no longer exists: a crate that still uses it fails to build
 with ``cannot find attribute `julia_pyo3` ``. The full write-up is in

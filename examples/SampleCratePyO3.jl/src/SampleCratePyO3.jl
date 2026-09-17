@@ -8,9 +8,10 @@ on one definition of each item.
 The two halves live in separate files:
 
 - **Rust**: `deps/sample_crate_pyo3/src/lib.rs` — the implementation, with
-  `#[julia]` next to `#[cfg_attr(feature = "python", pyo3::...)]`. No Julia
+  `#[julia]` next to `#[cfg_attr(feature = "python", pyo3::...)]`, and no `pub`
+  on any item (both macros emit their entry points inside the crate). No Julia
   file contains Rust source, and the Julia build never enables the `python`
-  feature (the wrapper links no Python).
+  feature, so pyo3 is not in its dependency graph.
 - **Julia**: this file and `src/generated/Bindings.jl`, which `deps/build.jl`
   writes with `RustCall.write_bindings_to_file` (run
   `Pkg.build("SampleCratePyO3")`).

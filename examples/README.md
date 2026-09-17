@@ -23,8 +23,8 @@ Before running the examples, ensure you have:
 | [SampleCrate.jl](./SampleCrate.jl/) | Julia package with a Rust crate using `#[julia]` embedded under `deps/sample_crate/`, plus a `rust"""` block in `src/inline.jl` | Intermediate | `#[julia]`, `@rust_crate`, `write_bindings_to_file`, coexistence of the crate bindings with `@rust_str`, Rust and Julia in separate files |
 | [RustCrateMacro.jl](./RustCrateMacro.jl/) | Julia package that binds a `#[julia]` crate with the `@rust_crate` macro at its top level and adds a `rust"""` block in the same module | Intermediate | `@rust_crate ... submodule=`, `#[julia]`, inline `rust"""`, all three front doors coexisting and composing |
 | [SampleCratePyO3.jl](./SampleCratePyO3.jl/) | Julia package with a dual Julia/Python crate embedded under `deps/sample_crate_pyo3/` | Advanced | PyO3 integration, feature flags |
-| [SampleCratePyO3Only.jl](./SampleCratePyO3Only.jl/) | Julia package with a **PyO3-only** crate (no RustCall attribute) embedded under `deps/sample_crate_pyo3_only/`, bound through RustCall's generated wrapper crate | Advanced | `#[pyfunction]` / `#[pyclass]` without `#[julia]`, `PyResult` → `RustResult`, `:link_libpython` (needs a Python interpreter to build) |
-| [RustCrateMacroPyO3Only.jl](./RustCrateMacroPyO3Only.jl/) | The same **PyO3-only** shape, embedded under `deps/macro_pyo3_only/`, bound with the **`@rust_crate` macro** at the package's top level instead of a `deps/build.jl` | Advanced | `@rust_crate ... submodule="Bindings"` in a package, bindings generated while the package is precompiled, nothing generated in the repository, `:link_libpython` |
+| [SampleCratePyO3Only.jl](./SampleCratePyO3Only.jl/) | Julia package with a **PyO3-only** crate (no RustCall attribute, no `pub`) embedded under `deps/sample_crate_pyo3_only/`, bound through RustCall's Python-host path | Advanced | `#[pyfunction]` / `#[pyclass]` without `#[julia]`, the crate built as the Python extension it is and imported through PythonCall, `PyResult` → `RustResult` with the real message |
+| [RustCrateMacroPyO3Only.jl](./RustCrateMacroPyO3Only.jl/) | The same **PyO3-only** shape, embedded under `deps/macro_pyo3_only/`, bound with the **`@rust_crate` macro** at the package's top level | Advanced | `@rust_crate ... submodule="Bindings" pyo3_host=true` in a package, bindings generated while the package is precompiled, the crate built and imported lazily on first call, nothing generated in the repository |
 | [pluto/hello.jl](./pluto/hello.jl) | Pluto notebook with a `// cargo-deps:` block | Beginner | Inline Rust in Pluto, run headlessly in CI |
 
 Every `*.jl` directory is a Julia package: `Pkg.test()` runs its tests, and the
@@ -38,8 +38,10 @@ show the two front doors coexisting. The only reference an example makes outside
 its own directory is the `rustcall_julia_macros` path dependency in its
 `Cargo.toml`, because it is not on crates.io yet — and the two
 PyO3-only packages, `SampleCratePyO3Only.jl` and `RustCrateMacroPyO3Only.jl`,
-make none at all: their crates depend on pyo3 alone, and the wrapper crate
-RustCall generates for each is what depends on `rustcall_julia_macros`.
+make none at all: their crates depend on pyo3 alone, and RustCall generates no
+wrapper crate for them — it builds each crate as the Python extension it is and
+imports it through PythonCall
+([#424](https://github.com/AtelierArith/RustCall.jl/issues/424)).
 (RustCall's own test suite uses separate fixture crates under `test/fixtures/`,
 not the examples.)
 
@@ -196,10 +198,10 @@ inline_norm(Point(3.0, 4.0))     # 5.0    — the two joined
 
 ### SampleCratePyO3.jl
 
-A Julia package with a Rust crate embedded under `deps/sample_crate_pyo3/` that has **dual bindings** for both Julia and Python using feature flags (`test/runtests.jl` makes the same assertions as the crate's `main.py`).
+A Julia package with a Rust crate embedded under `deps/sample_crate_pyo3/` that has **dual bindings** for both Julia and Python using feature flags (`test/runtests.jl` makes the same assertions as the crate's `main.py`). Nothing is `pub`: `#[julia]` emits its entry points and PyO3 registers its own inside the crate, which is how a real crate of either kind is written.
 
 **Features demonstrated:**
-- Coexistence of `#[julia]` and PyO3 in a single crate
+- Coexistence of `#[julia]` and PyO3 in a single crate, with no `pub` needed for either
 - Feature flags to separate Julia/Python builds
 - Shared core logic between both languages
 - Proper separation of concerns
@@ -240,25 +242,25 @@ m.add(2, 3)  # => 5
 
 A Julia package with a Rust crate embedded under `deps/sample_crate_pyo3_only/`
 that was **written for PyO3 only**: no `#[julia]`, no `rustcall_julia_macros`
-dependency, just `#[pyfunction]`, `#[pyclass]`, `#[pymethods]` and a
-`#[pymodule]`. RustCall binds it without changing it ([#275](https://github.com/AtelierArith/RustCall.jl/issues/275)
-Phase 2): `write_bindings_to_file` scans the `pub` items PyO3 exposes,
-generates a wrapper crate that depends on the crate, builds it and writes the
-bindings of that wrapper. This is the shape you have when the crate is not
-yours to annotate.
+dependency, no `pub` anywhere, just `#[pyfunction]`, `#[pyclass]`,
+`#[pymethods]` and a `#[pymodule]`. It is a real extension module
+(`crate-type = ["cdylib"]`, pyo3's `extension-module`). RustCall binds it
+without changing it ([#424](https://github.com/AtelierArith/RustCall.jl/issues/424)):
+`@rust_crate ... pyo3_host=true` builds the crate **as the Python extension it
+already is** and calls the imported module, so the private `#[pyfunction]`s and
+the `Python<'_>`/numpy/callable signatures the older C-ABI wrapper path cannot
+bind are all reachable. This is the shape you have when the crate is not yours
+to annotate.
 
 **Features demonstrated:**
-- Binding a PyO3 crate with no RustCall attribute anywhere, through the generated wrapper crate
-- `PyResult<T>` → `RustResult{T, String}` with the opaque error `RustCall.PYO3_OPAQUE_ERROR`, and a Julia layer (`parse_int`) that turns it into a value or an `ArgumentError`
-- `#[new]` as the constructor, `#[staticmethod]` as a module-level function (`origin()` / `origin(Point)`), `#[pyclass(get_all, set_all)]` fields as properties, `&self` / `&mut self` / `String` / `PyResult` methods
-- The link plan: pyo3 is a mandatory dependency, so the wrapper links libpython (`:link_libpython`)
+- Binding a PyO3 crate with no RustCall attribute anywhere, by building it as an extension and importing it through PythonCall
+- `PyResult<T>` → `RustResult{T, String}` carrying the **real** exception message (there is an interpreter), and a Julia layer (`parse_int`) that turns `Err` into an `ArgumentError`
+- `#[new]` as the constructor, `#[staticmethod]` as a function (`origin()`), `#[pyclass(get_all, set_all)]` fields as properties, `&self` / `&mut self` / `String` / `PyResult` methods
+- Python owning object lifetime: no generated `Point_free`, no `finalize`
 
-**The Python requirement:** building this package needs a Python interpreter
-whose library directory RustCall can find (`PYO3_PYTHON=/path/to/python3` pins
-one; `RUSTCALL_PYTHON_LIBDIR` overrides the directory; on Windows the
-interpreter's `python3xy.dll` is preloaded by full path). No Python code runs:
-the wrapper only links the library pyo3 refers to. The `Examples` workflow
-installs one with `actions/setup-python` before Julia runs.
+**The Python requirement** is PythonCall's interpreter: PythonCall provides one
+through CondaPkg, and RustCall pins pyo3's build to that same interpreter. The
+build happens lazily, on the first call, not while the package is precompiled.
 
 **How to use from Julia:**
 ```bash
@@ -270,34 +272,34 @@ using SampleCratePyO3Only
 add(Int32(2), Int32(3))                      # 5
 p = Point(3.0, 4.0); norm(p)                 # 5.0
 parse_int("42")                              # 42; parse_int("x") throws ArgumentError
-SampleCratePyO3Only.Bindings.parse("x").value == RustCall.PYO3_OPAQUE_ERROR   # true
+occursin("invalid digit", SampleCratePyO3Only.Bindings.parse("x").value)  # true
 ```
 
 `RustCall.scan_report("examples/SampleCratePyO3Only.jl/deps/sample_crate_pyo3_only")`
-prints what the wrapper exports and what it skips (only the `#[pymodule]`
-initializer), and the link plan.
+still reports what the C-ABI wrapper path *would* export and skip — here only
+the `#[pymodule]` — but the host path binds what the crate's `#[pymodule]`
+registers, `pub` or not.
 
 ### RustCrateMacroPyO3Only.jl
 
 The same PyO3-only crate shape as above — `deps/macro_pyo3_only/` carries no
-RustCall attribute and no `rustcall_julia_macros` dependency — bound through the
-**other front door**: `@rust_crate ... submodule="Bindings"` at the package's
-top level, which
+RustCall attribute, no `rustcall_julia_macros` dependency and no `pub` — bound
+through the **other front door**: `@rust_crate ... submodule="Bindings"
+pyo3_host=true` at the package's top level, which
 [#339](https://github.com/AtelierArith/RustCall.jl/issues/339) made
 precompilable. Read it next to `SampleCratePyO3Only.jl`: the two crates are
 interchangeable, and the whole difference is in `src/`.
 
 **Features demonstrated:**
 - `@rust_crate` in a package's `src/`, with `submodule="Bindings"` defining the generated module as `RustCrateMacroPyO3Only.Bindings` so `using .Bindings: ...` works (`name=` only renames the otherwise hidden module and defines nothing)
-- No `deps/build.jl` and no `src/generated/`: the crate is built and the bindings module generated while the package is *precompiled*, straight into its precompile image
-- The library is a `Base.include_dependency` of the package, so `RustCall.clear_cache()` or an edit to the crate makes the cache stale and the next `using` rebuilds
-- The generated module reaches `Libdl` through RustCall, so the package needs `RustCall` alone among its dependencies
-- The same `PyResult` → `RustResult` lowering with `RustCall.PYO3_OPAQUE_ERROR`, and a Julia layer (`safe_div`) that turns it into a `DivideError`
+- No `deps/build.jl`, no `src/generated/` and no wrapper crate: the bindings module is compiled into the package's precompile image, and the crate's build and import happen lazily on the first call
+- `RustCall.clear_cache()` or an edit to the crate rebuilds: the artifact key digests the crate's sources
+- The package needs `RustCall` and `PythonCall`; `Libdl` is not involved — the host path never `dlopen`s the crate
+- The same `PyResult` → `RustResult` lowering with the real exception message, and a Julia layer (`safe_div`) that turns any `Err` into a `DivideError`
 
-**The Python requirement** is the same as `SampleCratePyO3Only.jl`'s: pyo3 is a
-mandatory dependency of the crate, so the wrapper links libpython
-(`:link_libpython`) and *precompiling* the package needs an interpreter whose
-library directory RustCall can find.
+**The Python requirement** is the same as `SampleCratePyO3Only.jl`'s:
+PythonCall's interpreter, provided through CondaPkg, pinned as pyo3's
+`PYO3_PYTHON` at build time.
 
 **How to use from Julia:**
 ```bash
@@ -367,15 +369,17 @@ We recommend learning RustCall.jl in this order:
    - See how to share core logic between languages
 
 5. **Explore SampleCratePyO3Only.jl** (optional)
-   - Bind a PyO3 crate you cannot annotate: RustCall's generated wrapper crate
-   - See what `PyResult<T>` becomes, and why its error is opaque
-   - Understand the link plan and the Python requirement of `:link_libpython`
+   - Bind a PyO3 crate you cannot annotate: build it as the extension it is and
+     import it through PythonCall (`pyo3_host=true`)
+   - See what `PyResult<T>` becomes when there *is* an interpreter: a
+     `RustResult` carrying the real message
+   - Understand why no `pub` is needed and who owns object lifetime (Python)
 
 6. **Compare RustCrateMacroPyO3Only.jl** (optional)
-   - The same crate shape bound with `@rust_crate ... submodule="Bindings"` in
-     a package's `src/`, instead of `write_bindings_to_file` in a `deps/build.jl`
-   - See what a package that generates nothing looks like, and when to prefer
-     each of the two front doors
+   - The same crate shape bound with `@rust_crate ... submodule="Bindings"
+     pyo3_host=true` in a package's `src/`
+   - See what a package that generates nothing looks like: bindings in the
+     precompile image, the crate built and imported lazily on the first call
 
 7. **Read the documentation**
    - [Tutorial](../docs/src/tutorial.md)

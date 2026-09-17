@@ -4,13 +4,19 @@
 //! - Build for Python: `maturin build --features python` (or
 //!   `cargo build --features python`)
 //!
-//! One definition serves both languages. The Julia half is `#[julia]`, which
-//! is **additive** (#279): it keeps the annotated item exactly as written and
-//! emits the `extern "C"` entry point next to it (`rustcall_add`,
-//! `rustcall_Point_new`, `Point_get_x`, …). The Python half is PyO3's own
-//! attributes, which likewise keep the item — so the two stack on the same
-//! `fn` / `struct`, and pyo3 stays an *optional* dependency behind the
-//! `python` feature. See `docs/src/pyo3.md`.
+//! One definition serves both languages, and **nothing here is `pub`** — that
+//! is what both halves look like in a real crate, because both macros expand
+//! their public entry points *inside* the crate:
+//!
+//! - the Julia half is `#[julia]`, which is **additive** (#279): it keeps the
+//!   annotated item exactly as written and emits the `extern "C"` entry point
+//!   next to it (`rustcall_add`, `rustcall_Point_new`, `Point_get_x`, …);
+//! - the Python half is PyO3's own attributes, which likewise keep the item and
+//!   register it in the module, so no Rust path has to name it.
+//!
+//! The two stack on the same `fn` / `struct`, and pyo3 stays an *optional*
+//! dependency behind the `python` feature, so the Julia build never mentions
+//! Python. See `docs/src/pyo3.md`.
 
 // The generated `extern "C"` wrappers take the raw `*const Struct` / `*mut
 // Struct` pointers Julia hands back; that is the FFI contract, not an oversight.
@@ -59,13 +65,13 @@ fn fibonacci(n: u32) -> u64 {
 /// still see `fn shout(String) -> String` (#279).
 #[julia]
 #[cfg_attr(feature = "python", pyo3::pyfunction)]
-pub fn shout(s: String) -> String {
+fn shout(s: String) -> String {
     s.to_uppercase()
 }
 
 /// A plain in-crate caller of the annotated function.
 #[julia]
-pub fn shout_twice(s: String) -> String {
+fn shout_twice(s: String) -> String {
     format!("{} {}", shout(s.clone()), shout(s))
 }
 
@@ -74,16 +80,17 @@ pub fn shout_twice(s: String) -> String {
 //
 // `#[julia]` adds `#[repr(C)]` and emits `Point_free` and the field accessors;
 // `#[pyclass(get_all, set_all)]` exposes the same fields to Python. Neither
-// attribute rewrites the struct, so they compose.
+// attribute rewrites the struct, so they compose. The fields stay private: each
+// macro generates its accessor inside the crate.
 // ============================================================================
 
 /// A point in the plane, usable from Julia (`Point(x, y)`, `p.x`, …) and, with
 /// the `python` feature, from Python (`Point(x, y)`, `p.x`, …).
 #[julia]
 #[cfg_attr(feature = "python", pyo3::pyclass(get_all, set_all))]
-pub struct Point {
-    pub x: f64,
-    pub y: f64,
+struct Point {
+    x: f64,
+    y: f64,
 }
 
 /// The Rust methods, and the Julia bindings: each `#[julia]` method gets a
@@ -92,23 +99,23 @@ pub struct Point {
 #[julia]
 impl Point {
     #[julia]
-    pub fn new(x: f64, y: f64) -> Self {
+    fn new(x: f64, y: f64) -> Self {
         Point { x, y }
     }
 
     #[julia]
-    pub fn distance_from_origin(&self) -> f64 {
+    fn distance_from_origin(&self) -> f64 {
         (self.x * self.x + self.y * self.y).sqrt()
     }
 
     #[julia]
-    pub fn translate(&mut self, dx: f64, dy: f64) {
+    fn translate(&mut self, dx: f64, dy: f64) {
         self.x += dx;
         self.y += dy;
     }
 
     #[julia]
-    pub fn scaled(&self, factor: f64) -> Self {
+    fn scaled(&self, factor: f64) -> Self {
         Point {
             x: self.x * factor,
             y: self.y * factor,

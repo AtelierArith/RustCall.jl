@@ -1,10 +1,6 @@
-# Written by deps/build.jl (Pkg.build("SampleCratePyO3Only")): the generated
-# bindings module and the compiled wrapper library it loads.
-/src/generated/
-/deps/lib/
-# Cargo's output for the embedded crate (the generated wrapper crate is built
-# under it too).
+# Cargo's output for the embedded crate, which RustCall builds in place.
 /deps/sample_crate_pyo3_only/target/
 /deps/sample_crate_pyo3_only/Cargo.lock
-/deps/build.log
+# PythonCall's Conda environment for this package.
+/.CondaPkg/
 /Manifest.toml
