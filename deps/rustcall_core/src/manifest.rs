@@ -145,7 +145,7 @@ use serde::{Deserialize, Serialize};
 ///   [`Arg::callback_args`] / [`Arg::callback_return`] carrying the function
 ///   pointer's signature. A consumer that does not know the column sees an
 ///   argument it cannot describe and fails closed, as before.
-pub const SCHEMA_VERSION: &str = "0.5";
+pub const SCHEMA_VERSION: &str = "0.6";
 
 #[cfg(test)]
 mod schema_version_tests {
