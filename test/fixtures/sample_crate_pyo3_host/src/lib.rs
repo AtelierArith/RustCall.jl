@@ -1,3 +1,4 @@
+use numpy::{IntoPyArray, PyArray1, PyReadonlyArray1};
 use pyo3::prelude::*;
 
 #[pyfunction]
@@ -43,6 +44,49 @@ fn total_norm(points: Vec<PyRef<'_, Point>>) -> f64 {
     points.iter().map(|p| p.norm()).sum()
 }
 
+/// A numpy array argument: a Julia `AbstractVector` reaches Python as a
+/// `juliacall.VectorValue`, which PyO3's extractor rejects (it wants a real
+/// `numpy.ndarray`), so the host binding converts it with `numpy.asarray`
+/// first (#424).
+#[pyfunction]
+fn array_sum(values: PyReadonlyArray1<f64>) -> f64 {
+    values.as_array().iter().sum()
+}
+
+/// A numpy array return: PythonCall converts the ndarray back to a Julia
+/// `Vector{Float64}` (#424).
+#[pyfunction]
+fn doubled(values: PyReadonlyArray1<f64>) -> Py<PyArray1<f64>> {
+    let out = values.as_array().iter().map(|v| v * 2.0).collect::<Vec<_>>();
+    Python::attach(|py| out.into_pyarray(py).unbind())
+}
+
+/// A Python callable argument: a Julia function reaches Python as a callable
+/// (PythonCall wraps it), and the host binding passes it through unchanged
+/// (#424).
+#[pyfunction]
+fn apply_twice(f: Bound<'_, PyAny>, x: i32) -> PyResult<i32> {
+    let once: i32 = f.call1((x,))?.extract()?;
+    let twice: i32 = f.call1((once,))?.extract()?;
+    Ok(twice)
+}
+
+/// An interpreter object return: the host keeps it as a `PythonCall.Py`
+/// rather than converting it, which is the policy for every spelling the
+/// emitter has no Julia type for (#424).
+#[pyfunction]
+fn echo_object(x: Py<PyAny>) -> Py<PyAny> {
+    x
+}
+
+/// `#[pyo3(pass_module)]`: PyO3 injects the module object at the call, so the
+/// host binding drops it from the Julia signature (#424).
+#[pyfunction]
+#[pyo3(pass_module)]
+fn module_name(_module: &Bound<'_, PyModule>) -> String {
+    "sample_crate_pyo3_host".to_string()
+}
+
 #[pyclass]
 struct Point {
     #[pyo3(get, set)]
@@ -65,6 +109,13 @@ impl Point {
     /// A `#[staticmethod]` returning the class itself.
     #[staticmethod]
     fn origin() -> Self {
+        Point { x: 0.0, y: 0.0 }
+    }
+
+    /// A `#[classmethod]`: Python's bound descriptor passes the class, so the
+    /// host binding drops that argument from the Julia signature (#424).
+    #[classmethod]
+    fn named_origin(_cls: &Bound<'_, pyo3::types::PyType>) -> Self {
         Point { x: 0.0, y: 0.0 }
     }
 
@@ -103,6 +154,11 @@ fn sample_crate_pyo3_host(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse, m)?)?;
     m.add_function(wrap_pyfunction!(add_default, m)?)?;
     m.add_function(wrap_pyfunction!(total_norm, m)?)?;
+    m.add_function(wrap_pyfunction!(array_sum, m)?)?;
+    m.add_function(wrap_pyfunction!(doubled, m)?)?;
+    m.add_function(wrap_pyfunction!(apply_twice, m)?)?;
+    m.add_function(wrap_pyfunction!(echo_object, m)?)?;
+    m.add_function(wrap_pyfunction!(module_name, m)?)?;
     m.add_class::<Point>()?;
     Ok(())
 }

@@ -1,0 +1,14 @@
+# A scan-only fixture (#424): the host path refuses an `async fn` because it
+# cannot await. The crate is never built — the scan is `syn`-based — so it does
+# not need pyo3's `experimental-async` feature or an executor.
+[package]
+name = "sample_crate_pyo3_async"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "sample_crate_pyo3_async"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.29", default-features = false, features = ["macros", "extension-module"] }

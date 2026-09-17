@@ -261,6 +261,7 @@ pub fn function_entry(
         vis: crate::attrs::visibility_string(&func.vis),
         skip_reason: String::new(),
         python_name: String::new(),
+        python_path: Vec::new(),
         exported,
         cfg: predicate_string(&effective_cfg),
         cfg_features: crate::cfg::predicate_features(&effective_cfg),
@@ -1284,6 +1285,8 @@ fn crate_struct_entry(
                 python_name: String::new(),
                 vis: String::new(),
                 cfg: String::new(),
+                pyo3_get: false,
+                pyo3_set: false,
                 precollision: None,
             }
         })
@@ -1305,6 +1308,7 @@ fn crate_struct_entry(
             is_static: m.is_static,
             is_mutable: m.is_mutable,
             is_constructor: returns_boxed_struct(struct_name, &m.func),
+            is_classmethod: false,
             vis: crate::attrs::visibility_string(&m.func.vis),
             skip_reason: String::new(),
             python_name: String::new(),
@@ -1347,6 +1351,7 @@ fn crate_struct_entry(
         vis: crate::attrs::visibility_string(&model.item.vis),
         skip_reason: String::new(),
         python_name: String::new(),
+        python_path: Vec::new(),
         pyo3_extends: String::new(),
         pyo3_options: Vec::new(),
         python_owned_handle: false,

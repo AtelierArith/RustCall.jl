@@ -423,6 +423,13 @@ pub struct Function {
     /// empty when it is the Rust name or the item is not a PyO3 one (#275).
     #[serde(default)]
     pub python_name: String,
+    /// The Python attribute path of a **declarative** PyO3 module item
+    /// (`#[pymodule] mod outer { ... }`, #424), below the imported module:
+    /// empty for a direct item (`module.f`, and for every function-form
+    /// crate), `["inner"]` for one in a nested `#[pymodule] mod inner`
+    /// (`module.inner.g`). Additive within schema 0.6.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub python_path: Vec<String>,
     /// True when the generated code carries `#[no_mangle] extern "C"`.
     ///
     /// Always `false` for a PyO3-scanned item: [`Function::symbol`] names the
@@ -571,6 +578,17 @@ pub struct Field {
     /// is compiled against may not have (#307 review).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub cfg: String,
+    /// Whether PyO3 exposes the field to Python (`#[pyo3(get)]`, or
+    /// `get_all`), independent of whether a wrapper crate can read it
+    /// ([`Field::ffi_compatible`]). The Python-host path reads through the
+    /// object, so a private field of a private struct is readable even though
+    /// it has no exported getter (#424). Additive within schema 0.6.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pyo3_get: bool,
+    /// Whether PyO3 exposes a setter for the field (`#[pyo3(set)]`, or
+    /// `set_all`; never when the class is `frozen`). See [`Field::pyo3_get`].
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pyo3_set: bool,
     /// The accessors this field had before a **symbol collision** took them.
     ///
     /// In memory only, and never serialized: it exists so the collision
@@ -729,6 +747,13 @@ pub struct Method {
     /// item (#307 review).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub cfg: String,
+    /// Whether the method carries `#[classmethod]` (#424). [`Method::is_static`]
+    /// is true for it too — neither takes a `self` receiver — but Python's call
+    /// passes the class as the first argument, so a Python-host binding drops
+    /// that argument rather than requiring it from Julia. Additive within
+    /// schema 0.6.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_classmethod: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -760,6 +785,13 @@ pub struct Struct {
     /// empty when it is the Rust name or the item is not a PyO3 one (#275).
     #[serde(default)]
     pub python_name: String,
+    /// The Python attribute path of a **declarative** PyO3 module class
+    /// (`#[pymodule] mod outer { ... }`, #424), below the imported module:
+    /// empty for a direct class (`module.Point`) and for every function-form
+    /// crate, `["inner"]` for one in a nested module
+    /// (`module.inner.Point`). See [`Function::python_path`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub python_path: Vec<String>,
     /// Base type named by `#[pyclass(extends = ...)]`; empty for ordinary
     /// classes and non-PyO3 structs. This selects a Python-owned handle.
     #[serde(default, skip_serializing_if = "String::is_empty")]

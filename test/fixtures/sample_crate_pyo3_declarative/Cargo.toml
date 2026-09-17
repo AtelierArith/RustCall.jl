@@ -1,0 +1,20 @@
+# A PyO3 crate written as a **declarative** module (#424), the shape PyO3
+# recommends when a crate owns its whole module tree:
+#
+#   #[pymodule]
+#   mod name { #[pyfunction] fn f(); #[pymodule] mod sub { ... } }
+#
+# PyO3 registers the items itself, so the Python attribute path is the
+# declarative nesting below the imported module (`name.f`, `name.sub.g`), not
+# the Rust module path. The host path reads that path from the manifest.
+[package]
+name = "sample_crate_pyo3_declarative"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "sample_crate_pyo3_declarative"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.29", default-features = false, features = ["macros", "extension-module"] }

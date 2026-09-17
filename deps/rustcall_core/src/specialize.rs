@@ -485,6 +485,7 @@ fn function_entry(func: &ItemFn, module_path: &[String]) -> Function {
         vis: crate::attrs::visibility_string(&func.vis),
         skip_reason: String::new(),
         python_name: String::new(),
+        python_path: Vec::new(),
         exported: true,
         is_generic: false,
         type_params: Vec::new(),

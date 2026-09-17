@@ -373,6 +373,7 @@ fn methods_of(
                 is_static: m.is_static,
                 is_mutable: m.is_mutable,
                 is_constructor: m.name() == "new" || returns_self,
+                is_classmethod: false,
                 vis: crate::attrs::visibility_string(&m.func.vis),
                 skip_reason: String::new(),
                 python_name: String::new(),
@@ -419,6 +420,8 @@ fn fields_of(model: &StructModel, accessors: &[(String, String, String)]) -> Vec
                 python_name: String::new(),
                 vis: String::new(),
                 cfg: String::new(),
+                pyo3_get: false,
+                pyo3_set: false,
                 precollision: None,
             }
         })
@@ -442,6 +445,7 @@ fn concrete_struct_entry(
         vis: crate::attrs::visibility_string(&model.item.vis),
         skip_reason: String::new(),
         python_name: String::new(),
+        python_path: Vec::new(),
         pyo3_extends: String::new(),
         pyo3_options: Vec::new(),
         python_owned_handle: false,
@@ -519,6 +523,7 @@ fn generic_struct_entry(
         vis: crate::attrs::visibility_string(&model.item.vis),
         skip_reason: String::new(),
         python_name: String::new(),
+        python_path: Vec::new(),
         pyo3_extends: String::new(),
         pyo3_options: Vec::new(),
         python_owned_handle: false,

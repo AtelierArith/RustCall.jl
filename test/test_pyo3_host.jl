@@ -23,8 +23,23 @@ if Base.find_package("PythonCall") !== nothing
 end
 
 const PYO3_HOST_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_host")
+const PYO3_DECLARATIVE_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_declarative")
+const PYO3_ASYNC_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_async")
 const PYO3_ONLY_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_only")
 const JULIA_ONLY_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate")
+
+# The host path can bind a crate that takes a pyo3-numpy array, but that call
+# needs numpy in the interpreter; PythonCall does not install it on its own, so
+# the numpy assertions below are the one place a skip is honest (#424).
+function _numpy_available()
+    RustCall.pyo3_host_available() || return false
+    try
+        PythonCall.pyimport("numpy")
+        return true
+    catch
+        return false
+    end
+end
 
 @testset "PyO3 Python-host build plan (#424 Phase 1)" begin
 
@@ -33,6 +48,9 @@ const JULIA_ONLY_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate")
               "sample_crate_pyo3_host"
         @test RustCall._pyo3_extension_module_name(PYO3_ONLY_CRATE) ==
               "sample_crate_pyo3_only"
+        # A declarative `#[pymodule] mod name` names the module too (#424).
+        @test RustCall._pyo3_extension_module_name(PYO3_DECLARATIVE_CRATE) ==
+              "sample_crate_pyo3_declarative"
         # `#[pymodule]` lives in the optional fixture too, under a feature; the
         # lenient scan reads the marker rather than deciding the feature.
         optional = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_optional")
@@ -95,6 +113,57 @@ const JULIA_ONLY_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate")
     end
 end
 
+@testset "pyo3-numpy array spellings (#424)" begin
+    # `PyReadonlyArray*` / `PyArray*`, bare, behind `Py<...>` or behind
+    # `Bound<'_, ...>`, with or without the `numpy::` path; `Dyn` is any rank.
+    @test RustCall._pyo3_host_numpy_parts("PyReadonlyArray1<f64>") == (1, "f64")
+    @test RustCall._pyo3_host_numpy_parts("PyArrayDyn<i32>") == (-1, "i32")
+    @test RustCall._pyo3_host_numpy_parts("Py<PyArray2<u8>>") == (2, "u8")
+    @test RustCall._pyo3_host_numpy_parts("Bound<'_, PyArray1<f64>>") == (1, "f64")
+    @test RustCall._pyo3_host_numpy_parts("numpy::PyReadonlyArray3<f32>") == (3, "f32")
+    @test RustCall._pyo3_host_numpy_parts("Vec<f64>") === nothing
+    @test RustCall._pyo3_host_numpy_parts("PyArrayMethods") === nothing
+    # The Julia side: an array argument is an `AbstractArray` the emitter wraps
+    # with `numpy.asarray`; a numpy return is typed from its element.
+    @test RustCall._pyo3_host_arg_type("PyReadonlyArray1<f64>") === :AbstractArray
+    @test RustCall._pyo3_host_arg_type("Py<PyArray2<u8>>") === :AbstractArray
+    @test RustCall._pyo3_host_value_type("Py<PyArray1<f64>>") == :(Vector{Float64})
+    @test RustCall._pyo3_host_value_type("PyArray2<f32>") == :(Matrix{Float32})
+    @test RustCall._pyo3_host_value_type("PyReadonlyArrayDyn<i32>") == :(Array{Int32})
+end
+
+@testset "PyO3 declarative module attribute paths (#424)" begin
+    info = RustCall.scan_crate(PYO3_DECLARATIVE_CRATE)
+    direct = Dict(f.name => f for f in info.pyo3_functions)
+    # The top-level `#[pymodule] mod` is the imported module, so a direct item
+    # is `module.direct`; a nested `#[pymodule] mod inner` contributes `inner`.
+    @test direct["direct"].python_path == String[]
+    @test direct["nested"].python_path == ["inner"]
+    # The same for a class: `module.Gauge`, and the Python attribute path is
+    # recorded on the struct, not on each method.
+    gauge = only(filter(s -> s.name == "Gauge", info.pyo3_structs))
+    @test gauge.python_path == String[]
+    # Which fields PyO3 exposes, and in which direction, independent of `pub`.
+    @test gauge.field_pyo3_get == Dict("value" => true, "label" => true)
+    @test gauge.field_pyo3_set == Dict("value" => true, "label" => false)
+end
+
+@testset "an async fn is refused on the host path (#424)" begin
+    info = RustCall.scan_crate(PYO3_ASYNC_CRATE)
+    later = only(filter(f -> f.name == "later", info.pyo3_functions))
+    # The extractor's `async_fn` reason, and the host generator's own filter.
+    @test later.skip_reason == "async_fn"
+    @test RustCall._pyo3_host_async(later)
+    now = only(filter(f -> f.name == "now", info.pyo3_functions))
+    @test !RustCall._pyo3_host_async(now)
+
+    # The generated module carries a binding for `now` and none for `later`: a
+    # binding for the coroutine would look like a value and never run (#424).
+    text = string(RustCall.generate_pyo3_host_bindings(PYO3_ASYNC_CRATE))
+    @test occursin("now", text)
+    @test !occursin("later", text)
+end
+
 @testset "PyO3 Python-host import (#424 Phase 1)" begin
     if !RustCall.pyo3_host_available()
         @info "skipping the PyO3 Python-host import testset" reason =
@@ -118,6 +187,16 @@ end
     @test pyconvert(Float64, point.x) == 3.0
     point.x = 6.0
     @test pyconvert(Float64, point.x) == 6.0
+    if _numpy_available()
+        # The raw module wants a real ndarray — `numpy.asarray` is the
+        # conversion the typed binding below inserts (#424).
+        np = PythonCall.pyimport("numpy")
+        @test pyconvert(Float64, module_.array_sum(np.asarray([1.0, 2.0, 3.0]))) == 6.0
+        @test pyconvert(Vector{Float64}, module_.doubled(np.asarray([1.0, 2.0]))) == [2.0, 4.0]
+    else
+        @info "skipping pyo3-numpy assertions" reason =
+            "the interpreter has no numpy; install it to exercise the conversion"
+    end
     # A second call must reuse the cached artifact rather than rebuild.
     again = RustCall.build_pyo3_extension(PYO3_HOST_CRATE;
                                           python = PythonCall.python_executable_path())
@@ -188,6 +267,64 @@ end
 
     # A `Vec` of class references.
     @test M.total_norm([p34, M.origin()]) == 5.0
+
+    if _numpy_available()
+        # The typed binding converts the Julia array and the numpy return.
+        @test bindings.array_sum([1.0, 2.0, 3.0]) == 6.0
+        @test bindings.doubled([1.0, 2.0]) == [2.0, 4.0]
+    end
+
+    # A Python callable argument: a Julia function reaches Python as a
+    # callable (PythonCall wraps it), and the binding passes it through (#424).
+    applied = bindings.apply_twice(x -> x + 1, Int32(5))
+    @test applied isa RustCall.RustResult{Int32, String}
+    @test applied.is_ok && applied.value == 7
+
+    # A `Py<PyAny>` return has no Julia type, so the binding keeps the
+    # interpreter object rather than inventing one (#424).
+    obj = PythonCall.pyimport("builtins").list([1, 2, 3])
+    echoed = bindings.echo_object(obj)
+    @test echoed isa PythonCall.Py
+    @test pyconvert(Vector{Int}, echoed) == [1, 2, 3]
+
+    # A `#[classmethod]`: Python's bound descriptor passes the class, so the
+    # binding takes no `cls` argument and calls through the class object (#424).
+    named = bindings.named_origin()
+    @test (named.x, named.y) == (0.0, 0.0)
+
+    # `#[pyo3(pass_module)]`: PyO3 injects the module, so the binding takes no
+    # argument for it (#424).
+    @test bindings.module_name() == "sample_crate_pyo3_host"
+end
+
+@testset "PyO3 Python-host declarative modules (#424)" begin
+    if !RustCall.pyo3_host_available()
+        @info "skipping the PyO3 declarative-module testset" reason =
+            "PythonCall is not loaded; `using PythonCall` enables RustCallPyO3HostExt"
+        return
+    end
+    bindings = RustCall.load_crate_bindings(PYO3_DECLARATIVE_CRATE; pyo3_host = true)
+
+    # A direct item of the declarative module is `module.direct`.
+    @test bindings.direct(3) == 6
+    # A nested `#[pymodule] mod inner` is `module.inner.nested`.
+    @test bindings.nested(3) == 103
+    # The raw import proves the attribute path the binding used.
+    module_ = RustCall.pyo3_host_import(PYO3_DECLARATIVE_CRATE)
+    @test pyconvert(Int, module_.inner.nested(3)) == 103
+
+    gauge = bindings.Gauge(5, "g")
+    @test gauge.value == 5
+    @test gauge.label == "g"
+    # A `#[getter]` method is a Python property; `getproperty` reaches it.
+    @test pyconvert(Int, gauge.doubled) == 10
+    # Which fields answer, and in which direction, comes from the manifest; a
+    # get-only field is readable and not writable (#424).
+    @test :value in propertynames(gauge)
+    @test :label in propertynames(gauge)
+    gauge.value = 7
+    @test gauge.value == 7
+    @test_throws ArgumentError (gauge.label = "h")
 end
 
 @testset "PyO3 Python-host @rust_crate dispatch (#424 Phase 3)" begin

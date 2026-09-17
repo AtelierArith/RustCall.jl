@@ -661,6 +661,8 @@ getter = "rustcall_Point_get_x"
 setter = ""
 python_name = ""
 vis = "pub"
+pyo3_get = true
+pyo3_set = true
 
 [[structs.fields]]
 name = "y"
@@ -671,6 +673,7 @@ getter = "rustcall_Point_get_y"
 setter = ""
 python_name = ""
 vis = "pub"
+pyo3_get = true
 
 [[structs.fields]]
 name = "tag"
@@ -681,6 +684,7 @@ getter = "rustcall_Point_get_tag"
 setter = ""
 python_name = "label"
 vis = "pub"
+pyo3_get = true
 
 [[structs.methods]]
 name = "new"
@@ -822,6 +826,7 @@ returns_boxed_struct = true
 return_type = "Self"
 return_abi = ""
 generic_wrapper = ""
+is_classmethod = true
 
 [[structs.methods.args]]
 name = "cls"
@@ -934,6 +939,7 @@ getter = ""
 setter = ""
 python_name = ""
 vis = ""
+pyo3_get = true
 
 [[structs.methods]]
 name = "new"
@@ -991,6 +997,7 @@ getter = "rustcall_shapes__Circle_get_r"
 setter = ""
 python_name = ""
 vis = "pub"
+pyo3_get = true
 
 [[structs.methods]]
 name = "new"
@@ -1074,6 +1081,8 @@ getter = "rustcall_GatedPoint_get_x"
 setter = "rustcall_GatedPoint_set_x"
 python_name = ""
 vis = "pub"
+pyo3_get = true
+pyo3_set = true
 
 [[structs.fields]]
 name = "hidden_but_gettable"
@@ -1084,6 +1093,7 @@ getter = ""
 setter = ""
 python_name = ""
 vis = ""
+pyo3_get = true
 
 [[structs.methods]]
 name = "new"

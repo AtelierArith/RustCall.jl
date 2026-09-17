@@ -1451,6 +1451,7 @@ function manifest_function_signatures(manifest::Dict; only_attributed::Bool = tr
             vis = _mstr(f, "vis"),
             skip_reason = _mstr(f, "skip_reason"),
             python_name = _mstr(f, "python_name"),
+            python_path = String[String(p) for p in _mvec(f, "python_path")],
             cfg_features = String[String(c) for c in _mvec(f, "cfg_features")],
         ))
     end
@@ -1496,6 +1497,7 @@ function _manifest_method(m)
         # The impl block's attribute; omitted by the extractor when there is
         # none (an inline-mode impl), additive within schema 6 (#275 Phase 3).
         attribute = Symbol(something(_mstr_or_nothing(m, "attribute"), "none")),
+        is_classmethod = _mbool(m, "is_classmethod"),
     )
 end
 
@@ -1523,7 +1525,15 @@ function manifest_struct_infos(manifest::Dict; origins = nothing)
         field_free_symbols = Dict{String, String}()
         getters = Dict{String, String}()
         setters = Dict{String, String}()
-        for f in _mvec(s, "fields")
+        pyo3_get = Dict{String, Bool}()
+        pyo3_set = Dict{String, Bool}()
+        # The extractor omits the column when it is false, so an all-read-only
+        # struct and a legacy manifest both look "empty"; the presence of the
+        # key anywhere says the column exists and every field gets an explicit
+        # entry (#424).
+        field_list = _mvec(s, "fields")
+        access_column = any(f -> haskey(f, "pyo3_get") || haskey(f, "pyo3_set"), field_list)
+        for f in field_list
             name = _mstr(f, "name")
             push!(fields, (name, _mstr(f, "rust_type")))
             field_abis[name] = _mstr(f, "abi")
@@ -1531,6 +1541,12 @@ function manifest_struct_infos(manifest::Dict; origins = nothing)
                 (field_vec_elements[name] = _mstr(f, "vec_element"))
             isempty(_mstr(f, "free_symbol")) ||
                 (field_free_symbols[name] = _mstr(f, "free_symbol"))
+            # What PyO3 itself exposes, whether or not a wrapper crate can name
+            # it; the Python-host path reads through the object (#424).
+            if access_column
+                pyo3_get[name] = _mbool(f, "pyo3_get")
+                pyo3_set[name] = _mbool(f, "pyo3_set")
+            end
             # Each accessor on its own: a `#[julia]` struct carries both, a
             # `#[pyclass]` field carries what `#[pyo3(get)]` / `#[pyo3(set)]`
             # declared, and a `set`-only field is a setter with no getter
@@ -1558,6 +1574,8 @@ function manifest_struct_infos(manifest::Dict; origins = nothing)
             field_free_symbols = field_free_symbols,
             field_getters = getters,
             field_setters = setters,
+            field_pyo3_get = pyo3_get,
+            field_pyo3_set = pyo3_set,
             has_clone = _mbool(s, "has_clone"),
             has_owned_string_helper = _mbool(s, "has_owned_string_helper"),
             has_borrowed_string_helper = _mbool(s, "has_borrowed_string_helper"),
@@ -1570,6 +1588,7 @@ function manifest_struct_infos(manifest::Dict; origins = nothing)
             vis = _mstr(s, "vis"),
             skip_reason = _mstr(s, "skip_reason"),
             python_name = _mstr(s, "python_name"),
+            python_path = String[String(p) for p in _mvec(s, "python_path")],
             pyo3_extends = _mstr(s, "pyo3_extends"),
             pyo3_options = String[String(o) for o in _mvec(s, "pyo3_options")],
             python_owned_handle = _mbool(s, "python_owned_handle"),
