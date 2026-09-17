@@ -69,7 +69,7 @@ every push.
 
 The extractor's manifest carries a `schema_version`, and RustCall refuses a
 manifest whose identifier is not its own. Since **v0.4.0** that identifier is
-the **`MAJOR.MINOR` of the release** — `"0.5"` for every v0.5.x — derived on
+the **`MAJOR.MINOR` of the release** — `"0.6"` for every v0.6.x — derived on
 the Julia side from `Project.toml` and on the Rust side from
 `rustcall_core`'s `Cargo.toml` version (#372). Through v0.3.x it was an integer
 bumped on every manifest edit, last `13`.
