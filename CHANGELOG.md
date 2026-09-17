@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-17
+
 ### Added
 - **The PyO3 Python-host path**
   ([#424](https://github.com/AtelierArith/RustCall.jl/issues/424)).
@@ -31,6 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   object, so a `#[pyclass]` with a field named `value` is readable and
   assignable through it (`B.Counter(...).value`); the proxy's own fields are
   `_`-prefixed and reached with `getfield`.
+
+### Changed
+- **The manifest schema identifier is now `0.6`** — the `MAJOR.MINOR` of this
+  release (#372). A `rustcall-extract` built for `0.5` is refused with the
+  rebuild message rather than read, so `Pkg.build("RustCall")` (or the build
+  step that ships with the package) rebuilds it. The extractor is identified by
+  its sources, so this is the only cache-key movement the release causes.
 
 ## [0.5.1] - 2026-09-17
 
@@ -2028,7 +2037,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration tests for Rust helpers library
 - Documentation examples tests
 
-[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/atelierarith/RustCall.jl/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/atelierarith/RustCall.jl/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/atelierarith/RustCall.jl/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/atelierarith/RustCall.jl/compare/v0.4.1...v0.4.2

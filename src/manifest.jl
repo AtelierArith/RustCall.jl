@@ -14,8 +14,8 @@ using SHA: sha256
     MANIFEST_SCHEMA_VERSION
 
 The manifest compatibility identifier this RustCall.jl accepts: the
-**`MAJOR.MINOR` of its own release**, read from `Project.toml` — `"0.5"` for
-every v0.5.x. `rustcall_core::manifest::SCHEMA_VERSION` is the same string,
+**`MAJOR.MINOR` of its own release**, read from `Project.toml` — `"0.6"` for
+every v0.6.x. `rustcall_core::manifest::SCHEMA_VERSION` is the same string,
 and `test/test_schema_version.jl` keeps the two from drifting by pinning every
 manifest crate's `Cargo.toml` version to the package version (#372).
 
