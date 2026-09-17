@@ -335,16 +335,25 @@ end
         host = RustCall._generation_copy_host()
         @test occursin(r"^[0-9a-f]{12}$", host)
         @test host == RustCall._generation_copy_host()
+        # ...and a per-process instance token, so two processes that share the
+        # volume and the pid from different pid namespaces never share a path
+        # (#321).
+        instance = RustCall._generation_copy_instance()
+        @test occursin(r"^[0-9a-f]{8}$", instance)
+        @test instance == RustCall._generation_copy_instance()
         @test basename(RustCall.process_generation_path(joinpath("a", "foo.dll"), 7)) ==
-              "foo.rustcall.$(host).$(getpid()).7.dll"
+              "foo.rustcall.$(host).$(getpid()).$(instance).7.dll"
         mktempdir() do dir
             built = joinpath(dir, "libfoo.so")
             write(built, "not a library")
             expected = RustCall.RELOAD_GENERATION[] + 1
             copied = RustCall.loadable_library_copy(built)
-            @test copied == joinpath(dir, "libfoo.rustcall.$(host).$(getpid()).$(expected).so")
+            @test copied == joinpath(dir, "libfoo.rustcall.$(host).$(getpid()).$(instance).$(expected).so")
             @test isfile(copied) && isfile(built)
             @test read(copied) == read(built)
+            # The copy's lease exists and is held by this process.
+            @test isfile(RustCall.generation_lease_path(copied))
+            @test RustCall._lease_state(copied) in (:held, :none)   # :none only without file locking
         end
         @test occursin("process_generation_path(built, next_reload_generation())",
                        _src_loadpolicy())
@@ -372,22 +381,30 @@ end
                 @test RustCall._process_alive(live_pid)
                 @test RustCall._process_alive(getpid())
                 host = RustCall._generation_copy_host()
+                instance = RustCall._generation_copy_instance()
                 other_host = host == "0123456789ab" ? "ba9876543210" : "0123456789ab"
+                # The v0.4.x shape (no instance token, no lease) is judged by
+                # pid for one release...
                 stale = joinpath(dir, "libbar.rustcall.$(host).$(dead_pid).3.so")
                 mine = joinpath(dir, "libbar.rustcall.$(host).$(getpid()).1.so")
                 theirs = joinpath(dir, "libbar.rustcall.$(host).$(live_pid).1.so")
+                # ...and so is the current shape when no lease was left beside it.
+                stale_new = joinpath(dir, "libbar.rustcall.$(host).$(dead_pid).0123abcd.3.so")
+                mine_new = joinpath(dir, "libbar.rustcall.$(host).$(getpid()).$(instance).1.so")
                 foreign = joinpath(dir, "libbar.rustcall.$(other_host).$(dead_pid).3.so")
                 hostless = joinpath(dir, "libbar.rustcall.$(dead_pid).3.so")
                 legacy = joinpath(dir, "libbar.7.so")
                 unmarked = joinpath(dir, "libbar.$(dead_pid).2.so")
                 other_lib = joinpath(dir, "libbarbaz.rustcall.$(host).$(dead_pid).2.so")
-                for f in (stale, mine, theirs, foreign, hostless, legacy, unmarked, other_lib)
+                for f in (stale, mine, theirs, stale_new, mine_new, foreign, hostless, legacy, unmarked, other_lib)
                     write(f, "stale?")
                 end
                 copied = RustCall.loadable_library_copy(built)
                 @test isfile(copied)
                 @test !isfile(stale)
+                @test !isfile(stale_new)
                 @test isfile(mine)
+                @test isfile(mine_new)
                 @test isfile(theirs)
                 @test isfile(foreign)
                 @test isfile(hostless)

@@ -1655,24 +1655,204 @@ function _generation_copy_host()
 end
 
 """
+    GENERATION_COPY_INSTANCE_LEN
+
+Length of the per-process instance token in a generation copy's name
+(`_generation_copy_instance`): hex characters.
+"""
+const GENERATION_COPY_INSTANCE_LEN = 8
+
+const _GENERATION_COPY_INSTANCE = _state_view(:generation_copy_instance, Ref(""))
+
+"""
+    _generation_copy_instance() -> String
+
+A token that tells this process apart from every other process that may share
+the library's volume — including one in **another pid namespace with the same
+pid** (#321): a bind mount into two containers that also share the UTS
+hostname gives both the same host tag and can give both the same pid and the
+same `RELOAD_GENERATION`, so without it they would pick one copy path.
+
+Drawn once per process at first use, from `/dev/urandom` where there is one
+and otherwise from the clock, the pid and the host, and folded through
+`stable_content_hash`; never computed at precompile time, so an image does
+not carry the token of the process that built it.
+"""
+function _generation_copy_instance()
+    token = _GENERATION_COPY_INSTANCE[]
+    isempty(token) || return token
+    entropy = try
+        isfile("/dev/urandom") ? bytes2hex(read("/dev/urandom", 16)) : ""
+    catch
+        ""
+    end
+    seed = string(entropy, ':', time_ns(), ':', getpid(), ':', _generation_copy_host(),
+                  ':', objectid(Ref(0)))
+    fresh = artifact_short_id(stable_content_hash(seed), GENERATION_COPY_INSTANCE_LEN)
+    # Another task may have drawn one first; one token per process, so the
+    # first published wins and this task adopts it.
+    current = _GENERATION_COPY_INSTANCE[]
+    isempty(current) || return current
+    _GENERATION_COPY_INSTANCE[] = fresh
+    return _GENERATION_COPY_INSTANCE[]
+end
+
+"""
+    _generation_copy_name(stem, ext, host, pid, instance, generation) -> String
+
+`<stem>.rustcall.<host>.<pid>.<instance>.<generation><ext>`: the one spelling
+of a generation copy's file name, used by `process_generation_path` to make
+one and by `_sweep_stale_generation_copies` to recognise one.
+"""
+_generation_copy_name(stem::AbstractString, ext::AbstractString, host::AbstractString,
+                      pid::Integer, instance::AbstractString, generation::Integer) =
+    "$(stem).$(GENERATION_COPY_MARKER).$(host).$(pid).$(instance).$(generation)$(ext)"
+
+"""
     process_generation_path(lib_path, generation) -> String
 
-`libfoo.dylib` → `libfoo.rustcall.<host>.<pid>.<generation>.dylib`: the copy
-name `loadable_library_copy` uses; `<host>` is `_generation_copy_host()`.
+`libfoo.dylib` → `libfoo.rustcall.<host>.<pid>.<instance>.<generation>.dylib`:
+the copy name `loadable_library_copy` uses; `<host>` is
+`_generation_copy_host()`, `<instance>` is `_generation_copy_instance()`.
 
 `RELOAD_GENERATION` is per process, so two Julia processes that load the same
 built library — two workers of a test run, two sessions using one crate — would
 both pick `libfoo.1.dylib`. On Windows the second cannot overwrite the copy the
 first has mapped, and a copy that fails would fall back to mapping Cargo's
 output in place, which is the very failure the copy exists to prevent (#309).
-With the process id in the name, the copies of two live processes never share
-a path; a leftover of a dead process with a reused id is not mapped by anyone
-and can be overwritten. The `rustcall` marker is what lets the stale-copy sweep
-recognise its own files (`GENERATION_COPY_MARKER`).
+With the process id in the name, the copies of two live processes on one host
+never share a path; with the instance token, neither do two processes that
+share the volume and the pid from different pid namespaces (#321). The
+`rustcall` marker is what lets the stale-copy sweep recognise its own files
+(`GENERATION_COPY_MARKER`).
 """
-process_generation_path(lib_path::AbstractString, generation::Integer) =
-    generation_path(lib_path,
-                    "$(GENERATION_COPY_MARKER).$(_generation_copy_host()).$(getpid()).$(generation)")
+function process_generation_path(lib_path::AbstractString, generation::Integer)
+    dir = dirname(lib_path)
+    stem, ext = splitext(basename(lib_path))
+    return joinpath(dir, _generation_copy_name(stem, ext, _generation_copy_host(), getpid(),
+                                               _generation_copy_instance(), generation))
+end
+
+# ---------------------------------------------------------------------------
+# Leases: who owns a generation copy, decided by the file system (#321)
+# ---------------------------------------------------------------------------
+
+"""
+    GENERATION_LEASE_SUFFIX
+
+Beside every generation copy `loadable_library_copy` makes sits
+`<copy>.lease`, a file the owning process keeps **open and locked** for its
+whole life. A pid proves nothing across pid namespaces — container B's
+`kill(pid, 0)` says nothing about container A's process — but an advisory
+lock on a shared volume is held by whichever process holds it, whatever
+namespace it runs in, and is released by the kernel when that process ends,
+cleanly or not. So the stale-copy sweep asks the lease, not the process
+table: a copy whose lease it can lock has no owner and goes; one whose lease
+is held stays. This is the shape of the lockfile claim of #256 / PR #313.
+"""
+const GENERATION_LEASE_SUFFIX = ".lease"
+
+generation_lease_path(copy_path::AbstractString) = String(copy_path) * GENERATION_LEASE_SUFFIX
+
+# The leases this process holds, kept open for its whole life: closing the
+# stream would release the lock and let another process's sweep take the copy
+# for abandoned while it is mapped here.
+const _GENERATION_LEASES = _state_view(:generation_leases, IOStream[])
+
+"""
+    _try_lock_lease(io::IOStream) -> Union{Bool, Nothing}
+
+Take an exclusive, non-blocking lock on the open lease `io`: `true` when
+acquired, `false` when another open description holds it (`flock` reports
+`EWOULDBLOCK`; `LockFileEx` reports `ERROR_LOCK_VIOLATION`), `nothing` when
+the file system offers no locking at all — the sweep then falls back to the
+process table, and the owner proceeds without a lease.
+
+`flock` locks belong to the open file description, so a second `open` of the
+same lease in the *same* process conflicts too, which is what lets a test
+observe the lock; on Windows `LockFileEx` over the first byte does the same.
+Both are released when the description is closed or the process ends.
+"""
+function _try_lock_lease(io::IOStream)
+    if Sys.iswindows()
+        LOCKFILE_EXCLUSIVE_LOCK = UInt32(0x2)
+        LOCKFILE_FAIL_IMMEDIATELY = UInt32(0x1)
+        ERROR_LOCK_VIOLATION = UInt32(33)
+        ERROR_IO_PENDING = UInt32(997)
+        handle = Base.Libc._get_osfhandle(fd(io)).handle
+        overlapped = zeros(UInt8, 32)
+        ok = ccall((:LockFileEx, "kernel32"), stdcall, Cint,
+                   (Ptr{Cvoid}, UInt32, UInt32, UInt32, UInt32, Ptr{UInt8}),
+                   handle, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, overlapped)
+        ok != 0 && return true
+        err = Libc.GetLastError()
+        return (err == ERROR_LOCK_VIOLATION || err == ERROR_IO_PENDING) ? false : nothing
+    end
+    LOCK_EX = Cint(2)
+    LOCK_NB = Cint(4)
+    r = ccall(:flock, Cint, (Cint, Cint), fd(io), LOCK_EX | LOCK_NB)
+    r == 0 && return true
+    err = Libc.errno()
+    return err == Libc.EAGAIN ? false : nothing   # EWOULDBLOCK == EAGAIN on every Unix Julia runs on
+end
+
+"""
+    _acquire_generation_lease(copy_path) -> Union{Bool, Nothing}
+
+Create `<copy>.lease` and take its lock for the rest of this process's life
+(`_GENERATION_LEASES`). `true`: held. `false`: another process holds a lease
+of that name — the copy path is taken (a collision of host, pid, instance and
+generation, which the instance token makes all but impossible) and the caller
+picks another generation. `nothing`: no lease could be made or locked here;
+the caller proceeds without one, as before #321.
+"""
+function _acquire_generation_lease(copy_path::AbstractString)
+    io = try
+        open(generation_lease_path(copy_path), "w")
+    catch e
+        @debug "No lease for $(copy_path): $(sprint(showerror, e))"
+        return nothing
+    end
+    state = try
+        _try_lock_lease(io)
+    catch e
+        @debug "Could not lock the lease of $(copy_path): $(sprint(showerror, e))"
+        nothing
+    end
+    if state === true
+        push!(_GENERATION_LEASES, io)
+        return true
+    end
+    close(io)
+    return state
+end
+
+"""
+    _lease_state(copy_path) -> Symbol
+
+What the lease beside `copy_path` says about its owner, for the sweep:
+`:held` (a process holds it — alive, wherever it runs), `:free` (the lease
+exists and nobody holds it — the owner is gone), `:none` (no lease, or a file
+system without locking — decide from the process table instead).
+"""
+function _lease_state(copy_path::AbstractString)
+    lease = generation_lease_path(copy_path)
+    isfile(lease) || return :none
+    io = try
+        open(lease, "a")
+    catch
+        return :none
+    end
+    state = try
+        _try_lock_lease(io)
+    catch
+        nothing
+    end
+    close(io)   # releases the probe lock at once, if it was taken
+    state === true && return :free
+    state === false && return :held
+    return :none
+end
 
 """
     _process_alive(pid) -> Bool
@@ -1713,32 +1893,41 @@ end
 """
     _sweep_stale_generation_copies(built_path)
 
-Remove the `<lib>.rustcall.<host>.<pid>.<generation>.<ext>` copies beside
-`built_path` that this host made and whose process is gone.
+Remove the `<lib>.rustcall.<host>.<pid>.<instance>.<generation>.<ext>` copies
+beside `built_path` that this host made and whose owner is gone, and their
+leases.
 
 A written bindings module makes one copy per process start, and nothing
 removes it when that process exits — an image is retired, not closed, and on
 Windows a mapped DLL cannot be deleted anyway — so an application that keeps
 launching Julia would accumulate copies without bound (#309). The next process
-to copy the same library sweeps first: a copy tagged with a pid that no longer
-exists is removed; this process's own copies and those of a live pid are kept;
-a copy Windows still has mapped refuses the delete and is kept for a later
-sweep. Only names carrying `GENERATION_COPY_MARKER` **and this host's tag**
-are candidates: the legacy `<lib>.<generation>.<ext>` shape and anything else
-beside the library are not RustCall's to delete, and another host's copy
-cannot be judged from this host's process table (`_generation_copy_host`).
-Best effort: nothing here can fail the load.
+to copy the same library sweeps first. Who is "gone" is decided by the copy's
+**lease** (`GENERATION_LEASE_SUFFIX`, #321): a lease this sweep can lock has
+no owner anywhere on the volume, in this pid namespace or another, and the
+copy goes; a lease somebody holds means a live owner, whatever its pid looks
+like from here, and the copy stays. Only when there is no lease to ask — a
+copy made without one, or a file system without locking — does the process
+table decide, as it did before #321. This process's own copies are never
+candidates; a copy Windows still has mapped refuses the delete and is kept
+for a later sweep. Only names carrying `GENERATION_COPY_MARKER` **and this
+host's tag** are candidates: the pre-#309 `<lib>.<generation>.<ext>` shape
+and anything else beside the library are not RustCall's to delete. The
+v0.4.x shape without an instance token is still recognised, by pid, for one
+release. Best effort: nothing here can fail the load.
 """
 function _sweep_stale_generation_copies(built_path::AbstractString)
     dir = dirname(built_path)
     stem, ext = splitext(basename(built_path))
     prefix = stem * "." * GENERATION_COPY_MARKER * "." * _generation_copy_host() * "."
     me = getpid()
+    mine = _generation_copy_instance()
     names = try
         readdir(dir)
     catch
         return nothing
     end
+    isnum(p) = !isempty(p) && all(isdigit, p)
+    ishex(p) = ncodeunits(p) == GENERATION_COPY_INSTANCE_LEN && all(c -> c in '0':'9' || c in 'a':'f', p)
     for name in names
         startswith(name, prefix) && endswith(name, ext) || continue
         ncodeunits(name) > ncodeunits(prefix) + ncodeunits(ext) || continue
@@ -1746,17 +1935,49 @@ function _sweep_stale_generation_copies(built_path::AbstractString)
         # ASCII '.', so both cuts fall on character boundaries.
         tag = SubString(name, ncodeunits(prefix) + 1, ncodeunits(name) - ncodeunits(ext))
         parts = split(tag, '.')
-        length(parts) == 2 || continue
-        all(p -> !isempty(p) && all(isdigit, p), parts) || continue
-        pid = tryparse(Int, parts[1])
-        pid === nothing && continue
-        pid == me && continue
-        _process_alive(pid) && continue
-        try
-            rm(joinpath(dir, name))
-        catch e
-            @debug "Kept generation copy $(name): $(sprint(showerror, e))"
+        path = joinpath(dir, name)
+        if length(parts) == 3 && isnum(parts[1]) && ishex(parts[2]) && isnum(parts[3])
+            pid = tryparse(Int, parts[1])
+            pid === nothing && continue
+            pid == me && parts[2] == mine && continue
+            state = _lease_state(path)
+            if state === :held
+                continue
+            elseif state === :none
+                # No lease to ask: the process table, as before #321. A pid
+                # equal to this process's from another namespace stays, err on
+                # the side of alive.
+                (pid == me || _process_alive(pid)) && continue
+            end
+            _remove_generation_copy(path)
+        elseif length(parts) == 2 && isnum(parts[1]) && isnum(parts[2])
+            # The v0.4.x shape (no instance token, no lease): by pid, for one
+            # release.
+            pid = tryparse(Int, parts[1])
+            pid === nothing && continue
+            pid == me && continue
+            _process_alive(pid) && continue
+            _remove_generation_copy(path)
         end
+    end
+    return nothing
+end
+
+# Remove a copy and its lease; either may be refused (a mapped DLL on Windows)
+# and is then left for a later sweep.
+function _remove_generation_copy(path::AbstractString)
+    try
+        rm(path)
+    catch e
+        @debug "Kept generation copy $(basename(path)): $(sprint(showerror, e))"
+        return nothing
+    end
+    lease = generation_lease_path(path)
+    isfile(lease) || return nothing
+    try
+        rm(lease)
+    catch e
+        @debug "Kept lease $(basename(lease)): $(sprint(showerror, e))"
     end
     return nothing
 end
@@ -1775,13 +1996,18 @@ already mapped hands back the **old** image, so a rebuild silently has no
 effect while objects allocated by the old library start being freed by code
 from the new one.
 
-Copying to `<lib>.rustcall.<host>.<pid>.<generation>.<ext>` and opening that
-leaves Cargo's output untouched, and makes every load a genuinely distinct
-file — across processes and hosts too, since the counter alone is per process
-(#255, #277, #309).
-Before copying, the copies of processes that no longer exist are swept
+Copying to `<lib>.rustcall.<host>.<pid>.<instance>.<generation>.<ext>` and
+opening that leaves Cargo's output untouched, and makes every load a
+genuinely distinct file — across processes, pid namespaces and hosts too,
+since the counter alone is per process (#255, #277, #309, #321).
+Before copying, the copies whose owners no longer exist are swept
 (`_sweep_stale_generation_copies`), so a library that is loaded by one
-process after another keeps only the live processes' copies beside it.
+process after another keeps only the live processes' copies beside it; and
+before copying, this process takes the copy's **lease** — `<copy>.lease`,
+held open and locked until the process ends — so that no other process's
+sweep, in this pid namespace or another, can take the copy for abandoned in
+the window between the copy and its `dlopen`, or ever after (#321). The lease
+is taken first: a sweep that sees the copy sees a held lease.
 
 Returns the original path when the copy cannot be made, so a platform or a
 filesystem that will not take one degrades to the previous behaviour rather
@@ -1792,6 +2018,13 @@ function loadable_library_copy(built_path::AbstractString)
     isfile(built) || return built
     _sweep_stale_generation_copies(built)
     copy_path = process_generation_path(built, next_reload_generation())
+    # A lease of that name held elsewhere means the path is taken by a live
+    # process this table cannot see; the counter moves on. Bounded: the
+    # instance token makes even one collision improbable.
+    for _ in 1:8
+        _acquire_generation_lease(copy_path) === false || break
+        copy_path = process_generation_path(built, next_reload_generation())
+    end
     try
         cp(built, copy_path; force = true)
         return copy_path
