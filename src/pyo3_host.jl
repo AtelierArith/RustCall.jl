@@ -302,11 +302,24 @@ end
 # lists the struct's fields with their Rust types, which is what types the
 # getter; a field PyO3 does not expose raises at access, as it would in Python.
 
-const _PYO3_HOST_SCALARS = Dict(
-    "i8" => :Int8, "i16" => :Int16, "i32" => :Int32, "i64" => :Int64, "isize" => :Int,
-    "u8" => :UInt8, "u16" => :UInt16, "u32" => :UInt32, "u64" => :UInt64, "usize" => :UInt,
-    "f32" => :Float32, "f64" => :Float64, "bool" => :Bool,
-)
+# A function, not a `const Dict`: a module-level mutable registry is what
+# `test_state.jl`'s guard forbids (#251), and this table never changes.
+function _pyo3_host_scalar_type(t::AbstractString)
+    t == "i8" && return :Int8
+    t == "i16" && return :Int16
+    t == "i32" && return :Int32
+    t == "i64" && return :Int64
+    t == "isize" && return :Int
+    t == "u8" && return :UInt8
+    t == "u16" && return :UInt16
+    t == "u32" && return :UInt32
+    t == "u64" && return :UInt64
+    t == "usize" && return :UInt
+    t == "f32" && return :Float32
+    t == "f64" && return :Float64
+    t == "bool" && return :Bool
+    return nothing
+end
 
 # The Julia type a Python value is converted into, or `nothing` for "leave it as
 # a Python object" (a `Py<T>`, `Bound<...>`, `PyObject`, or a type this path has
@@ -314,7 +327,8 @@ const _PYO3_HOST_SCALARS = Dict(
 function _pyo3_host_value_type(rust_type::AbstractString)
     t = strip(rust_type)
     t == "()" && return :Nothing
-    haskey(_PYO3_HOST_SCALARS, t) && return _PYO3_HOST_SCALARS[t]
+    scalar = _pyo3_host_scalar_type(t)
+    scalar === nothing || return scalar
     t == "String" && return :String
     (startswith(t, "&") && endswith(t, "str")) && return :String
     if startswith(t, "Vec<") && endswith(t, ">")
@@ -330,7 +344,7 @@ end
 # `add`, as they would in Python.
 function _pyo3_host_arg_type(rust_type::AbstractString)
     t = strip(rust_type)
-    if haskey(_PYO3_HOST_SCALARS, t)
+    if _pyo3_host_scalar_type(t) !== nothing
         t == "bool" && return :Bool
         (t == "f32" || t == "f64") && return :Real
         return :Integer
