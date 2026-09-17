@@ -292,6 +292,10 @@ include("pyo3_host.jl")
 # Hot reload support
 include("hot_reload.jl")
 
+# Cache the `__init__` helper-load path's native code in the package image.
+# Must follow every include whose state containers the workload touches.
+include("precompile.jl")
+
 # Export public API — only macros/string literals are exported.
 # All other identifiers are accessible via RustCall.XXX or import RustCall: XXX.
 export @rust, @rust_str, @irust, @irust_str
