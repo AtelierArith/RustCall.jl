@@ -26,6 +26,19 @@ const PYO3_HOST_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_host")
 const PYO3_ONLY_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_only")
 const JULIA_ONLY_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate")
 
+# The host path can bind a crate that takes a pyo3-numpy array, but that call
+# needs numpy in the interpreter; PythonCall does not install it on its own, so
+# the numpy assertions below are the one place a skip is honest (#424).
+function _numpy_available()
+    RustCall.pyo3_host_available() || return false
+    try
+        PythonCall.pyimport("numpy")
+        return true
+    catch
+        return false
+    end
+end
+
 @testset "PyO3 Python-host build plan (#424 Phase 1)" begin
 
     @testset "a #[pymodule] names the importable module" begin
@@ -95,6 +108,25 @@ const JULIA_ONLY_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate")
     end
 end
 
+@testset "pyo3-numpy array spellings (#424)" begin
+    # `PyReadonlyArray*` / `PyArray*`, bare, behind `Py<...>` or behind
+    # `Bound<'_, ...>`, with or without the `numpy::` path; `Dyn` is any rank.
+    @test RustCall._pyo3_host_numpy_parts("PyReadonlyArray1<f64>") == (1, "f64")
+    @test RustCall._pyo3_host_numpy_parts("PyArrayDyn<i32>") == (-1, "i32")
+    @test RustCall._pyo3_host_numpy_parts("Py<PyArray2<u8>>") == (2, "u8")
+    @test RustCall._pyo3_host_numpy_parts("Bound<'_, PyArray1<f64>>") == (1, "f64")
+    @test RustCall._pyo3_host_numpy_parts("numpy::PyReadonlyArray3<f32>") == (3, "f32")
+    @test RustCall._pyo3_host_numpy_parts("Vec<f64>") === nothing
+    @test RustCall._pyo3_host_numpy_parts("PyArrayMethods") === nothing
+    # The Julia side: an array argument is an `AbstractArray` the emitter wraps
+    # with `numpy.asarray`; a numpy return is typed from its element.
+    @test RustCall._pyo3_host_arg_type("PyReadonlyArray1<f64>") === :AbstractArray
+    @test RustCall._pyo3_host_arg_type("Py<PyArray2<u8>>") === :AbstractArray
+    @test RustCall._pyo3_host_value_type("Py<PyArray1<f64>>") == :(Vector{Float64})
+    @test RustCall._pyo3_host_value_type("PyArray2<f32>") == :(Matrix{Float32})
+    @test RustCall._pyo3_host_value_type("PyReadonlyArrayDyn<i32>") == :(Array{Int32})
+end
+
 @testset "PyO3 Python-host import (#424 Phase 1)" begin
     if !RustCall.pyo3_host_available()
         @info "skipping the PyO3 Python-host import testset" reason =
@@ -118,6 +150,16 @@ end
     @test pyconvert(Float64, point.x) == 3.0
     point.x = 6.0
     @test pyconvert(Float64, point.x) == 6.0
+    if _numpy_available()
+        # The raw module wants a real ndarray — `numpy.asarray` is the
+        # conversion the typed binding below inserts (#424).
+        np = PythonCall.pyimport("numpy")
+        @test pyconvert(Float64, module_.array_sum(np.asarray([1.0, 2.0, 3.0]))) == 6.0
+        @test pyconvert(Vector{Float64}, module_.doubled(np.asarray([1.0, 2.0]))) == [2.0, 4.0]
+    else
+        @info "skipping pyo3-numpy assertions" reason =
+            "the interpreter has no numpy; install it to exercise the conversion"
+    end
     # A second call must reuse the cached artifact rather than rebuild.
     again = RustCall.build_pyo3_extension(PYO3_HOST_CRATE;
                                           python = PythonCall.python_executable_path())
@@ -188,6 +230,12 @@ end
 
     # A `Vec` of class references.
     @test M.total_norm([p34, M.origin()]) == 5.0
+
+    if _numpy_available()
+        # The typed binding converts the Julia array and the numpy return.
+        @test bindings.array_sum([1.0, 2.0, 3.0]) == 6.0
+        @test bindings.doubled([1.0, 2.0]) == [2.0, 4.0]
+    end
 end
 
 @testset "PyO3 Python-host @rust_crate dispatch (#424 Phase 3)" begin

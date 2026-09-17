@@ -336,7 +336,108 @@ function _pyo3_host_value_type(rust_type::AbstractString)
         elem === nothing && return nothing
         return :(Vector{$elem})
     end
+    numpy = _pyo3_host_numpy_value_type(t)
+    numpy === nothing || return numpy
     return nothing
+end
+
+# ============================================================================
+# pyo3-numpy arrays (#424)
+# ============================================================================
+#
+# `PyReadonlyArray*` / `PyArray*` parameters are what pyo3-numpy extracts from a
+# **real** `numpy.ndarray`. A Julia `AbstractArray` reaches Python as a
+# `juliacall.VectorValue`, which that extractor rejects (`not an instance of
+# 'ndarray'`), so the binding converts it with `numpy.asarray` before the call.
+# Python already hands Julia a numpy array back for the reverse direction, so
+# only the argument side needs a conversion; a numpy *return* is typed from its
+# element so a caller gets a Julia array rather than a `Py`.
+
+# The pyo3-numpy array type in a Rust spelling: `(rank, element)`, or `nothing`
+# when the spelling names no such array. `rank` is `0`–`6`, or `-1` for
+# `PyReadonlyArrayDyn` / `PyArrayDyn`. The stem may sit bare
+# (`PyReadonlyArray1<f64>`), behind `Py<...>` (`Py<PyArray1<f64>>`) or behind
+# `Bound<'_, ...>`; a `numpy::` path is irrelevant because only the tail is
+# read.
+function _pyo3_host_numpy_parts(t::AbstractString)
+    chars = collect(t)
+    for stem in ("PyReadonlyArray", "PyArray")
+        start = _pyo3_host_find(chars, collect(stem))
+        start == 0 && continue
+        p = start + length(stem)
+        p > length(chars) && continue
+        rank = -2
+        if p + 2 <= length(chars) && chars[p] == 'D' && chars[p + 1] == 'y' &&
+           chars[p + 2] == 'n'
+            rank = -1
+            p += 3
+        elseif isdigit(chars[p])
+            rank = Int(chars[p]) - Int('0')
+            p += 1
+        end
+        rank == -2 && continue
+        (p <= length(chars) && chars[p] == '<') || continue
+        inner = _pyo3_host_generic_body(chars, p)
+        inner === nothing && continue
+        element = _pyo3_host_last_generic_arg(inner)
+        isempty(element) && continue
+        return (rank, element)
+    end
+    return nothing
+end
+
+function _pyo3_host_find(chars::Vector{Char}, needle::Vector{Char})
+    n = length(needle)
+    for i in 1:(length(chars) - n + 1)
+        chars[i:(i + n - 1)] == needle && return i
+    end
+    return 0
+end
+
+# The body of the `<...>` at `chars[pos]`, by depth; `nothing` if unbalanced.
+function _pyo3_host_generic_body(chars::Vector{Char}, pos::Int)
+    (pos <= length(chars) && chars[pos] == '<') || return nothing
+    depth = 0
+    for i in pos:length(chars)
+        chars[i] == '<' && (depth += 1)
+        if chars[i] == '>'
+            depth -= 1
+            depth == 0 && return String(chars[(pos + 1):(i - 1)])
+        end
+    end
+    return nothing
+end
+
+# The last top-level comma-separated argument of a generic body, trimmed: the
+# element type of `PyArray1<'py, f64>` is `f64`.
+function _pyo3_host_last_generic_arg(inner::AbstractString)
+    depth = 0
+    last = firstindex(inner)
+    for (i, c) in pairs(inner)
+        if c == '<'
+            depth += 1
+        elseif c == '>'
+            depth -= 1
+        elseif c == ',' && depth == 0
+            last = nextind(inner, i)
+        end
+    end
+    return strip(inner[last:end])
+end
+
+_pyo3_host_numpy_arg(t::AbstractString) = _pyo3_host_numpy_parts(t) !== nothing
+
+# The Julia array type a numpy return is converted into, or `nothing`.
+function _pyo3_host_numpy_value_type(t::AbstractString)
+    parts = _pyo3_host_numpy_parts(t)
+    parts === nothing && return nothing
+    rank, element = parts
+    el = _pyo3_host_value_type(element)
+    el === nothing && return nothing
+    rank == 0 && return el
+    rank == 1 && return :(Vector{$el})
+    rank == 2 && return :(Matrix{$el})
+    return :(Array{$el})
 end
 
 # The Julia type a binding accepts for an argument. Abstract on purpose: a
@@ -352,6 +453,12 @@ function _pyo3_host_arg_type(rust_type::AbstractString)
     t == "String" && return :AbstractString
     (startswith(t, "&") && endswith(t, "str")) && return :AbstractString
     startswith(t, "Vec<") && return :AbstractVector
+    parts = _pyo3_host_numpy_parts(t)
+    if parts !== nothing
+        # A 0-d numpy array is a scalar in disguise (pyo3-numpy's `PyArray0`);
+        # anything with a rank is reached as an array.
+        return parts[1] == 0 ? :Any : :AbstractArray
+    end
     return :Any
 end
 
@@ -420,7 +527,12 @@ function _pyo3_host_args(arg_names, arg_types, python_defaults, python_kinds,
         kind == "keyword_only" && break
         sym = Symbol(name)
         target = _pyo3_host_struct_arg(type, classes)
-        if target === nothing
+        if _pyo3_host_numpy_arg(type)
+            # pyo3-numpy extracts from a real `numpy.ndarray`, not the
+            # `juliacall.VectorValue` a Julia array becomes by default (#424).
+            push!(sig, :($sym::$(_pyo3_host_arg_type(type))))
+            push!(conv, :(_pyo3_asarray($sym)))
+        elseif target === nothing
             push!(sig, :($sym::$(_pyo3_host_arg_type(type))))
             push!(conv, sym)
         else
@@ -539,6 +651,20 @@ function _pyo3_host_method_expr(jname::Symbol, pyclass::AbstractString, m::RustM
     end
 end
 
+# Whether any generated call takes a pyo3-numpy array, which is what decides
+# whether the module carries the `_pyo3_asarray` helper (#424).
+function _pyo3_host_needs_numpy(info::CrateInfo)
+    for f in info.pyo3_functions
+        any(_pyo3_host_numpy_arg, f.arg_types) && return true
+    end
+    for s in info.pyo3_structs
+        for m in s.methods
+            any(_pyo3_host_numpy_arg, m.arg_types) && return true
+        end
+    end
+    return false
+end
+
 # `#[pyo3(get)]` / `#[pyo3(set)]` install the descriptor inside the crate, so
 # the object answers; the manifest types the value.
 function _pyo3_host_property_expr(jname::Symbol, s::RustStructInfo)
@@ -625,6 +751,16 @@ function generate_pyo3_host_bindings(crate_path::AbstractString;
             return m
         end
     end)
+    # pyo3-numpy extracts from a **real** `numpy.ndarray`, and a Julia array
+    # becomes a `juliacall.VectorValue`; the bindings that take one convert it
+    # here (lazily — a module with no numpy parameter never imports numpy).
+    if _pyo3_host_needs_numpy(info)
+        push!(body.args, quote
+            function _pyo3_asarray(x)
+                return PythonCall.pyimport("numpy").asarray(x)
+            end
+        end)
+    end
     # The scanned classes, by their Rust name: a return or argument spelling them
     # (or `Py<T>` / `Bound<'_, T>` around one) is that Julia struct, not a
     # `Py`. Local, not module-level: `test_state.jl`'s guard forbids a mutable

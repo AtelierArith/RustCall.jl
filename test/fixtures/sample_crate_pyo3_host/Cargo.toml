@@ -17,3 +17,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = { version = "0.29", default-features = false, features = ["macros", "extension-module"] }
+numpy = "0.29"
