@@ -284,6 +284,11 @@ include("crate_bindings.jl")
 # a wrapper crate needs (#275). Depends on scan_crate from crate_bindings.jl.
 include("pyo3.jl")
 
+# The PyO3 Python-host path: build a PyO3 crate as the Python extension it
+# already is, and hand the artifact to a Python implementation (#424 Phase 1).
+# Interpreter-free itself; `RustCallPyO3HostExt` defines the import hook.
+include("pyo3_host.jl")
+
 # Hot reload support
 include("hot_reload.jl")
 

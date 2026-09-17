@@ -2916,8 +2916,26 @@ function generate_bindings(crate_path::String;
     build_release::Bool = true,
     cache_enabled::Bool = true,
     features::Vector{String} = String[],
-    default_features::Bool = true
+    default_features::Bool = true,
+    pyo3_host::Bool = false
 )
+    # The Python-host path (#424) is a different binding strategy, not a patch to
+    # the C-ABI one: build the crate as the extension it is and call the imported
+    # module. It needs a Python implementation, which RustCall does not depend
+    # on, so it is refused with the fix named rather than a `MethodError` deep in
+    # generated code.
+    if pyo3_host
+        pyo3_host_available() || throw(RustError(
+            "`pyo3_host = true` needs a Python implementation to import the crate " *
+            "into. Load PythonCall (`using PythonCall`) to enable the " *
+            "`RustCallPyO3HostExt` extension, which provides it."))
+        return generate_pyo3_host_bindings(crate_path;
+                                           module_name = output_module_name,
+                                           features = features,
+                                           default_features = default_features,
+                                           release = build_release)
+    end
+
     opts = CrateBindingOptions(
         output_module_name = output_module_name,
         build_release = build_release,
@@ -3377,13 +3395,18 @@ struct CrateBindingMember
     name::Symbol
 end
 
+# The wrapped value and the bindings it came from. Deliberately `_`-prefixed:
+# property access is forwarded wholesale to the wrapped object below, so these
+# fields must be reached with `getfield`, and they must not collide with a field
+# of the wrapped Rust type. A `#[pyclass] struct Counter { value: i64 }` used to
+# be unreadable through the proxy because `:value` was reserved here (#424).
 struct CrateBindingObject
-    bindings::CrateBindings
-    value::Any
+    _bindings::CrateBindings
+    _value::Any
 end
 
 _unwrap_crate_binding_value(value) = value
-_unwrap_crate_binding_value(value::CrateBindingObject) = getfield(value, :value)
+_unwrap_crate_binding_value(value::CrateBindingObject) = getfield(value, :_value)
 
 _should_proxy_crate_binding(value) = value isa Function
 
@@ -3432,37 +3455,32 @@ function (member::CrateBindingMember)(args...)
     return _wrap_crate_binding_value(bindings, result)
 end
 
+# Every property access forwards to the wrapped object, including one named
+# `value` or `bindings`; the proxy's own fields are `_`-prefixed and reached
+# with `getfield`.
 function Base.getproperty(proxy::CrateBindingObject, name::Symbol)
-    if name === :bindings || name === :value
-        return getfield(proxy, name)
-    end
-
-    value = getfield(proxy, :value)
+    value = getfield(proxy, :_value)
     result = Base.invokelatest(getproperty, value, name)
-    return _wrap_crate_binding_value(getfield(proxy, :bindings), result)
+    return _wrap_crate_binding_value(getfield(proxy, :_bindings), result)
 end
 
 function Base.setproperty!(proxy::CrateBindingObject, name::Symbol, value)
-    if name === :bindings || name === :value
-        error("cannot set internal proxy field $name")
-    end
-
-    target = getfield(proxy, :value)
+    target = getfield(proxy, :_value)
     raw_value = _unwrap_crate_binding_value(value)
     result = Base.invokelatest(setproperty!, target, name, raw_value)
-    return _wrap_crate_binding_value(getfield(proxy, :bindings), result)
+    return _wrap_crate_binding_value(getfield(proxy, :_bindings), result)
 end
 
 function Base.propertynames(proxy::CrateBindingObject, private::Bool=false)
-    Base.invokelatest(propertynames, getfield(proxy, :value), private)
+    Base.invokelatest(propertynames, getfield(proxy, :_value), private)
 end
 
 Base.show(io::IO, bindings::CrateBindings) = print(io, "CrateBindings(", nameof(getfield(bindings, :module_ref)), ")")
 Base.show(io::IO, member::CrateBindingMember) = print(io, nameof(getfield(getfield(member, :bindings), :module_ref)), ".", getfield(member, :name))
 
 function _show_crate_binding_object(io::IO, proxy::CrateBindingObject)
-    value = getfield(proxy, :value)
-    module_name = nameof(getfield(getfield(proxy, :bindings), :module_ref))
+    value = getfield(proxy, :_value)
+    module_name = nameof(getfield(getfield(proxy, :_bindings), :module_ref))
     type_name = nameof(typeof(value))
 
     print(io, module_name, ".", type_name, "(")
@@ -3560,6 +3578,7 @@ function load_crate_bindings(crate_path::String;
     cache_enabled::Bool = true,
     features::Vector{String} = String[],
     default_features::Bool = true,
+    pyo3_host::Bool = false,
     target_module::Union{Module, Nothing} = nothing,
 )
     if submodule_name !== nothing && output_module_name !== nothing &&
@@ -3578,6 +3597,7 @@ function load_crate_bindings(crate_path::String;
         cache_enabled = cache_enabled,
         features = features,
         default_features = default_features,
+        pyo3_host = pyo3_host,
     )
 
     crate_module = _instantiate_runtime_bindings(
@@ -3609,6 +3629,13 @@ Generate and load bindings for an external Rust crate.
   package uses. Do not assign the result to the same name.
 - `release=true/false`: Build in release mode (default: true)
 - `cache=true/false`: Enable caching (default: true)
+- `pyo3_host=false/true`: bind a PyO3 crate through a live Python interpreter
+  instead of the generated C-ABI wrapper (#424). The crate is built as the
+  Python extension it already is and its imported module is called, so a private
+  `#[pyfunction]` (E0603 to the wrapper path), a `Python<'_>` signature, numpy
+  arrays and Python callables are all reachable. Requires PythonCall
+  (`using PythonCall`); a `PyResult{T}` becomes `RustResult{T, String}` carrying
+  the interpreter's own message.
 
 # Where the module lives
 
@@ -3657,6 +3684,7 @@ macro rust_crate(path, options...)
     cache = true
     features = :(String[])
     default_features = true
+    pyo3_host = false
 
     for opt in options
         if isa(opt, Expr) && opt.head == :(=)
@@ -3675,6 +3703,8 @@ macro rust_crate(path, options...)
                 features = value
             elseif key == :default_features
                 default_features = value
+            elseif key == :pyo3_host
+                pyo3_host = value
             end
         end
     end
@@ -3691,6 +3721,7 @@ macro rust_crate(path, options...)
             cache_enabled = $cache,
             features = String[$(esc(features))...],
             default_features = $(esc(default_features)),
+            pyo3_host = $(esc(pyo3_host)),
             target_module = $__module__,
         )
     end

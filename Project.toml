@@ -12,6 +12,12 @@ SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
 Scratch = "6c6a2e73-6563-6170-7368-637461726353"
 TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
 
+[weakdeps]
+PythonCall = "6099a3de-0909-46bc-b1f4-468b9a2dfc0d"
+
+[extensions]
+RustCallPyO3HostExt = "PythonCall"
+
 [compat]
 Aqua = "0.8"
 BenchmarkTools = "1.6.3"
@@ -20,6 +26,7 @@ FileWatching = "1"
 Libdl = "1"
 ParallelTestRunner = "2.5"
 Pkg = "1"
+PythonCall = "0.9"
 RustToolChain = "0.1.8"
 SHA = "0.7, 1"
 Scratch = "1.3.0"

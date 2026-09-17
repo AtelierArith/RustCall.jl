@@ -8,7 +8,8 @@ serial_testsuite = Dict{String, Expr}()
 # Cargo cache directory (#287), which only holds if nothing else is writing to
 # it at the same time. `test_pyo3_wrapper` builds Cargo projects and caches
 # them (#275 Phase 2), so it runs here rather than in the parallel phase.
-serial_test_names = ("test_cache", "test_core_api", "test_cargo", "test_pyo3_wrapper")
+serial_test_names = ("test_cache", "test_core_api", "test_cargo", "test_pyo3_wrapper",
+                     "test_pyo3_host")
 
 for test_name in collect(keys(testsuite))
     basename = split(test_name, '/')[end]

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **The PyO3 Python-host path**
+  ([#424](https://github.com/AtelierArith/RustCall.jl/issues/424)).
+  `@rust_crate ... pyo3_host=true` builds a PyO3 crate **as the Python
+  extension it already is** — the `extension-module` build the link plan calls
+  `:unlinkable` — imports it through PythonCall, and calls the imported module.
+  That reaches what the C-ABI wrapper path refuses: a private `#[pyfunction]`
+  (rustc E0603 to an outside crate), and `Python<'_>` / `Py<T>` / numpy /
+  callable signatures that need a live interpreter. `PyResult<T>` stays
+  `RustResult{T, String}`, now carrying the interpreter's own message instead
+  of the opaque sentence the interpreter-free path can only produce. RustCall
+  stays interpreter-free: the host lives in the `RustCallPyO3HostExt` package
+  extension, loaded with PythonCall, and the crate is built (pinned to
+  `PythonCall.python_executable_path()`) and imported lazily on first call.
+  `load_crate_bindings` and `generate_bindings` take the same `pyo3_host`
+  keyword.
+
+### Fixed
+- **The `CrateBindings` proxy no longer reserves `value` and `bindings`**
+  ([#424](https://github.com/AtelierArith/RustCall.jl/issues/424)). Property
+  access on the value `@rust_crate` returns forwards wholesale to the wrapped
+  object, so a `#[pyclass]` with a field named `value` is readable and
+  assignable through it (`B.Counter(...).value`); the proxy's own fields are
+  `_`-prefixed and reached with `getfield`.
+
 ## [0.5.1] - 2026-09-17
 
 ### Fixed
