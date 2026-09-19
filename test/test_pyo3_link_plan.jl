@@ -1342,7 +1342,9 @@ _manifest(text::AbstractString) = TOML.parse(text)
         # MB. The next probe names its project after its owner and sweeps the
         # ones whose owner is gone — never a live process's.
         mktempdir() do parent
-            # No lease, another pid: swept by the pid fallback.
+            # No lease, another pid: swept by the pid fallback once the
+            # pre-lease grace window has passed (closed here so the test need
+            # not wait).
             dead = joinpath(parent, "project_2000000000_abandoned")
             mkpath(dead)
             # No lease, this process's pid: kept.
@@ -1356,12 +1358,25 @@ _manifest(text::AbstractString) = TOML.parse(text)
             # A name with no owner encoded and no lease is never guessed at.
             legacy = joinpath(parent, "project_legacy")
             mkpath(legacy)
-            @test RustCall._sweep_abandoned_projects(parent) == 2
+            grace = RustCall._UNLEASED_PROJECT_GRACE[]
+            RustCall._UNLEASED_PROJECT_GRACE[] = 0.0
+            try
+                @test RustCall._sweep_abandoned_projects(parent) == 2
+            finally
+                RustCall._UNLEASED_PROJECT_GRACE[] = grace
+            end
             @test !isdir(dead)
             @test !isdir(freed)
             @test isdir(live)
             @test isdir(legacy)
             @test !isfile(RustCall.generation_lease_path(freed))
+            # A directory created this instant is not abandoned: the lease is
+            # locked a moment after the directory appears, and a concurrent
+            # sweep must not catch that window.
+            fresh = joinpath(parent, "project_2000000000_fresh")
+            mkpath(fresh)
+            @test RustCall._sweep_abandoned_projects(parent) == 0
+            @test isdir(fresh)
         end
     end
 
@@ -1720,6 +1735,9 @@ _manifest(text::AbstractString) = TOML.parse(text)
             # the crate's `target/`; nothing did, so neither directory exists.
             @test !isdir(joinpath(dir, "target", "rustcall-pyo3-probe"))
             @test !isdir(joinpath(dir, "target", "rustcall-pyo3-features"))
+            # The empty snapshot is what keeps the lenient scan off Cargo:
+            # `_cfg_file_args` passes no arguments and never asks for a snapshot.
+            @test isempty(RustCall._cfg_file_args(:lenient; cfg_text = ""))
         end
     end
 

@@ -1872,6 +1872,13 @@ project is removed; only with **no** lease (a pre-#425 project, or a file system
 without locking) is the pid consulted, and then only a provably dead owner is
 removed. Returns the count.
 """
+# The lease is locked a moment after the project directory appears, and until
+# then the directory carries no lease for the sweep to read. An unleased
+# directory younger than this is left for the next sweep; an interrupted owner
+# leaves its lease file behind and takes the `:free` branch at once. A `Ref` so
+# a test can close the window without waiting.
+const _UNLEASED_PROJECT_GRACE = _state_view(:unleased_project_grace, Ref(60.0))
+
 function _sweep_abandoned_projects(parent::AbstractString)
     isdir(parent) || return 0
     me = getpid()
@@ -1899,6 +1906,12 @@ function _sweep_abandoned_projects(parent::AbstractString)
         pid === nothing && continue          # a pre-#425 name with no lease
         pid == me && continue
         _process_alive(pid) && continue
+        # The lease is locked a moment after the directory appears, so an
+        # unleased directory may be one being set up right now. Only remove it
+        # once it is older than the grace window (#425 review). An interrupted
+        # owner leaves its lease file behind, so it takes the `:free` branch
+        # above and is swept at once; this grace is the pre-lease window only.
+        time() - Base.Filesystem.mtime(dir) >= _UNLEASED_PROJECT_GRACE[] || continue
         _remove_shaped_project(dir)
         removed += 1
     end
@@ -2381,10 +2394,20 @@ function scan_report(crate_path::AbstractString; features::Vector{String} = Stri
     # `allow_cargo = resolve` keeps the scan itself free of Cargo under
     # `resolve = false`, where `scan_crate` must not ask for a workspace-member's
     # inherited `edition` / `version` either (#425 review).
-    info = isempty(plan.cfg_text) ?
-        scan_crate(String(crate_path); allow_cargo = resolve) :
+    info = if !isempty(plan.cfg_text)
         scan_crate(String(crate_path); cfg = :cargo, cfg_text = plan.cfg_text,
                    build_env = plan.build_env, allow_cargo = resolve)
+    elseif resolve
+        # Cargo could not resolve the crate; the dependency-free cfg probe still
+        # decides target predicates for the lenient scan.
+        scan_crate(String(crate_path); allow_cargo = true)
+    else
+        # `resolve = false`: an explicit empty snapshot keeps the lenient scan
+        # from falling back to `_cargo_cfg_text` — `_cfg_file_args` passes no
+        # arguments for an empty text, which is the Cargo-unavailable case — so
+        # no Cargo runs here either (#425 review).
+        scan_crate(String(crate_path); cfg_text = "", allow_cargo = false)
+    end
 
     julia_items = Any[info.julia_functions...; info.julia_structs...]
     wrappable = Any[]
@@ -2424,7 +2447,10 @@ function scan_report(crate_path::AbstractString; features::Vector{String} = Stri
             cargo_toml = parse_cargo_toml(joinpath(String(crate_path), "Cargo.toml"))
             source_files = sort(find_rust_sources(String(crate_path)))
             lib_root, tree_files = _crate_scan_inputs(String(crate_path), cargo_toml, source_files)
-            cfg, cfg_text = isempty(plan.cfg_text) ? (:lenient, nothing) : (:cargo, plan.cfg_text)
+            # An explicit empty snapshot under `resolve = false` keeps the
+            # generator scan from reaching `_cargo_cfg_text` too (#425 review).
+            cfg, cfg_text = isempty(plan.cfg_text) ?
+                (:lenient, resolve ? nothing : "") : (:cargo, plan.cfg_text)
             source = wrap_crate(tree_files;
                                 crate_name = first(wrapper_target_identifier(info.name, cargo_toml)),
                                 cfg = cfg, cfg_text = cfg_text,
