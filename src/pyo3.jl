@@ -854,10 +854,17 @@ transitive closure.
 """
 function _pyo3_conservative_plan(cargo_toml::AbstractDict; flags::Vector{String} = String[],
                                  features::Vector{String} = String[],
-                                 default_features::Bool = true)
+                                 default_features::Bool = true,
+                                 resolution::Symbol = :unavailable)
     found = _pyo3_dependencies(cargo_toml)
-    note = " (Cargo could not resolve this crate, so the features were not resolved; " *
-           "this is the conservative reading of Cargo.toml)"
+    # `:skipped` is a deliberate `scan_report(...; resolve = false)`, not a
+    # failed Cargo: the plan is the same declaration-only reading, but the
+    # reason must not blame a Cargo run that never happened (#425).
+    note = resolution === :skipped ?
+        " (feature resolution was skipped (`resolve = false`), so the features were not " *
+        "resolved; this is the conservative reading of Cargo.toml)" :
+        " (Cargo could not resolve this crate, so the features were not resolved; " *
+        "this is the conservative reading of Cargo.toml)"
     if isempty(found)
         return PyO3LinkPlan(:python_free, copy(flags), "",
                             "the crate declares no pyo3 dependency" * note, default_features;
@@ -1791,11 +1798,47 @@ The directory is the caller's to remove.
 function _wrapper_shaped_project(crate_path::AbstractString, subdir::AbstractString)
     parent = joinpath(String(crate_path), "target", String(subdir))
     mkpath(parent)
-    dir = mktempdir(parent; prefix = "project_")
+    _sweep_abandoned_projects(parent)
+    dir = mktempdir(parent; prefix = "project_$(getpid())_")
     mkpath(joinpath(dir, "src"))
     lock = joinpath(_cargo_root_dir(crate_path), "Cargo.lock")
     isfile(lock) && cp(lock, joinpath(dir, "Cargo.lock"); force = true)
     return dir
+end
+
+"""
+    _sweep_abandoned_projects(parent) -> Int
+
+Remove the generated projects under `parent` whose owning process is gone.
+
+A project is named `project_<owner pid>_<random>`. The `finally` that removes it
+does not run when the process is interrupted, and the cfg probe's project can be
+hundreds of MB — measured on a crate with large path dependencies, the probe
+wrote 538 MB before it was killed (#425) — so the next probe in that directory
+sweeps the abandoned ones. A project owned by a live process, this one or a
+concurrent scan, is left alone: `_process_alive` errs on the side of "alive",
+and only a provably dead owner's directory is removed. Returns the count.
+"""
+function _sweep_abandoned_projects(parent::AbstractString)
+    isdir(parent) || return 0
+    me = getpid()
+    removed = 0
+    for entry in readdir(parent)
+        startswith(entry, "project_") || continue
+        parts = split(entry, '_'; limit = 3)
+        length(parts) >= 2 || continue
+        pid = tryparse(Int, parts[2])
+        pid === nothing && continue          # a pre-#425 name: no owner to read
+        pid == me && continue
+        _process_alive(pid) && continue
+        try
+            rm(joinpath(parent, String(entry)); recursive = true, force = true)
+            removed += 1
+        catch e
+            @debug "Could not remove an abandoned project" path = entry exception = e
+        end
+    end
+    return removed
 end
 
 # The directory whose manifest is the Cargo root of a build of `crate_path`:
@@ -2199,16 +2242,28 @@ end
 # ----------------------------------------------------------------------------
 
 """
-    scan_report(crate_path; features = String[], default_features = true, io = stdout) -> NamedTuple
+    scan_report(crate_path; features = String[], default_features = true, io = stdout,
+                generate = true, resolve = true) -> NamedTuple
 
 Report what a crate offers to RustCall, including the items it marks only for
 PyO3 (#275 Phase 1).
 
-The crate is scanned **under the build the plan describes**: `pyo3_link_plan`
-asks Cargo to resolve `features` / `default_features`, and the scan then runs in
-strict mode under that build's configuration, so `#[cfg]` and `#[cfg_attr]` on
-functions, structs, impls, methods and fields are evaluated by the extractor's
-own evaluator and the items listed are exactly the items that build has.
+By default the crate is scanned **under the build the plan describes**:
+`pyo3_link_plan` asks Cargo to resolve `features` / `default_features`, and the
+scan then runs in strict mode under that build's configuration, so `#[cfg]` and
+`#[cfg_attr]` on functions, structs, impls, methods and fields are evaluated by
+the extractor's own evaluator and the items listed are exactly the items that
+build has.
+
+Pass `resolve = false` for a **probe-free Phase-1 mode**: no Cargo runs at all.
+The plan is the declaration-only conservative reading of `Cargo.toml`
+(`plan.resolved == false`) and the scan is lenient, so a `#[cfg]`-carrying item
+is reported rather than decided — the same distinction an unresolved plan makes.
+Use it for large crates (the default mode's cfg probe compiles the crate's whole
+dependency graph as a wrapper dependency, which can be minutes and gigabytes),
+offline machines, and item-inventory checks that need no link plan.
+`candidates` is empty in this mode. `generate = false` is orthogonal: it skips
+the Phase-2 generator, but the default plan resolution still runs.
 
 Returns `(; julia, wrappable, wrapped, skipped, plan, info, candidates)`:
 
@@ -2232,13 +2287,27 @@ Returns `(; julia, wrappable, wrapped, skipped, plan, info, candidates)`:
 ```julia
 RustCall.scan_report("/path/to/some_pyo3_crate")
 RustCall.scan_report(crate; features = ["python"], default_features = false)
+RustCall.scan_report(crate; resolve = false)   # no Cargo, lenient scan
 ```
 """
 function scan_report(crate_path::AbstractString; features::Vector{String} = String[],
                      default_features::Bool = true, release::Bool = true, io::IO = stdout,
-                     generate::Bool = true)
-    plan = pyo3_link_plan(crate_path; features = features, default_features = default_features,
-                          release = release)
+                     generate::Bool = true, resolve::Bool = true)
+    manifest_path = joinpath(String(crate_path), "Cargo.toml")
+    plan = if resolve
+        pyo3_link_plan(crate_path; features = features, default_features = default_features,
+                       release = release)
+    else
+        # `resolve = false`: no Cargo at all. The plan is the declaration-only
+        # conservative reading and the scan stays lenient, as it does whenever
+        # `cfg_text` is empty (#425).
+        isfile(manifest_path) ||
+            throw(RustError("Cargo.toml not found in: $(crate_path)"))
+        _pyo3_conservative_plan(TOML.parsefile(manifest_path);
+                                flags = _pyo3_feature_flags(features, default_features),
+                                features = features, default_features = default_features,
+                                resolution = :skipped)
+    end
     # A resolved plan carries the cfg text of its build, so the scan runs in
     # strict mode and the manifest holds exactly that build's items. Without one
     # (no Cargo) the scan stays lenient and reports everything, which
@@ -2260,9 +2329,15 @@ function scan_report(crate_path::AbstractString; features::Vector{String} = Stri
         end
     end
 
-    candidates = try
-        pyo3_feature_candidates(crate_path)
-    catch
+    # `pyo3_feature_candidates` is a Cargo resolution per feature; under
+    # `resolve = false` there is no Cargo to ask, so the column is empty (#425).
+    candidates = if resolve
+        try
+            pyo3_feature_candidates(crate_path)
+        catch
+            NamedTuple[]
+        end
+    else
         NamedTuple[]
     end
 
@@ -2270,7 +2345,8 @@ function scan_report(crate_path::AbstractString; features::Vector{String} = Stri
     # answers "and does it *build*?": the scan says an item is namable, the
     # generator says whether its signature can be lowered. Generating is cheap
     # (it runs the extractor again and compiles nothing), so the report shows
-    # it by default; `generate = false` is the pure Phase-1 report.
+    # it by default; `generate = false` drops just this column, while the plan
+    # is still resolved — use `resolve = false` for the mode with no Cargo.
     wrapped = nothing
     generate_error = ""
     if generate
@@ -2305,9 +2381,11 @@ function scan_report(crate_path::AbstractString; features::Vector{String} = Stri
     end
 
     build = isempty(plan.feature_flags) ? "default features" : join(plan.feature_flags, " ")
+    unresolved_note = plan.resolved ? "" :
+        resolve ? " (Cargo could not resolve it; every #[cfg] item is reported)" :
+        " (resolution skipped: every #[cfg] item is reported undecided)"
     println(io, "Crate $(info.name) v$(info.version) ($(info.path))")
-    println(io, "  Build scanned: $(build)",
-            plan.resolved ? "" : " (Cargo could not resolve it; every #[cfg] item is reported)")
+    println(io, "  Build scanned: $(build)", unresolved_note)
     println(io, "  RustCall items (wrapped today): $(length(julia_items))")
     for item in julia_items
         println(io, "    $(_pyo3_item_label(item))")

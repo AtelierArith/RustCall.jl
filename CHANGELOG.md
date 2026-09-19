@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **A probe-free Phase-1 mode for `scan_report`**
+  ([#425](https://github.com/AtelierArith/RustCall.jl/issues/425)).
+  `RustCall.scan_report(crate; resolve = false)` runs no Cargo at all: the plan
+  is the declaration-only reading of `Cargo.toml` (`plan.resolved == false`),
+  the scan is lenient, and `candidates` is empty. The default route's cfg probe
+  compiles the crate's whole dependency graph as a wrapper dependency — minutes
+  and hundreds of MB on a crate with large path dependencies — which this mode
+  avoids for large crates, offline machines, and item inventories.
+  `generate = false` is orthogonal and does not avoid the probe.
+
+### Fixed
+- **An interrupted PyO3 cfg probe no longer leaves its project tree behind**
+  ([#425](https://github.com/AtelierArith/RustCall.jl/issues/425)).
+  Probe projects are named after the owning process, and the next probe sweeps
+  the projects whose owner is gone — never a live process's.
+
 ## [0.6.1] - 2026-09-17
 
 ### Fixed
