@@ -1342,18 +1342,66 @@ _manifest(text::AbstractString) = TOML.parse(text)
         # MB. The next probe names its project after its owner and sweeps the
         # ones whose owner is gone — never a live process's.
         mktempdir() do parent
+            # No lease, another pid: swept by the pid fallback.
             dead = joinpath(parent, "project_2000000000_abandoned")
-            live = joinpath(parent, "project_$(getpid())_live")
             mkpath(dead)
+            # No lease, this process's pid: kept.
+            live = joinpath(parent, "project_$(getpid())_live")
             mkpath(live)
-            @test RustCall._sweep_abandoned_projects(parent) == 1
-            @test !isdir(dead)
-            @test isdir(live)
-            # A name with no owner encoded is never guessed at.
+            # A lease nobody holds (the owner died before its `finally`): free,
+            # so swept whatever the name's pid says.
+            freed = joinpath(parent, "project_$(getpid())_freed")
+            mkpath(freed)
+            write(RustCall.generation_lease_path(freed), "")
+            # A name with no owner encoded and no lease is never guessed at.
             legacy = joinpath(parent, "project_legacy")
             mkpath(legacy)
-            @test RustCall._sweep_abandoned_projects(parent) == 0
+            @test RustCall._sweep_abandoned_projects(parent) == 2
+            @test !isdir(dead)
+            @test !isdir(freed)
+            @test isdir(live)
             @test isdir(legacy)
+            @test !isfile(RustCall.generation_lease_path(freed))
+        end
+    end
+
+    @testset "a held lease protects a live probe across pid namespaces (#425 review)" begin
+        # Another "container" holds the lease on a project tagged with a pid
+        # that is dead here. The pid fallback alone would delete it; the held
+        # lease says hold. Needs advisory locking, like the generation leases.
+        mktempdir() do parent
+            gone = open(`$(Base.julia_cmd()) --startup-file=no -e 0`)
+            dead_pid = getpid(gone)
+            wait(gone)
+            @test !RustCall._process_alive(dead_pid)
+            guarded = joinpath(parent, "project_$(dead_pid)_guarded")
+            mkpath(guarded)
+            script = """
+            using RustCall
+            io = open($(repr(RustCall.generation_lease_path(guarded))), "w")
+            RustCall._try_lock_lease(io) === true || (print("nolock"); exit(0))
+            println("ready"); flush(stdout)
+            readline(stdin)
+            """
+            holder = open(`$(Base.julia_cmd()) --startup-file=no --project=$(dirname(@__DIR__)) -e $script`, "r+")
+            ready = readline(holder)
+            if ready != "ready"
+                close(holder); wait(holder)
+                @test_skip "this file system offers no advisory locking"
+            else
+                try
+                    @test RustCall._lease_state(guarded) === :held
+                    # The name's pid reads as dead here; the lease keeps it.
+                    @test RustCall._sweep_abandoned_projects(parent) == 0
+                    @test isdir(guarded)
+                finally
+                    close(holder); wait(holder)
+                end
+                # The owner is gone: the free lease lets the sweep take it.
+                @test RustCall._lease_state(guarded) === :free
+                @test RustCall._sweep_abandoned_projects(parent) == 1
+                @test !isdir(guarded)
+            end
         end
     end
 
@@ -1672,6 +1720,37 @@ _manifest(text::AbstractString) = TOML.parse(text)
             # the crate's `target/`; nothing did, so neither directory exists.
             @test !isdir(joinpath(dir, "target", "rustcall-pyo3-probe"))
             @test !isdir(joinpath(dir, "target", "rustcall-pyo3-features"))
+        end
+    end
+
+    @testset "resolve = false reads inherited fields without Cargo (#425 review)" begin
+        # A workspace member inheriting `version` / `edition` used to reach
+        # `cargo metadata` through `scan_crate`, so the advertised no-Cargo mode
+        # still launched Cargo. The manifest read decides both now.
+        mktempdir() do ws
+            write(joinpath(ws, "Cargo.toml"), """
+            [workspace]
+            members = ["member"]
+            [workspace.package]
+            version = "9.9.9"
+            edition = "2021"
+            """)
+            member = _write_crate(joinpath(ws, "member"), """
+            [package]
+            name = "inheriting"
+            version = { workspace = true }
+            edition = { workspace = true }
+            """)
+            toml = RustCall.parse_cargo_toml(joinpath(member, "Cargo.toml"))
+            @test RustCall._crate_rust_edition(member, toml; allow_cargo = false) == "2021"
+            @test RustCall._package_field(member, toml, "version", "0.1.0";
+                                          allow_cargo = false) == "9.9.9"
+
+            io = IOBuffer()
+            report = RustCall.scan_report(member; io = io, generate = false, resolve = false)
+            @test report.info.name == "inheriting"
+            @test report.info.version == "9.9.9"
+            @test !isdir(joinpath(member, "target", "rustcall-pyo3-probe"))
         end
     end
 end

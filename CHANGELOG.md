@@ -15,14 +15,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the scan is lenient, and `candidates` is empty. The default route's cfg probe
   compiles the crate's whole dependency graph as a wrapper dependency — minutes
   and hundreds of MB on a crate with large path dependencies — which this mode
-  avoids for large crates, offline machines, and item inventories.
+  avoids for large crates, offline machines, and item inventories. A workspace
+  member that inherits `version` / `edition` has both read from the workspace
+  manifest, so the mode never falls back to `cargo metadata`.
   `generate = false` is orthogonal and does not avoid the probe.
 
 ### Fixed
 - **An interrupted PyO3 cfg probe no longer leaves its project tree behind**
   ([#425](https://github.com/AtelierArith/RustCall.jl/issues/425)).
-  Probe projects are named after the owning process, and the next probe sweeps
-  the projects whose owner is gone — never a live process's.
+  A probe project carries a held `<project>.lease` for its lifetime, and the
+  next project's creation sweeps the projects whose lease is free — never one a
+  live process still holds, even when that process is in another pid namespace
+  (a container sharing the target volume). A pre-#425 project with no lease
+  falls back to its owner pid.
 
 ## [0.6.1] - 2026-09-17
 

@@ -123,7 +123,8 @@ println("Found \$(length(info.julia_functions)) Julia functions")
 """
 function scan_crate(crate_path::String; cfg = :lenient,
                     cfg_text::Union{Nothing, AbstractString} = nothing,
-                    build_env::Union{Nothing, AbstractDict} = nothing)
+                    build_env::Union{Nothing, AbstractDict} = nothing,
+                    allow_cargo::Bool = true)
     # Validate path
     if !isdir(crate_path)
         error("Crate path does not exist: $crate_path")
@@ -136,7 +137,7 @@ function scan_crate(crate_path::String; cfg = :lenient,
 
     # Parse Cargo.toml
     cargo_toml = parse_cargo_toml(cargo_toml_path)
-    edition = _crate_rust_edition(crate_path, cargo_toml)
+    edition = _crate_rust_edition(crate_path, cargo_toml; allow_cargo = allow_cargo)
 
     # Find all Rust source files
     source_files = sort(find_rust_sources(crate_path))
@@ -171,13 +172,8 @@ function scan_crate(crate_path::String; cfg = :lenient,
 
     # Extract dependencies from Cargo.toml
     dependencies = extract_crate_dependencies(cargo_toml)
-    version = get(cargo_toml["package"], "version", "0.1.0")
-    if version isa AbstractDict && get(version, "workspace", false) === true
-        metadata = _cargo_package_metadata(crate_path)
-        manifest_path = realpath(cargo_toml_path)
-        package = only(p for p in metadata["packages"] if realpath(p["manifest_path"]) == manifest_path)
-        version = package["version"]
-    end
+    version = _package_field(crate_path, cargo_toml, "version", "0.1.0";
+                             allow_cargo = allow_cargo)
 
     CrateInfo(
         cargo_toml["package"]["name"],
@@ -192,16 +188,61 @@ function scan_crate(crate_path::String; cfg = :lenient,
     )
 end
 
-function _crate_rust_edition(crate_path::AbstractString, cargo_toml::AbstractDict)
-    edition = get(cargo_toml["package"], "edition", "2015")
-    if edition isa AbstractDict && get(edition, "workspace", false) === true
+function _crate_rust_edition(crate_path::AbstractString, cargo_toml::AbstractDict;
+                             allow_cargo::Bool = true)
+    edition = _package_field(crate_path, cargo_toml, "edition", "2015";
+                             allow_cargo = allow_cargo)
+    return String(edition)
+end
+
+"""
+    _package_field(crate_path, cargo_toml, key, fallback; allow_cargo = true)
+
+The value of the `[package]` field `key` of `cargo_toml`, with `{ workspace =
+true }` inheritance resolved from the workspace root's `[workspace.package]`
+table **by reading that manifest**.
+
+A member that inherits `edition` or `version` is a common layout, and reading
+the root is what keeps the probe-free scan of #425 from running `cargo metadata`
+for it. When the root cannot be found or does not declare the field, `fallback`
+is what a caller that may not invoke Cargo gets; with `allow_cargo = true` Cargo
+is asked instead, which remains the authority for the layouts a manifest read
+cannot decide.
+"""
+function _package_field(crate_path::AbstractString, cargo_toml::AbstractDict,
+                        key::AbstractString, fallback;
+                        allow_cargo::Bool = true)
+    value = get(cargo_toml["package"], key, fallback)
+    if value isa AbstractDict && get(value, "workspace", false) === true
+        inherited = _workspace_inherited_package_field(crate_path, key)
+        inherited === nothing || return inherited
+        allow_cargo || return fallback
         metadata = _cargo_package_metadata(crate_path)
         manifest_path = realpath(joinpath(crate_path, "Cargo.toml"))
         package = only(p for p in metadata["packages"]
                        if realpath(p["manifest_path"]) == manifest_path)
-        edition = package["edition"]
+        return package[key]
     end
-    return String(edition)
+    return value
+end
+
+# `[workspace.package].<key>` of the workspace `crate_path` belongs to, for a
+# member that writes `key = { workspace = true }`. `nothing` when there is no
+# workspace, no such key, or the manifest cannot be read: pure file reads, so
+# the no-Cargo scan can use it.
+function _workspace_inherited_package_field(crate_path::AbstractString, key::AbstractString)
+    root = _workspace_root_dir(crate_path)
+    root === nothing && return nothing
+    manifest = joinpath(root, "Cargo.toml")
+    isfile(manifest) || return nothing
+    parsed = _parse_manifest_or_nothing(manifest)
+    parsed isa AbstractDict || return nothing
+    workspace = get(parsed, "workspace", nothing)
+    workspace isa AbstractDict || return nothing
+    package = get(workspace, "package", nothing)
+    package isa AbstractDict || return nothing
+    haskey(package, key) || return nothing
+    return package[key]
 end
 
 """
