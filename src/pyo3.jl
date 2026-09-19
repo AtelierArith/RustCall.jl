@@ -476,9 +476,9 @@ function _wrapper_probe_context(crate_path::AbstractString;
     probe = () -> begin
         try
             # Under the crate's `target/`, with its lockfile and `[patch]`, so
-            # the probe resolves as the wrapper will (`_wrapper_shaped_project`).
-            dir = _wrapper_shaped_project(path, "rustcall-pyo3-probe")
-            try
+            # the probe resolves as the wrapper will (`_with_shaped_project`),
+            # and with a lease the sweep in another process can see (#425).
+            _with_shaped_project(path, "rustcall-pyo3-probe") do dir
                 write(joinpath(dir, "src", "lib.rs"), "")
                 write(joinpath(dir, "Cargo.toml"),
                       _probe_cargo_toml(package, path, features, default_features) *
@@ -501,8 +501,6 @@ function _wrapper_probe_context(crate_path::AbstractString;
                 metadata = _cargo_package_metadata(path; env = env, dir = dir)
                 builtins = _cargo_package_environment(metadata, package_id)
                 _cargo_probe_context(out, package_id, path; builtins = builtins)
-            finally
-                rm(dir; recursive = true, force = true)
             end
         catch e
             @debug "Could not probe the wrapper-root build cfg of $(path)" exception = e
@@ -767,8 +765,7 @@ function _cargo_resolved_features(crate_path::AbstractString;
     package = _cargo_package_name(path)
     isempty(package) && return nothing
     out = try
-        dir = _wrapper_shaped_project(path, "rustcall-pyo3-features")
-        try
+        _with_shaped_project(path, "rustcall-pyo3-features") do dir
             write(joinpath(dir, "src", "lib.rs"), "")
             write(joinpath(dir, "Cargo.toml"),
                   _probe_cargo_toml(package, path, features, default_features) *
@@ -776,8 +773,6 @@ function _cargo_resolved_features(crate_path::AbstractString;
             args = String["tree", "-e", "features,normal", "--prefix", "none",
                           "--format", "{p}|{f}", "--no-dedupe", "-p", package]
             read(pipeline(setenv(`$(cargo()) $args`; dir = dir); stderr = devnull), String)
-        finally
-            rm(dir; recursive = true, force = true)
         end
     catch e
         @debug "Could not resolve features of $(path)" exception = e
@@ -854,10 +849,17 @@ transitive closure.
 """
 function _pyo3_conservative_plan(cargo_toml::AbstractDict; flags::Vector{String} = String[],
                                  features::Vector{String} = String[],
-                                 default_features::Bool = true)
+                                 default_features::Bool = true,
+                                 resolution::Symbol = :unavailable)
     found = _pyo3_dependencies(cargo_toml)
-    note = " (Cargo could not resolve this crate, so the features were not resolved; " *
-           "this is the conservative reading of Cargo.toml)"
+    # `:skipped` is a deliberate `scan_report(...; resolve = false)`, not a
+    # failed Cargo: the plan is the same declaration-only reading, but the
+    # reason must not blame a Cargo run that never happened (#425).
+    note = resolution === :skipped ?
+        " (feature resolution was skipped (`resolve = false`), so the features were not " *
+        "resolved; this is the conservative reading of Cargo.toml)" :
+        " (Cargo could not resolve this crate, so the features were not resolved; " *
+        "this is the conservative reading of Cargo.toml)"
     if isempty(found)
         return PyO3LinkPlan(:python_free, copy(flags), "",
                             "the crate declares no pyo3 dependency" * note, default_features;
@@ -1661,73 +1663,79 @@ function _build_pyo3_wrapper_project(info::CrateInfo, plan::PyO3LinkPlan,
                                      rustflags::Vector{String}, release::Bool,
                                      key::String, cache_enabled::Bool)
     # Under the crate's own `target/`, with its lockfile and `[patch]` table,
-    # so the wrapper resolves as the crate does (`_wrapper_shaped_project`).
-    wrapper_path = _wrapper_shaped_project(info.path, "rustcall-pyo3-wrapper")
-    # Dependency outputs are shared with the probe. Distinct wrapper artifacts
-    # must not overwrite one shared cdylib between Cargo exiting and our copy.
-    wrapper_name = "rustcall_wrapper_$(key)"
-    project = CargoProject(wrapper_name, "0.1.0", DependencySpec[],
-                           "2021", wrapper_path)
-    # The cleanup scope opens here, at the directory that already exists, not at
-    # the build. Writing the manifest can *refuse* — a pyo3 older than the
-    # dispatcher needs, or one from a registry the alias cannot name — and those
-    # are expected outcomes, not crashes. Entering the `try` only at
-    # `build_cargo_project` left a project tree under the crate's `target/` for
-    # every refused attempt, for the life of the process (#392 review).
-    try
-        # The same choice `wrap_crate` was given, from the same function: the
-        # dependency table has to be keyed on the identifier the generated
-        # `lib.rs` names the crate by, or the two disagree about what
-        # `use <crate>::*` means.
-        target_identifier, target_renamed =
-            wrapper_target_identifier(info.name,
-                                      parse_cargo_toml(joinpath(info.path, "Cargo.toml")))
-        write(joinpath(wrapper_path, "Cargo.toml"),
-              generate_pyo3_wrapper_cargo_toml(
-                  info, plan; wrapper_name = wrapper_name,
-                  python_dispatch = source.uses_python_dispatch,
-                  target_identifier = target_identifier, target_renamed = target_renamed,
-                  pyo3_dependency = _resolved_pyo3_dependency(info.path, plan)) *
-              _root_patch_toml(info.path))
-        write(joinpath(wrapper_path, "src", "lib.rs"), source.lib_rs)
+    # so the wrapper resolves as the crate does (`_with_shaped_project`), and
+    # with a lease the sweep in another process can see (#425).
+    return _with_shaped_project(info.path, "rustcall-pyo3-wrapper") do wrapper_path
+        # Dependency outputs are shared with the probe. Distinct wrapper
+        # artifacts must not overwrite one shared cdylib between Cargo exiting
+        # and our copy.
+        wrapper_name = "rustcall_wrapper_$(key)"
+        project = CargoProject(wrapper_name, "0.1.0", DependencySpec[],
+                               "2021", wrapper_path)
+        # The cleanup scope opens here, at the directory that already exists,
+        # not at the build. Writing the manifest can *refuse* — a pyo3 older
+        # than the dispatcher needs, or one from a registry the alias cannot
+        # name — and those are expected outcomes, not crashes. Entering the
+        # `try` only at `build_cargo_project` left a project tree under the
+        # crate's `target/` for every refused attempt, for the life of the
+        # process (#392 review).
+        try
+            # The same choice `wrap_crate` was given, from the same function:
+            # the dependency table has to be keyed on the identifier the
+            # generated `lib.rs` names the crate by, or the two disagree about
+            # what `use <crate>::*` means.
+            target_identifier, target_renamed =
+                wrapper_target_identifier(info.name,
+                                          parse_cargo_toml(joinpath(info.path, "Cargo.toml")))
+            write(joinpath(wrapper_path, "Cargo.toml"),
+                  generate_pyo3_wrapper_cargo_toml(
+                      info, plan; wrapper_name = wrapper_name,
+                      python_dispatch = source.uses_python_dispatch,
+                      target_identifier = target_identifier, target_renamed = target_renamed,
+                      pyo3_dependency = _resolved_pyo3_dependency(info.path, plan)) *
+                  _root_patch_toml(info.path))
+            write(joinpath(wrapper_path, "src", "lib.rs"), source.lib_rs)
 
-        # The link options travel in the wrapper's own build script, not in
-        # `RUSTFLAGS`: an environment `RUSTFLAGS` replaces the crate's
-        # `[build] rustflags` from config, and is itself ignored whenever
-        # `CARGO_ENCODED_RUSTFLAGS` is set — either way the flags reach the wrong
-        # place or none. `cargo:rustc-link-search` / `cargo:rustc-link-arg` from
-        # `build.rs` apply to exactly this cdylib's link step and to nothing else
-        # (#307 review). `rustflags` stays the identity input it always was.
-        script = _pyo3_wrapper_build_script(plan)
-        isempty(script) || write(joinpath(wrapper_path, "build.rs"), script)
+            # The link options travel in the wrapper's own build script, not in
+            # `RUSTFLAGS`: an environment `RUSTFLAGS` replaces the crate's
+            # `[build] rustflags` from config, and is itself ignored whenever
+            # `CARGO_ENCODED_RUSTFLAGS` is set — either way the flags reach the
+            # wrong place or none. `cargo:rustc-link-search` /
+            # `cargo:rustc-link-arg` from `build.rs` apply to exactly this
+            # cdylib's link step and to nothing else (#307 review). `rustflags`
+            # stays the identity input it always was.
+            script = _pyo3_wrapper_build_script(plan)
+            isempty(script) || write(joinpath(wrapper_path, "build.rs"), script)
 
-        env = Dict{String, String}(ENV)
-        # Only where pyo3 is actually in the graph: a `:python_free` build has no
-        # pyo3 build script to configure, and pinning an interpreter it will never
-        # consult would misdescribe the build. The interpreter is the plan's — it
-        # honours a caller's own `PYO3_PYTHON`, was chosen next to `plan.rpath`,
-        # and is already in the artifact key (`_pyo3_wrapper_build_env`).
-        if plan.mode === :link_libpython && !isempty(plan.interpreter)
-            env["PYO3_PYTHON"] = plan.interpreter
-        end
-        built = build_cargo_project(project; release = release, env = env,
-                                    policy = crate_wrapper_policy(),
-                                    target_directory = joinpath(info.path, "target", "rustcall-pyo3-probe", "target"))
-        if cache_enabled
-            try
-                save_cargo_cached_library(key, built)
-                cached = get_cargo_cached_library(key)
-                cached === nothing || return cached
-            catch e
-                @debug "Failed to cache PyO3 wrapper library: $e"
+            env = Dict{String, String}(ENV)
+            # Only where pyo3 is actually in the graph: a `:python_free` build
+            # has no pyo3 build script to configure, and pinning an interpreter
+            # it will never consult would misdescribe the build. The interpreter
+            # is the plan's — it honours a caller's own `PYO3_PYTHON`, was chosen
+            # next to `plan.rpath`, and is already in the artifact key
+            # (`_pyo3_wrapper_build_env`).
+            if plan.mode === :link_libpython && !isempty(plan.interpreter)
+                env["PYO3_PYTHON"] = plan.interpreter
             end
+            built = build_cargo_project(project; release = release, env = env,
+                                        policy = crate_wrapper_policy(),
+                                        target_directory = joinpath(info.path, "target", "rustcall-pyo3-probe", "target"))
+            if cache_enabled
+                try
+                    save_cargo_cached_library(key, built)
+                    cached = get_cargo_cached_library(key)
+                    cached === nothing || return cached
+                catch e
+                    @debug "Failed to cache PyO3 wrapper library: $e"
+                end
+            end
+            # No cache: keep the library somewhere the cleanup below does not
+            # reach — and that outlives this process, since the module that
+            # records the path may be loaded by a later one (#339 review).
+            return _uncached_library_home(built)
+        finally
+            cleanup_cargo_project(project)
         end
-        # No cache: keep the library somewhere the cleanup below does not
-        # reach — and that outlives this process, since the module that
-        # records the path may be loaded by a later one (#339 review).
-        return _uncached_library_home(built)
-    finally
-        cleanup_cargo_project(project)
     end
 end
 
@@ -1791,11 +1799,123 @@ The directory is the caller's to remove.
 function _wrapper_shaped_project(crate_path::AbstractString, subdir::AbstractString)
     parent = joinpath(String(crate_path), "target", String(subdir))
     mkpath(parent)
-    dir = mktempdir(parent; prefix = "project_")
+    _sweep_abandoned_projects(parent)
+    dir = mktempdir(parent; prefix = "project_$(getpid())_")
     mkpath(joinpath(dir, "src"))
     lock = joinpath(_cargo_root_dir(crate_path), "Cargo.lock")
     isfile(lock) && cp(lock, joinpath(dir, "Cargo.lock"); force = true)
     return dir
+end
+
+"""
+    _with_shaped_project(f, crate_path, subdir)
+
+Create a wrapper-shaped project (`_wrapper_shaped_project`), hold a lease on it
+for the duration of `f(dir)`, and remove it afterwards.
+
+The lease is `<dir>.lease`, held with the same advisory lock the generation
+copies use (`_try_lock_lease`). It is what makes the sweep safe across pid
+namespaces: a project whose lease another process still holds is live even when
+that process's pid means nothing here, and a project whose owner died — this
+`finally` never ran — is left with a free lease and is swept (#425 review).
+Where the file system offers no locking the lease records nothing and the sweep
+falls back to the pid in the name.
+"""
+function _with_shaped_project(f::Function, crate_path::AbstractString,
+                              subdir::AbstractString)
+    dir = _wrapper_shaped_project(crate_path, subdir)
+    lease = try
+        open(generation_lease_path(dir), "w")
+    catch e
+        @debug "No lease for the shaped project $(dir)" exception = e
+        nothing
+    end
+    try
+        lease === nothing || _try_lock_lease(lease)
+        return f(dir)
+    finally
+        lease === nothing || close(lease)   # releases the lock
+        _remove_shaped_project(dir)
+    end
+end
+
+"""
+    _remove_shaped_project(path)
+
+Remove a wrapper-shaped project and its lease file. The lease is closed first —
+Windows refuses to delete a file an open handle still holds — which also
+releases the lock.
+"""
+function _remove_shaped_project(path::AbstractString)
+    rm(generation_lease_path(path); force = true)
+    rm(path; recursive = true, force = true)
+    return nothing
+end
+
+"""
+    _sweep_abandoned_projects(parent) -> Int
+
+Remove the generated projects under `parent` whose owner is gone.
+
+A project is named `project_<owner pid>_<random>` and, while its owner works on
+it, carries a held `<project>.lease`. The `finally` that removes it does not run
+when the process is interrupted, and the cfg probe's project can be hundreds of
+MB — measured on a crate with large path dependencies, the probe wrote 538 MB
+before it was killed (#425) — so the next project's creation sweeps the
+abandoned ones.
+
+The lease is asked first, because `_process_alive` reads only the caller's pid
+namespace: a live owner in another container or on another host would look dead
+and its active project would be deleted. A **held** lease keeps a project
+whatever the name's pid says; a **free** lease means the owner is gone and the
+project is removed; only with **no** lease (a pre-#425 project, or a file system
+without locking) is the pid consulted, and then only a provably dead owner is
+removed. Returns the count.
+"""
+# The project directory appears, then its lease file is created, then that
+# lease is locked: a sweep looking in either window sees no lock and could take
+# an active project for abandoned. A project whose lease is held is kept
+# outright; one whose lease is free, or that has no lease, is only removed once
+# it is older than this. A `Ref` so a test can close the window without waiting.
+const _UNLEASED_PROJECT_GRACE = _state_view(:unleased_project_grace, Ref(60.0))
+
+function _sweep_abandoned_projects(parent::AbstractString)
+    isdir(parent) || return 0
+    me = getpid()
+    removed = 0
+    for entry in readdir(parent)
+        startswith(entry, "project_") || continue
+        dir = joinpath(parent, String(entry))
+        isdir(dir) || continue                # the `.lease` sidecars are files
+        state = try
+            _lease_state(dir)
+        catch e
+            @debug "Could not read a shaped-project lease" path = dir exception = e
+            :none
+        end
+        state === :held && continue
+        # A `:free` lease (created but not yet locked) and a missing lease are
+        # both indistinguishable from the moment before the owner takes its
+        # lease, so neither is removed until the project — its lease, when there
+        # is one — is older than the grace window (#425 review). An owner that
+        # died leaves something older than that by the time the next sweep runs.
+        stamp = state === :free ? generation_lease_path(dir) : dir
+        time() - Base.Filesystem.mtime(stamp) >= _UNLEASED_PROJECT_GRACE[] || continue
+        if state === :free
+            _remove_shaped_project(dir)
+            removed += 1
+            continue
+        end
+        parts = split(entry, '_'; limit = 3)
+        length(parts) >= 2 || continue
+        pid = tryparse(Int, parts[2])
+        pid === nothing && continue          # a pre-#425 name with no lease
+        pid == me && continue
+        _process_alive(pid) && continue
+        _remove_shaped_project(dir)
+        removed += 1
+    end
+    return removed
 end
 
 # The directory whose manifest is the Cargo root of a build of `crate_path`:
@@ -2199,16 +2319,30 @@ end
 # ----------------------------------------------------------------------------
 
 """
-    scan_report(crate_path; features = String[], default_features = true, io = stdout) -> NamedTuple
+    scan_report(crate_path; features = String[], default_features = true, io = stdout,
+                generate = true, resolve = true) -> NamedTuple
 
 Report what a crate offers to RustCall, including the items it marks only for
 PyO3 (#275 Phase 1).
 
-The crate is scanned **under the build the plan describes**: `pyo3_link_plan`
-asks Cargo to resolve `features` / `default_features`, and the scan then runs in
-strict mode under that build's configuration, so `#[cfg]` and `#[cfg_attr]` on
-functions, structs, impls, methods and fields are evaluated by the extractor's
-own evaluator and the items listed are exactly the items that build has.
+By default the crate is scanned **under the build the plan describes**:
+`pyo3_link_plan` asks Cargo to resolve `features` / `default_features`, and the
+scan then runs in strict mode under that build's configuration, so `#[cfg]` and
+`#[cfg_attr]` on functions, structs, impls, methods and fields are evaluated by
+the extractor's own evaluator and the items listed are exactly the items that
+build has.
+
+Pass `resolve = false` for a **probe-free Phase-1 mode**: no Cargo runs at all.
+The plan is the declaration-only conservative reading of `Cargo.toml`
+(`plan.resolved == false`) and the scan is lenient, so a `#[cfg]`-carrying item
+is reported rather than decided — the same distinction an unresolved plan makes.
+Use it for large crates (the default mode's cfg probe compiles the crate's whole
+dependency graph as a wrapper dependency, which can be minutes and gigabytes),
+offline machines, and item-inventory checks that need no link plan. A workspace
+member's inherited `version` / `edition` are read from the workspace manifest,
+so even that does not reach `cargo metadata`. `candidates` is empty in this
+mode. `generate = false` is orthogonal: it skips the Phase-2 generator, but the
+default plan resolution still runs.
 
 Returns `(; julia, wrappable, wrapped, skipped, plan, info, candidates)`:
 
@@ -2232,20 +2366,48 @@ Returns `(; julia, wrappable, wrapped, skipped, plan, info, candidates)`:
 ```julia
 RustCall.scan_report("/path/to/some_pyo3_crate")
 RustCall.scan_report(crate; features = ["python"], default_features = false)
+RustCall.scan_report(crate; resolve = false)   # no Cargo, lenient scan
 ```
 """
 function scan_report(crate_path::AbstractString; features::Vector{String} = String[],
                      default_features::Bool = true, release::Bool = true, io::IO = stdout,
-                     generate::Bool = true)
-    plan = pyo3_link_plan(crate_path; features = features, default_features = default_features,
-                          release = release)
+                     generate::Bool = true, resolve::Bool = true)
+    manifest_path = joinpath(String(crate_path), "Cargo.toml")
+    plan = if resolve
+        pyo3_link_plan(crate_path; features = features, default_features = default_features,
+                       release = release)
+    else
+        # `resolve = false`: no Cargo at all. The plan is the declaration-only
+        # conservative reading and the scan stays lenient, as it does whenever
+        # `cfg_text` is empty (#425).
+        isfile(manifest_path) ||
+            throw(RustError("Cargo.toml not found in: $(crate_path)"))
+        _pyo3_conservative_plan(TOML.parsefile(manifest_path);
+                                flags = _pyo3_feature_flags(features, default_features),
+                                features = features, default_features = default_features,
+                                resolution = :skipped)
+    end
     # A resolved plan carries the cfg text of its build, so the scan runs in
     # strict mode and the manifest holds exactly that build's items. Without one
     # (no Cargo) the scan stays lenient and reports everything, which
     # `resolved = false` on the plan makes explicit.
-    info = isempty(plan.cfg_text) ?
-        scan_crate(String(crate_path)) :
-        scan_crate(String(crate_path); cfg = :cargo, cfg_text = plan.cfg_text, build_env = plan.build_env)
+    # `allow_cargo = resolve` keeps the scan itself free of Cargo under
+    # `resolve = false`, where `scan_crate` must not ask for a workspace-member's
+    # inherited `edition` / `version` either (#425 review).
+    info = if !isempty(plan.cfg_text)
+        scan_crate(String(crate_path); cfg = :cargo, cfg_text = plan.cfg_text,
+                   build_env = plan.build_env, allow_cargo = resolve)
+    elseif resolve
+        # Cargo could not resolve the crate; the dependency-free cfg probe still
+        # decides target predicates for the lenient scan.
+        scan_crate(String(crate_path); allow_cargo = true)
+    else
+        # `resolve = false`: an explicit empty snapshot keeps the lenient scan
+        # from falling back to `_cargo_cfg_text` — `_cfg_file_args` passes no
+        # arguments for an empty text, which is the Cargo-unavailable case — so
+        # no Cargo runs here either (#425 review).
+        scan_crate(String(crate_path); cfg_text = "", allow_cargo = false)
+    end
 
     julia_items = Any[info.julia_functions...; info.julia_structs...]
     wrappable = Any[]
@@ -2260,9 +2422,15 @@ function scan_report(crate_path::AbstractString; features::Vector{String} = Stri
         end
     end
 
-    candidates = try
-        pyo3_feature_candidates(crate_path)
-    catch
+    # `pyo3_feature_candidates` is a Cargo resolution per feature; under
+    # `resolve = false` there is no Cargo to ask, so the column is empty (#425).
+    candidates = if resolve
+        try
+            pyo3_feature_candidates(crate_path)
+        catch
+            NamedTuple[]
+        end
+    else
         NamedTuple[]
     end
 
@@ -2270,7 +2438,8 @@ function scan_report(crate_path::AbstractString; features::Vector{String} = Stri
     # answers "and does it *build*?": the scan says an item is namable, the
     # generator says whether its signature can be lowered. Generating is cheap
     # (it runs the extractor again and compiles nothing), so the report shows
-    # it by default; `generate = false` is the pure Phase-1 report.
+    # it by default; `generate = false` drops just this column, while the plan
+    # is still resolved — use `resolve = false` for the mode with no Cargo.
     wrapped = nothing
     generate_error = ""
     if generate
@@ -2278,12 +2447,16 @@ function scan_report(crate_path::AbstractString; features::Vector{String} = Stri
             cargo_toml = parse_cargo_toml(joinpath(String(crate_path), "Cargo.toml"))
             source_files = sort(find_rust_sources(String(crate_path)))
             lib_root, tree_files = _crate_scan_inputs(String(crate_path), cargo_toml, source_files)
-            cfg, cfg_text = isempty(plan.cfg_text) ? (:lenient, nothing) : (:cargo, plan.cfg_text)
+            # An explicit empty snapshot under `resolve = false` keeps the
+            # generator scan from reaching `_cargo_cfg_text` too (#425 review).
+            cfg, cfg_text = isempty(plan.cfg_text) ?
+                (:lenient, resolve ? nothing : "") : (:cargo, plan.cfg_text)
             source = wrap_crate(tree_files;
                                 crate_name = first(wrapper_target_identifier(info.name, cargo_toml)),
                                 cfg = cfg, cfg_text = cfg_text,
                                 crate_root = lib_root,
-                                edition = _crate_rust_edition(crate_path, cargo_toml),
+                                edition = _crate_rust_edition(crate_path, cargo_toml;
+                                                              allow_cargo = resolve),
                                 skip_unparsable = true, build_env = plan.build_env)
             functions, structs, refused, _ = _pyo3_wrapper_items(source.manifest)
             wrapped = Any[]
@@ -2305,9 +2478,11 @@ function scan_report(crate_path::AbstractString; features::Vector{String} = Stri
     end
 
     build = isempty(plan.feature_flags) ? "default features" : join(plan.feature_flags, " ")
+    unresolved_note = plan.resolved ? "" :
+        resolve ? " (Cargo could not resolve it; every #[cfg] item is reported)" :
+        " (resolution skipped: every #[cfg] item is reported undecided)"
     println(io, "Crate $(info.name) v$(info.version) ($(info.path))")
-    println(io, "  Build scanned: $(build)",
-            plan.resolved ? "" : " (Cargo could not resolve it; every #[cfg] item is reported)")
+    println(io, "  Build scanned: $(build)", unresolved_note)
     println(io, "  RustCall items (wrapped today): $(length(julia_items))")
     for item in julia_items
         println(io, "    $(_pyo3_item_label(item))")

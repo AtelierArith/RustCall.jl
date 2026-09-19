@@ -11,7 +11,7 @@ This page describes what is available today:
 
 * **Phase 1 — the scan.** `RustCall.scan_report` reports every PyO3 item the
   crate declares, which of them a wrapper crate will be able to wrap, and why
-  the others cannot be.
+  the others cannot be; `resolve = false` makes it probe-free (no Cargo).
 * **Phase 1.5 — the link plan.** `RustCall.pyo3_link_plan` decides, from the
   crate's `Cargo.toml` alone, whether a wrapper cdylib can be linked and loaded
   at all, and under which flags.
@@ -376,12 +376,27 @@ Crate sample_crate_pyo3_only v0.1.0 (…/test/fixtures/sample_crate_pyo3_only)
   Link plan: link_libpython — pyo3 is a mandatory dependency, so the wrapper cdylib links libpython; … is added as an rpath at wrapper-build time
 ```
 
-The scan needs no build and no Python: it runs `rustcall-extract` over the
-crate's sources and reads its `Cargo.toml`. Generating the wrapper's `lib.rs` —
-which is what the "Wrapper crate exports" column reports — compiles nothing
-either; pass `generate = false` for the Phase-1-only report.
+By default `scan_report` resolves the build with Cargo — `pyo3_link_plan` runs
+`cargo tree` and a wrapper-shaped cfg probe — so the items behind `#[cfg]` are
+*decided* for the build the wrapper is compiled with. For a **probe-free
+Phase 1** that runs no Cargo at all, pass `resolve = false`: the plan is the
+declaration-only reading of `Cargo.toml`, `plan.resolved` is `false`, and the
+scan is lenient, so a `#[cfg]`-carrying item is reported as undecided rather
+than decided away. That is the mode for large crates (the cfg probe compiles
+the crate's whole dependency graph as a wrapper dependency, which can be
+minutes and gigabytes), offline machines, and item inventories that need no
+link plan. `generate = false` is orthogonal: it skips the Phase-2 generator,
+but the default plan resolution still runs.
+
 `RustCall.scan_crate` returns the same information programmatically, in the
-`pyo3_functions` and `pyo3_structs` fields of the `CrateInfo`.
+`pyo3_functions` and `pyo3_structs` fields of the `CrateInfo`. Its default
+lenient scan still invokes Cargo — `_cfg_snapshot(:lenient)` runs the
+dependency-free `cargo rustc --release --lib -- --print cfg` probe for target
+predicates, and an inherited `edition` / `version` can fall back to
+`cargo metadata` — so for a run that touches no Cargo use
+`scan_report(...; resolve = false)`, or pass an explicit empty `cfg_text` to
+`scan_crate`. Generating the wrapper's `lib.rs` — which is what the "Wrapper
+crate exports" column reports — compiles nothing either.
 
 ## What the manifest records
 

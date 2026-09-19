@@ -116,6 +116,25 @@ _manifest(text::AbstractString) = TOML.parse(text)
         end
     end
 
+    @testset "conservative fallback: a skipped resolution says so (#425)" begin
+        # `scan_report(...; resolve = false)` uses the same declaration-only
+        # reading, but the reason must not blame a Cargo run that never happened.
+        plan = RustCall._pyo3_conservative_plan(_manifest("""
+        [package]
+        name = "mandatory"
+        version = "0.1.0"
+        [dependencies]
+        pyo3 = "0.29"
+        """);
+        resolution = :skipped)
+        @test plan.resolved == false
+        @test plan.mode === :link_libpython
+        @test plan.cfg_text == ""
+        @test occursin("resolve = false", plan.reason)
+        @test occursin("conservative", plan.reason)
+        @test !occursin("Cargo could not resolve", plan.reason)
+    end
+
     @testset "link flags and the dependency entry" begin
         plan = RustCall._pyo3_conservative_plan(_manifest("""
         [package]
@@ -517,6 +536,8 @@ _manifest(text::AbstractString) = TOML.parse(text)
         mktempdir() do dir
             @test_throws RustCall.RustError RustCall.pyo3_link_plan(dir)
             @test_throws RustCall.RustError RustCall.pyo3_feature_candidates(dir)
+            # `resolve = false` needs the manifest too: no Cargo, but still a crate.
+            @test_throws RustCall.RustError RustCall.scan_report(dir; resolve = false)
         end
     end
 
@@ -1315,6 +1336,99 @@ _manifest(text::AbstractString) = TOML.parse(text)
         end
     end
 
+    @testset "an abandoned probe project is swept, a live one is kept (#425)" begin
+        # The `finally` that removes a probe project does not run when the
+        # process is interrupted, and a probe of a large crate is hundreds of
+        # MB. The next probe names its project after its owner and sweeps the
+        # ones whose owner is gone — never a live process's.
+        mktempdir() do parent
+            # No lease, another pid: swept by the pid fallback once the
+            # pre-lease grace window has passed (closed here so the test need
+            # not wait).
+            dead = joinpath(parent, "project_2000000000_abandoned")
+            mkpath(dead)
+            # No lease, this process's pid: kept.
+            live = joinpath(parent, "project_$(getpid())_live")
+            mkpath(live)
+            # A lease nobody holds (the owner died before its `finally`): free,
+            # so swept whatever the name's pid says.
+            freed = joinpath(parent, "project_$(getpid())_freed")
+            mkpath(freed)
+            write(RustCall.generation_lease_path(freed), "")
+            # A name with no owner encoded and no lease is never guessed at.
+            legacy = joinpath(parent, "project_legacy")
+            mkpath(legacy)
+            grace = RustCall._UNLEASED_PROJECT_GRACE[]
+            RustCall._UNLEASED_PROJECT_GRACE[] = 0.0
+            try
+                @test RustCall._sweep_abandoned_projects(parent) == 2
+            finally
+                RustCall._UNLEASED_PROJECT_GRACE[] = grace
+            end
+            @test !isdir(dead)
+            @test !isdir(freed)
+            @test isdir(live)
+            @test isdir(legacy)
+            @test !isfile(RustCall.generation_lease_path(freed))
+            # A directory created this instant is not abandoned: the lease is
+            # locked a moment after the directory appears, and a concurrent
+            # sweep must not catch that window.
+            fresh = joinpath(parent, "project_2000000000_fresh")
+            mkpath(fresh)
+            @test RustCall._sweep_abandoned_projects(parent) == 0
+            @test isdir(fresh)
+        end
+    end
+
+    @testset "a held lease protects a live probe across pid namespaces (#425 review)" begin
+        # Another "container" holds the lease on a project tagged with a pid
+        # that is dead here. The pid fallback alone would delete it; the held
+        # lease says hold. Needs advisory locking, like the generation leases.
+        mktempdir() do parent
+            gone = open(`$(Base.julia_cmd()) --startup-file=no -e 0`)
+            dead_pid = getpid(gone)
+            wait(gone)
+            @test !RustCall._process_alive(dead_pid)
+            guarded = joinpath(parent, "project_$(dead_pid)_guarded")
+            mkpath(guarded)
+            script = """
+            using RustCall
+            io = open($(repr(RustCall.generation_lease_path(guarded))), "w")
+            RustCall._try_lock_lease(io) === true || (print("nolock"); exit(0))
+            println("ready"); flush(stdout)
+            readline(stdin)
+            """
+            holder = open(`$(Base.julia_cmd()) --startup-file=no --project=$(dirname(@__DIR__)) -e $script`, "r+")
+            ready = readline(holder)
+            if ready != "ready"
+                close(holder); wait(holder)
+                @test_skip "this file system offers no advisory locking"
+            else
+                try
+                    @test RustCall._lease_state(guarded) === :held
+                    # The name's pid reads as dead here; the lease keeps it.
+                    @test RustCall._sweep_abandoned_projects(parent) == 0
+                    @test isdir(guarded)
+                finally
+                    close(holder); wait(holder)
+                end
+                # The owner is gone: the free lease lets the sweep take it,
+                # once the lease is past the window that covers the moment
+                # before its lock is taken (closed here so the test need not
+                # wait).
+                @test RustCall._lease_state(guarded) === :free
+                grace = RustCall._UNLEASED_PROJECT_GRACE[]
+                RustCall._UNLEASED_PROJECT_GRACE[] = 0.0
+                try
+                    @test RustCall._sweep_abandoned_projects(parent) == 1
+                finally
+                    RustCall._UNLEASED_PROJECT_GRACE[] = grace
+                end
+                @test !isdir(guarded)
+            end
+        end
+    end
+
     @testset "a refused entry does not keep a valid name (#392 review)" begin
         # The symbol table reserves every arity an entry *will* emit, and it
         # runs in the scan — before the generator has had the chance to refuse
@@ -1585,6 +1699,85 @@ _manifest(text::AbstractString) = TOML.parse(text)
             @test plan.mode === expected
             @test plan.crate_features == ["a"]
             @test occursin("--print cfg", plan.reason)
+        end
+    end
+
+    @testset "scan_report(resolve = false) is a probe-free Phase 1 (#425)" begin
+        # The default route asks Cargo to resolve features and runs the wrapper
+        # cfg probe, which compiles the crate's whole dependency graph. This
+        # opt-out runs no Cargo: the plan is the declaration-only reading and
+        # the scan is lenient, so a `#[cfg]`-carrying item is reported rather
+        # than decided.
+        mktempdir() do dir
+            _write_crate(dir, """
+            [package]
+            name = "probe_free_scan"
+            version = "0.1.0"
+            edition = "2021"
+            [dependencies]
+            pyo3 = { version = "0.29", default-features = false, features = ["macros"] }
+            [features]
+            extra = []
+            """)
+            write(joinpath(dir, "src", "lib.rs"), """
+            #[pyfunction]
+            pub fn always(a: i32) -> i32 { a }
+
+            #[cfg(feature = "extra")]
+            #[pyfunction]
+            pub fn gated(a: i32) -> i32 { a }
+            """)
+            io = IOBuffer()
+            report = RustCall.scan_report(dir; io = io, generate = false, resolve = false)
+            text = String(take!(io))
+            @test report.plan.resolved == false
+            @test report.plan.cfg_text == ""
+            @test occursin("resolve = false", report.plan.reason)
+            # `pyo3_feature_candidates` is a Cargo resolution per feature: under
+            # `resolve = false` there is no Cargo to ask, so the column is empty.
+            @test isempty(report.candidates)
+            @test occursin("resolution skipped", text)
+            names = Set(String(f.name) for f in report.wrappable)
+            @test "always" in names
+            @test "gated" in names
+            # Neither Cargo resolution would have made its project tree under
+            # the crate's `target/`; nothing did, so neither directory exists.
+            @test !isdir(joinpath(dir, "target", "rustcall-pyo3-probe"))
+            @test !isdir(joinpath(dir, "target", "rustcall-pyo3-features"))
+            # The empty snapshot is what keeps the lenient scan off Cargo:
+            # `_cfg_file_args` passes no arguments and never asks for a snapshot.
+            @test isempty(RustCall._cfg_file_args(:lenient; cfg_text = ""))
+        end
+    end
+
+    @testset "resolve = false reads inherited fields without Cargo (#425 review)" begin
+        # A workspace member inheriting `version` / `edition` used to reach
+        # `cargo metadata` through `scan_crate`, so the advertised no-Cargo mode
+        # still launched Cargo. The manifest read decides both now.
+        mktempdir() do ws
+            write(joinpath(ws, "Cargo.toml"), """
+            [workspace]
+            members = ["member"]
+            [workspace.package]
+            version = "9.9.9"
+            edition = "2021"
+            """)
+            member = _write_crate(joinpath(ws, "member"), """
+            [package]
+            name = "inheriting"
+            version = { workspace = true }
+            edition = { workspace = true }
+            """)
+            toml = RustCall.parse_cargo_toml(joinpath(member, "Cargo.toml"))
+            @test RustCall._crate_rust_edition(member, toml; allow_cargo = false) == "2021"
+            @test RustCall._package_field(member, toml, "version", "0.1.0";
+                                          allow_cargo = false) == "9.9.9"
+
+            io = IOBuffer()
+            report = RustCall.scan_report(member; io = io, generate = false, resolve = false)
+            @test report.info.name == "inheriting"
+            @test report.info.version == "9.9.9"
+            @test !isdir(joinpath(member, "target", "rustcall-pyo3-probe"))
         end
     end
 end
