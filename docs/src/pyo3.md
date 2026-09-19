@@ -389,10 +389,14 @@ link plan. `generate = false` is orthogonal: it skips the Phase-2 generator,
 but the default plan resolution still runs.
 
 `RustCall.scan_crate` returns the same information programmatically, in the
-`pyo3_functions` and `pyo3_structs` fields of the `CrateInfo`; it needs no
-Cargo and no Python, running `rustcall-extract` over the crate's sources and
-reading its `Cargo.toml`. Generating the wrapper's `lib.rs` — which is what the
-"Wrapper crate exports" column reports — compiles nothing either.
+`pyo3_functions` and `pyo3_structs` fields of the `CrateInfo`. Its default
+lenient scan still invokes Cargo — `_cfg_snapshot(:lenient)` runs the
+dependency-free `cargo rustc --release --lib -- --print cfg` probe for target
+predicates, and an inherited `edition` / `version` can fall back to
+`cargo metadata` — so for a run that touches no Cargo use
+`scan_report(...; resolve = false)`, or pass an explicit empty `cfg_text` to
+`scan_crate`. Generating the wrapper's `lib.rs` — which is what the "Wrapper
+crate exports" column reports — compiles nothing either.
 
 ## What the manifest records
 

@@ -1412,9 +1412,18 @@ _manifest(text::AbstractString) = TOML.parse(text)
                 finally
                     close(holder); wait(holder)
                 end
-                # The owner is gone: the free lease lets the sweep take it.
+                # The owner is gone: the free lease lets the sweep take it,
+                # once the lease is past the window that covers the moment
+                # before its lock is taken (closed here so the test need not
+                # wait).
                 @test RustCall._lease_state(guarded) === :free
-                @test RustCall._sweep_abandoned_projects(parent) == 1
+                grace = RustCall._UNLEASED_PROJECT_GRACE[]
+                RustCall._UNLEASED_PROJECT_GRACE[] = 0.0
+                try
+                    @test RustCall._sweep_abandoned_projects(parent) == 1
+                finally
+                    RustCall._UNLEASED_PROJECT_GRACE[] = grace
+                end
                 @test !isdir(guarded)
             end
         end

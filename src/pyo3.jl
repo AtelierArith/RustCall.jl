@@ -1872,11 +1872,11 @@ project is removed; only with **no** lease (a pre-#425 project, or a file system
 without locking) is the pid consulted, and then only a provably dead owner is
 removed. Returns the count.
 """
-# The lease is locked a moment after the project directory appears, and until
-# then the directory carries no lease for the sweep to read. An unleased
-# directory younger than this is left for the next sweep; an interrupted owner
-# leaves its lease file behind and takes the `:free` branch at once. A `Ref` so
-# a test can close the window without waiting.
+# The project directory appears, then its lease file is created, then that
+# lease is locked: a sweep looking in either window sees no lock and could take
+# an active project for abandoned. A project whose lease is held is kept
+# outright; one whose lease is free, or that has no lease, is only removed once
+# it is older than this. A `Ref` so a test can close the window without waiting.
 const _UNLEASED_PROJECT_GRACE = _state_view(:unleased_project_grace, Ref(60.0))
 
 function _sweep_abandoned_projects(parent::AbstractString)
@@ -1893,9 +1893,15 @@ function _sweep_abandoned_projects(parent::AbstractString)
             @debug "Could not read a shaped-project lease" path = dir exception = e
             :none
         end
-        if state === :held
-            continue
-        elseif state === :free
+        state === :held && continue
+        # A `:free` lease (created but not yet locked) and a missing lease are
+        # both indistinguishable from the moment before the owner takes its
+        # lease, so neither is removed until the project — its lease, when there
+        # is one — is older than the grace window (#425 review). An owner that
+        # died leaves something older than that by the time the next sweep runs.
+        stamp = state === :free ? generation_lease_path(dir) : dir
+        time() - Base.Filesystem.mtime(stamp) >= _UNLEASED_PROJECT_GRACE[] || continue
+        if state === :free
             _remove_shaped_project(dir)
             removed += 1
             continue
@@ -1906,12 +1912,6 @@ function _sweep_abandoned_projects(parent::AbstractString)
         pid === nothing && continue          # a pre-#425 name with no lease
         pid == me && continue
         _process_alive(pid) && continue
-        # The lease is locked a moment after the directory appears, so an
-        # unleased directory may be one being set up right now. Only remove it
-        # once it is older than the grace window (#425 review). An interrupted
-        # owner leaves its lease file behind, so it takes the `:free` branch
-        # above and is swept at once; this grace is the pre-lease window only.
-        time() - Base.Filesystem.mtime(dir) >= _UNLEASED_PROJECT_GRACE[] || continue
         _remove_shaped_project(dir)
         removed += 1
     end
