@@ -21,8 +21,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   member that inherits `version` / `edition` has both read from the workspace
   manifest, so the mode never falls back to `cargo metadata`.
   `generate = false` is orthogonal and does not avoid the probe.
+- **The PyO3 Python-host path covers numpy arrays, declarative modules,
+  classmethods, callables and async**
+  ([#424](https://github.com/AtelierArith/RustCall.jl/issues/424)).
+  A `pyo3-numpy` array argument is typed `AbstractArray` and converted with
+  `numpy.asarray`, and a numpy return becomes a Julia array; items of a
+  declarative `#[pymodule] mod` bind below the imported module and a nested
+  module contributes its attribute path; a `#[classmethod]` drops its class
+  argument and calls through the class object; a class's `propertynames` lists
+  only the fields PyO3 exposes and a get-only field raises on assignment; a
+  Python callable argument stays `Any`; an `async fn` is skipped, since the path
+  has no event loop to drive the coroutine. `docs/src/pyo3.md` states the
+  policies.
+- **An example, `examples/Pyo3HostImport.jl`, binds two PyO3-only crates**
+  ([#424](https://github.com/AtelierArith/RustCall.jl/issues/424),
+  [#434](https://github.com/AtelierArith/RustCall.jl/issues/434)). It shows both
+  front doors in one package: `@rust_crate ... pyo3_host=true` and
+  `RustCall.pyo3_host_import` directly.
+
+### Changed
+- **`using RustCall` loads much faster.** `__init__`'s helper-library load wrote
+  several `StateView`s through a closure specialised on each container type, so
+  the first write of every registry was JIT-compiled at load time (measured at
+  ~0.65 s of a ~0.86 s load). The closure is now a `@nospecialize`d callable and
+  the path is replayed during precompilation, so a warm `using RustCall` falls to
+  ~0.27 s ([#430](https://github.com/AtelierArith/RustCall.jl/issues/430)).
 
 ### Fixed
+- **A one-argument `#[new]` no longer breaks package precompilation**
+  ([#433](https://github.com/AtelierArith/RustCall.jl/issues/433)).
+  A `#[new]` whose argument maps to untyped Julia `Any` (`Py<PyAny>`, a
+  class-typed argument) emitted `Class(obj::Any)`, overwriting Julia's
+  synthesized single-field constructor. Outside precompilation that is a
+  warning; while precompiling a package it is an error, so a package using such
+  a crate could not precompile. The host struct now declares an explicit inner
+  constructor, and the emitted method is a new outer method.
 - **The PyO3 shaped-project claim is atomic, with no grace window**
   ([#437](https://github.com/AtelierArith/RustCall.jl/issues/437)).
   A project's `<project>.lease` is now locked under a staging name and renamed
