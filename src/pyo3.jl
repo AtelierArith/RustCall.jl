@@ -1879,6 +1879,27 @@ removed. Returns the count.
 # it is older than this. A `Ref` so a test can close the window without waiting.
 const _UNLEASED_PROJECT_GRACE = _state_view(:unleased_project_grace, Ref(60.0))
 
+"""
+    _project_age_seconds(path) -> Union{Float64, Nothing}
+
+The age of a project's stamp (its directory, or its lease file when that is the
+thing under test), or `nothing` when the stamp is already gone. A concurrent
+sweep, or the owner's own `finally`, can remove the directory or its lease
+between the listing and this stat; a vanished project needs no cleanup, and
+letting the `ENOENT` escape aborted the caller's own project creation (#425
+review).
+"""
+function _project_age_seconds(path::AbstractString)
+    # `mtime` answers `0.0` for a missing path on some platforms and throws on
+    # others; `ispath` plus the `catch` cover both, and the race between them.
+    ispath(path) || return nothing
+    return try
+        time() - Base.Filesystem.mtime(path)
+    catch
+        nothing
+    end
+end
+
 function _sweep_abandoned_projects(parent::AbstractString)
     isdir(parent) || return 0
     me = getpid()
@@ -1899,8 +1920,9 @@ function _sweep_abandoned_projects(parent::AbstractString)
         # lease, so neither is removed until the project — its lease, when there
         # is one — is older than the grace window (#425 review). An owner that
         # died leaves something older than that by the time the next sweep runs.
-        stamp = state === :free ? generation_lease_path(dir) : dir
-        time() - Base.Filesystem.mtime(stamp) >= _UNLEASED_PROJECT_GRACE[] || continue
+        age = _project_age_seconds(state === :free ? generation_lease_path(dir) : dir)
+        age === nothing && continue          # already cleaned by its owner
+        age >= _UNLEASED_PROJECT_GRACE[] || continue
         if state === :free
             _remove_shaped_project(dir)
             removed += 1

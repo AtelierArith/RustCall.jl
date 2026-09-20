@@ -1377,6 +1377,10 @@ _manifest(text::AbstractString) = TOML.parse(text)
             mkpath(fresh)
             @test RustCall._sweep_abandoned_projects(parent) == 0
             @test isdir(fresh)
+            # A project that vanished while the sweep looked at it — its owner's
+            # `finally` ran, or another sweep took it — needs no cleanup and
+            # must not abort the sweep with an `ENOENT` from the stamp read.
+            @test RustCall._project_age_seconds(joinpath(parent, "gone")) === nothing
         end
     end
 
