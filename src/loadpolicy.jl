@@ -1852,7 +1852,7 @@ function _lease_state(copy_path::AbstractString)
     lease = generation_lease_path(copy_path)
     isfile(lease) || return :none
     io = try
-        open(lease, "a")
+        open(lease, "r")   # read: never recreate a lease that just vanished
     catch
         return :none
     end

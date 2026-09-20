@@ -899,12 +899,12 @@ const PYO3_MIXED_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_mixed
                 # the config is discovered, and the crate's lockfile is the
                 # project's starting point.
                 write(joinpath(dir, "Cargo.lock"), "# a marker, not a real lockfile\n")
-                project = RustCall._wrapper_shaped_project(dir, "rustcall-pyo3-test")
+                project, lease = RustCall._wrapper_shaped_project(dir, "rustcall-pyo3-test")
                 @test startswith(project, joinpath(dir, "target", "rustcall-pyo3-test"))
                 @test isdir(joinpath(project, "src"))
                 @test read(joinpath(project, "Cargo.lock"), String) ==
                       read(joinpath(dir, "Cargo.lock"), String)
-                rm(project; recursive = true, force = true)
+                RustCall._remove_shaped_project(project, lease)
                 rm(joinpath(dir, "Cargo.lock"))
                 # `[patch]` is honoured only in the root manifest: it is carried
                 # over, paths made absolute; a crate without one adds nothing.

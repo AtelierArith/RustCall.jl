@@ -21,6 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `generate = false` is orthogonal and does not avoid the probe.
 
 ### Fixed
+- **The PyO3 shaped-project claim is atomic, with no grace window**
+  ([#437](https://github.com/AtelierArith/RustCall.jl/issues/437)).
+  A project's `<project>.lease` is now locked under a staging name and renamed
+  into place *before* the directory is made, so a sweep never sees a project
+  whose owner is still claiming it. The lock alone decides held versus free:
+  the timing-based grace window, the age stamp, the lease retry/abort, the
+  post-lock liveness re-check and the separate claimed-removal path are gone.
+  A lease left by an owner that died between the claim and `mkdir` is swept.
+  Windows and lockless volumes, which carry no lease, still decide by the
+  machine-wide pid in the name.
 - **An interrupted PyO3 cfg probe no longer leaves its project tree behind**
   ([#425](https://github.com/AtelierArith/RustCall.jl/issues/425)).
   A probe project carries a held `<project>.lease` for its lifetime, and the

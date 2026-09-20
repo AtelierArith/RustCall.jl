@@ -363,9 +363,9 @@ end
             @test occursin("[patch.crates-io", patched)
             @test occursin("vendor", patched)
             @test !occursin(joinpath("member", "vendor"), patched)
-            project = RustCall._wrapper_shaped_project(member, "rustcall-pyo3-test")
+            project, lease = RustCall._wrapper_shaped_project(member, "rustcall-pyo3-test")
             @test read(joinpath(project, "Cargo.lock"), String) == "# the workspace's lockfile\n"
-            rm(project; recursive = true, force = true)
+            RustCall._remove_shaped_project(project, lease)
             @test occursin(r"^\[workspace\]$"m,
                            RustCall._probe_cargo_toml("member", member, String[], true))
 
@@ -381,9 +381,9 @@ end
             @test RustCall._workspace_root_dir(standalone) === nothing
             @test RustCall._cargo_root_dir(standalone) == abspath(standalone)
             @test RustCall._root_patch_toml(standalone) == ""
-            project = RustCall._wrapper_shaped_project(standalone, "rustcall-pyo3-test")
+            project, lease = RustCall._wrapper_shaped_project(standalone, "rustcall-pyo3-test")
             @test !isfile(joinpath(project, "Cargo.lock"))
-            rm(project; recursive = true, force = true)
+            RustCall._remove_shaped_project(project, lease)
 
             # ... but an explicit `members` listing wins over `exclude`, as it
             # does in Cargo (`is_excluded` is "excluded and not an explicit
@@ -1347,51 +1347,133 @@ end
         end
     end
 
+    @testset "a project is claimed before it is visible (#437)" begin
+        # The whole point of #437: the lease is locked under a staging name and
+        # renamed into place before the directory exists, so a sweep never has
+        # to guess whether a visible project is still being created. No grace
+        # window is consulted and no owner can be building against a tree a
+        # sweep took for abandoned.
+        mktempdir() do parent
+            dir = RustCall._new_shaped_project_dir(parent)
+            lease = RustCall._publish_shaped_project_lease(parent, dir)
+            if lease === nothing
+                @test_skip "no advisory locking here (Windows, or a lockless volume)"
+            else
+                @test !isdir(dir)                       # claimed, not yet visible
+                @test isfile(RustCall.generation_lease_path(dir))
+                @test RustCall._lease_state(dir) === :held
+                @test RustCall._sweep_abandoned_projects(parent) == 0
+                mkpath(dir)
+                @test isdir(dir)
+                @test RustCall._sweep_abandoned_projects(parent) == 0
+                RustCall._remove_shaped_project(dir, lease)
+                @test !isdir(dir)
+                @test !isfile(RustCall.generation_lease_path(dir))
+            end
+        end
+    end
+
+    @testset "an orphan lease is swept once its owner is gone (#437)" begin
+        # A claim whose owner died between the lock and `mkdir` leaves a lease
+        # with no project. A held one must stay; a free one must not accumulate.
+        mktempdir() do parent
+            dir = RustCall._new_shaped_project_dir(parent)
+            lease = RustCall._publish_shaped_project_lease(parent, dir)
+            if lease === nothing
+                @test_skip "no advisory locking here"
+            else
+                @test RustCall._sweep_abandoned_projects(parent) == 0
+                @test isfile(RustCall.generation_lease_path(dir))
+                close(lease)                            # the owner dies here
+                @test RustCall._lease_state(dir) === :free
+                @test RustCall._sweep_abandoned_projects(parent) == 1
+                @test !isfile(RustCall.generation_lease_path(dir))
+            end
+        end
+    end
+
+    @testset "a paused owner keeps its project across pid namespaces (#437)" begin
+        # Synchronize the pause at the exact window #437 removed: the claim is
+        # held, the directory does not exist yet, and the owner is stopped. A
+        # sweep in another process must leave the claim alone; when the owner
+        # dies without a `finally`, the same sweep removes it with no wait.
+        mktempdir() do parent
+            script = """
+            using RustCall
+            parent = $(repr(parent))
+            dir = RustCall._new_shaped_project_dir(parent)
+            lease = RustCall._publish_shaped_project_lease(parent, dir)
+            if lease === nothing
+                print("nolock"); flush(stdout); exit(0)
+            end
+            println(dir); flush(stdout)
+            readline(stdin)          # paused before the directory is made
+            mkpath(dir)
+            println("made"); flush(stdout)
+            readline(stdin)          # paused while the claim is held
+            """
+            holder = open(`$(Base.julia_cmd()) --startup-file=no --project=$(dirname(@__DIR__)) -e $script`, "r+")
+            line = readline(holder)
+            if line == "nolock" || isempty(line)
+                close(holder); wait(holder)
+                @test_skip "no advisory locking here"
+            else
+                dir = line
+                try
+                    @test !isdir(dir)
+                    @test RustCall._sweep_abandoned_projects(parent) == 0
+                    @test isfile(RustCall.generation_lease_path(dir))
+                    println(holder, "go"); flush(holder)
+                    @test readline(holder) == "made"
+                    @test isdir(dir)
+                    @test RustCall._sweep_abandoned_projects(parent) == 0
+                finally
+                    close(holder)        # the owner dies, running no `finally`
+                    wait(holder)
+                end
+                @test RustCall._lease_state(dir) === :free
+                @test RustCall._sweep_abandoned_projects(parent) == 1
+                @test !isdir(dir)
+                @test !isfile(RustCall.generation_lease_path(dir))
+            end
+        end
+    end
+
     @testset "an abandoned probe project is swept, a live one is kept (#425)" begin
         # The `finally` that removes a probe project does not run when the
         # process is interrupted, and a probe of a large crate is hundreds of
         # MB. The next probe names its project after its owner and sweeps the
         # ones whose owner is gone — never a live process's.
         mktempdir() do parent
-            # No lease, another pid: swept by the pid fallback once the
-            # pre-lease grace window has passed (closed here so the test need
-            # not wait).
+            probe = open(joinpath(parent, "probe.lease"), "w")
+            locking = _advisory_lock_state(probe) === true
+            close(probe)
+            rm(joinpath(parent, "probe.lease"); force = true)
+            # No lease, another pid: swept by the pid fallback at once.
             dead = joinpath(parent, "project_2000000000_abandoned")
             mkpath(dead)
-            # No lease, this process's pid: kept.
+            # No lease, this process's pid: kept, with no waiting.
             live = joinpath(parent, "project_$(getpid())_live")
             mkpath(live)
             # A lease nobody holds (the owner died before its `finally`): free,
-            # so swept whatever the name's pid says.
+            # so swept whatever the name's pid says, with no grace window.
             freed = joinpath(parent, "project_$(getpid())_freed")
             mkpath(freed)
             write(RustCall.generation_lease_path(freed), "")
             # A name with no owner encoded and no lease is never guessed at.
             legacy = joinpath(parent, "project_legacy")
             mkpath(legacy)
-            grace = RustCall._UNLEASED_PROJECT_GRACE[]
-            RustCall._UNLEASED_PROJECT_GRACE[] = 0.0
-            try
-                @test RustCall._sweep_abandoned_projects(parent) == 2
-            finally
-                RustCall._UNLEASED_PROJECT_GRACE[] = grace
-            end
+            @test RustCall._sweep_abandoned_projects(parent) == (locking ? 2 : 1)
             @test !isdir(dead)
-            @test !isdir(freed)
             @test isdir(live)
             @test isdir(legacy)
-            @test !isfile(RustCall.generation_lease_path(freed))
-            # A directory created this instant is not abandoned: the lease is
-            # locked a moment after the directory appears, and a concurrent
-            # sweep must not catch that window.
-            fresh = joinpath(parent, "project_2000000000_fresh")
-            mkpath(fresh)
-            @test RustCall._sweep_abandoned_projects(parent) == 0
-            @test isdir(fresh)
-            # A project that vanished while the sweep looked at it — its owner's
-            # `finally` ran, or another sweep took it — needs no cleanup and
-            # must not abort the sweep with an `ENOENT` from the stamp read.
-            @test RustCall._project_age_seconds(joinpath(parent, "gone")) === nothing
+            @test !isfile(RustCall.generation_lease_path(dead))
+            if locking
+                @test !isdir(freed)
+                @test !isfile(RustCall.generation_lease_path(freed))
+            else
+                @test isdir(freed)      # a free lease is unreadable: pid, alive
+            end
         end
     end
 
@@ -1428,78 +1510,12 @@ end
                 finally
                     close(holder); wait(holder)
                 end
-                # The owner is gone: the free lease lets the sweep take it,
-                # once the lease is past the window that covers the moment
-                # before its lock is taken (closed here so the test need not
-                # wait).
+                # The owner is gone: the free lease lets the sweep take it at
+                # once — there is no create-to-lock window to wait out.
                 @test RustCall._lease_state(guarded) === :free
-                grace = RustCall._UNLEASED_PROJECT_GRACE[]
-                RustCall._UNLEASED_PROJECT_GRACE[] = 0.0
-                try
-                    @test RustCall._sweep_abandoned_projects(parent) == 1
-                finally
-                    RustCall._UNLEASED_PROJECT_GRACE[] = grace
-                end
+                @test RustCall._sweep_abandoned_projects(parent) == 1
                 @test !isdir(guarded)
             end
-        end
-    end
-
-    @testset "a project lease is retried while a sweep probe holds it (#425 review)" begin
-        # A sweep's `_lease_state` probe takes the lease lock for the instant it
-        # needs to read `:free` versus `:held`. A first `false` must be retried,
-        # not ignored: running the build without the lock would let a later
-        # sweep, past the grace window, delete a project still in progress.
-        mktempdir() do dir
-            path = joinpath(dir, "project_1_retry.lease")
-            holder = open(path, "w")
-            if _advisory_lock_state(holder) !== true
-                close(holder)
-                @test_skip "this file system offers no advisory locking"
-            else
-                target = open(path, "a")
-                releaser = @async begin
-                    sleep(0.05)
-                    close(holder)
-                end
-                state = RustCall._lock_project_lease(target)
-                wait(releaser)
-                @test state === true
-                close(target)
-            end
-        end
-    end
-
-    @testset "a project lease gives up rather than run unprotected (#425 review)" begin
-        # Past the wait window the holder is paused, not a probe: the caller gets
-        # an error and `_with_shaped_project` removes the project instead of
-        # running a build whose lease a later sweep could take for free.
-        mktempdir() do dir
-            path = joinpath(dir, "project_1_busy.lease")
-            holder = open(path, "w")
-            if _advisory_lock_state(holder) !== true
-                close(holder)
-                @test_skip "this file system offers no advisory locking"
-            else
-                target = open(path, "a")
-                @test_throws RustCall.RustError RustCall._lock_project_lease(target; wait = 0.05)
-                close(target)
-                close(holder)
-            end
-        end
-    end
-
-    @testset "a project swept before its lease was taken is refused (#425 review)" begin
-        # A pause long enough to outlast the grace window (`SIGSTOP`) can let a
-        # sweep remove a project between its creation and its lease; the owner
-        # must refuse rather than build against the missing tree.
-        mktempdir() do dir
-            gone = joinpath(dir, "project_1_gone")
-            @test_throws RustCall.RustError RustCall._require_project_alive(gone)
-            present = joinpath(dir, "project_2_present")
-            mkpath(present)
-            write(RustCall.generation_lease_path(present), "")
-            @test RustCall._require_project_alive(present) === nothing
         end
     end
 
