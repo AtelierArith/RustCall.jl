@@ -2033,36 +2033,70 @@ function _sweep_abandoned_projects(parent::AbstractString)
         startswith(entry, "project_") || continue
         dir = joinpath(parent, String(entry))
         isdir(dir) || continue                # the `.lease` sidecars are files
-        state = try
-            _lease_state(dir)
-        catch e
-            @debug "Could not read a shaped-project lease" path = dir exception = e
-            :none
+        lease_path = generation_lease_path(dir)
+        if isfile(lease_path)
+            lease = try
+                open(lease_path, "a")
+            catch e
+                @debug "Could not open a shaped-project lease" path = dir exception = e
+                nothing
+            end
+            if lease !== nothing
+                state = try
+                    _try_lock_lease(lease)
+                catch e
+                    @debug "Could not lock a shaped-project lease" path = dir exception = e
+                    nothing
+                end
+                if state === false
+                    close(lease)                 # a live owner holds it
+                    continue
+                elseif state === true
+                    # Keep holding the lock across the removal: a paused owner
+                    # that resumes now cannot take the lease in the probe-to-
+                    # delete gap and pass its own liveness check before the
+                    # directory goes (#425 review).
+                    age = _project_age_seconds(lease_path)
+                    if age !== nothing && age >= _UNLEASED_PROJECT_GRACE[]
+                        _remove_claimed_project(dir, lease)
+                        removed += 1
+                    else
+                        close(lease)
+                    end
+                    continue
+                end
+                close(lease)                     # `nothing`: no advisory locking
+            end
         end
-        state === :held && continue
-        # A `:free` lease (created but not yet locked) and a missing lease are
-        # both indistinguishable from the moment before the owner takes its
-        # lease, so neither is removed until the project — its lease, when there
-        # is one — is older than the grace window (#425 review). An owner that
-        # died leaves something older than that by the time the next sweep runs.
-        age = _project_age_seconds(state === :free ? generation_lease_path(dir) : dir)
-        age === nothing && continue          # already cleaned by its owner
-        age >= _UNLEASED_PROJECT_GRACE[] || continue
-        if state === :free
-            _remove_shaped_project(dir)
-            removed += 1
-            continue
-        end
+        # No lease, or a file system without locking: consult the owner pid, and
+        # only remove a provably dead owner past the grace window.
         parts = split(entry, '_'; limit = 3)
         length(parts) >= 2 || continue
         pid = tryparse(Int, parts[2])
         pid === nothing && continue          # a pre-#425 name with no lease
         pid == me && continue
         _process_alive(pid) && continue
+        age = _project_age_seconds(dir)
+        age === nothing && continue          # already cleaned by its owner
+        age >= _UNLEASED_PROJECT_GRACE[] || continue
         _remove_shaped_project(dir)
         removed += 1
     end
     return removed
+end
+
+# Remove a project whose lease this sweep just took: the directory first, while
+# the lock is still held and no resuming owner can slip in, then close the lease
+# and remove its file. Windows will not delete a file an open handle holds, so
+# the lease file goes after the close.
+function _remove_claimed_project(dir::AbstractString, lease::IOStream)
+    try
+        rm(dir; recursive = true, force = true)
+    finally
+        close(lease)
+        rm(generation_lease_path(dir); force = true)
+    end
+    return nothing
 end
 
 # The directory whose manifest is the Cargo root of a build of `crate_path`:
