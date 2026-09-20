@@ -1898,8 +1898,12 @@ atomic and the file is already locked, so `<dir>.lease` is **never visible
 unlocked** — the sweep asks the lock, never a timestamp (#437).
 
 Returns the open, locked stream, or `nothing` where there is no lock to publish
-(Windows, whose machine-wide process table decides instead, or a file system
-without advisory locking); the sweep then falls back to the pid in the name.
+(Windows, whose machine-wide process table decides instead, a file system
+without advisory locking, or a locking error); the sweep then falls back to the
+pid in the name. Only a lease this call actually holds is published: a stream
+left unlocked — a transient lock failure, not a file system without locking —
+would let a later sweep take a still-active project for abandoned (#437
+review).
 """
 function _publish_shaped_project_lease(parent::AbstractString, dir::AbstractString)
     Sys.iswindows() && return nothing
@@ -1916,10 +1920,10 @@ function _publish_shaped_project_lease(parent::AbstractString, dir::AbstractStri
         @debug "Could not lock a staged shaped-project lease" path = dir exception = e
         nothing
     end
-    if state === false
-        # `tmp` is a name from `tempname`, ours alone; another description
-        # holding it means locking is not advisory here. Build without a claim,
-        # as before #425.
+    if state !== true
+        # `false`: a name from `tempname`, ours alone, is already locked, so
+        # locking is not advisory here. `nothing`: no lock, or a transient
+        # error. Build without a claim, as before #425.
         close(io)
         rm(tmp; force = true)
         return nothing
@@ -2025,7 +2029,11 @@ function _sweep_abandoned_projects(parent::AbstractString)
         lease_path = generation_lease_path(dir)
         if isfile(lease_path)
             lease = try
-                open(lease_path, "r")        # never recreate a vanished lease
+                # Read/write but non-creating: some network file systems need a
+                # writable descriptor for the exclusive lock, and `"r+"` still
+                # fails rather than recreates a lease that just vanished (#437
+                # review).
+                open(lease_path, "r+")
             catch e
                 @debug "Could not open a shaped-project lease" path = dir exception = e
                 nothing
@@ -2072,7 +2080,7 @@ end
 # whole project.
 function _sweep_orphan_project_lease(lease_path::AbstractString)
     io = try
-        open(lease_path, "r")
+        open(lease_path, "r+")                # writable, for the lock
     catch
         return false                          # already gone
     end
