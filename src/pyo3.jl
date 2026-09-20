@@ -1834,7 +1834,7 @@ function _require_linkable_lib_target(name::AbstractString, cargo_toml::Abstract
 end
 
 """
-    _wrapper_shaped_project(crate_path, subdir) -> String
+    _wrapper_shaped_project(crate_path, subdir) -> (dir, lease)
 
 A fresh directory for a Cargo project that stands in for the wrapper crate —
 the generated wrapper itself, or the cfg probe — placed **under the target
@@ -1858,122 +1858,141 @@ Both generated manifests declare an empty `[workspace]`: under a workspace
 member's `target/` Cargo would otherwise climb to the workspace and reject a
 crate it does not list ("believes it's in a workspace when it's not").
 
-The directory is the caller's to remove.
+The claim comes before the directory: `_publish_shaped_project_lease` names the
+project, locks its lease under a staging name and renames it into place, and
+only then is the directory made (#437). A sweep therefore never sees a project
+without its lock, so it needs no grace window. The returned `lease` is the held
+stream (or `nothing` where there is no lock); pass both to
+`_remove_shaped_project` when done.
 """
 function _wrapper_shaped_project(crate_path::AbstractString, subdir::AbstractString)
     parent = joinpath(String(crate_path), "target", String(subdir))
     mkpath(parent)
     _sweep_abandoned_projects(parent)
-    dir = mktempdir(parent; prefix = "project_$(getpid())_")
-    mkpath(joinpath(dir, "src"))
-    lock = joinpath(_cargo_root_dir(crate_path), "Cargo.lock")
-    isfile(lock) && cp(lock, joinpath(dir, "Cargo.lock"); force = true)
-    return dir
+    dir = _new_shaped_project_dir(parent)
+    lease = _publish_shaped_project_lease(parent, dir)
+    try
+        mkpath(joinpath(dir, "src"))
+        lock = joinpath(_cargo_root_dir(crate_path), "Cargo.lock")
+        isfile(lock) && cp(lock, joinpath(dir, "Cargo.lock"); force = true)
+    catch
+        # The claim is already held, so `_with_shaped_project` will never see
+        # this project to clean it up: do it here, or the locked lease and the
+        # partial tree outlive the failure and a sweep keeps calling them live
+        # (#437 review).
+        _remove_shaped_project(dir, lease)
+        rethrow()
+    end
+    return dir, lease
+end
+
+"""
+    _new_shaped_project_dir(parent) -> String
+
+A unique, not-yet-created `project_<pid>_<random>` path under `parent`. The
+directory is made only after its lease is published (`_wrapper_shaped_project`),
+so no sweep can see an unclaimed project.
+"""
+function _new_shaped_project_dir(parent::AbstractString)
+    token = basename(tempname(String(parent); cleanup = false))
+    return joinpath(String(parent), "project_$(getpid())_$(token)")
+end
+
+"""
+    _publish_shaped_project_lease(parent, dir) -> Union{IOStream, Nothing}
+
+Take the claim on `dir` before it exists: create a staging lease under
+`parent`, lock it, then rename it to `generation_lease_path(dir)`. The rename is
+atomic and the file is already locked, so `<dir>.lease` is **never visible
+unlocked** — the sweep asks the lock, never a timestamp (#437).
+
+Returns the open, locked stream, or `nothing` where there is no lock to publish
+(Windows, whose machine-wide process table decides instead, a file system
+without advisory locking, or a locking error); the sweep then falls back to the
+pid in the name. Only a lease this call actually holds is published: a stream
+left unlocked — a transient lock failure, not a file system without locking —
+would let a later sweep take a still-active project for abandoned (#437
+review).
+"""
+function _publish_shaped_project_lease(parent::AbstractString, dir::AbstractString)
+    Sys.iswindows() && return nothing
+    tmp = joinpath(String(parent), ".rustcall-lease-" * basename(tempname(parent; cleanup = false)))
+    io = try
+        open(tmp, "w")
+    catch e
+        @debug "Could not stage a shaped-project lease" path = dir exception = e
+        return nothing
+    end
+    state = try
+        _try_lock_lease(io)
+    catch e
+        @debug "Could not lock a staged shaped-project lease" path = dir exception = e
+        nothing
+    end
+    if state !== true
+        # `false`: a name from `tempname`, ours alone, is already locked, so
+        # locking is not advisory here. `nothing`: no lock, or a transient
+        # error. Build without a claim, as before #425.
+        close(io)
+        rm(tmp; force = true)
+        return nothing
+    end
+    try
+        mv(tmp, generation_lease_path(dir); force = true)
+    catch e
+        @debug "Could not publish a shaped-project lease" path = dir exception = e
+        close(io)
+        rm(tmp; force = true)
+        return nothing
+    end
+    return io
 end
 
 """
     _with_shaped_project(f, crate_path, subdir)
 
-Create a wrapper-shaped project (`_wrapper_shaped_project`), hold a lease on it
-for the duration of `f(dir)`, and remove it afterwards.
+Claim a wrapper-shaped project (`_wrapper_shaped_project`), hold its lease for
+the duration of `f(dir)`, and remove it afterwards.
 
 The lease is `<dir>.lease`, held with the same advisory lock the generation
 copies use (`_try_lock_lease`). It is what makes the sweep safe across pid
 namespaces: a project whose lease another process still holds is live even when
 that process's pid means nothing here, and a project whose owner died — this
-`finally` never ran — is left with a free lease and is swept (#425 review).
-Where the file system offers no locking the lease records nothing and the sweep
-falls back to the pid in the name.
+`finally` never ran — is left with a free lease and is swept (#425 review). The
+claim is atomic (#437), so no grace window and no re-check are needed: the
+directory cannot appear before the lock, and no sweep can take a held lease.
+Where the file system offers no locking, the lease records nothing and the
+sweep falls back to the pid in the name.
 """
 function _with_shaped_project(f::Function, crate_path::AbstractString,
                               subdir::AbstractString)
-    dir = _wrapper_shaped_project(crate_path, subdir)
-    lease = try
-        open(generation_lease_path(dir), "w")
-    catch e
-        @debug "No lease for the shaped project $(dir)" exception = e
-        nothing
-    end
+    dir, lease = _wrapper_shaped_project(crate_path, subdir)
     try
-        if lease !== nothing
-            _lock_project_lease(lease)
-            # A sweep that ran during a long pause between the directory
-            # appearing and the lease being taken may already have removed it;
-            # `f` would then work against a missing tree. The lease is held now,
-            # so no later sweep can take it, but this one must be refused
-            # (#425 review).
-            _require_project_alive(dir)
-        end
         return f(dir)
     finally
-        lease === nothing || close(lease)   # releases the lock
-        _remove_shaped_project(dir)
+        _remove_shaped_project(dir, lease)
     end
 end
 
 """
-    _require_project_alive(dir)
+    _remove_shaped_project(path, lease = nothing)
 
-Confirm a shaped project survived until its lease was taken. A sweep that ran
-between the directory's creation and its lease (a pause the grace window
-narrows but cannot close — `SIGSTOP` exceeds any of them) removes both; the
-caller must not run its build against the missing tree.
+Remove a wrapper-shaped project and its lease file. The directory goes first,
+while `lease` is still held, so a sweep — and an owner resuming from a pause —
+cannot claim it in between; then the lock is released and the lease file
+removed. Windows refuses to delete a file an open handle still holds, so the
+lease file goes after the close.
 """
-function _require_project_alive(dir::AbstractString)
-    isdir(dir) && isfile(generation_lease_path(dir)) && return nothing
-    throw(RustError("The generated Cargo project $(dir) was removed while its lease was " *
-                    "being taken."))
-end
-
-# How long a project lease is retried before giving up. Only a sweep's
-# `_lease_state` probe ever contends for a freshly created lease, and it holds
-# the lock for microseconds, so reaching this means the holder is paused; giving
-# up (rather than running the build unprotected) is the safe answer.
-const _PROJECT_LEASE_WAIT_SECONDS = 30.0
-
-"""
-    _lock_project_lease(lease; wait = _PROJECT_LEASE_WAIT_SECONDS) -> Union{Bool, Nothing}
-
-Take the exclusive lock on a freshly created project lease, retrying while
-another process holds it.
-
-A concurrent sweep's `_lease_state` probe takes that very lock for the instant
-it takes to read `:free` versus `:held`, so a first `false` answer is retried
-rather than ignored: running the build without the lock would let a later sweep,
-past the grace window, delete a project still in progress (#425 review). If the
-lock is still not acquired after `wait` seconds — a holder paused that long, not
-a probe — this raises rather than proceeding unprotected. `nothing` is a file
-system with no advisory locking: the caller proceeds and the sweep's pid
-fallback does what it can.
-"""
-function _lock_project_lease(lease::Union{Nothing, IOStream};
-                             wait::Float64 = _PROJECT_LEASE_WAIT_SECONDS)
-    lease === nothing && return nothing
-    deadline = time() + wait
-    while true
-        state = try
-            _try_lock_lease(lease)
-        catch
-            nothing
+function _remove_shaped_project(path::AbstractString,
+                                lease::Union{Nothing, IOStream} = nothing)
+    try
+        rm(path; recursive = true, force = true)
+    finally
+        if lease !== nothing
+            close(lease)                     # releases the lock
         end
-        state === false || return state
-        time() >= deadline && throw(RustError(
-            "Could not take the lease of a generated Cargo project within $(wait) s; " *
-            "another process is holding it."))
-        sleep(0.01)
+        rm(generation_lease_path(path); force = true)
     end
-end
-
-"""
-    _remove_shaped_project(path)
-
-Remove a wrapper-shaped project and its lease file. The lease is closed first —
-Windows refuses to delete a file an open handle still holds — which also
-releases the lock.
-"""
-function _remove_shaped_project(path::AbstractString)
-    rm(generation_lease_path(path); force = true)
-    rm(path; recursive = true, force = true)
     return nothing
 end
 
@@ -1983,60 +2002,47 @@ end
 Remove the generated projects under `parent` whose owner is gone.
 
 A project is named `project_<owner pid>_<random>` and, while its owner works on
-it, carries a held `<project>.lease`. The `finally` that removes it does not run
-when the process is interrupted, and the cfg probe's project can be hundreds of
-MB — measured on a crate with large path dependencies, the probe wrote 538 MB
-before it was killed (#425) — so the next project's creation sweeps the
-abandoned ones.
+it, is claimed by a held `<project>.lease`. The claim is published atomically:
+the lease is locked under a staging name and renamed into place
+(`_publish_shaped_project_lease`) **before the directory exists**, so a visible
+lease is always already locked (#437). A **held** lease keeps a project whatever
+the name's pid says; a **free** lease means the owner is gone — the `finally`
+that removes it did not run when the process was interrupted, and the cfg
+probe's project can be hundreds of MB (measured on a crate with large path
+dependencies, the probe wrote 538 MB before it was killed: #425) — and the
+project is removed. There is no window in which an owner is still claiming a
+visible project, so no age or grace window is consulted.
 
-The lease is asked first, because `_process_alive` reads only the caller's pid
-namespace: a live owner in another container or on another host would look dead
-and its active project would be deleted. A **held** lease keeps a project
-whatever the name's pid says; a **free** lease means the owner is gone and the
-project is removed; only with **no** lease (a pre-#425 project, or a file system
-without locking) is the pid consulted, and then only a provably dead owner is
-removed. Returns the count.
+Where there is no lease — Windows, whose machine-wide process table decides
+instead of a lease, a file system without advisory locking, or a pre-#437
+directory — the pid in the name is consulted, and only a provably dead owner is
+removed. `_process_alive` reads only the caller's pid namespace, but that is
+exact on Windows and the only signal left on a lockless volume. Returns the
+count.
 """
-# The project directory appears, then its lease file is created, then that
-# lease is locked: a sweep looking in either window sees no lock and could take
-# an active project for abandoned. A project whose lease is held is kept
-# outright; one whose lease is free, or that has no lease, is only removed once
-# it is older than this. A `Ref` so a test can close the window without waiting.
-const _UNLEASED_PROJECT_GRACE = _state_view(:unleased_project_grace, Ref(60.0))
-
-"""
-    _project_age_seconds(path) -> Union{Float64, Nothing}
-
-The age of a project's stamp (its directory, or its lease file when that is the
-thing under test), or `nothing` when the stamp is already gone. A concurrent
-sweep, or the owner's own `finally`, can remove the directory or its lease
-between the listing and this stat; a vanished project needs no cleanup, and
-letting the `ENOENT` escape aborted the caller's own project creation (#425
-review).
-"""
-function _project_age_seconds(path::AbstractString)
-    # `mtime` answers `0.0` for a missing path on some platforms and throws on
-    # others; `ispath` plus the `catch` cover both, and the race between them.
-    ispath(path) || return nothing
-    return try
-        time() - Base.Filesystem.mtime(path)
-    catch
-        nothing
-    end
-end
-
 function _sweep_abandoned_projects(parent::AbstractString)
     isdir(parent) || return 0
     me = getpid()
     removed = 0
     for entry in readdir(parent)
         startswith(entry, "project_") || continue
-        dir = joinpath(parent, String(entry))
-        isdir(dir) || continue                # the `.lease` sidecars are files
+        path = joinpath(parent, String(entry))
+        if !isdir(path)
+            # A lease whose project never appeared, because its owner died
+            # between the claim and `mkdir`: remove it when its lock is free.
+            endswith(entry, GENERATION_LEASE_SUFFIX) || continue
+            _sweep_orphan_project_lease(path) && (removed += 1)
+            continue
+        end
+        dir = path
         lease_path = generation_lease_path(dir)
         if isfile(lease_path)
             lease = try
-                open(lease_path, "a")
+                # Read/write but non-creating: some network file systems need a
+                # writable descriptor for the exclusive lock, and `"r+"` still
+                # fails rather than recreates a lease that just vanished (#437
+                # review).
+                open(lease_path, "r+")
             catch e
                 @debug "Could not open a shaped-project lease" path = dir exception = e
                 nothing
@@ -2052,51 +2058,51 @@ function _sweep_abandoned_projects(parent::AbstractString)
                     close(lease)                 # a live owner holds it
                     continue
                 elseif state === true
-                    # Keep holding the lock across the removal: a paused owner
-                    # that resumes now cannot take the lease in the probe-to-
-                    # delete gap and pass its own liveness check before the
-                    # directory goes (#425 review).
-                    age = _project_age_seconds(lease_path)
-                    if age !== nothing && age >= _UNLEASED_PROJECT_GRACE[]
-                        _remove_claimed_project(dir, lease)
-                        removed += 1
-                    else
-                        close(lease)
-                    end
+                    # Free: the owner is gone. Remove the directory while the
+                    # lock is still held, so no sweep — and no owner resuming
+                    # from a pause — can interleave, then release and unlink the
+                    # lease (`_remove_shaped_project`).
+                    _remove_shaped_project(dir, lease)
+                    removed += 1
                     continue
                 end
                 close(lease)                     # `nothing`: no advisory locking
             end
         end
         # No lease, or a file system without locking: consult the owner pid, and
-        # only remove a provably dead owner past the grace window.
+        # only remove a provably dead owner.
         parts = split(entry, '_'; limit = 3)
         length(parts) >= 2 || continue
         pid = tryparse(Int, parts[2])
         pid === nothing && continue          # a pre-#425 name with no lease
         pid == me && continue
         _process_alive(pid) && continue
-        age = _project_age_seconds(dir)
-        age === nothing && continue          # already cleaned by its owner
-        age >= _UNLEASED_PROJECT_GRACE[] || continue
         _remove_shaped_project(dir)
         removed += 1
     end
     return removed
 end
 
-# Remove a project whose lease this sweep just took: the directory first, while
-# the lock is still held and no resuming owner can slip in, then close the lease
-# and remove its file. Windows will not delete a file an open handle holds, so
-# the lease file goes after the close.
-function _remove_claimed_project(dir::AbstractString, lease::IOStream)
-    try
-        rm(dir; recursive = true, force = true)
-    finally
-        close(lease)
-        rm(generation_lease_path(dir); force = true)
+# Remove a `<project>.lease` whose directory does not exist. Its owner publishes
+# the lease just before `mkdir`, so such a file is either live-and-paused (the
+# lock is held) or abandoned; the lock answers which, exactly as it does for a
+# whole project.
+function _sweep_orphan_project_lease(lease_path::AbstractString)
+    io = try
+        open(lease_path, "r+")                # writable, for the lock
+    catch
+        return false                          # already gone
     end
-    return nothing
+    state = try
+        _try_lock_lease(io)
+    catch
+        nothing
+    end
+    if state === true
+        rm(lease_path; force = true)          # unlink while the lock is held
+    end
+    close(io)
+    return state === true
 end
 
 # The directory whose manifest is the Cargo root of a build of `crate_path`:

@@ -1852,7 +1852,11 @@ function _lease_state(copy_path::AbstractString)
     lease = generation_lease_path(copy_path)
     isfile(lease) || return :none
     io = try
-        open(lease, "a")
+        # Read/write but non-creating: `flock(LOCK_EX)` is emulated with
+        # byte-range locks on some network file systems and then needs a
+        # writable descriptor, while `"r+"` still fails rather than recreates a
+        # lease that just vanished (#437 review).
+        open(lease, "r+")
     catch
         return :none
     end
