@@ -290,7 +290,7 @@ function pyo3_link_plan(crate_path::AbstractString; features::Vector{String} = S
     plan = _pyo3_resolved_plan(crate_path, flags; release = release,
                                features = features, default_features = default_features)
     plan === nothing || return plan
-    return _pyo3_conservative_plan(TOML.parsefile(manifest_path); flags = flags,
+    return _pyo3_conservative_plan(_declaration_manifest(crate_path); flags = flags,
                                    features = features, default_features = default_features)
 end
 
@@ -824,6 +824,70 @@ function _parse_cargo_tree_features(line::AbstractString)
     occursin(r"^v[0-9]", length(split(head)) > 1 ? split(head)[2] : "") || return nothing
     feats = String[String(strip(f)) for f in split(tail, ',') if !isempty(strip(f))]
     return (String(name), feats)
+end
+
+"""
+    _declaration_manifest(crate_path) -> Dict
+
+The crate's parsed `Cargo.toml` with `{ workspace = true }` dependency
+inheritance expanded from the workspace root's `[workspace.dependencies]`
+table.
+
+Cargo expands that inheritance before it resolves a build, and the
+declaration-only plan must see the same table: with the unexpanded member
+manifest, a dependency inherited under an alias (the root writes
+`[workspace.dependencies.python] package = "pyo3"` and the member
+`python = { workspace = true }`) has no local `package` field, looks like an
+unknown crate, and the plan wrongly says `:python_free` (#425 review). Pure
+manifest reads: no Cargo.
+"""
+function _declaration_manifest(crate_path::AbstractString)
+    cargo_toml = TOML.parsefile(joinpath(String(crate_path), "Cargo.toml"))
+    root = _workspace_root_dir(crate_path)
+    root === nothing && return cargo_toml
+    root_manifest = joinpath(root, "Cargo.toml")
+    isfile(root_manifest) || return cargo_toml
+    parsed = _parse_manifest_or_nothing(root_manifest)
+    parsed isa AbstractDict || return cargo_toml
+    workspace = get(parsed, "workspace", nothing)
+    workspace isa AbstractDict || return cargo_toml
+    inherited = get(workspace, "dependencies", nothing)
+    inherited isa AbstractDict || return cargo_toml
+    _expand_inherited_dependencies!(get(cargo_toml, "dependencies", nothing), inherited)
+    targets = get(cargo_toml, "target", nothing)
+    if targets isa AbstractDict
+        for (_, cfg) in targets
+            cfg isa AbstractDict || continue
+            _expand_inherited_dependencies!(get(cfg, "dependencies", nothing), inherited)
+        end
+    end
+    return cargo_toml
+end
+
+# Replace each `key = { workspace = true }` entry of `deps` with the matching
+# `[workspace.dependencies.key]` table; the member's own keys (extra `features`,
+# `optional`) sit on top, and `features` is the union Cargo makes of the two.
+function _expand_inherited_dependencies!(deps, inherited::AbstractDict)
+    deps isa AbstractDict || return deps
+    for (key, spec) in deps
+        spec isa AbstractDict || continue
+        get(spec, "workspace", false) === true || continue
+        base = get(inherited, key, nothing)
+        base isa AbstractDict || continue
+        merged = Dict{String, Any}(String(k) => v for (k, v) in base)
+        for (k, v) in spec
+            k = String(k)
+            k == "workspace" && continue
+            if k == "features" && v isa AbstractVector &&
+               get(merged, "features", nothing) isa AbstractVector
+                merged["features"] = vcat(collect(Any, merged["features"]), collect(Any, v))
+            else
+                merged[k] = v
+            end
+        end
+        deps[key] = merged
+    end
+    return deps
 end
 
 """
@@ -2404,7 +2468,7 @@ function scan_report(crate_path::AbstractString; features::Vector{String} = Stri
         # `cfg_text` is empty (#425).
         isfile(manifest_path) ||
             throw(RustError("Cargo.toml not found in: $(crate_path)"))
-        _pyo3_conservative_plan(TOML.parsefile(manifest_path);
+        _pyo3_conservative_plan(_declaration_manifest(crate_path);
                                 flags = _pyo3_feature_flags(features, default_features),
                                 features = features, default_features = default_features,
                                 resolution = :skipped)

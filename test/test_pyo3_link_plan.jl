@@ -1784,4 +1784,48 @@ _manifest(text::AbstractString) = TOML.parse(text)
             @test !isdir(joinpath(member, "target", "rustcall-pyo3-probe"))
         end
     end
+
+    @testset "resolve = false expands inherited workspace dependencies (#425 review)" begin
+        # The root renames pyo3 under an alias and the member inherits it with
+        # `workspace = true`. A declaration-only reader that saw the unexpanded
+        # member manifest would find no `package = "pyo3"` and call the crate
+        # `:python_free` though it depends on pyo3.
+        mktempdir() do ws
+            write(joinpath(ws, "Cargo.toml"), """
+            [workspace]
+            members = ["member"]
+            [workspace.dependencies]
+            python = { package = "pyo3", version = "0.29", default-features = false, features = ["macros"] }
+            """)
+            member = _write_crate(joinpath(ws, "member"), """
+            [package]
+            name = "aliased"
+            version = "0.1.0"
+            edition = "2021"
+            [dependencies]
+            python = { workspace = true }
+            """)
+            plan = RustCall._pyo3_conservative_plan(RustCall._declaration_manifest(member);
+                                                    resolution = :skipped)
+            @test plan.mode === :link_libpython
+            io = IOBuffer()
+            report = RustCall.scan_report(member; io = io, generate = false, resolve = false)
+            @test report.plan.mode === :link_libpython
+
+            # A workspace `extension-module` is seen through the alias too.
+            write(joinpath(ws, "Cargo.toml"), """
+            [workspace]
+            members = ["member"]
+            [workspace.dependencies]
+            python = { package = "pyo3", version = "0.29", features = ["extension-module"] }
+            """)
+            aliased = RustCall._pyo3_conservative_plan(RustCall._declaration_manifest(member);
+                                                       resolution = :skipped)
+            if Sys.iswindows()
+                @test aliased.mode === :link_libpython
+            else
+                @test aliased.mode === :unlinkable
+            end
+        end
+    end
 end
