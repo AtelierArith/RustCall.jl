@@ -1810,8 +1810,16 @@ of that name — the copy path is taken (a collision of host, pid, instance and
 generation, which the instance token makes all but impossible) and the caller
 picks another generation. `nothing`: no lease could be made or locked here;
 the caller proceeds without one, as before #321.
+
+Windows is always `nothing`: it has no pid namespaces, so `_process_alive` sees
+every process on the machine and the sweep's pid fallback is exact there. A
+lease held for the life of the process is also a file an active lock keeps
+`DeleteFile` from unlinking, which would refuse the test or rebuild that removes
+a temp tree holding a live copy (EBUSY). The instance token already makes the
+copy name unique, so nothing is lost.
 """
 function _acquire_generation_lease(copy_path::AbstractString)
+    Sys.iswindows() && return nothing
     io = try
         open(generation_lease_path(copy_path), "w")
     catch e

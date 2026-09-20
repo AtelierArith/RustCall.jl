@@ -22,6 +22,17 @@ end
 
 _manifest(text::AbstractString) = TOML.parse(text)
 
+# `_try_lock_lease` needs an OS advisory lock. A file system that offers none
+# returns `nothing`; an older Windows HANDLE spelling raised. Both mean the
+# lease tests skip rather than fail.
+function _advisory_lock_state(io)
+    return try
+        RustCall._try_lock_lease(io)
+    catch
+        nothing
+    end
+end
+
 @testset "PyO3 link plan (#275 Phase 1.5)" begin
     @testset "conservative fallback: no pyo3 declared" begin
         plan = RustCall._pyo3_conservative_plan(_manifest("""
@@ -1398,7 +1409,8 @@ _manifest(text::AbstractString) = TOML.parse(text)
             script = """
             using RustCall
             io = open($(repr(RustCall.generation_lease_path(guarded))), "w")
-            RustCall._try_lock_lease(io) === true || (print("nolock"); exit(0))
+            ok = try RustCall._try_lock_lease(io) === true catch; false end
+            ok || (print("nolock"); exit(0))
             println("ready"); flush(stdout)
             readline(stdin)
             """
@@ -1441,7 +1453,7 @@ _manifest(text::AbstractString) = TOML.parse(text)
         mktempdir() do dir
             path = joinpath(dir, "project_1_retry.lease")
             holder = open(path, "w")
-            if RustCall._try_lock_lease(holder) !== true
+            if _advisory_lock_state(holder) !== true
                 close(holder)
                 @test_skip "this file system offers no advisory locking"
             else
@@ -1465,7 +1477,7 @@ _manifest(text::AbstractString) = TOML.parse(text)
         mktempdir() do dir
             path = joinpath(dir, "project_1_busy.lease")
             holder = open(path, "w")
-            if RustCall._try_lock_lease(holder) !== true
+            if _advisory_lock_state(holder) !== true
                 close(holder)
                 @test_skip "this file system offers no advisory locking"
             else

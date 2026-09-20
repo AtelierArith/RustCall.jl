@@ -32,6 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returns a `WindowsRawSocket`, a primitive type that *is* the HANDLE, and has
   no `.handle` field; taking a lease on every shaped project made that branch
   run and exposed the crash.
+- **Generation copies carry no lease on Windows.** A lease held for the life of
+  the process is a file an active lock keeps `DeleteFile` from unlinking, which
+  refused any test or rebuild that removed a temp tree holding a live copy. The
+  machine-wide process table decides there instead (Windows has no pid
+  namespaces), and the instance token already makes the copy name unique.
 
 ## [0.6.1] - 2026-09-17
 
