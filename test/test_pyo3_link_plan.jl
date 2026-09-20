@@ -1392,6 +1392,50 @@ end
         end
     end
 
+    @testset "a failed claim initialization leaves nothing behind (#437 review)" begin
+        # `_wrapper_shaped_project` publishes the claim before it initializes the
+        # tree. If initialization throws, `_with_shaped_project` never receives
+        # the tuple and so never cleans up; the failure path itself must. An
+        # unreadable lockfile is the deterministic way to throw there.
+        if Sys.iswindows()
+            @test_skip "chmod-based failure is POSIX-only"
+        else
+            mktempdir() do root
+                mkpath(joinpath(root, "src"))
+                write(joinpath(root, "Cargo.toml"), """
+                [package]
+                name = "init_fail"
+                version = "0.1.0"
+                edition = "2021"
+                """)
+                write(joinpath(root, "src", "lib.rs"), "")
+                lock = joinpath(root, "Cargo.lock")
+                write(lock, "# unreadable\n")
+                chmod(lock, 0o000)
+                try
+                    readable = try
+                        open(io -> read(io), lock)
+                        true
+                    catch
+                        false
+                    end
+                    if readable
+                        @test_skip "this user ignores file permissions"
+                    else
+                        parent = joinpath(root, "target", "rustcall-pyo3-test")
+                        @test_throws Exception RustCall._wrapper_shaped_project(
+                            root, "rustcall-pyo3-test")
+                        entries = isdir(parent) ? readdir(parent) : String[]
+                        @test isempty(filter(startswith("project_"), entries))
+                        @test isempty(filter(endswith(".lease"), entries))
+                    end
+                finally
+                    chmod(lock, 0o644)
+                end
+            end
+        end
+    end
+
     @testset "a paused owner keeps its project across pid namespaces (#437)" begin
         # Synchronize the pause at the exact window #437 removed: the claim is
         # held, the directory does not exist yet, and the owner is stopped. A

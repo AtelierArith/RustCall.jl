@@ -1871,9 +1871,18 @@ function _wrapper_shaped_project(crate_path::AbstractString, subdir::AbstractStr
     _sweep_abandoned_projects(parent)
     dir = _new_shaped_project_dir(parent)
     lease = _publish_shaped_project_lease(parent, dir)
-    mkpath(joinpath(dir, "src"))
-    lock = joinpath(_cargo_root_dir(crate_path), "Cargo.lock")
-    isfile(lock) && cp(lock, joinpath(dir, "Cargo.lock"); force = true)
+    try
+        mkpath(joinpath(dir, "src"))
+        lock = joinpath(_cargo_root_dir(crate_path), "Cargo.lock")
+        isfile(lock) && cp(lock, joinpath(dir, "Cargo.lock"); force = true)
+    catch
+        # The claim is already held, so `_with_shaped_project` will never see
+        # this project to clean it up: do it here, or the locked lease and the
+        # partial tree outlive the failure and a sweep keeps calling them live
+        # (#437 review).
+        _remove_shaped_project(dir, lease)
+        rethrow()
+    end
     return dir, lease
 end
 
