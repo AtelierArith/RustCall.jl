@@ -1895,12 +1895,34 @@ function _with_shaped_project(f::Function, crate_path::AbstractString,
         nothing
     end
     try
-        lease === nothing || _lock_project_lease(lease)
+        if lease !== nothing
+            _lock_project_lease(lease)
+            # A sweep that ran during a long pause between the directory
+            # appearing and the lease being taken may already have removed it;
+            # `f` would then work against a missing tree. The lease is held now,
+            # so no later sweep can take it, but this one must be refused
+            # (#425 review).
+            _require_project_alive(dir)
+        end
         return f(dir)
     finally
         lease === nothing || close(lease)   # releases the lock
         _remove_shaped_project(dir)
     end
+end
+
+"""
+    _require_project_alive(dir)
+
+Confirm a shaped project survived until its lease was taken. A sweep that ran
+between the directory's creation and its lease (a pause the grace window
+narrows but cannot close — `SIGSTOP` exceeds any of them) removes both; the
+caller must not run its build against the missing tree.
+"""
+function _require_project_alive(dir::AbstractString)
+    isdir(dir) && isfile(generation_lease_path(dir)) && return nothing
+    throw(RustError("The generated Cargo project $(dir) was removed while its lease was " *
+                    "being taken."))
 end
 
 # How long a project lease is retried before giving up. Only a sweep's

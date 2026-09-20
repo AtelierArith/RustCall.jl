@@ -1477,6 +1477,20 @@ _manifest(text::AbstractString) = TOML.parse(text)
         end
     end
 
+    @testset "a project swept before its lease was taken is refused (#425 review)" begin
+        # A pause long enough to outlast the grace window (`SIGSTOP`) can let a
+        # sweep remove a project between its creation and its lease; the owner
+        # must refuse rather than build against the missing tree.
+        mktempdir() do dir
+            gone = joinpath(dir, "project_1_gone")
+            @test_throws RustCall.RustError RustCall._require_project_alive(gone)
+            present = joinpath(dir, "project_2_present")
+            mkpath(present)
+            write(RustCall.generation_lease_path(present), "")
+            @test RustCall._require_project_alive(present) === nothing
+        end
+    end
+
     @testset "a refused entry does not keep a valid name (#392 review)" begin
         # The symbol table reserves every arity an entry *will* emit, and it
         # runs in the scan — before the generator has had the chance to refuse
