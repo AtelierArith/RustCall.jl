@@ -1458,6 +1458,25 @@ _manifest(text::AbstractString) = TOML.parse(text)
         end
     end
 
+    @testset "a project lease gives up rather than run unprotected (#425 review)" begin
+        # Past the wait window the holder is paused, not a probe: the caller gets
+        # an error and `_with_shaped_project` removes the project instead of
+        # running a build whose lease a later sweep could take for free.
+        mktempdir() do dir
+            path = joinpath(dir, "project_1_busy.lease")
+            holder = open(path, "w")
+            if RustCall._try_lock_lease(holder) !== true
+                close(holder)
+                @test_skip "this file system offers no advisory locking"
+            else
+                target = open(path, "a")
+                @test_throws RustCall.RustError RustCall._lock_project_lease(target; wait = 0.05)
+                close(target)
+                close(holder)
+            end
+        end
+    end
+
     @testset "a refused entry does not keep a valid name (#392 review)" begin
         # The symbol table reserves every arity an entry *will* emit, and it
         # runs in the scan — before the generator has had the chance to refuse

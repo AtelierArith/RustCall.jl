@@ -1903,30 +1903,43 @@ function _with_shaped_project(f::Function, crate_path::AbstractString,
     end
 end
 
-"""
-    _lock_project_lease(lease) -> Union{Bool, Nothing}
+# How long a project lease is retried before giving up. Only a sweep's
+# `_lease_state` probe ever contends for a freshly created lease, and it holds
+# the lock for microseconds, so reaching this means the holder is paused; giving
+# up (rather than running the build unprotected) is the safe answer.
+const _PROJECT_LEASE_WAIT_SECONDS = 30.0
 
-Take the exclusive lock on a freshly created project lease.
+"""
+    _lock_project_lease(lease; wait = _PROJECT_LEASE_WAIT_SECONDS) -> Union{Bool, Nothing}
+
+Take the exclusive lock on a freshly created project lease, retrying while
+another process holds it.
 
 A concurrent sweep's `_lease_state` probe takes that very lock for the instant
 it takes to read `:free` versus `:held`, so a first `false` answer is retried
 rather than ignored: running the build without the lock would let a later sweep,
-past the grace window, delete a project still in progress (#425 review).
-`nothing` is a file system with no advisory locking — the caller proceeds and
-the sweep's pid fallback does what it can.
+past the grace window, delete a project still in progress (#425 review). If the
+lock is still not acquired after `wait` seconds — a holder paused that long, not
+a probe — this raises rather than proceeding unprotected. `nothing` is a file
+system with no advisory locking: the caller proceeds and the sweep's pid
+fallback does what it can.
 """
-function _lock_project_lease(lease::Union{Nothing, IOStream})
+function _lock_project_lease(lease::Union{Nothing, IOStream};
+                             wait::Float64 = _PROJECT_LEASE_WAIT_SECONDS)
     lease === nothing && return nothing
-    for _ in 1:50
+    deadline = time() + wait
+    while true
         state = try
             _try_lock_lease(lease)
         catch
             nothing
         end
         state === false || return state
+        time() >= deadline && throw(RustError(
+            "Could not take the lease of a generated Cargo project within $(wait) s; " *
+            "another process is holding it."))
         sleep(0.01)
     end
-    return false
 end
 
 """
