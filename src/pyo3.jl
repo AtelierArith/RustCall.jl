@@ -1895,12 +1895,38 @@ function _with_shaped_project(f::Function, crate_path::AbstractString,
         nothing
     end
     try
-        lease === nothing || _try_lock_lease(lease)
+        lease === nothing || _lock_project_lease(lease)
         return f(dir)
     finally
         lease === nothing || close(lease)   # releases the lock
         _remove_shaped_project(dir)
     end
+end
+
+"""
+    _lock_project_lease(lease) -> Union{Bool, Nothing}
+
+Take the exclusive lock on a freshly created project lease.
+
+A concurrent sweep's `_lease_state` probe takes that very lock for the instant
+it takes to read `:free` versus `:held`, so a first `false` answer is retried
+rather than ignored: running the build without the lock would let a later sweep,
+past the grace window, delete a project still in progress (#425 review).
+`nothing` is a file system with no advisory locking — the caller proceeds and
+the sweep's pid fallback does what it can.
+"""
+function _lock_project_lease(lease::Union{Nothing, IOStream})
+    lease === nothing && return nothing
+    for _ in 1:50
+        state = try
+            _try_lock_lease(lease)
+        catch
+            nothing
+        end
+        state === false || return state
+        sleep(0.01)
+    end
+    return false
 end
 
 """

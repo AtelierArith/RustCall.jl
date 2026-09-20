@@ -1433,6 +1433,31 @@ _manifest(text::AbstractString) = TOML.parse(text)
         end
     end
 
+    @testset "a project lease is retried while a sweep probe holds it (#425 review)" begin
+        # A sweep's `_lease_state` probe takes the lease lock for the instant it
+        # needs to read `:free` versus `:held`. A first `false` must be retried,
+        # not ignored: running the build without the lock would let a later
+        # sweep, past the grace window, delete a project still in progress.
+        mktempdir() do dir
+            path = joinpath(dir, "project_1_retry.lease")
+            holder = open(path, "w")
+            if RustCall._try_lock_lease(holder) !== true
+                close(holder)
+                @test_skip "this file system offers no advisory locking"
+            else
+                target = open(path, "a")
+                releaser = @async begin
+                    sleep(0.05)
+                    close(holder)
+                end
+                state = RustCall._lock_project_lease(target)
+                wait(releaser)
+                @test state === true
+                close(target)
+            end
+        end
+    end
+
     @testset "a refused entry does not keep a valid name (#392 review)" begin
         # The symbol table reserves every arity an entry *will* emit, and it
         # runs in the scan — before the generator has had the chance to refuse
