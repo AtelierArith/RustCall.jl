@@ -1779,7 +1779,12 @@ function _try_lock_lease(io::IOStream)
         LOCKFILE_FAIL_IMMEDIATELY = UInt32(0x1)
         ERROR_LOCK_VIOLATION = UInt32(33)
         ERROR_IO_PENDING = UInt32(997)
-        handle = Base.Libc._get_osfhandle(fd(io)).handle
+        # `_get_osfhandle` returns a `WindowsRawSocket`, a primitive type that
+        # *is* the HANDLE; `cconvert` bitcasts it to `Ptr{Cvoid}`. (It has no
+        # `.handle` field — that spelling never worked, and a project lease is
+        # taken on every shaped project since #425, so it stopped being latent.)
+        raw = Base.Libc._get_osfhandle(fd(io))
+        handle = raw isa Ptr{Cvoid} ? raw : Base.cconvert(Ptr{Cvoid}, raw)::Ptr{Cvoid}
         overlapped = zeros(UInt8, 32)
         ok = ccall((:LockFileEx, "kernel32"), stdcall, Cint,
                    (Ptr{Cvoid}, UInt32, UInt32, UInt32, UInt32, Ptr{UInt8}),

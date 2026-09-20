@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   live process still holds, even when that process is in another pid namespace
   (a container sharing the target volume). A pre-#425 project with no lease
   falls back to its owner pid.
+- **The Windows lease lock uses the file handle correctly.** `_get_osfhandle`
+  returns a `WindowsRawSocket`, a primitive type that *is* the HANDLE, and has
+  no `.handle` field; taking a lease on every shaped project made that branch
+  run and exposed the crash.
 
 ## [0.6.1] - 2026-09-17
 
