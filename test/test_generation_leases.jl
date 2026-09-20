@@ -27,13 +27,16 @@ const _GL_PROJECT = dirname(@__DIR__)
             write(built, "not a library")
             copied = RustCall.loadable_library_copy(built)
             lease = RustCall.generation_lease_path(copied)
-            @test isfile(lease)
             state = RustCall._lease_state(copied)
             if state === :none
-                @test_skip "this file system offers no advisory locking"
+                # A platform that carries no generation lease at all (Windows,
+                # where the machine-wide process table decides instead).
+                @test !isfile(lease)
+                @test_skip "generation copies carry no lease on this platform"
             else
                 # Held: a second description of the same lease cannot lock it,
                 # in this process or in another one.
+                @test isfile(lease)
                 @test state === :held
                 probe = """
                 using RustCall
