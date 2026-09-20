@@ -351,9 +351,16 @@ end
             @test copied == joinpath(dir, "libfoo.rustcall.$(host).$(getpid()).$(instance).$(expected).so")
             @test isfile(copied) && isfile(built)
             @test read(copied) == read(built)
-            # The copy's lease exists and is held by this process.
-            @test isfile(RustCall.generation_lease_path(copied))
-            @test RustCall._lease_state(copied) in (:held, :none)   # :none only without file locking
+            # The copy's lease exists and is held by this process, except where
+            # the platform carries none (Windows: the machine-wide process
+            # table decides, and a held lease file could not be unlinked).
+            state = RustCall._lease_state(copied)
+            if state === :none
+                @test !isfile(RustCall.generation_lease_path(copied))
+            else
+                @test isfile(RustCall.generation_lease_path(copied))
+                @test state === :held
+            end
         end
         @test occursin("process_generation_path(built, next_reload_generation())",
                        _src_loadpolicy())

@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **A probe-free Phase-1 mode for `scan_report`**
+  ([#425](https://github.com/AtelierArith/RustCall.jl/issues/425)).
+  `RustCall.scan_report(crate; resolve = false)` runs no Cargo at all: the plan
+  is the declaration-only reading of `Cargo.toml` (`plan.resolved == false`),
+  the scan is lenient, and `candidates` is empty. The default route's cfg probe
+  compiles the crate's whole dependency graph as a wrapper dependency — minutes
+  and hundreds of MB on a crate with large path dependencies — which this mode
+  avoids for large crates, offline machines, and item inventories. A workspace
+  member that inherits `version` / `edition` has both read from the workspace
+  manifest, so the mode never falls back to `cargo metadata`.
+  `generate = false` is orthogonal and does not avoid the probe.
+
+### Fixed
+- **An interrupted PyO3 cfg probe no longer leaves its project tree behind**
+  ([#425](https://github.com/AtelierArith/RustCall.jl/issues/425)).
+  A probe project carries a held `<project>.lease` for its lifetime, and the
+  next project's creation sweeps the projects whose lease is free — never one a
+  live process still holds, even when that process is in another pid namespace
+  (a container sharing the target volume). A pre-#425 project with no lease
+  falls back to its owner pid.
+- **The Windows lease lock uses the file handle correctly.** `_get_osfhandle`
+  returns a `WindowsRawSocket`, a primitive type that *is* the HANDLE, and has
+  no `.handle` field; taking a lease on every shaped project made that branch
+  run and exposed the crash.
+- **Generation copies carry no lease on Windows.** A lease held for the life of
+  the process is a file an active lock keeps `DeleteFile` from unlinking, which
+  refused any test or rebuild that removed a temp tree holding a live copy. The
+  machine-wide process table decides there instead (Windows has no pid
+  namespaces), and the instance token already makes the copy name unique.
+
 ## [0.6.1] - 2026-09-17
 
 ### Fixed
