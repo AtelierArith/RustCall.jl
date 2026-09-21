@@ -17,6 +17,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   walkthrough of it, a limitation matrix, a troubleshooting checklist, and
   cache-warming, lockfile and toolchain guidance for CI.
 
+### Fixed
+- **An inline `#[julia]` struct's constructor and static methods resolve
+  through their own module**
+  ([#443](https://github.com/AtelierArith/RustCall.jl/issues/443)). They
+  used the session's last-compiled library (`get_current_library()`). So in a
+  precompiled package whose first Rust call was a constructor they failed with
+  "No Rust library loaded", and after another module compiled a block defining
+  the same struct they called that module's code. They now go through
+  `module_symbol_library(@__MODULE__, symbol)`, like free `#[julia]` functions:
+  it restores the module's recorded blocks first. The block records their
+  wrapper symbols as its own.
+
 ## [0.6.2] - 2026-09-20
 
 ### Added

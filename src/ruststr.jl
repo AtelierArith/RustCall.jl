@@ -419,6 +419,16 @@ macro rust_str(code)
     # session (#250).
     block_symbols = String[sig.symbol for sig in julia_func_signatures
                            if !sig.is_generic && sig.exported && !isempty(sig.symbol)]
+    # A struct's constructor and static methods are reached through the module
+    # too, so their wrappers are this block's symbols as well (#443). Instance
+    # methods resolve through the object's own library instead, and a generic
+    # struct's wrappers are instantiated later under names Julia chooses.
+    for info in struct_infos
+        (info.has_derive_julia_struct && isempty(info.type_params)) || continue
+        for m in info.methods
+            m.is_static && push!(block_symbols, method_wrapper_symbol(info.ffi_name, m))
+        end
+    end
 
     return quote
         lib_name = _compile_and_load_rust($(esc(code)), $(string(__source__.file)), $(__source__.line);
