@@ -636,7 +636,11 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                 push!(exprs, quote
                     function (::Type{$esc_struct})($(esc_args...))
                         $(bindings...)
-                        lib = get_current_library()
+                        # The defining module's library, as for a free
+                        # function: never the session's last-compiled one,
+                        # and restored first when this is the first call into
+                        # a precompiled caller (#443).
+                        lib = RustCall.module_symbol_library(@__MODULE__, $wrapper_name)
                         # One snapshot for the whole construction: the wrapper
                         # that allocates, its panic channel, and the destructor
                         # and liveness flag the object will carry (#277).
@@ -656,7 +660,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                     push!(exprs, quote
                         function $fname(::Type{$esc_struct}, $(esc_args...))
                             $(bindings...)
-                            lib = get_current_library()
+                            lib = RustCall.module_symbol_library(@__MODULE__, $wrapper_name)
                             return $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) _call_rust_owned_string(lib, $wrapper_name, $free_fn, $(expanded_call_args...)))))
                         end
                     end)
@@ -664,7 +668,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                     push!(exprs, quote
                         function $fname(::Type{$esc_struct}, $(esc_args...))
                             $(bindings...)
-                            lib = get_current_library()
+                            lib = RustCall.module_symbol_library(@__MODULE__, $wrapper_name)
                             return $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) _call_rust_borrowed_string(lib, $wrapper_name, $(expanded_call_args...)))))
                         end
                     end)
@@ -677,7 +681,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                     push!(exprs, quote
                         function $fname(::Type{$esc_struct}, $(esc_args...))
                             $(bindings...)
-                            lib = get_current_library()
+                            lib = RustCall.module_symbol_library(@__MODULE__, $wrapper_name)
                             return $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) _call_rust_method(lib, $wrapper_name, C_NULL, $jl_ret_type, $(expanded_call_args...)))))
                         end
                     end)
@@ -927,7 +931,10 @@ function _inline_method_payload_wrapper(info::RustStructInfo, m::RustMethod, fna
         # A static method dispatches on the type (#323); the bare form, when
         # there is one, is a delegator emitted by `emit_julia_definitions`.
         static_type === nothing && throw(ArgumentError("a static method needs `static_type`"))
-        inner = body(:(get_current_library()), (), preserved)
+        # Like the static branches of `emit_julia_definitions`: the defining
+        # module's own library, restored first if this is the first call
+        # into a precompiled caller (#443).
+        inner = body(:(RustCall.module_symbol_library(@__MODULE__, $wrapper_name)), (), preserved)
         return quote
             function $fname(::Type{$static_type}, $(esc_args...))
                 $inner
