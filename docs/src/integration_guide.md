@@ -224,6 +224,7 @@ persist between CI runs:
 | --- | --- | --- |
 | compiled Rust libraries, and the `Cargo.lock` of each `// cargo-deps:` set | `RustCall.get_cache_dir()`, or `RUSTCALL_CACHE_DIR` when set | the first build of each block or crate |
 | crate sources from the registry | `$CARGO_HOME/registry` and `$CARGO_HOME/git` (default `~/.cargo`) | Cargo |
+| a `cdylib` facade's Cargo build, including its dependencies | the crate's own `target/` | `@rust_crate`, whose cfg probe runs Cargo there even when the library is cached ([#445](https://github.com/AtelierArith/RustCall.jl/issues/445)) |
 | Julia precompile images, including `@rust_crate` modules | the depot's `compiled/` | `Pkg.precompile()` |
 | the artifact Rust toolchain, when there is no system `rustc` | the depot's `artifacts/` | RustToolChain |
 
@@ -246,6 +247,7 @@ A GitHub Actions sketch:
       ${{ runner.temp }}/rustcall-cache
       ~/.cargo/registry
       ~/.cargo/git
+      deps/**/target                      # a cdylib facade's own Cargo build
     key: rustcall-${{ runner.os }}-${{ steps.rust.outputs.version }}-${{ hashFiles('deps/**/Cargo.toml', 'deps/**/Cargo.lock', 'deps/**/*.rs', 'src/**/*.jl', 'Manifest.toml') }}
     restore-keys: rustcall-${{ runner.os }}-
 - run: julia --project -e 'using Pkg; Pkg.instantiate(); Pkg.precompile(); Pkg.test()'
