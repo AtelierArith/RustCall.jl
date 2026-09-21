@@ -3228,8 +3228,11 @@ function build_crate_directly(info::CrateInfo, release::Bool;
     # The Cargo root here is the *user's* manifest, so the policy pins nothing
     # and their profile decides (`crate_direct_policy`, #244). The feature set
     # is the caller's, exactly as a wrapper build's is (#307 review).
+    # Built from the crate's directory against its own `Cargo.lock`, but with
+    # the output under RustCall's cache, never the crate's `target/` (#445).
     build_cargo_project(project, release=release, policy=crate_direct_policy(),
-                        features=features, default_features=default_features)
+                        features=features, default_features=default_features,
+                        target_directory=crate_target_directory(info.path))
 end
 
 """

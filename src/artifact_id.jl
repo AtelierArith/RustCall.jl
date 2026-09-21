@@ -447,6 +447,26 @@ function cargo_lockfile_id(deps)::ArtifactId
     )
 end
 
+"""
+    crate_target_id(crate_path) -> ArtifactId
+
+The identity of the Cargo target directory RustCall uses for a crate it runs
+Cargo on **in place**: a `cdylib` crate `@rust_crate` builds directly, and the
+`--print cfg` probe of such a crate (#445). It names the crate (its canonical
+path) and nothing else. The directory holds no artifact RustCall looks up by
+content; Cargo's own fingerprint decides what inside it is reused, so the
+toolchain and compiler are left out, exactly as `cargo_lockfile_id` leaves
+them out.
+"""
+function crate_target_id(crate_path::AbstractString)::ArtifactId
+    return ArtifactId(
+        kind = "crate-target",
+        source = _canonical_dir(crate_path),
+        toolchain = "",
+        compiler = "",
+    )
+end
+
 # ----------------------------------------------------------------------------
 # Memoization (issue #278 §8)
 #

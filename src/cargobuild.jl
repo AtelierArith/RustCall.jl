@@ -721,6 +721,28 @@ function get_cargo_cache_dir()
 end
 
 """
+    crate_target_directory(crate_path) -> String
+
+The `CARGO_TARGET_DIR` for a crate RustCall runs Cargo on in place: the direct
+build of a `cdylib` crate (`build_crate_directly`) and its build-cfg probe
+(`_crate_build_cfg_text`) share it, under RustCall's cache (#445).
+
+Never the crate's own `target/`: a package installed under a depot is
+read-only, and a CI cache that carries RustCall's cache then carries this
+build as well. One directory per crate rather than one shared by all, because
+Cargo writes the final library as `target/<profile>/lib<name>.*`, so two
+crates with the same package name would overwrite each other's output.
+
+The name is `artifact_short_id` of `crate_target_id`: a directory Cargo nests
+deeply, where a full digest would push Windows paths towards `MAX_PATH`. A
+collision would only make two crates share a Cargo target directory, which
+Cargo's own fingerprinting and locking handle; nothing is looked up by it.
+"""
+function crate_target_directory(crate_path::AbstractString)
+    return joinpath(get_cache_dir(), "targets", artifact_short_id(crate_target_id(crate_path)))
+end
+
+"""
     get_cargo_cached_library(cache_key::String) -> Union{String, Nothing}
 
 Get a cached Cargo library by cache key.

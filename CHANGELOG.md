@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A `cdylib` crate bound with `@rust_crate` is built without writing into
+  it** ([#445](https://github.com/AtelierArith/RustCall.jl/issues/445)). The
+  direct build and its `--print cfg` probe ran Cargo with the crate's own
+  `target/`, so a package installed into a read-only depot could not precompile
+  its facade, and a CI cache of RustCall's cache did not carry the dependency
+  build. Both now use `RustCall.crate_target_directory(crate)`, one directory
+  per crate under RustCall's cache. Cargo still reads the crate's `Cargo.lock`,
+  which a read-only package must ship.
+
 ### Added
 - **A runnable safe-integration example, `examples/SafeLedger.jl`**
   ([#441](https://github.com/AtelierArith/RustCall.jl/issues/441)): a facade
