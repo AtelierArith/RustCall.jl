@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **A runnable safe-integration example, `examples/SafeLedger.jl`**
+  ([#441](https://github.com/AtelierArith/RustCall.jl/issues/441)): a facade
+  crate with one opaque `#[julia]` struct, bound with `@rust_crate`, behind a
+  Julia API with typed errors and explicit release. Its tests (construction,
+  normal use, the error path, release, unload) also run in RustCall's own suite
+  as `test/test_integration_example.jl`. The integration guide gains a
+  walkthrough of it, a limitation matrix, a troubleshooting checklist, and
+  cache-warming, lockfile and toolchain guidance for CI.
+
 ## [0.6.2] - 2026-09-20
 
 ### Added

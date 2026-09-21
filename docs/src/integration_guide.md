@@ -38,6 +38,96 @@ explicit C-ABI call is required, and reserve `@irust` for small scalar
 experiments at the REPL or in notebooks. `@irust` is intentionally not
 type-stable and does not support strings, arrays, structs, or 128-bit integers.
 
+## Worked example: `examples/SafeLedger.jl`
+
+[`examples/SafeLedger.jl`](https://github.com/AtelierArith/RustCall.jl/tree/main/examples/SafeLedger.jl)
+is a complete package built this way. Its tests run in RustCall's own suite
+(`test/test_integration_example.jl`) and as a package in the Examples workflow.
+
+**The facade** (`deps/safe_ledger/src/lib.rs`) is a crate with one `#[julia]`
+struct and no `pub` field, so the Julia type RustCall generates for it is only
+a handle. Its state, a `HashMap<String, i64>`, never crosses the boundary:
+
+```rust
+#[julia]
+pub struct Ledger {
+    balances: HashMap<String, i64>,
+}
+
+#[julia]
+impl Ledger {
+    #[julia]
+    pub fn new() -> Self { /* ... */ }
+
+    #[julia]
+    pub fn withdraw(&mut self, account: &str, amount: i64) -> Result<i64, String> {
+        // an unknown account, a non-positive amount or insufficient funds is an
+        // `Err`, and leaves the ledger unchanged
+    }
+
+    #[julia]
+    pub fn balance(&self, account: &str) -> Option<i64> { /* ... */ }
+}
+```
+
+The crate has ordinary `#[cfg(test)]` tests, so `cargo test` checks the Rust
+logic before any binding is involved.
+
+**The binding** is one line. `@rust_crate` builds the crate and generates the
+`Native` submodule while the package is precompiled:
+
+```julia
+@rust_crate joinpath(@__DIR__, "..", "deps", "safe_ledger") submodule="Native"
+```
+
+**The Julia API** keeps `Native` internal and wraps the handle in a Julia
+object that owns it:
+
+```julia
+struct LedgerError <: Exception
+    msg::String
+end
+
+mutable struct Ledger
+    handle::Union{Native.Ledger, Nothing}
+    Ledger() = new(Native.Ledger())
+end
+
+function Base.close(ledger::Ledger)          # explicit, idempotent release
+    handle = ledger.handle
+    handle === nothing && return nothing
+    ledger.handle = nothing
+    finalize(handle)                         # runs the generated destructor now
+    return nothing
+end
+
+_ok(r::RustCall.RustResult) =
+    RustCall.is_ok(r) ? RustCall.unwrap(r) : throw(LedgerError(r.value))
+
+withdraw!(ledger::Ledger, account::AbstractString, amount::Integer) =
+    _ok(Native.withdraw(_handle(ledger), String(account), Int64(amount)))
+```
+
+`_handle` throws `InvalidStateException` for a closed ledger. `Ledger(f)`
+supports the do-block form, which closes the ledger even when its body throws.
+Callers never see a `RustResult`, a raw pointer or the generated type:
+
+```julia
+SafeLedger.Ledger() do ledger
+    SafeLedger.deposit!(ledger, "alice", 100)   # 100
+    SafeLedger.withdraw!(ledger, "alice", 500)  # throws LedgerError("insufficient funds in alice: 100 < 500")
+end                                             # the Rust allocation is freed here
+```
+
+The tests cover construction, normal use, the error path (including that a
+failed operation leaves the Rust state unchanged), explicit and do-block
+release, and what an object does once its library is unloaded:
+
+- After `RustCall.unload_library(name)`, a call raises. The object still frees
+  through its own destructor, because the image is retired but not unmapped.
+- After the retired image is closed, a call raises a `RustError` and release
+  does nothing: the object leaks rather than running unmapped code.
+
 ## Ownership and lifetime rules
 
 - Prefer RustCall ownership types such as `RustBox`, `RustRc`, `RustArc`, and
@@ -81,6 +171,22 @@ For callbacks, document the thread and lifetime assumptions explicitly. The
 current callback path is for synchronous calls, argument-position callbacks,
 and same-thread execution; it is not a general asynchronous callback system.
 
+## Limitations at a glance
+
+| Area | Supported | Not supported, or your responsibility | What to do instead |
+| --- | --- | --- | --- |
+| Scalars | integers, floats, `bool` | `i128`/`u128` on Windows (a platform ABI mismatch) | split into two `u64`, or pass behind a pointer |
+| Strings | `String`/`&str` arguments and returns, copied at the boundary | invalid UTF-8 (rejected with a `RustError`) | send non-text bytes as `*const u8` plus a length |
+| Collections | — | `Vec<T>`, `HashMap`, `&[T]` arguments, `Box`/`Rc`/`Arc`/`Cow` in signatures | keep them inside an opaque `#[julia]` struct and expose methods |
+| Structs | `#[julia]` structs, used as handles or with `pub` fields of supported types | borrowed references into a struct that outlive it | return owned values; see `examples/SafeLedger.jl` |
+| Errors | `Result<T, E>` / `Option<T>` of supported types, as `RustResult` / `RustOption` | — | turn them into Julia exceptions in your wrapper |
+| Panics | caught at a generated `#[julia]` boundary, raised as `RustPanicError` | raw `#[no_mangle] extern "C"` functions, and threads Rust spawns | put every entry point behind `#[julia]` |
+| Callbacks | `extern "C" fn` arguments, synchronous, on the calling thread | storing a callback for later, calling it from another thread | return control to Julia and call again |
+| Threads | calls from any Julia thread | concurrent `&mut self` calls on one object (RustCall does not lock objects) | serialize access to a handle, e.g. with a `ReentrantLock` in the wrapper |
+| Lifetime | finalizers, `finalize(obj)` for explicit release | use after `unload_library(...; close = true)` (the call raises, the object leaks) | close images only when nothing still uses them |
+| Generics | generic functions and structs, monomorphized on demand | trait objects, explicit lifetime parameters | expose concrete facade functions |
+| `@irust` | scalar snippets at the REPL | strings, arrays, structs, 128-bit integers; type stability | `rust"""..."""` or a crate with `#[julia]` |
+
 ## Build and CI practices
 
 - Commit `Cargo.lock` for applications, fixtures, and RustCall integration
@@ -107,6 +213,72 @@ and same-thread execution; it is not a general asynchronous callback system.
 - Keep Rust dependencies behind the facade. This reduces both the generated
   binding surface and the number of platform-specific build scripts that
   affect Julia users.
+
+### Warming and persisting the caches
+
+A cold build has three costs: downloading the Rust toolchain when there is no
+system one, downloading crates, and compiling. Each is stored somewhere you can
+persist between CI runs:
+
+| What | Where | Filled by |
+| --- | --- | --- |
+| compiled Rust libraries, and the `Cargo.lock` of each `// cargo-deps:` set | `RustCall.get_cache_dir()`, or `RUSTCALL_CACHE_DIR` when set | the first build of each block or crate |
+| crate sources from the registry | `$CARGO_HOME/registry` and `$CARGO_HOME/git` (default `~/.cargo`) | Cargo |
+| Julia precompile images, including `@rust_crate` modules | the depot's `compiled/` | `Pkg.precompile()` |
+| the artifact Rust toolchain, when there is no system `rustc` | the depot's `artifacts/` | RustToolChain |
+
+`Pkg.precompile()` builds every `@rust_crate` crate, because the bindings are
+generated during precompilation. An inline `rust"""` block may still compile on
+first use, so run the test suite (or a script that calls each entry point once)
+while warming the cache.
+
+A GitHub Actions sketch:
+
+```yaml
+- uses: julia-actions/setup-julia@v2
+- uses: julia-actions/cache@v2          # the depot: packages, artifacts, compiled/
+- uses: actions/cache@v4
+  with:
+    path: |
+      ${{ runner.temp }}/rustcall-cache
+      ~/.cargo/registry
+      ~/.cargo/git
+    key: rustcall-${{ runner.os }}-${{ hashFiles('deps/**/Cargo.toml', 'deps/**/*.rs') }}
+    restore-keys: rustcall-${{ runner.os }}-
+- run: julia --project -e 'using Pkg; Pkg.instantiate(); Pkg.precompile(); Pkg.test()'
+  env:
+    RUSTCALL_CACHE_DIR: ${{ runner.temp }}/rustcall-cache
+```
+
+A restored cache cannot serve a stale library. Every entry's key is the
+`ArtifactId` of what was built (source, dependencies, compiler identity and so
+on), so a changed input is a cache miss, not a wrong hit. The `hashFiles` key
+only controls how often the stored cache is refreshed.
+
+### Lockfiles and reproducible builds
+
+- A `// cargo-deps:` block builds against a persisted lockfile
+  (`RustCall.lockfile_path(source)`) with `cargo build --locked`. Commit a copy
+  if another machine must build the same graph. See
+  [Performance](performance.md).
+- `@rust_crate` builds a wrapper crate that depends on your facade by path and
+  resolves its own dependency graph. The facade's `Cargo.lock` pins its own
+  `cargo test` but not that build. If the exact versions matter, pin them in the
+  facade's `Cargo.toml` (`serde = "=1.0.210"`).
+- For an offline or air-gapped build, run once online to fill the registry and
+  RustCall caches, then set `RUSTCALL_OFFLINE=1`. Cargo then fails at once on
+  anything it would have to download, rather than hanging.
+
+### Toolchain and platform requirements
+
+- Julia 1.12 or later. Rust stable; CI tests stable and beta.
+- RustToolChain uses a `rustc`/`cargo` on `PATH` when there is one and
+  downloads an artifact toolchain otherwise, so a machine needs no system Rust.
+  The compiler's identity is part of every cache key: a toolchain upgrade
+  rebuilds, it does not reuse.
+- RustCall is tested on Linux x86_64, macOS aarch64 and Windows x86_64. Windows
+  needs the MSVC linker (Visual Studio Build Tools). See
+  [Platforms](platforms/windows.md).
 
 ## Debugging workflow
 
@@ -139,6 +311,24 @@ reported as `RustPanicError`. A raw `#[no_mangle] extern "C"` function has no
 generated panic boundary and can abort the process instead. A panic in a
 thread or function that RustCall did not wrap is likewise outside the Julia
 exception channel.
+
+### Troubleshooting checklist
+
+| Symptom | Check |
+| --- | --- |
+| `no working rustc`, or a build that cannot find `cargo` | the `RustToolChain.rustc()` / `cargo()` versions above; on Windows, the MSVC build tools |
+| a Rust compile error in code you did not write | the generated wrapper, not your facade: `RustCall.expand_inline(source).source` shows what an inline block compiles |
+| `CargoBuildError` | Cargo's own message in the error; with `RUSTCALL_OFFLINE=1`, a crate missing from the registry cache |
+| an unsupported-type error at wrapper generation | the [type contract](type_contract.md); move the type behind the facade |
+| wrong values, but no error | the `extern "C"` signature against the Julia call: argument order, integer width (`Clong`), `bool` |
+| `RustPanicError` | the Rust message it carries; reproduce in `cargo test` |
+| a crash instead of `RustPanicError` | an entry point without a `#[julia]` boundary, or a panic on a thread Rust spawned |
+| "attempted to use a freed ... object" | a call after `close`/`finalize`; have the wrapper check (as `SafeLedger` does) |
+| "... is not loaded" / "unloaded ... object" | a library was unloaded while objects or call sites still used it |
+| `RustCall.finalizer_failure_count()` grows | a `Drop` implementation that panics |
+| a slow first run every time on CI | the caches in [Warming and persisting the caches](#Warming-and-persisting-the-caches) |
+
+See [Troubleshooting](troubleshooting.md) for longer answers.
 
 ## Practical decision rule
 

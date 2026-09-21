@@ -26,6 +26,7 @@ Before running the examples, ensure you have:
 | [SampleCratePyO3Only.jl](./SampleCratePyO3Only.jl/) | Julia package with a **PyO3-only** crate (no RustCall attribute, no `pub`) embedded under `deps/sample_crate_pyo3_only/`, bound through RustCall's Python-host path | Advanced | `#[pyfunction]` / `#[pyclass]` without `#[julia]`, the crate built as the Python extension it is and imported through PythonCall, `PyResult` → `RustResult` with the real message |
 | [RustCrateMacroPyO3Only.jl](./RustCrateMacroPyO3Only.jl/) | The same **PyO3-only** shape, embedded under `deps/macro_pyo3_only/`, bound with the **`@rust_crate` macro** at the package's top level | Advanced | `@rust_crate ... submodule="Bindings" pyo3_host=true` in a package, bindings generated while the package is precompiled, the crate built and imported lazily on first call, nothing generated in the repository |
 | [Pyo3HostImport.jl](./Pyo3HostImport.jl/) | Two **PyO3-only** crates under `deps/macro_crate/` and `deps/direct_crate/`, bound through the host path with the **`@rust_crate` macro** and with **`RustCall.pyo3_host_import`** respectively | Advanced | The two host-path front doors side by side; the direct import plus an explicit inner constructor work around a one-argument `#[new]` the macro cannot bind ([#433](https://github.com/AtelierArith/RustCall.jl/issues/433)) |
+| [SafeLedger.jl](./SafeLedger.jl/) | The safe integration pattern of the [integration guide](../docs/src/integration_guide.md): a facade crate under `deps/safe_ledger/` exposes one opaque, Rust-owned `#[julia]` struct, bound with `@rust_crate`, behind a small Julia API | Intermediate | Opaque handle, `Result` → Julia exception, explicit `close` and do-block release, unload behaviour |
 | [pluto/hello.jl](./pluto/hello.jl) | Pluto notebook with a `// cargo-deps:` block | Beginner | Inline Rust in Pluto, run headlessly in CI |
 
 Every `*.jl` directory is a Julia package: `Pkg.test()` runs its tests, and the
@@ -48,7 +49,8 @@ not the examples.)
 
 ```bash
 # any of MyExample.jl, SampleCrate.jl, RustCrateMacro.jl, SampleCratePyO3.jl,
-# SampleCratePyO3Only.jl, RustCrateMacroPyO3Only.jl, Pyo3HostImport.jl
+# SampleCratePyO3Only.jl, RustCrateMacroPyO3Only.jl, Pyo3HostImport.jl,
+# SafeLedger.jl
 cd examples/SampleCrate.jl
 julia --project=. -e 'using Pkg; Pkg.develop(path="../.."); Pkg.test()'
 ```
