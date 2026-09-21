@@ -40,8 +40,10 @@ type-stable and does not support strings, arrays, structs, or 128-bit integers.
 
 ## Ownership and lifetime rules
 
-- Prefer RustCall ownership types such as `RustBox`, `RustRc`, `RustArc`,
-  `RustVec`, and `RustSlice` when their semantics match the API.
+- Prefer RustCall ownership types such as `RustBox`, `RustRc`, `RustArc`, and
+  `RustVec` when their semantics match the API. Treat `RustSlice` separately:
+  it is a borrowed pointer-and-length view and does not retain or release its
+  backing allocation, so retain or preserve the owner for the whole use.
 - An owned value must have one clear release path. An allocation made by one
   library must be released by that same library.
 - Do not return a borrowed reference whose Rust owner can disappear while
@@ -72,7 +74,7 @@ Good boundary types are those with an unambiguous C-compatible representation:
 Avoid exposing `Vec<T>` or a user-defined Rust struct merely because it happens
 to compile. Check the generated manifest and the [supported type
 matrix](type_contract.md) first. Unknown types fail closed by default; do not
-make `FFI_STRICT = :warn` a production solution for an API whose layout has
+make `RustCall.FFI_STRICT[] = :warn` a production solution for an API whose layout has
 not been designed.
 
 For callbacks, document the thread and lifetime assumptions explicitly. The
@@ -86,12 +88,17 @@ and same-thread execution; it is not a general asynchronous callback system.
 - Warm and persist the RustCall cache in CI or distribution builds. Expect the
   first build to be slower because Rust and Cargo may be invoked and registry
   dependencies may be downloaded.
-- Run the documented helper build before tests:
+- In a downstream package, build RustCall through Julia's package manager:
 
-  ```bash
-  julia --project deps/build.jl
-  export RUSTCALL_EXTRACT=deps/rustcall_extract/target/release/rustcall-extract
+  ```julia
+  using Pkg
+  Pkg.build("RustCall")
   ```
+
+  The `deps/build.jl` command and `RUSTCALL_EXTRACT` override are for a
+  RustCall source checkout and contributor workflow; a downstream package
+  should use its normal Julia environment and RustCall's installed product
+  lookup.
 
 - Test the supported Julia/Rust/OS matrix, including Windows linker and SDK
   requirements when Windows is supported.
