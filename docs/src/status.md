@@ -87,6 +87,11 @@ Pkg.build("RustCall")
 - Generic structs and more advanced trait patterns still need explicit handling in some cases, especially for external bindings.
 - Cargo-backed workflows are cached, but first builds can be slow and some crates may still need platform-specific build configuration.
 
+For the recommended mitigation pattern, see [Safe Rust/Julia Integration](integration_guide.md).
+The remaining improvements—facade templates, a runnable opaque-handle example,
+and earlier diagnostics for unsafe or unsupported boundary patterns—are tracked
+in [#441](https://github.com/AtelierArith/RustCall.jl/issues/441).
+
 ## Delivered Milestones
 
 - Phase 1: direct `rust"""..."""`, `@rust`, `@irust`, type mapping, string support, and cache-backed compilation.
