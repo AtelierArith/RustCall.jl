@@ -41,6 +41,7 @@ jobs:
           - SampleCratePyO3Only.jl
           - RustCrateMacroPyO3Only.jl
           - Pyo3HostImport.jl
+          - SafeLedger.jl
     steps:
       - uses: actions/checkout@v6
       # SampleCratePyO3Only.jl, RustCrateMacroPyO3Only.jl and Pyo3HostImport.jl

@@ -1,0 +1,20 @@
+name = "SafeLedger"
+uuid = "e48f3183-1b84-4d14-bccc-97d8b500ccaf"
+version = "0.1.0"
+authors = ["Your Name <your.email@example.com>"]
+
+[deps]
+RustCall = "7ac5b1a4-9e37-4f0e-9aa3-3305a66bfb1c"
+
+[sources]
+RustCall = {path = "../.."}
+
+[compat]
+RustCall = "0.6"
+julia = "1.12"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]

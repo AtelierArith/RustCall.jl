@@ -1,0 +1,18 @@
+# The Rust half of examples/SafeLedger.jl: a facade crate. Everything the Julia
+# side can see is in src/lib.rs under `#[julia]`; the state behind it (a
+# HashMap) never crosses the boundary. See docs/src/integration_guide.md.
+#
+# `rustcall_julia_macros` (the `#[julia]` attribute) is not on crates.io yet, so
+# this is a path dependency into the RustCall.jl checkout. It is the only
+# reference this example makes outside its own directory.
+[package]
+name = "safe_ledger"
+version = "0.1.0"
+edition = "2021"
+description = "The Rust half of examples/SafeLedger.jl: an opaque-handle facade bound with @rust_crate"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+rustcall_julia_macros = { path = "../../../../deps/rustcall_julia_macros" }
