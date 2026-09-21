@@ -112,9 +112,20 @@ and same-thread execution; it is not a general asynchronous callback system.
 
 When an integration fails, identify the layer before changing the API:
 
-1. **Toolchain/build:** run `rustc --version`, `cargo --version`, and
-   `Pkg.build("RustCall")`; inspect the Cargo/build error before clearing the
-   cache.
+1. **Toolchain/build:** inspect the same executables RustCall resolves, then
+   rebuild the helpers:
+
+   ```julia
+   using Pkg
+   using RustToolChain
+   run(`$(RustToolChain.rustc()) --version`)
+   run(`$(RustToolChain.cargo()) --version`)
+   Pkg.build("RustCall")
+   ```
+
+   Inspect the Cargo/build error before clearing the cache. This matters when
+   RustCall uses the artifact fallback or when the PATH compiler differs from
+   the one RustToolChain selects.
 2. **Rust API:** compile and test the facade as a normal Rust crate first.
 3. **Manifest and ABI:** verify the generated manifest, `#[julia]` attributes,
    `extern "C"` requirements where applicable, and the type contract.
