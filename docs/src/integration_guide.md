@@ -243,7 +243,7 @@ A GitHub Actions sketch:
       ${{ runner.temp }}/rustcall-cache
       ~/.cargo/registry
       ~/.cargo/git
-    key: rustcall-${{ runner.os }}-${{ hashFiles('deps/**/Cargo.toml', 'deps/**/*.rs') }}
+    key: rustcall-${{ runner.os }}-${{ hashFiles('deps/**/Cargo.toml', 'deps/**/Cargo.lock', 'deps/**/*.rs', 'src/**/*.jl', 'Manifest.toml') }}
     restore-keys: rustcall-${{ runner.os }}-
 - run: julia --project -e 'using Pkg; Pkg.instantiate(); Pkg.precompile(); Pkg.test()'
   env:
@@ -252,8 +252,13 @@ A GitHub Actions sketch:
 
 A restored cache cannot serve a stale library. Every entry's key is the
 `ArtifactId` of what was built (source, dependencies, compiler identity and so
-on), so a changed input is a cache miss, not a wrong hit. The `hashFiles` key
-only controls how often the stored cache is refreshed.
+on), so a changed input is a cache miss, not a wrong hit. The outer `hashFiles`
+key decides whether the rebuilt entries are **saved**: a GitHub cache is
+immutable, and an exact-key hit is never written back. So the key must change
+whenever a build input changes: every Rust source, `Cargo.toml` and
+`Cargo.lock`, the Julia sources holding `rust"""` blocks, and the Julia
+`Manifest.toml` (it pins the RustCall version). If an input is left out, every
+run rebuilds the same thing and never stores the result.
 
 ### Lockfiles and reproducible builds
 
@@ -261,10 +266,15 @@ only controls how often the stored cache is refreshed.
   (`RustCall.lockfile_path(source)`) with `cargo build --locked`. Commit a copy
   if another machine must build the same graph. See
   [Performance](performance.md).
-- `@rust_crate` builds a wrapper crate that depends on your facade by path and
-  resolves its own dependency graph. The facade's `Cargo.lock` pins its own
-  `cargo test` but not that build. If the exact versions matter, pin them in the
-  facade's `Cargo.toml` (`serde = "=1.0.210"`).
+- `@rust_crate` builds a crate one of two ways, and they differ here:
+  - A crate that declares `crate-type = ["cdylib"]`, like the example's
+    facade, is built **in place**. Cargo resolves against the crate's own
+    `Cargo.lock`, so committing that file pins the build. (`SafeLedger` has no
+    registry dependencies, so it does not commit one.)
+  - Any other crate is built through a generated **wrapper crate** that
+    depends on it by path and resolves its own graph; your `Cargo.lock` does
+    not pin that build. Declare `cdylib` in the facade, or pin versions in its
+    `Cargo.toml` (`serde = "=1.0.210"`).
 - For an offline or air-gapped build, run once online to fill the registry and
   RustCall caches, then set `RUSTCALL_OFFLINE=1`. Cargo then fails at once on
   anything it would have to download, rather than hanging.
