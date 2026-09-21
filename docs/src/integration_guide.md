@@ -237,13 +237,16 @@ A GitHub Actions sketch:
 ```yaml
 - uses: julia-actions/setup-julia@v2
 - uses: julia-actions/cache@v2          # the depot: packages, artifacts, compiled/
+- id: rust                                # the system toolchain, if any
+  shell: bash
+  run: echo "version=$( (rustc --version; cargo --version) 2>/dev/null | tr -c 'A-Za-z0-9.' '-')" >> "$GITHUB_OUTPUT"
 - uses: actions/cache@v4
   with:
     path: |
       ${{ runner.temp }}/rustcall-cache
       ~/.cargo/registry
       ~/.cargo/git
-    key: rustcall-${{ runner.os }}-${{ hashFiles('deps/**/Cargo.toml', 'deps/**/Cargo.lock', 'deps/**/*.rs', 'src/**/*.jl', 'Manifest.toml') }}
+    key: rustcall-${{ runner.os }}-${{ steps.rust.outputs.version }}-${{ hashFiles('deps/**/Cargo.toml', 'deps/**/Cargo.lock', 'deps/**/*.rs', 'src/**/*.jl', 'Manifest.toml') }}
     restore-keys: rustcall-${{ runner.os }}-
 - run: julia --project -e 'using Pkg; Pkg.instantiate(); Pkg.precompile(); Pkg.test()'
   env:
@@ -256,9 +259,15 @@ on), so a changed input is a cache miss, not a wrong hit. The outer `hashFiles`
 key decides whether the rebuilt entries are **saved**: a GitHub cache is
 immutable, and an exact-key hit is never written back. So the key must change
 whenever a build input changes: every Rust source, `Cargo.toml` and
-`Cargo.lock`, the Julia sources holding `rust"""` blocks, and the Julia
-`Manifest.toml` (it pins the RustCall version). If an input is left out, every
-run rebuilds the same thing and never stores the result.
+`Cargo.lock`, the Julia sources holding `rust"""` blocks, the Julia
+`Manifest.toml` (it pins the RustCall and RustToolChain versions), and the
+toolchain. RustToolChain uses a `rustc` on `PATH` when there is one, so the
+`rust` step records that version: a runner image that updates stable Rust
+changes the key. Without a system toolchain the step records nothing, and the
+artifact toolchain's version is pinned by `Manifest.toml` instead. A
+`RUSTC_WRAPPER` is part of the compiler identity too; add it to the key if you
+set one. If an input is left out, every run rebuilds the same thing and never
+stores the result.
 
 ### Lockfiles and reproducible builds
 
@@ -276,6 +285,11 @@ run rebuilds the same thing and never stores the result.
     depends on it by path and resolves its own graph; your `Cargo.lock` does
     not pin that build. Declare `cdylib` in the facade, or pin versions in its
     `Cargo.toml` (`serde = "=1.0.210"`).
+- A direct (`cdylib`) build currently writes `target/` inside the crate
+  directory, and so does its cfg probe. A package installed into a read-only
+  depot therefore cannot precompile its facade
+  ([#445](https://github.com/AtelierArith/RustCall.jl/issues/445)). Until that
+  is fixed, keep the package tree writable wherever it is precompiled.
 - For an offline or air-gapped build, run once online to fill the registry and
   RustCall caches, then set `RUSTCALL_OFFLINE=1`. Cargo then fails at once on
   anything it would have to download, rather than hanging.
