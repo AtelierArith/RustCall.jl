@@ -130,3 +130,27 @@ end
     end
 end
 
+# The cache now holds live Cargo target directories, where Cargo creates and
+# deletes temporary directories while it builds. Walking the cache for its
+# size must tolerate an entry that vanishes (or cannot be read) mid-walk,
+# rather than failing a caller that only asked how large the cache is (#445).
+@testset "get_cache_size tolerates entries it cannot read (#445)" begin
+    mktempdir() do root
+        withenv("RUSTCALL_CACHE_DIR" => joinpath(root, "cache")) do
+            cache = RustCall.get_cache_dir()
+            write(joinpath(cache, "lib.bin"), zeros(UInt8, 100))
+            hidden = mkpath(joinpath(cache, "targets", "0000000000000000", "release", "deps", "rmetaXXXX"))
+            write(joinpath(hidden, "partial"), zeros(UInt8, 7))
+            chmod(hidden, 0o000)
+            try
+                if Sys.iswindows() || !_dbt_is_read_only(hidden)
+                    @test_skip "a mode-000 directory is still readable here (root, or Windows)"
+                else
+                    @test RustCall.get_cache_size() == 100
+                end
+            finally
+                chmod(hidden, 0o755)
+            end
+        end
+    end
+end

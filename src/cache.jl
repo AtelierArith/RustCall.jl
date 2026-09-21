@@ -850,16 +850,20 @@ function get_cache_size()
     end
 
     total_size = Int64(0)
-    for (root, dirs, files) in walkdir(cache_dir)
+    # The cache holds live Cargo target directories (`crate_target_directory`,
+    # #445), where Cargo creates and deletes temporary directories while it
+    # builds: an entry that vanishes, or cannot be read, between listing and
+    # descending is skipped rather than failing a size query.
+    for (root, dirs, files) in walkdir(cache_dir; onerror = _ -> nothing)
         # The size of the *compiled* cache: the persisted lockfiles are inputs
         # (`CACHE_INPUT_DIRS`), survive `clear_cache`, and are not counted —
         # otherwise a cleared cache would never read as empty (#256).
         root == cache_dir && filter!(d -> !(d in CACHE_INPUT_DIRS), dirs)
         for file in files
             file_path = joinpath(root, file)
-            if isfile(file_path)
-                total_size += filesize(file_path)
-            end
+            # One `stat`: a file removed after the listing reads as size 0.
+            st = stat(file_path)
+            isfile(st) && (total_size += st.size)
         end
     end
 
