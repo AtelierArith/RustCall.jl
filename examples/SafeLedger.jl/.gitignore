@@ -1,0 +1,5 @@
+# Cargo's output for the embedded crate. `@rust_crate` generates the bindings
+# module in memory, straight into the package's precompile image.
+/deps/safe_ledger/target/
+/deps/safe_ledger/Cargo.lock
+/Manifest.toml
