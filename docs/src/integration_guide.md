@@ -269,8 +269,9 @@ run rebuilds the same thing and never stores the result.
 - `@rust_crate` builds a crate one of two ways, and they differ here:
   - A crate that declares `crate-type = ["cdylib"]`, like the example's
     facade, is built **in place**. Cargo resolves against the crate's own
-    `Cargo.lock`, so committing that file pins the build. (`SafeLedger` has no
-    registry dependencies, so it does not commit one.)
+    `Cargo.lock`, so committing that file pins the build. `SafeLedger`
+    commits one: even a facade with no dependencies of its own reaches
+    `syn`, `quote` and `proc-macro2` through `rustcall_julia_macros`.
   - Any other crate is built through a generated **wrapper crate** that
     depends on it by path and resolves its own graph; your `Cargo.lock` does
     not pin that build. Declare `cdylib` in the facade, or pin versions in its

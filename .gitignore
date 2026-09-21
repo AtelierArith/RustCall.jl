@@ -8,6 +8,9 @@ target
 # ... except the test fixtures, whose resolution is pinned so the suite does
 # not depend on what crates.io resolves to today (#259),
 !test/fixtures/*/Cargo.lock
+# ... and the facade of the canonical integration example, which @rust_crate
+# builds in place against it (#441).
+!examples/SafeLedger.jl/deps/safe_ledger/Cargo.lock
 # ... and the two crates `Pkg.build("RustCall")` compiles. They are built with
 # `--locked`, which is the only way Cargo leaves an installed, read-only
 # package tree alone: it writes Cargo.lock beside the manifest whatever

@@ -8,6 +8,17 @@ using RustCall
 
 const SAFE_LEDGER_ROOT = joinpath(dirname(@__DIR__), "examples", "SafeLedger.jl")
 
+# The facade is a `cdylib`, so `@rust_crate` builds it in place against its own
+# `Cargo.lock`. Its `#[julia]` dependency reaches `syn`/`quote`/`proc-macro2`
+# on crates.io, so the canonical example pins that resolution (#444 review).
+@testset "SafeLedger example: the facade's lockfile is tracked" begin
+    lockfile = joinpath(SAFE_LEDGER_ROOT, "deps", "safe_ledger", "Cargo.lock")
+    @test isfile(lockfile)
+    @test occursin("name = \"syn\"", read(lockfile, String))
+    @test !any(line -> strip(line) in ("/deps/safe_ledger/Cargo.lock", "Cargo.lock"),
+               readlines(joinpath(SAFE_LEDGER_ROOT, ".gitignore")))
+end
+
 if !RustCall.check_rustc_available()
     @testset "SafeLedger example" begin
         @test_skip "rustc is required"
