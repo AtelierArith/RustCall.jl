@@ -2,7 +2,7 @@
 # wrappers RustCall generates the FFI contract cannot describe.
 
 # Attributes whose items RustCall wraps (`Attribute::generates_wrapper` in
-# `rustcall_core`, minus the PyO3 origins, which `scan_report` covers).
+# `rustcall_julia_core`, minus the PyO3 origins, which `scan_report` covers).
 const _BOUNDARY_ATTRIBUTES = ("julia", "derive_julia_struct")
 
 """

@@ -12,7 +12,11 @@
 #
 # Idempotent: a version already on crates.io is skipped, so the workflow can
 # run on every green push to `main` and act only on an actual bump. Run with
-# `--dry-run` to print what it would do and publish nothing. `CARGO_REGISTRY_TOKEN`
+# `--dry-run` to publish nothing: every crate that would be published gets
+# `cargo publish --dry-run` — Cargo's own packaging, metadata and build checks
+# — except one whose dependency is itself still waiting to be published in the
+# same run, which Cargo cannot resolve against crates.io before that upload;
+# that one is named and skipped rather than reported green. `CARGO_REGISTRY_TOKEN`
 # is read by Cargo itself from the environment; it is never passed as a
 # command-line argument.
 #
@@ -79,6 +83,11 @@ wait_for_index() {
     return 1
 }
 
+# Crates this dry run would have uploaded before the current one: every later
+# crate depends on every earlier one, so their absence from crates.io is what
+# keeps Cargo from checking the current crate.
+unpublished_deps=()
+
 for crate in "${crates[@]}"; do
     manifest="$root/deps/$crate/Cargo.toml"
     version="$(crate_version "$manifest")"
@@ -87,7 +96,14 @@ for crate in "${crates[@]}"; do
         continue
     fi
     if $dry_run; then
-        echo "would publish $crate $version"
+        if [ ${#unpublished_deps[@]} -gt 0 ]; then
+            echo "would publish $crate $version (not checked: it depends on" \
+                 "${unpublished_deps[*]}, which this run would upload first)"
+        else
+            echo "would publish $crate $version; running cargo publish --dry-run"
+            cargo publish --dry-run --manifest-path "$manifest"
+        fi
+        unpublished_deps+=("$crate $version")
         continue
     fi
     echo "publishing $crate $version"
