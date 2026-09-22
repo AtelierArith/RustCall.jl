@@ -156,7 +156,13 @@ end
         end
         """
     project = Base.active_project()
-    cmd = `$(Base.julia_cmd()) --startup-file=no --project=$project --trace-compile=$trace -e $script`
+    # Coverage off in the child, whatever this process runs with: under
+    # `--code-coverage` Julia recompiles the directive-compiled instances of
+    # the covered package (reproduced on 1.13, all five entry points named
+    # `# recompile`), and coverage is not what this test measures. The image
+    # the child then wants may not exist yet under CI's coverage-only
+    # configuration, in which case the child precompiles it once.
+    cmd = `$(Base.julia_cmd()) --startup-file=no --code-coverage=none --project=$project --trace-compile=$trace -e $script`
     env = copy(ENV)
     haskey(ENV, "RUSTCALL_EXTRACT") && (env["RUSTCALL_EXTRACT"] = ENV["RUSTCALL_EXTRACT"])
     ok = success(pipeline(setenv(cmd, env); stdout = devnull, stderr = stderr))

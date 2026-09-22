@@ -473,7 +473,8 @@ end
         @rust_crate $(repr(abspath(PYO3_HOST_CRATE))) submodule="Bindings" pyo3_host=true
         Bindings.add(Int32(2), Int32(3))
         """
-    cmd = `$(Base.julia_cmd()) --startup-file=no --project=$(Base.active_project()) --trace-compile=$trace -e $script`
+    # Coverage off in the child, for the reason `test_precompile.jl` gives.
+    cmd = `$(Base.julia_cmd()) --startup-file=no --code-coverage=none --project=$(Base.active_project()) --trace-compile=$trace -e $script`
     @test success(pipeline(cmd; stdout = devnull, stderr = stderr))
     compiled = isfile(trace) ? readlines(trace) : String[]
     leaked = filter(line -> occursin("pyo3_host_import", line) ||
