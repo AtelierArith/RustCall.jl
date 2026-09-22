@@ -868,7 +868,15 @@ function _identity_file_bytes(path::String; release_names = nothing)::Vector{UIn
         package = get(doc, "package", nothing)
         package isa AbstractDict && haskey(package, "version") &&
             _is_rustcall_release_crate(dirname(path), get(package, "name", nothing)) || return raw
-        return _without_version_lines(raw, (header, body) -> header == "[package]")
+        # The requirement a release crate puts on a sibling it takes by path —
+        # `rustcall_julia_core = { path = "...", version = "0.1.0" }` — is bumped
+        # together with the crates' own versions (#451), so it leaves the
+        # identity with the `[package] version`; only for a dependency resolved
+        # by path into this package's `deps/`, never for a registry pin.
+        pinned = _release_path_dependency_keys(doc, dirname(path))
+        return _without_version_lines(raw,
+            (header, body) -> header == "[package]" || _release_dependency_table(header, pinned);
+            rewrite = line -> _without_inline_version(line, pinned))
     end
     packages = get(doc, "package", nothing)
     packages isa AbstractVector || return raw
@@ -895,6 +903,71 @@ function _identity_file_bytes(path::String; release_names = nothing)::Vector{UIn
             header == "[[package]]" && _toml_line_value(body, "name") in strip_names &&
             _toml_line_value(body, "source") === nothing;
         rewrite = line -> _unqualified_reference(line, versions))
+end
+
+# The dependency keys of `doc` (the parsed manifest at `dir`) that name one of
+# this package's release crates by path and pin its `version`: the keys whose
+# requirement is bumped with the crates (#451). Every dependency table is
+# read, including the per-target ones; `package = "..."` renames are honoured
+# — the provenance test is on the crate the path reaches, the key is what the
+# manifest line starts with.
+function _release_path_dependency_keys(doc, dir::AbstractString)::Set{String}
+    keys_ = Set{String}()
+    scopes = Any[doc]
+    targets = get(doc, "target", nothing)
+    targets isa AbstractDict && append!(scopes, (t for t in values(targets) if t isa AbstractDict))
+    for scope in scopes, table in ("dependencies", "dev-dependencies", "build-dependencies")
+        deps = get(scope, table, nothing)
+        deps isa AbstractDict || continue
+        for (dep, spec) in deps
+            spec isa AbstractDict || continue
+            path = get(spec, "path", nothing)
+            path isa AbstractString || continue
+            haskey(spec, "version") || continue
+            _is_rustcall_release_crate(joinpath(dir, path), get(spec, "package", dep)) || continue
+            push!(keys_, String(dep)::String)
+        end
+    end
+    return keys_
+end
+
+# Whether a TOML table header names one of `pinned` as a dependency table of
+# its own — `[dependencies.x]`, `[dev-dependencies.x]`, `[target.T.build-dependencies.x]`
+# — so that the `version = ...` line inside it goes the way an inline
+# `version` does.
+function _release_dependency_table(header::AbstractString, pinned::Set{String})
+    isempty(pinned) && return false
+    inner = strip(strip(header), ['[', ']'])
+    parts = split(inner, '.')
+    length(parts) >= 2 || return false
+    last_ = strip(String(parts[end]), '"')
+    table = String(parts[end - 1])
+    return last_ in pinned && table in ("dependencies", "dev-dependencies", "build-dependencies")
+end
+
+# A dependency line `key = { path = "...", version = "...", ... }` for a key in
+# `pinned`, with the `version` element and one separating comma removed and
+# every other byte kept; any other line unchanged.
+function _without_inline_version(line::AbstractString, pinned::Set{String})
+    isempty(pinned) && return line
+    any(key -> _is_toml_key_line(line, key), pinned) || return line
+    open_ = findfirst('{', line)
+    close_ = findlast('}', line)
+    (open_ === nothing || close_ === nothing || open_ > close_) && return line
+    inner = line[nextind(line, open_):prevind(line, close_)]
+    parts = split(inner, ',')
+    kept = String[p for p in parts if !_is_toml_key_line(p, "version")]
+    length(kept) == length(parts) && return line
+    # The last element's trailing whitespace sits before the `}`; when that
+    # element is the one removed, hand its tail to the new last element so
+    # `{ a = 1, version = "2" }` becomes `{ a = 1 }`, not `{ a = 1}`.
+    if !isempty(kept) && _is_toml_key_line(parts[end], "version")
+        tail_start = findlast(!isspace, parts[end])
+        trailing = tail_start === nothing ? String(parts[end]) :
+                   String(parts[end][nextind(parts[end], tail_start):end])
+        kept[end] = rstrip(kept[end]) * trailing
+    end
+    return line[1:open_] * join(kept, ',') * line[close_:end]
 end
 
 # `name => version` of the one source-less `[[package]]` entry per release

@@ -266,8 +266,33 @@ const _PUBLISHED_CRATES = ("rustcall_julia_core", "rustcall_julia_macros",
             real_manifest = joinpath(real, "Cargo.toml")
             raw_manifest = read(real_manifest, String)
             @test RustCall._identity_file_digest(real_manifest) != RustCall._file_content_digest(real_manifest)
+            # ...and the `version = "..."` requirement it puts on the sibling it
+            # takes by path goes with it (#451): the two are bumped together.
+            without_pins = line -> RustCall._without_inline_version(line, Set(["rustcall_julia_macros_impl"]))
             @test String(RustCall._identity_file_bytes(real_manifest)) ==
-                  join(filter(l -> !startswith(l, "version = "), split(raw_manifest, '\n')), '\n')
+                  join(map(without_pins, filter(l -> !startswith(l, "version = "), split(raw_manifest, '\n'))), '\n')
+            @test occursin("rustcall_julia_macros_impl = { path = \"../rustcall_julia_macros_impl\", version = ", raw_manifest)
+            @test occursin("rustcall_julia_macros_impl = { path = \"../rustcall_julia_macros_impl\" }\n",
+                           String(RustCall._identity_file_bytes(real_manifest)))
+            # A registry pin in the same manifest is not a release-coupled line
+            # and stays (`pyo3 = { version = "0.29", ... }` in the dev-dependencies).
+            @test occursin("pyo3 = { version = ", String(RustCall._identity_file_bytes(real_manifest)))
+            # The line surgery itself: the element and one comma go, the rest
+            # of the line is kept byte for byte; a registry pin and a line for
+            # another key are untouched.
+            pins = Set(["rustcall_julia_core"])
+            @test RustCall._without_inline_version(
+                      "rustcall_julia_core = { path = \"../rustcall_julia_core\", version = \"0.1.0\" }", pins) ==
+                  "rustcall_julia_core = { path = \"../rustcall_julia_core\" }"
+            @test RustCall._without_inline_version(
+                      "rustcall_julia_core = { version = \"0.1.0\", path = \"../rustcall_julia_core\", optional = true }", pins) ==
+                  "rustcall_julia_core = { path = \"../rustcall_julia_core\", optional = true }"
+            @test RustCall._without_inline_version("syn = { version = \"2.0\", features = [\"full\"] }", pins) ==
+                  "syn = { version = \"2.0\", features = [\"full\"] }"
+            @test RustCall._release_dependency_table("[dependencies.rustcall_julia_core]", pins)
+            @test RustCall._release_dependency_table("[target.'cfg(unix)'.build-dependencies.rustcall_julia_core]", pins)
+            @test !RustCall._release_dependency_table("[dependencies.syn]", pins)
+            @test !RustCall._release_dependency_table("[package]", pins)
             # A lockfile with a line to lose keeps its comments and order too.
             write(joinpath(dir, "Cargo.toml"), """
                 [package]
