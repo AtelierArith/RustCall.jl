@@ -1059,8 +1059,7 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
     # is refused up front.
     tree = _module_tree(info)
     _check_module_names(tree)
-    func_defs = generate_crate_function_wrappers(info, lib_path)
-    struct_defs = generate_crate_struct_wrappers(info, lib_path)
+    func_defs, struct_defs, submodules = _crate_wrapper_exprs(tree)
 
     # The registry name of this crate's library. `@rust_crate` used to keep its
     # handle only in a module-local `Ref`, invisible to `unload_library`,
@@ -1358,7 +1357,7 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
         $struct_defs
         # One Julia submodule per Rust module: `bindings.a.run()` for
         # `a::run` (#300). Each imports the helpers above from its parent.
-        $(_submodule_exprs(tree)...)
+        $(submodules...)
     end
 
     # Return a clean module expression (not wrapped in a block)
@@ -1708,6 +1707,23 @@ function _submodule_exprs(node::ModuleNode)
 end
 
 """
+    _crate_wrapper_exprs(tree::ModuleNode) -> (func_defs, struct_defs, submodules)
+
+The wrappers of a crate as `@rust_crate` binds them: the root's function
+wrappers, its struct definitions (with the root's static-method collisions,
+#323), and one module expression per Rust module below (#300).
+`emit_crate_module` splices them into the generated module;
+`boundary_report` runs them in collecting mode (#454), so the surface the
+report examines is the surface the module defines.
+"""
+function _crate_wrapper_exprs(tree::ModuleNode)
+    colliding = _static_method_collisions(tree.functions, tree.structs)
+    return (_function_wrappers_expr(tree.functions),
+            _struct_wrappers_expr(tree.structs, colliding),
+            _submodule_exprs(tree))
+end
+
+"""
     _submodule_code(node::ModuleNode; strict) -> Vector{String}
 
 Source-text twin of `_submodule_exprs` for `emit_crate_module_code`.
@@ -1741,6 +1757,9 @@ function _submodule_code(node::ModuleNode; strict::Symbol = FFI_STRICT[])
 end
 
 function _generate_crate_function_wrapper(func::RustFunctionSignature)
+    # The item every position below is filed under (#454), named before the
+    # argument plan, which records first.
+    _boundary_item!(_boundary_label(func))
     func_name = Symbol(func.name)
     func_name_str = func.name
     # The Julia wrapper keeps the Rust name; the exported symbol it calls is
@@ -1802,7 +1821,7 @@ function _generate_string_function_wrapper(func::RustFunctionSignature, arg_syms
     bindings, preserved, call_args, frame = _string_arg_plan(func, identity)
     # The helper types are named after the Rust item's FFI name, so that is the
     # owner and the contract derives `free_symbol` from it (#276, #300).
-    c = ffi_return_contract(func.return_type; abi = func.return_abi, owner = func.ffi_name)
+    c = _ffi_function_return(func)
     # Declared before the call expression is built, since it names them.
     channel_sym = _generated_local("panic_channel", func.arg_names)
     ptr_sym = _generated_local("func_ptr", func.arg_names)
@@ -1858,8 +1877,10 @@ function _generate_result_function_wrapper(func::RustFunctionSignature, arg_syms
     # slot Rust stored, converted to the surface type after the call. They
     # differ for `char`, whose slot is a `UInt32` code point (#245).
     ctx = _ffi_context(func)
-    ok_julia_type, ok_slot_type = ffi_payload_symbols(func.ok_type, func.ok_abi, ctx)
-    err_julia_type, err_slot_type = ffi_payload_symbols(func.err_type, func.err_abi, ctx)
+    ok_julia_type, ok_slot_type = ffi_payload_symbols(func.ok_type, func.ok_abi, ctx;
+                                                      position = "Ok payload")
+    err_julia_type, err_slot_type = ffi_payload_symbols(func.err_type, func.err_abi, ctx;
+                                                        position = "Err payload")
     # An owned-string payload is released through the function's own
     # `<fn>_free_rust_string`, snapshotted with the call pointer (#268, #277);
     # `<fn>` is the FFI name (#300).
@@ -1933,7 +1954,7 @@ function _py_result_types(ok_type::AbstractString, ok_abi::AbstractString,
         return (:Nothing, :UInt8, true)
     end
     surface, slot = ffi_payload_symbols(String(ok_type), String(ok_abi), context;
-                                        strict = strict)
+                                        position = "Ok payload", strict = strict)
     return (surface, slot, false)
 end
 
@@ -2018,7 +2039,8 @@ function _generate_option_function_wrapper(func::RustFunctionSignature, arg_syms
     # See `_generate_result_function_wrapper`: the payload field holds the C
     # slot, the surface type is what the caller sees.
     inner_julia_type, inner_slot_type =
-        ffi_payload_symbols(func.inner_type, func.inner_abi, _ffi_context(func))
+        ffi_payload_symbols(func.inner_type, func.inner_abi, _ffi_context(func);
+                            position = "Some payload")
     free_str = _payload_free_symbol(func.ffi_name, (func.inner_abi,))
 
     # The C-compatible struct name generated by the proc-macro
@@ -2220,7 +2242,8 @@ function _crate_field_read(info::RustStructInfo, field_name::AbstractString,
         end
     end
     julia_type = ffi_return_symbol_or_throw(field_type, get(info.field_abis, field_name, ""),
-                                            _ffi_field_context(info, field_name, field_type))
+                                            _ffi_field_context(info, field_name, field_type);
+                                            position = _ffi_field_position(info, field_name))
     return quote
         let (fp, channel) = _call_target($cache, $name)
             _guard_panic(call_rust_function(fp, $julia_type, $self_ptr_expr), channel, $name)
@@ -2277,7 +2300,8 @@ function _crate_field_write(info::RustStructInfo, field_name::AbstractString,
         end
     end
     julia_type = ffi_return_symbol_or_throw(field_type, get(info.field_abis, field_name, ""),
-                                            _ffi_field_context(info, field_name, field_type))
+                                            _ffi_field_context(info, field_name, field_type);
+                                            position = _ffi_field_position(info, field_name))
     return quote
         let value = convert($julia_type, $value_expr), (fp, channel) = _call_target($cache, $name)
             _guard_panic(call_rust_function(fp, Cvoid, $self_ptr_expr, value), channel, $name)
@@ -2309,7 +2333,8 @@ function _crate_field_write_source(info::RustStructInfo, field_name::AbstractStr
     end
     julia_type = ffi_return_symbol_or_throw(field_type, get(info.field_abis, field_name, ""),
                                             _ffi_field_context(info, field_name, field_type);
-                                            strict = strict)
+                                            strict = strict,
+                                            position = _ffi_field_position(info, field_name))
     return "let converted_value = convert($julia_type, $value), $target; " *
            "_guard_panic(call_rust_function(fp, Cvoid, $self_ptr, converted_value), channel, \"$setter_symbol\"); end"
 end
@@ -2340,7 +2365,8 @@ function _crate_field_read_source(info::RustStructInfo, field_name::AbstractStri
     end
     julia_type = ffi_return_symbol_or_throw(field_type, get(info.field_abis, field_name, ""),
                                             _ffi_field_context(info, field_name, field_type);
-                                            strict = strict)
+                                            strict = strict,
+                                            position = _ffi_field_position(info, field_name))
     return "let $target; _guard_panic(call_rust_function(fp, $julia_type, $self_ptr), channel, \"$getter_symbol\"); end"
 end
 
@@ -2452,6 +2478,9 @@ _check_not_freed(obj, type_name::String) = check_not_freed(obj, type_name)
 
 function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod;
                                         bare::Bool = true)
+    # The item every position below is filed under (#454), named before the
+    # argument plan, which records first.
+    _boundary_item!(_boundary_label(info, method.name))
     struct_name = Symbol(info.name)
     struct_name_str = info.name
     method_name = Symbol(method.name)
@@ -2474,7 +2503,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     # Crate method wrappers return strings through per-method buffers:
     # `<Struct>_<method>_RustCallOwnedString`, released with
     # `<Struct>_<method>_free_rust_string` (see rustcall_julia_core::codegen).
-    c = ffi_return_contract(method.return_type; abi = method.return_abi, owner = helper_owner)
+    c = _ffi_method_return(method, helper_owner)
 
     all_args = Any[]
     method.is_static || push!(all_args, :(getfield(self, :ptr)))
@@ -2627,8 +2656,10 @@ function _method_payload_plan(info::RustStructInfo, method::RustMethod,
                               strict::Symbol = FFI_STRICT[])
     ctx = _ffi_context(method, info.name)
     if method.return_kind === :result
-        ok_t, ok_slot = ffi_payload_symbols(method.ok_type, method.ok_abi, ctx; strict = strict)
-        err_t, err_slot = ffi_payload_symbols(method.err_type, method.err_abi, ctx; strict = strict)
+        ok_t, ok_slot = ffi_payload_symbols(method.ok_type, method.ok_abi, ctx;
+                                            position = "Ok payload", strict = strict)
+        err_t, err_slot = ffi_payload_symbols(method.err_type, method.err_abi, ctx;
+                                              position = "Err payload", strict = strict)
         name = Symbol("CResult_", info.name, "_", method.name)
         definition = quote
             # RustCall's own mirror of the extractor's `#[repr(C)]` aggregate,
@@ -2650,7 +2681,8 @@ end"""
         return MethodPayloadPlan(:result, name, definition, source, (ok_t, err_t), free)
     end
     inner_t, inner_slot =
-        ffi_payload_symbols(method.inner_type, method.inner_abi, ctx; strict = strict)
+        ffi_payload_symbols(method.inner_type, method.inner_abi, ctx;
+                            position = "Some payload", strict = strict)
     name = Symbol("COption_", info.name, "_", method.name)
     definition = quote
         struct $name <: FFIByValue
@@ -4265,6 +4297,9 @@ end
 Generate Julia code for a function wrapper as a string.
 """
 function _emit_function_code(func::RustFunctionSignature; strict::Symbol = FFI_STRICT[])
+    # The item every position below is filed under (#454), named before the
+    # argument plan, which records first.
+    _boundary_item!(_boundary_label(func))
     func_name = func.name
     # The generated Julia function keeps the Rust name; the symbol it looks up
     # is the additive wrapper `rustcall_<name>` (#279).
@@ -4330,8 +4365,10 @@ function _emit_result_function_code(func::RustFunctionSignature, arg_syms::Strin
     func_name = func.name
     ctx = _ffi_context(func)
     # The payload fields carry the C slot; see `_generate_result_function_wrapper`.
-    ok_surface, ok_slot = ffi_payload_symbols(func.ok_type, func.ok_abi, ctx; strict = strict)
-    err_surface, err_slot = ffi_payload_symbols(func.err_type, func.err_abi, ctx; strict = strict)
+    ok_surface, ok_slot = ffi_payload_symbols(func.ok_type, func.ok_abi, ctx;
+                                              position = "Ok payload", strict = strict)
+    err_surface, err_slot = ffi_payload_symbols(func.err_type, func.err_abi, ctx;
+                                                position = "Err payload", strict = strict)
     ok_type_str = string(ok_surface)
     err_type_str = string(err_surface)
     ok_slot_str = string(ok_slot)
@@ -4425,7 +4462,8 @@ function _emit_option_function_code(func::RustFunctionSignature, arg_syms::Strin
                                     strict::Symbol = FFI_STRICT[], frame_str::String = "")
     func_name = func.name
     inner_surface, inner_slot =
-        ffi_payload_symbols(func.inner_type, func.inner_abi, _ffi_context(func); strict = strict)
+        ffi_payload_symbols(func.inner_type, func.inner_abi, _ffi_context(func);
+                            position = "Some payload", strict = strict)
     inner_type_str = string(inner_surface)
     inner_slot_str = string(inner_slot)
     sym = func.symbol
@@ -4619,6 +4657,9 @@ Generate Julia code for a method wrapper as a string.
 """
 function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
                            strict::Symbol = FFI_STRICT[], bare::Bool = true)
+    # The item every position below is filed under (#454), named before the
+    # argument plan, which records first.
+    _boundary_item!(_boundary_label(struct_info, method.name))
     struct_name = struct_info.name
     method_name = method.name
     # Exported symbol (`rustcall_<Struct>_<method>`, #279) and the owner of the
@@ -4639,7 +4680,7 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
     # object, which the finalizer of a temporary could free mid-call.
     method.is_static || (preserve_str = strip("self " * preserve_str))
     ptr_var = _generated_local("func_ptr", method.arg_names)
-    c = ffi_return_contract(method.return_type; abi = method.return_abi, owner = helper_owner)
+    c = _ffi_method_return(method, helper_owner)
 
     all_args = String[]
     method.is_static || push!(all_args, "getfield(self, :ptr)")
