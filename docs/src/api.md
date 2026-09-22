@@ -47,7 +47,13 @@ Pages = [joinpath("src", "RustCall.jl")]
   types generated for `#[julia]` structs (`types.jl`, `memory.jl`, `structs.jl`).
 - [Generics and `#[julia]` functions](reference/generics.md) — the generic
   function registry, monomorphization, and the wrappers for `#[julia]` free
-  functions (`generics.jl`, `julia_functions.jl`).
+  functions (`generics.jl`, `julia_functions.jl`). Generics by hand:
+  [`RustCall.register_generic_function`](@ref),
+  [`RustCall.monomorphize_function`](@ref),
+  [`RustCall.call_generic_function`](@ref),
+  [`RustCall.precompile_generics`](@ref),
+  [`RustCall.release_generics`](@ref); the [Generics](generics.md) guide has
+  runnable examples of both automatic and manual monomorphization.
 - [Errors and load policy](reference/loading.md) — the exception types and the
   one load/unload path (`exceptions.jl`, `loadpolicy.jl`).
 
