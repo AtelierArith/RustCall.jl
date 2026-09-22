@@ -111,8 +111,16 @@ What that means in practice:
   own, independent of the package's: that version says what the crates' API
   promises, while the identifier above says what manifest the release speaks.
   `test/test_schema_version.jl` fails when the three drift. A version bump of
-  the crates is therefore a bump of their `Cargo.toml`s and of the `version`
-  requirements between them, and of nothing else.
+  the crates is therefore a bump of their `Cargo.toml`s, of the exact
+  `version = "=x.y.z"` requirements between them, and of the committed
+  lockfiles that record them as path dependencies —
+  `deps/rustcall_extract/Cargo.lock`, the three
+  `test/fixtures/sample_crate*/Cargo.lock` and
+  `examples/SafeLedger.jl/deps/safe_ledger/Cargo.lock`, refreshed with
+  `cargo update -w --offline` in each directory (the extractor is built with
+  `--locked`, so a stale entry fails every `Pkg.build`; the same test fails
+  when an entry disagrees). Nothing else moves: `Project.toml`, the schema
+  identifier and every cache key stay where they are.
 - The **package** release is a bump of `Project.toml`, of
   `rustcall_julia_core::manifest::SCHEMA_VERSION` when its `MAJOR.MINOR` moves (the
   two must agree, and `test/test_schema_version.jl` compares them through the
