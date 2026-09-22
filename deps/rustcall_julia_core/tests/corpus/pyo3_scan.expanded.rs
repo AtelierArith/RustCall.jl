@@ -176,9 +176,11 @@ pub extern "C" fn rustcall_dual_take_panic(out: *mut u8, cap: usize) -> usize {
         })
 }
 #[no_mangle]
-pub extern "C" fn rustcall_dual(a: i32, b: i32) -> i32 {
+pub extern "C" fn rustcall_dual(a: i32, b: i32) -> ::std::mem::MaybeUninit<i32> {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
-    match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| { dual(a, b) })) {
+    match ::std::panic::catch_unwind(
+        ::std::panic::AssertUnwindSafe(|| { ::std::mem::MaybeUninit::new(dual(a, b)) }),
+    ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
         ::std::result::Result::Err(rustcall_payload) => {
             let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
@@ -202,7 +204,7 @@ pub extern "C" fn rustcall_dual(a: i32, b: i32) -> i32 {
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<i32>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }

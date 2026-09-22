@@ -62,9 +62,9 @@ mod tests {
         assert!(add.exported);
         assert_eq!(add.return_kind, manifest::ReturnKind::Plain);
         assert_eq!(add.args.len(), 2);
-        assert!(e
-            .source
-            .contains("pub extern \"C\" fn rustcall_add(a: i32, b: i32) -> i32"));
+        assert!(e.source.contains(
+            "pub extern \"C\" fn rustcall_add(a: i32, b: i32) -> ::std::mem::MaybeUninit<i32>"
+        ));
 
         let div = m.functions.iter().find(|f| f.name == "safe_div").unwrap();
         assert_eq!(div.return_kind, manifest::ReturnKind::Option);
@@ -209,9 +209,15 @@ mod tests {
             "Pair_first_i32",
         )
         .unwrap();
-        assert!(sp
-            .source
-            .contains("pub extern \"C\" fn rustcall_Pair_first_i32(ptr: *const Pair<i32>) -> i32"));
+        let flat = sp.source.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            flat.contains(
+                "pub extern \"C\" fn rustcall_Pair_first_i32( ptr: *const Pair<i32>, ) -> ::std::mem::MaybeUninit<i32>"
+            ) || flat.contains(
+                "pub extern \"C\" fn rustcall_Pair_first_i32(ptr: *const Pair<i32>) -> ::std::mem::MaybeUninit<i32>"
+            ),
+            "{flat}"
+        );
 
         let full = format!("{}\n{}", s.context_source, s.generic_wrappers[0].source);
         let sp = specialize::specialize(
@@ -221,9 +227,15 @@ mod tests {
             "Pair_new_i32",
         )
         .unwrap();
-        assert!(sp.source.contains(
-            "pub extern \"C\" fn rustcall_Pair_new_i32(a: i32, b: i32) -> *mut Pair<i32>"
-        ));
+        let flat = sp.source.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            flat.contains(
+                "pub extern \"C\" fn rustcall_Pair_new_i32( a: i32, b: i32, ) -> ::std::mem::MaybeUninit<*mut Pair<i32>>"
+            ) || flat.contains(
+                "pub extern \"C\" fn rustcall_Pair_new_i32(a: i32, b: i32) -> ::std::mem::MaybeUninit<*mut Pair<i32>>"
+            ),
+            "{flat}"
+        );
     }
 
     #[test]

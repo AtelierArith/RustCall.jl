@@ -1012,16 +1012,24 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
             }
         }
         WrapperReturn::Plain(ty) => {
-            // A zeroed primitive / raw pointer is the sentinel: Julia raises
-            // before it is ever read. Every type that reaches `Plain` is
-            // `#[repr(C)]`-compatible and has no niche that makes all-zero
-            // invalid (`is_ffi_compatible_type`).
-            let sentinel = quote! { unsafe { ::std::mem::zeroed::<#ty>() } };
+            // The value leaves as `MaybeUninit<T>` (#462). Nothing checks that
+            // a plain return type is valid all-zero — `&T`, `Box<T>`,
+            // `NonZero*`, a fn pointer, a user `#[repr(C)]` struct holding one
+            // all reach this arm — so a `mem::zeroed::<T>()` sentinel hit
+            // rustc's non-unwinding "attempted to zero-initialize" check and
+            // aborted the process on the very panic the boundary exists to
+            // contain. `MaybeUninit::zeroed()` has no validity requirement,
+            // and `MaybeUninit<T>` is guaranteed the size, alignment and
+            // **ABI** of `T`, so the C signature Julia calls is unchanged
+            // (and `improper_ctypes_definitions` still judges `T` itself).
+            // Julia reads the panic channel and raises before it looks at the
+            // sentinel.
+            let sentinel = quote! { ::std::mem::MaybeUninit::zeroed() };
             let guarded = guarded_body(
                 &julia_name,
                 &slot,
                 &prologue,
-                quote! { #call },
+                quote! { ::std::mem::MaybeUninit::new(#call) },
                 sentinel,
                 false,
                 panic_hook,
@@ -1029,7 +1037,7 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
             quote! {
                 #(#cfg_attrs)*
                 #[no_mangle]
-                pub extern "C" fn #symbol(#(#wrapper_args),*) -> #ty {
+                pub extern "C" fn #symbol(#(#wrapper_args),*) -> ::std::mem::MaybeUninit<#ty> {
                     #guarded
                 }
             }
@@ -1649,9 +1657,15 @@ pub fn crate_struct_needs_owned_string_helper(item_struct: &ItemStruct) -> bool 
         .any(|f| f.ident.is_some() && field_has_accessors(&f.ty) && is_string_type(&f.ty))
 }
 
-/// Apply the common boundary to generated field/clone helpers. These helpers
-/// return only unit, primitives, raw pointers, owned-string buffers or Vec.
-/// In particular, Vec must use an empty vector, not an invalid zeroed value.
+/// Apply the common boundary to generated field/clone helpers.
+///
+/// A `Vec` result (never across `extern "C"`) takes an empty vector as its
+/// sentinel. Any other value leaves as `MaybeUninit<T>`, `MaybeUninit::zeroed()`
+/// after a panic, exactly as a plain function return does in
+/// [`generate_wrapper`] (#462): the sentinel is then sound whatever `T` is,
+/// rather than only while every caller keeps to types that are valid
+/// all-zero, and the C signature is unchanged because `MaybeUninit<T>` has the
+/// ABI of `T`.
 pub(crate) fn guard_struct_helper(tokens: TokenStream2, hook: PanicHook) -> TokenStream2 {
     let mut function: ItemFn = syn::parse2(tokens).expect("generated struct helper is a function");
     let symbol = &function.sig.ident;
@@ -1663,20 +1677,32 @@ pub(crate) fn guard_struct_helper(tokens: TokenStream2, hook: PanicHook) -> Toke
     let slot = format_ident!("__RUSTCALL_HELPER_PANIC_{}", suffix);
     let reader = format_ident!("{}", panic_symbol(&symbol.to_string()));
     let channel = panic_channel(&cfg_attrs(&function.attrs), &slot, &reader);
-    let (sentinel, unit) = match &function.sig.output {
-        ReturnType::Default => (quote! {}, true),
-        ReturnType::Type(_, ty) if matches!(unparen(ty), Type::Tuple(t) if t.elems.is_empty()) => {
-            (quote! {}, true)
+    let original = function.block.clone();
+    let (sentinel, unit, body) = match function.sig.output.clone() {
+        ReturnType::Default => (quote! {}, true, quote! { #original }),
+        ReturnType::Type(_, ty) if matches!(unparen(&ty), Type::Tuple(t) if t.elems.is_empty()) => {
+            (quote! {}, true, quote! { #original })
         }
-        ReturnType::Type(_, ty) if is_vec_type(ty) => (quote! { ::std::vec::Vec::new() }, false),
-        ReturnType::Type(_, ty) => (quote! { unsafe { ::std::mem::zeroed::<#ty>() } }, false),
+        ReturnType::Type(_, ty) if is_vec_type(&ty) => (
+            quote! { ::std::vec::Vec::new() },
+            false,
+            quote! { #original },
+        ),
+        ReturnType::Type(arrow, ty) => {
+            function.sig.output =
+                ReturnType::Type(arrow, syn::parse_quote!(::std::mem::MaybeUninit<#ty>));
+            (
+                quote! { ::std::mem::MaybeUninit::zeroed() },
+                false,
+                quote! { ::std::mem::MaybeUninit::new(#original) },
+            )
+        }
     };
-    let original = &function.block;
     let body = guarded_body(
         &symbol.to_string(),
         &slot,
         &quote! {},
-        quote! { #original },
+        body,
         sentinel,
         unit,
         hook,

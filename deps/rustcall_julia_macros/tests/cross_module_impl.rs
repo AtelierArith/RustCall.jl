@@ -119,9 +119,9 @@ fn the_rust_items_are_untouched() {
 #[test]
 fn method_symbols_follow_the_struct_not_the_block() {
     let p = rustcall_Gauge_new(4);
-    assert_eq!(ops::rustcall_Gauge_read(p), 4);
+    assert_eq!(unsafe { ops::rustcall_Gauge_read(p).assume_init() }, 4);
     ops::rustcall_Gauge_bump(p);
-    assert_eq!(ops::rustcall_Gauge_read(p), 5);
+    assert_eq!(unsafe { ops::rustcall_Gauge_read(p).assume_init() }, 5);
 
     let out = more::rustcall_Gauge_label(p);
     let bytes = unsafe { std::slice::from_raw_parts(out.ptr, out.len) };
@@ -129,8 +129,8 @@ fn method_symbols_follow_the_struct_not_the_block() {
     more::Gauge_label_free_rust_string(out.ptr, out.len, out.cap);
 
     let q = more::rustcall_Gauge_scaled(2, 3);
-    assert_eq!(ops::rustcall_Gauge_read(q), 6);
-    assert_eq!(Gauge_get_value(q), 6);
+    assert_eq!(unsafe { ops::rustcall_Gauge_read(q).assume_init() }, 6);
+    assert_eq!(unsafe { Gauge_get_value(q).assume_init() }, 6);
 
     // The `Result` lowering is the free-function one (#268); its aggregate is
     // read by Julia, so only that the wrapper exists and runs is checked here.
@@ -140,6 +140,6 @@ fn method_symbols_follow_the_struct_not_the_block() {
     Gauge_free(q);
 
     let c = a::rustcall_a__C_new(7);
-    assert_eq!(b::rustcall_a__C_get(c), 7);
+    assert_eq!(unsafe { b::rustcall_a__C_get(c).assume_init() }, 7);
     a::a__C_free(c);
 }

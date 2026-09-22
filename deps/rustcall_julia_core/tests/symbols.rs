@@ -237,9 +237,9 @@ fn specialized_flavour() {
     assert_eq!(f.module_path, path(&["api"]));
     assert_eq!(f.ffi_name, "api__twice_0i32");
     assert_eq!(f.symbol, "rustcall_api__twice_0i32");
-    assert!(out
-        .source
-        .contains("pub extern \"C\" fn rustcall_api__twice_0i32(x: i32) -> i32"));
+    assert!(out.source.contains(
+        "pub extern \"C\" fn rustcall_api__twice_0i32(x: i32) -> ::std::mem::MaybeUninit<i32>"
+    ));
 
     // At the crate root the instantiation keeps the bare name.
     let root = rustcall_julia_core::specialize::specialize(

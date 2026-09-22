@@ -49,10 +49,12 @@ pub extern "C" fn rustcall_add_take_panic(out: *mut u8, cap: usize) -> usize {
         })
 }
 #[no_mangle]
-pub extern "C" fn rustcall_add(a: i32, b: i32) -> i32 {
+pub extern "C" fn rustcall_add(a: i32, b: i32) -> ::std::mem::MaybeUninit<i32> {
     let _rustcall_boundary = ::rustcall_julia_macros::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
-        ::std::panic::AssertUnwindSafe(|| { user_crate::add(a, b) }),
+        ::std::panic::AssertUnwindSafe(|| {
+            ::std::mem::MaybeUninit::new(user_crate::add(a, b))
+        }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
         ::std::result::Result::Err(rustcall_payload) => {
@@ -77,7 +79,7 @@ pub extern "C" fn rustcall_add(a: i32, b: i32) -> i32 {
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<i32>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
@@ -229,10 +231,12 @@ pub extern "C" fn rustcall_double_take_panic(out: *mut u8, cap: usize) -> usize 
         })
 }
 #[no_mangle]
-pub extern "C" fn rustcall_double(x: f64) -> f64 {
+pub extern "C" fn rustcall_double(x: f64) -> ::std::mem::MaybeUninit<f64> {
     let _rustcall_boundary = ::rustcall_julia_macros::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
-        ::std::panic::AssertUnwindSafe(|| { user_crate::double(x) }),
+        ::std::panic::AssertUnwindSafe(|| {
+            ::std::mem::MaybeUninit::new(user_crate::double(x))
+        }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
         ::std::result::Result::Err(rustcall_payload) => {
@@ -257,7 +261,7 @@ pub extern "C" fn rustcall_double(x: f64) -> f64 {
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<f64>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
@@ -449,10 +453,12 @@ pub extern "C" fn rustcall_nested__deep_take_panic(out: *mut u8, cap: usize) -> 
         })
 }
 #[no_mangle]
-pub extern "C" fn rustcall_nested__deep(a: i32) -> i32 {
+pub extern "C" fn rustcall_nested__deep(a: i32) -> ::std::mem::MaybeUninit<i32> {
     let _rustcall_boundary = ::rustcall_julia_macros::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
-        ::std::panic::AssertUnwindSafe(|| { user_crate::nested::deep(a) }),
+        ::std::panic::AssertUnwindSafe(|| {
+            ::std::mem::MaybeUninit::new(user_crate::nested::deep(a))
+        }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
         ::std::result::Result::Err(rustcall_payload) => {
@@ -477,7 +483,7 @@ pub extern "C" fn rustcall_nested__deep(a: i32) -> i32 {
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<i32>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
@@ -522,10 +528,12 @@ pub extern "C" fn rustcall_gated_add_take_panic(out: *mut u8, cap: usize) -> usi
         })
 }
 #[no_mangle]
-pub extern "C" fn rustcall_gated_add(a: i32, b: i32) -> i32 {
+pub extern "C" fn rustcall_gated_add(a: i32, b: i32) -> ::std::mem::MaybeUninit<i32> {
     let _rustcall_boundary = ::rustcall_julia_macros::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
-        ::std::panic::AssertUnwindSafe(|| { user_crate::gated_add(a, b) }),
+        ::std::panic::AssertUnwindSafe(|| {
+            ::std::mem::MaybeUninit::new(user_crate::gated_add(a, b))
+        }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
         ::std::result::Result::Err(rustcall_payload) => {
@@ -550,7 +558,7 @@ pub extern "C" fn rustcall_gated_add(a: i32, b: i32) -> i32 {
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<i32>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
@@ -687,10 +695,14 @@ pub extern "C" fn rustcall_Point_get_x_take_panic(out: *mut u8, cap: usize) -> u
         })
 }
 #[no_mangle]
-pub extern "C" fn rustcall_Point_get_x(ptr: *const user_crate::Point) -> f64 {
+pub extern "C" fn rustcall_Point_get_x(
+    ptr: *const user_crate::Point,
+) -> ::std::mem::MaybeUninit<f64> {
     let _rustcall_boundary = ::rustcall_julia_macros::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
-        ::std::panic::AssertUnwindSafe(|| { { unsafe { (*ptr).x } } }),
+        ::std::panic::AssertUnwindSafe(|| {
+            ::std::mem::MaybeUninit::new({ unsafe { (*ptr).x } })
+        }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
         ::std::result::Result::Err(rustcall_payload) => {
@@ -715,7 +727,7 @@ pub extern "C" fn rustcall_Point_get_x(ptr: *const user_crate::Point) -> f64 {
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<f64>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
@@ -760,10 +772,14 @@ pub extern "C" fn rustcall_Point_get_y_take_panic(out: *mut u8, cap: usize) -> u
         })
 }
 #[no_mangle]
-pub extern "C" fn rustcall_Point_get_y(ptr: *const user_crate::Point) -> f64 {
+pub extern "C" fn rustcall_Point_get_y(
+    ptr: *const user_crate::Point,
+) -> ::std::mem::MaybeUninit<f64> {
     let _rustcall_boundary = ::rustcall_julia_macros::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
-        ::std::panic::AssertUnwindSafe(|| { { unsafe { (*ptr).y } } }),
+        ::std::panic::AssertUnwindSafe(|| {
+            ::std::mem::MaybeUninit::new({ unsafe { (*ptr).y } })
+        }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
         ::std::result::Result::Err(rustcall_payload) => {
@@ -788,7 +804,7 @@ pub extern "C" fn rustcall_Point_get_y(ptr: *const user_crate::Point) -> f64 {
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<f64>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
@@ -835,11 +851,11 @@ pub extern "C" fn rustcall_Point_get_tag_take_panic(out: *mut u8, cap: usize) ->
 #[no_mangle]
 pub extern "C" fn rustcall_Point_get_tag(
     ptr: *const user_crate::Point,
-) -> Point_RustCallOwnedString {
+) -> ::std::mem::MaybeUninit<Point_RustCallOwnedString> {
     let _rustcall_boundary = ::rustcall_julia_macros::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
-            {
+            ::std::mem::MaybeUninit::new({
                 let mut rustcall_bytes = unsafe { (*ptr).tag.clone().into_bytes() };
                 let rustcall_ret = Point_RustCallOwnedString {
                     ptr: rustcall_bytes.as_mut_ptr(),
@@ -848,7 +864,7 @@ pub extern "C" fn rustcall_Point_get_tag(
                 };
                 ::std::mem::forget(rustcall_bytes);
                 rustcall_ret
-            }
+            })
         }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
@@ -874,7 +890,7 @@ pub extern "C" fn rustcall_Point_get_tag(
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<Point_RustCallOwnedString>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
@@ -1004,12 +1020,14 @@ pub extern "C" fn rustcall_Point_norm_take_panic(out: *mut u8, cap: usize) -> us
         })
 }
 #[no_mangle]
-pub extern "C" fn rustcall_Point_norm(ptr: *const user_crate::Point) -> f64 {
+pub extern "C" fn rustcall_Point_norm(
+    ptr: *const user_crate::Point,
+) -> ::std::mem::MaybeUninit<f64> {
     let _rustcall_boundary = ::rustcall_julia_macros::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
-            self_obj.norm()
+            ::std::mem::MaybeUninit::new(self_obj.norm())
         }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
@@ -1035,7 +1053,7 @@ pub extern "C" fn rustcall_Point_norm(ptr: *const user_crate::Point) -> f64 {
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<f64>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
@@ -1231,12 +1249,14 @@ pub extern "C" fn rustcall_Point_sum_take_panic(out: *mut u8, cap: usize) -> usi
         })
 }
 #[no_mangle]
-pub extern "C" fn rustcall_Point_sum(ptr: *const user_crate::Point) -> f64 {
+pub extern "C" fn rustcall_Point_sum(
+    ptr: *const user_crate::Point,
+) -> ::std::mem::MaybeUninit<f64> {
     let _rustcall_boundary = ::rustcall_julia_macros::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
-            self_obj.sum()
+            ::std::mem::MaybeUninit::new(self_obj.sum())
         }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
@@ -1262,7 +1282,7 @@ pub extern "C" fn rustcall_Point_sum(ptr: *const user_crate::Point) -> f64 {
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<f64>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
@@ -1466,10 +1486,12 @@ pub extern "C" fn rustcall_shapes__Circle_get_r_take_panic(
 #[no_mangle]
 pub extern "C" fn rustcall_shapes__Circle_get_r(
     ptr: *const user_crate::shapes::Circle,
-) -> f64 {
+) -> ::std::mem::MaybeUninit<f64> {
     let _rustcall_boundary = ::rustcall_julia_macros::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
-        ::std::panic::AssertUnwindSafe(|| { { unsafe { (*ptr).r } } }),
+        ::std::panic::AssertUnwindSafe(|| {
+            ::std::mem::MaybeUninit::new({ unsafe { (*ptr).r } })
+        }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
         ::std::result::Result::Err(rustcall_payload) => {
@@ -1494,7 +1516,7 @@ pub extern "C" fn rustcall_shapes__Circle_get_r(
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<f64>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
@@ -1625,12 +1647,12 @@ pub extern "C" fn rustcall_shapes__Circle_area_take_panic(
 #[no_mangle]
 pub extern "C" fn rustcall_shapes__Circle_area(
     ptr: *const user_crate::shapes::Circle,
-) -> f64 {
+) -> ::std::mem::MaybeUninit<f64> {
     let _rustcall_boundary = ::rustcall_julia_macros::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
-            self_obj.area()
+            ::std::mem::MaybeUninit::new(self_obj.area())
         }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
@@ -1656,7 +1678,7 @@ pub extern "C" fn rustcall_shapes__Circle_area(
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<f64>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
@@ -1782,10 +1804,14 @@ pub extern "C" fn rustcall_GatedPoint_get_x_take_panic(
         })
 }
 #[no_mangle]
-pub extern "C" fn rustcall_GatedPoint_get_x(ptr: *const user_crate::GatedPoint) -> f64 {
+pub extern "C" fn rustcall_GatedPoint_get_x(
+    ptr: *const user_crate::GatedPoint,
+) -> ::std::mem::MaybeUninit<f64> {
     let _rustcall_boundary = ::rustcall_julia_macros::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
-        ::std::panic::AssertUnwindSafe(|| { { unsafe { (*ptr).x } } }),
+        ::std::panic::AssertUnwindSafe(|| {
+            ::std::mem::MaybeUninit::new({ unsafe { (*ptr).x } })
+        }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
         ::std::result::Result::Err(rustcall_payload) => {
@@ -1810,7 +1836,7 @@ pub extern "C" fn rustcall_GatedPoint_get_x(ptr: *const user_crate::GatedPoint) 
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<f64>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }

@@ -274,14 +274,17 @@ pub extern "C" fn rustcall_byte_len_take_panic(out: *mut u8, cap: usize) -> usiz
         })
 }
 #[no_mangle]
-pub extern "C" fn rustcall_byte_len(s_ptr: *const u8, s_len: usize) -> usize {
+pub extern "C" fn rustcall_byte_len(
+    s_ptr: *const u8,
+    s_len: usize,
+) -> ::std::mem::MaybeUninit<usize> {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let s_bytes = unsafe { std::slice::from_raw_parts(s_ptr, s_len) };
             let s_cow = String::from_utf8_lossy(s_bytes);
             let s: &str = &s_cow;
-            byte_len(s)
+            ::std::mem::MaybeUninit::new(byte_len(s))
         }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
@@ -307,7 +310,7 @@ pub extern "C" fn rustcall_byte_len(s_ptr: *const u8, s_len: usize) -> usize {
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<usize>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
@@ -562,7 +565,10 @@ pub extern "C" fn rustcall_consume_take_panic(out: *mut u8, cap: usize) -> usize
         })
 }
 #[no_mangle]
-pub extern "C" fn rustcall_consume(s_ptr: *const u8, s_len: usize) -> usize {
+pub extern "C" fn rustcall_consume(
+    s_ptr: *const u8,
+    s_len: usize,
+) -> ::std::mem::MaybeUninit<usize> {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
@@ -570,7 +576,7 @@ pub extern "C" fn rustcall_consume(s_ptr: *const u8, s_len: usize) -> usize {
                 let slice = std::slice::from_raw_parts(s_ptr, s_len);
                 String::from_utf8_lossy(slice).into_owned()
             };
-            consume(s)
+            ::std::mem::MaybeUninit::new(consume(s))
         }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
@@ -596,7 +602,7 @@ pub extern "C" fn rustcall_consume(s_ptr: *const u8, s_len: usize) -> usize {
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<usize>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
@@ -644,14 +650,17 @@ pub extern "C" fn rustcall_paren_ref_take_panic(out: *mut u8, cap: usize) -> usi
         })
 }
 #[no_mangle]
-pub extern "C" fn rustcall_paren_ref(s_ptr: *const u8, s_len: usize) -> (usize) {
+pub extern "C" fn rustcall_paren_ref(
+    s_ptr: *const u8,
+    s_len: usize,
+) -> ::std::mem::MaybeUninit<(usize)> {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let s_bytes = unsafe { std::slice::from_raw_parts(s_ptr, s_len) };
             let s_cow = String::from_utf8_lossy(s_bytes);
             let s: &str = &s_cow;
-            paren_ref(s)
+            ::std::mem::MaybeUninit::new(paren_ref(s))
         }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
@@ -677,7 +686,7 @@ pub extern "C" fn rustcall_paren_ref(s_ptr: *const u8, s_len: usize) -> (usize) 
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<(usize)>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
@@ -729,7 +738,7 @@ pub extern "C" fn rustcall_collide(
     s_ptr_: *const u8,
     s_len: usize,
     s_ptr: usize,
-) -> usize {
+) -> ::std::mem::MaybeUninit<usize> {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
@@ -737,7 +746,7 @@ pub extern "C" fn rustcall_collide(
                 let slice = std::slice::from_raw_parts(s_ptr_, s_len);
                 String::from_utf8_lossy(slice).into_owned()
             };
-            collide(s, s_ptr)
+            ::std::mem::MaybeUninit::new(collide(s, s_ptr))
         }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
@@ -763,7 +772,7 @@ pub extern "C" fn rustcall_collide(
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<usize>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
@@ -908,10 +917,14 @@ pub extern "C" fn Greeter_get_count_take_panic(out: *mut u8, cap: usize) -> usiz
         })
 }
 #[no_mangle]
-pub extern "C" fn Greeter_get_count(ptr: *const Greeter) -> u32 {
+pub extern "C" fn Greeter_get_count(
+    ptr: *const Greeter,
+) -> ::std::mem::MaybeUninit<u32> {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
-        ::std::panic::AssertUnwindSafe(|| { { unsafe { (*ptr).count } } }),
+        ::std::panic::AssertUnwindSafe(|| {
+            ::std::mem::MaybeUninit::new({ unsafe { (*ptr).count } })
+        }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
         ::std::result::Result::Err(rustcall_payload) => {
@@ -936,7 +949,7 @@ pub extern "C" fn Greeter_get_count(ptr: *const Greeter) -> u32 {
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<u32>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
@@ -1321,7 +1334,7 @@ pub extern "C" fn rustcall_Greeter_take(
     ptr: *mut Greeter,
     s_ptr: *const u8,
     s_len: usize,
-) -> usize {
+) -> ::std::mem::MaybeUninit<usize> {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
@@ -1330,7 +1343,7 @@ pub extern "C" fn rustcall_Greeter_take(
                 String::from_utf8_lossy(slice).into_owned()
             };
             let self_obj = unsafe { &mut *ptr };
-            self_obj.take(s)
+            ::std::mem::MaybeUninit::new(self_obj.take(s))
         }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
@@ -1356,7 +1369,7 @@ pub extern "C" fn rustcall_Greeter_take(
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<usize>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }

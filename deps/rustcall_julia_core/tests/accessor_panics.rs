@@ -112,7 +112,8 @@ fn generated_clone_helper_contains_clone_panics() {
             r#"
                 let object = std::mem::ManuallyDrop::new(Fields { values: vec![Explode { fail: true }] });
                 let mut bytes = [0u8; 512];
-                assert!(Fields_clone(&*object).is_null());
+                // The sentinel is `MaybeUninit::zeroed()` (#462): a null pointer.
+                assert!(unsafe { Fields_clone(&*object).assume_init() }.is_null());
                 let n = Fields_clone_take_panic(bytes.as_mut_ptr(), bytes.len());
                 assert!(std::str::from_utf8(&bytes[..n]).unwrap().contains("accessor clone panic"));
                 assert_eq!(Fields_clone_take_panic(bytes.as_mut_ptr(), bytes.len()), 0);

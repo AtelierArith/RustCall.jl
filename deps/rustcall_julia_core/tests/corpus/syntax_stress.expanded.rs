@@ -56,10 +56,12 @@ pub extern "C" fn rustcall_const_expression_take_panic(
 #[no_mangle]
 pub extern "C" fn rustcall_const_expression(
     value: [u8; { if 1 < 2 { 3 } else { 4 } }],
-) -> u8 {
+) -> ::std::mem::MaybeUninit<u8> {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
-        ::std::panic::AssertUnwindSafe(|| { const_expression(value) }),
+        ::std::panic::AssertUnwindSafe(|| {
+            ::std::mem::MaybeUninit::new(const_expression(value))
+        }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
         ::std::result::Result::Err(rustcall_payload) => {
@@ -84,7 +86,7 @@ pub extern "C" fn rustcall_const_expression(
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<u8>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
@@ -234,10 +236,12 @@ pub extern "C" fn rustcall_cfg_disabled_take_panic(out: *mut u8, cap: usize) -> 
 }
 #[cfg(any())]
 #[no_mangle]
-pub extern "C" fn rustcall_cfg_disabled() -> i32 {
+pub extern "C" fn rustcall_cfg_disabled() -> ::std::mem::MaybeUninit<i32> {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
-        ::std::panic::AssertUnwindSafe(|| { cfg_disabled() }),
+        ::std::panic::AssertUnwindSafe(|| {
+            ::std::mem::MaybeUninit::new(cfg_disabled())
+        }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
         ::std::result::Result::Err(rustcall_payload) => {
@@ -262,7 +266,7 @@ pub extern "C" fn rustcall_cfg_disabled() -> i32 {
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<i32>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
