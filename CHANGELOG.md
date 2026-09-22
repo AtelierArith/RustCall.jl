@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-09-22
+
 ### Fixed
 - **The first PyO3 host call no longer compiles RustCall's scan and cache
   code** ([#449](https://github.com/AtelierArith/RustCall.jl/issues/449)).
@@ -2225,7 +2227,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration tests for Rust helpers library
 - Documentation examples tests
 
-[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.4...HEAD
+[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.5...HEAD
+[0.6.5]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.4...v0.6.5
 [0.6.4]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.1...v0.6.2
