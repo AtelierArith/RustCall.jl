@@ -22,8 +22,9 @@ the Julia value rather than about the Rust signature. This report names the
 Rust item and position instead, before anything is built.
 
 Only positions RustCall generates a wrapper for are examined: `#[julia]`
-functions, and the methods of non-generic `#[julia]` structs that the mode
-wraps (every `pub` method inline, only `#[julia]` methods in a crate). A
+functions, the methods of non-generic `#[julia]` structs that the mode wraps
+(every `pub` method inline, only `#[julia]` methods in a crate), and the
+getters of their readable fields. A
 generic item is monomorphized later under types not known yet, and a plain
 `#[no_mangle] extern "C"` function is exported as written, so neither is
 checked. A constructor, or any method returning the struct itself, returns a
@@ -32,9 +33,9 @@ handle and is always describable.
 Prints a summary to `io` and returns `(; unsupported, checked)`:
 
 * `unsupported` — one `(; item, position, rust_type, abi, reason)` per position,
-  where `item` is `"f"` or `"Struct::method"` and `position` is
-  ``"argument `x`"``, `"return"`, `"Ok payload"`, `"Err payload"` or
-  `"Some payload"`;
+  where `item` is `"f"`, `"Struct::method"` or `"Struct::field"` and `position`
+  is ``"argument `x`"``, `"return"`, `"Ok payload"`, `"Err payload"`,
+  `"Some payload"` or `"field getter"`;
 * `checked` — how many positions were examined.
 
 ```julia
@@ -78,9 +79,12 @@ function _boundary_report(manifest::AbstractDict, label::AbstractString, io::IO)
         _boundary_check_entry!(unsupported, checked, String(f["name"]), f)
     end
 
+    infos = Dict(info.name => info for info in manifest_struct_infos(manifest))
     for s in get(manifest, "structs", Any[])
         get(s, "attribute", "none") in _BOUNDARY_ATTRIBUTES || continue
         isempty(get(s, "type_params", Any[])) || continue
+        info = get(infos, String(s["name"]), nothing)
+        info === nothing || _boundary_check_fields!(unsupported, checked, info)
         for m in get(s, "methods", Any[])
             wrapped = inline ? get(m, "vis", "") == "pub" :
                                get(m, "attribute", "none") == "julia"
@@ -123,6 +127,21 @@ function _boundary_check_entry!(out, checked, item::String, entry::AbstractDict;
         checked[] += 1
         reason = _boundary_unknown(() -> ffi_return_contract(rust_type; abi = abi), rust_type)
         reason === nothing || push!(out, _BoundaryFinding((item, position, rust_type, abi, reason)))
+    end
+    return nothing
+end
+
+# A readable field gets a generated getter, and its type is decided the way
+# generation decides it (`field_is_accessible`, `_ffi_field_return`): an
+# unsupported one fails when the struct's wrapper is generated (#450 review).
+function _boundary_check_fields!(out, checked, info::RustStructInfo)
+    for (name, rust_type) in info.fields
+        field_is_accessible(info, name) || continue
+        checked[] += 1
+        abi = get(info.field_abis, name, "")
+        reason = _boundary_unknown(() -> _ffi_field_return(info, name, rust_type), rust_type)
+        reason === nothing ||
+            push!(out, _BoundaryFinding(("$(info.name)::$(name)", "field getter", rust_type, abi, reason)))
     end
     return nothing
 end
