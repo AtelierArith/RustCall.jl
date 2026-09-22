@@ -25,8 +25,8 @@ use crate::extract::{fn_args, function_entry};
 use crate::manifest::{Attribute, Field, Manifest, Method, Mode, Struct};
 use crate::model::{ModelTree, StructModel};
 use crate::types::{
-    const_param_names, generics_to_type_params, has_impl_trait, has_type_params,
-    is_inline_accessible_field_type, return_type_to_string, type_to_string,
+    const_param_names, generic_field_has_accessors, generics_to_type_params, has_impl_trait,
+    has_type_params, return_type_to_string, type_to_string,
 };
 
 pub struct Expanded {
@@ -473,10 +473,11 @@ fn generic_struct_entry(
     let effective_cfg = crate::cfg::effective_cfg_attrs(enclosing_cfg, &model.item.attrs);
     let wrappers = inline_generic_wrappers(model);
     let wrapper_names: Vec<&str> = wrappers.iter().map(|w| w.name.as_str()).collect();
+    let type_params = model.type_param_names();
     let accessors: Vec<(String, String, String)> = model
         .named_fields()
         .iter()
-        .filter(|(_, ty)| is_inline_accessible_field_type(ty))
+        .filter(|(_, ty)| generic_field_has_accessors(ty, &type_params))
         .map(|(n, _)| {
             let getter = format!("{}_get_{}", model.name(), n);
             let setter = format!("{}_set_{}", model.name(), n);

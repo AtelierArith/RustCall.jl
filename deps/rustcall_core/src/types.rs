@@ -145,13 +145,6 @@ pub fn callback_signature(ty: &Type) -> Option<(Vec<Type>, Option<Type>)> {
     Some((inputs, output))
 }
 
-/// Check if a type needs cloning for a getter (`String`, `Vec`).
-pub fn needs_clone_for_getter(ty: &Type) -> bool {
-    last_ident(ty)
-        .map(|id| id == "String" || id == "Vec")
-        .unwrap_or(false)
-}
-
 /// Check if a type is a known non-FFI-compatible type (String, Vec<T>, Box<T>, references, ...).
 pub fn is_non_ffi_type(ty: &Type) -> bool {
     let ty = unparen(ty);
@@ -178,43 +171,32 @@ pub fn is_non_ffi_type(ty: &Type) -> bool {
     }
 }
 
-/// Whether the inline struct wrapper generator emits accessors for a field of this type.
+/// Whether a struct field gets a generated getter and setter (#453), in both
+/// flavours and whatever the field's visibility: exactly when its value crosses
+/// `extern "C"` on its own — a primitive, a raw pointer or `()` read out as is,
+/// or a `String` handed back as an owned buffer. A `Vec<T>`, a struct by value
+/// or any other aggregate gets none, because the FFI contract cannot describe
+/// it and the struct would fail to bind; a struct holding one is then an opaque
+/// handle, reached through its methods.
 ///
-/// Mirrors the historical Julia-side rule: primitives, `String`, `Vec<..>` and raw
-/// pointers are accessible; references, known non-`Copy` containers and any other
-/// generic type are skipped; unknown non-generic user types are assumed accessible.
-pub fn is_inline_accessible_field_type(ty: &Type) -> bool {
+/// The manifest, the proc macro and the inline generator all ask this one
+/// function, so the symbol Julia looks up is always one that was emitted.
+pub fn field_has_accessors(ty: &Type) -> bool {
+    is_ffi_compatible_type(ty) || is_string_type(ty)
+}
+
+/// [`field_has_accessors`] for a field of a generic inline struct: a field typed
+/// by one of the struct's own type parameters also gets them, since it is
+/// monomorphized to a concrete type before anything is called.
+pub fn generic_field_has_accessors(ty: &Type, type_params: &[String]) -> bool {
+    if field_has_accessors(ty) {
+        return true;
+    }
     match unparen(ty) {
-        Type::Ptr(_) => true,
-        Type::Reference(_) => false,
-        Type::Tuple(t) if t.elems.is_empty() => true,
-        Type::Path(tp) => {
-            let Some(seg) = tp.path.segments.last() else {
-                return false;
-            };
-            let name = seg.ident.to_string();
-            if PRIMITIVES.contains(&name.as_str()) || name == "String" || name == "Vec" {
-                return true;
-            }
-            if matches!(
-                name.as_str(),
-                "ThreadRng"
-                    | "HashMap"
-                    | "HashSet"
-                    | "BTreeMap"
-                    | "BTreeSet"
-                    | "Mutex"
-                    | "RwLock"
-                    | "Arc"
-                    | "Rc"
-                    | "Box"
-                    | "RefCell"
-                    | "Cell"
-            ) || name.starts_with("Array")
-            {
-                return false;
-            }
+        Type::Path(tp) if tp.qself.is_none() && tp.path.segments.len() == 1 => {
+            let seg = &tp.path.segments[0];
             matches!(seg.arguments, PathArguments::None)
+                && type_params.iter().any(|p| seg.ident == p)
         }
         _ => false,
     }

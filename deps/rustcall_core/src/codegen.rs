@@ -82,9 +82,9 @@ use crate::cfg::cfg_attrs;
 use crate::manifest::GenericWrapper;
 use crate::model::{MethodModel, StructModel};
 use crate::types::{
-    extract_option_type, extract_result_type, is_ffi_compatible_type,
-    is_inline_accessible_field_type, is_non_ffi_type, is_self_type, is_str_ref_type,
-    is_string_type, is_vec_type, last_ident, needs_clone_for_getter, unparen,
+    extract_option_type, extract_result_type, field_has_accessors, generic_field_has_accessors,
+    is_non_ffi_type, is_self_type, is_str_ref_type, is_string_type, is_vec_type, last_ident,
+    unparen,
 };
 
 // ============================================================================
@@ -1643,11 +1643,10 @@ pub fn crate_struct_needs_owned_string_helper(item_struct: &ItemStruct) -> bool 
     let syn::Fields::Named(ref fields) = item_struct.fields else {
         return false;
     };
-    fields.named.iter().any(|f| {
-        f.ident.is_some()
-            && (is_ffi_compatible_type(&f.ty) || needs_clone_for_getter(&f.ty))
-            && is_string_type(&f.ty)
-    })
+    fields
+        .named
+        .iter()
+        .any(|f| f.ident.is_some() && field_has_accessors(&f.ty) && is_string_type(&f.ty))
 }
 
 /// Apply the common boundary to generated field/clone helpers. These helpers
@@ -1709,7 +1708,7 @@ fn crate_field_accessors(
                 continue;
             };
             let field_ty = &field.ty;
-            if !(is_ffi_compatible_type(field_ty) || needs_clone_for_getter(field_ty)) {
+            if !field_has_accessors(field_ty) {
                 continue;
             }
             let getter_name = format_ident!("{}_get_{}", stem, field_name);
@@ -1732,17 +1731,6 @@ fn crate_field_accessors(
                         rustcall_ret
                     }
                 }, hook));
-            } else if needs_clone_for_getter(field_ty) {
-                ffi_functions.extend(guard_struct_helper(
-                    quote! {
-                        #(#cfgs)*
-                        #[no_mangle]
-                        pub extern "C" fn #getter_name(ptr: *const #struct_name) -> #field_ty {
-                            unsafe { (*ptr).#field_name.clone() }
-                        }
-                    },
-                    hook,
-                ));
             } else {
                 ffi_functions.extend(guard_struct_helper(
                     quote! {
@@ -2236,7 +2224,7 @@ pub fn inline_struct_wrappers(
     let fields = model.named_fields();
     let accessible: Vec<&(Ident, Type)> = fields
         .iter()
-        .filter(|(_, ty)| is_inline_accessible_field_type(ty))
+        .filter(|(_, ty)| field_has_accessors(ty))
         .collect();
 
     // Only the methods whose `#[julia] impl` block sits beside the struct are
@@ -2305,16 +2293,6 @@ pub fn inline_struct_wrappers(
                         };
                         std::mem::forget(rustcall_bytes);
                         rustcall_ret
-                    }
-                },
-                PanicHook::FileOwned,
-            ));
-        } else if is_vec_type(field_ty) {
-            out.extend(guard_struct_helper(
-                quote! {
-                    #[no_mangle]
-                    pub extern "C" fn #getter(ptr: *const #struct_name) -> #field_ty {
-                        unsafe { (*ptr).#field_name.clone() }
                     }
                 },
                 PanicHook::FileOwned,
@@ -2675,7 +2653,7 @@ pub fn inline_generic_wrappers(model: &StructModel) -> Vec<GenericWrapper> {
     // Accessor and free wrappers are emitted generically into the expanded
     // source, so they must type-check for every `T`: carry the struct's own
     // `where` predicates and state what the getter body needs (`Copy` to read
-    // the field out through the raw pointer, `Clone` for String/Vec).
+    // the field out through the raw pointer, `Clone` for a String).
     let struct_predicates: Vec<syn::WherePredicate> = generics
         .where_clause
         .as_ref()
@@ -2692,17 +2670,10 @@ pub fn inline_generic_wrappers(model: &StructModel) -> Vec<GenericWrapper> {
     };
     let struct_where = where_of(None);
 
-    let struct_param_names: Vec<String> = generics
-        .params
-        .iter()
-        .filter_map(|p| match p {
-            syn::GenericParam::Type(tp) => Some(tp.ident.to_string()),
-            _ => None,
-        })
-        .collect();
+    let struct_param_names = model.type_param_names();
     let method_symbols: Vec<String> = wrappers.iter().map(|w| w.name.clone()).collect();
     for (field_name, field_ty) in model.named_fields() {
-        if !is_inline_accessible_field_type(&field_ty) {
+        if !generic_field_has_accessors(&field_ty, &struct_param_names) {
             continue;
         }
         let getter = format_ident!("{}_get_{}", struct_name, field_name);
@@ -2710,7 +2681,7 @@ pub fn inline_generic_wrappers(model: &StructModel) -> Vec<GenericWrapper> {
             continue;
         }
         let setter = format_ident!("{}_set_{}", struct_name, field_name);
-        let (body, getter_where) = if is_string_type(&field_ty) || is_vec_type(&field_ty) {
+        let (body, getter_where) = if is_string_type(&field_ty) {
             (
                 quote! { unsafe { (*ptr).#field_name.clone() } },
                 where_of(Some(syn::parse_quote!(#field_ty: Clone))),

@@ -93,6 +93,19 @@ impl StructModel {
         crate::types::has_type_params(&self.item.generics)
     }
 
+    /// The struct's own type parameter names (`T` in `S<'a, T, const N: usize>`).
+    pub fn type_param_names(&self) -> Vec<String> {
+        self.item
+            .generics
+            .params
+            .iter()
+            .filter_map(|p| match p {
+                syn::GenericParam::Type(tp) => Some(tp.ident.to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Named fields `(ident, type)`; tuple and unit structs yield nothing.
     pub fn named_fields(&self) -> Vec<(syn::Ident, Type)> {
         match &self.item.fields {

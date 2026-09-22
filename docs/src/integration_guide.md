@@ -73,15 +73,9 @@ impl Ledger {
 The crate has ordinary `#[cfg(test)]` tests, so `cargo test` checks the Rust
 logic before any binding is involved.
 
-!!! warning "Some private fields still get a getter"
-    A private field whose type is a `Vec<T>` or a bare struct name (`inner:
-    Inner`) is currently given a generated getter, and binding the struct then
-    fails because that type is not in the FFI contract
-    ([#453](https://github.com/AtelierArith/RustCall.jl/issues/453)). A
-    `HashMap`, as here, is not affected, nor is a `Box`, an `Option` or a
-    `RefCell`. Until that is fixed, box such state (`inner: Box<Inner>`), and run
-    `RustCall.boundary_report` on the facade: it lists an affected field as an
-    unsupported `field getter`.
+A private field needs no special shape: a field whose type the FFI contract
+does not describe (a `HashMap` here, or a `Vec`, a `Box`, another struct) gets
+no generated accessor, so the struct is an opaque handle whatever it holds.
 
 **The binding** is one line. `@rust_crate` builds the crate and generates the
 `Native` submodule while the package is precompiled:

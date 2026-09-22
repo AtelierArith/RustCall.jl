@@ -10,6 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.6.5] - 2026-09-22
 
 ### Fixed
+- **A `#[julia]` struct holding a `Vec` or another struct binds as a handle**
+  ([#453](https://github.com/AtelierArith/RustCall.jl/issues/453)). A field
+  of type `Vec<T>` (either flavour, `pub` or not) or a struct held by value
+  (inline) got a generated getter whose type the FFI contract cannot describe,
+  so binding the whole struct failed with "cannot describe the return type of
+  `Bag::items -> Vec<i32>`". A field now gets a getter and a setter exactly
+  when its value crosses `extern "C"` on its own — a primitive, a raw pointer,
+  a `String`, or a generic struct's own type parameter — decided by one
+  predicate that the manifest, the proc macro and the inline generator share.
+  Every other field gets none, so the struct is an opaque handle that Julia
+  reaches through its methods.
 - **The first PyO3 host call no longer compiles RustCall's scan and cache
   code** ([#449](https://github.com/AtelierArith/RustCall.jl/issues/449)).
   With the extension module already cached, the first `pyo3_host_import` — and
