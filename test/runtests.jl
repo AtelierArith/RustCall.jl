@@ -26,10 +26,7 @@ if args.list !== nothing
     exit(0)
 end
 
-if filter_tests!(testsuite, args)
-    # Preserve the pre-migration default suite: test_phase4.jl was not in the old harness.
-    delete!(testsuite, "test_phase4")
-end
+filter_tests!(testsuite, args)
 
 for test_name in serial_test_names
     if haskey(testsuite, test_name)

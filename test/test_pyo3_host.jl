@@ -222,8 +222,8 @@ end
 
 @testset "PyO3 Python-host import (#424 Phase 1)" begin
     if !RustCall.pyo3_host_available()
-        @info "skipping the PyO3 Python-host import testset" reason =
-            "PythonCall is not loaded; `using PythonCall` enables RustCallPyO3HostExt"
+        # Visible as a Broken/skipped result, not a silent pass (#464).
+        @test_skip "the PyO3 Python-host import testset needs PythonCall; `using PythonCall` enables RustCallPyO3HostExt"
         return
     end
     # Once the host is available these are hard assertions: a build, import or
@@ -250,8 +250,7 @@ end
         @test pyconvert(Float64, module_.array_sum(np.asarray([1.0, 2.0, 3.0]))) == 6.0
         @test pyconvert(Vector{Float64}, module_.doubled(np.asarray([1.0, 2.0]))) == [2.0, 4.0]
     else
-        @info "skipping pyo3-numpy assertions" reason =
-            "the interpreter has no numpy; install it to exercise the conversion"
+        @test_skip "pyo3-numpy assertions need numpy in the interpreter"
     end
     # A second call must reuse the cached artifact rather than rebuild.
     again = RustCall.build_pyo3_extension(PYO3_HOST_CRATE;
@@ -312,8 +311,8 @@ end
 
 @testset "PyO3 Python-host typed bindings (#424 Phase 2)" begin
     if !RustCall.pyo3_host_available()
-        @info "skipping the PyO3 Python-host typed testset" reason =
-            "PythonCall is not loaded; `using PythonCall` enables RustCallPyO3HostExt"
+        # Visible as a Broken/skipped result, not a silent pass (#464).
+        @test_skip "the PyO3 Python-host typed testset needs PythonCall; `using PythonCall` enables RustCallPyO3HostExt"
         return
     end
     bindings = RustCall.load_crate_bindings(PYO3_HOST_CRATE; pyo3_host = true)
@@ -413,8 +412,8 @@ end
 
 @testset "PyO3 Python-host declarative modules (#424)" begin
     if !RustCall.pyo3_host_available()
-        @info "skipping the PyO3 declarative-module testset" reason =
-            "PythonCall is not loaded; `using PythonCall` enables RustCallPyO3HostExt"
+        # Visible as a Broken/skipped result, not a silent pass (#464).
+        @test_skip "the PyO3 declarative-module testset needs PythonCall; `using PythonCall` enables RustCallPyO3HostExt"
         return
     end
     bindings = RustCall.load_crate_bindings(PYO3_DECLARATIVE_CRATE; pyo3_host = true)
@@ -443,8 +442,8 @@ end
 
 @testset "PyO3 Python-host @rust_crate dispatch (#424 Phase 3)" begin
     if !RustCall.pyo3_host_available()
-        @info "skipping the PyO3 Python-host macro testset" reason =
-            "PythonCall is not loaded; `using PythonCall` enables RustCallPyO3HostExt"
+        # Visible as a Broken/skipped result, not a silent pass (#464).
+        @test_skip "the PyO3 Python-host macro testset needs PythonCall; `using PythonCall` enables RustCallPyO3HostExt"
         return
     end
     Host = @rust_crate PYO3_HOST_CRATE pyo3_host = true
@@ -460,8 +459,8 @@ end
 # expected there — it is evaluated in the child.
 @testset "a generated host call is served from the images (#449)" begin
     if !RustCall.pyo3_host_available()
-        @info "skipping the generated-host image testset" reason =
-            "PythonCall is not loaded; `using PythonCall` enables RustCallPyO3HostExt"
+        # Visible as a Broken/skipped result, not a silent pass (#464).
+        @test_skip "the generated-host image testset needs PythonCall; `using PythonCall` enables RustCallPyO3HostExt"
         return
     end
     # Build first, in this process, so the child measures a warm cache.
@@ -488,8 +487,8 @@ end
 
 @testset "a one-argument #[new] precompiles (#433)" begin
     if !RustCall.pyo3_host_available()
-        @info "skipping the one-argument #[new] precompile testset" reason =
-            "PythonCall is not loaded; `using PythonCall` enables RustCallPyO3HostExt"
+        # Visible as a Broken/skipped result, not a silent pass (#464).
+        @test_skip "the one-argument #[new] precompile testset needs PythonCall; `using PythonCall` enables RustCallPyO3HostExt"
         return
     end
     # Overwriting a method is only a warning outside precompilation; Julia
