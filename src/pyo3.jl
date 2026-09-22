@@ -490,11 +490,14 @@ function _wrapper_probe_context(crate_path::AbstractString;
                 # either — a `#[cfg(panic = "...")]` item would be scanned for
                 # the opposite build (#307 review).
                 env = _wrapper_probe_env(path, release, interpreter)
-                cmd = `$(cargo()) rustc -q $flag --message-format=json -p $package --lib -- --print cfg`
+                # `--offline` under `RUSTCALL_OFFLINE` on every Cargo command
+                # of the probe, as on the build it describes (#461).
+                network = _cargo_network_args()
+                cmd = `$(cargo()) rustc -q $flag $network --message-format=json -p $package --lib -- --print cfg`
                 out = read(setenv(cmd, env; dir = dir), String)
                 # `pkgid` requires Cargo.lock. The successful probe first
                 # resolves it, including for a fresh crate without a lockfile.
-                package_id = strip(read(setenv(`$(cargo()) pkgid -p $package`, env; dir = dir), String))
+                package_id = strip(read(setenv(`$(cargo()) pkgid $network -p $package`, env; dir = dir), String))
                 # Package metadata is independent of feature resolution. Ask
                 # Cargo to expand workspace inheritance without traversing or
                 # downloading the target's entire dependency graph.
@@ -513,7 +516,7 @@ end
 
 function _cargo_package_metadata(path::AbstractString; env = ENV, dir = path)
     manifest = abspath(joinpath(path, "Cargo.toml"))
-    parse_json(read(setenv(`$(cargo()) metadata --no-deps --format-version=1 --manifest-path $manifest`,
+    parse_json(read(setenv(`$(cargo()) metadata $(_cargo_network_args()) --no-deps --format-version=1 --manifest-path $manifest`,
                           env; dir = dir), String))
 end
 
@@ -771,7 +774,8 @@ function _cargo_resolved_features(crate_path::AbstractString;
                   _probe_cargo_toml(package, path, features, default_features) *
                   _root_patch_toml(path))
             args = String["tree", "-e", "features,normal", "--prefix", "none",
-                          "--format", "{p}|{f}", "--no-dedupe", "-p", package]
+                          "--format", "{p}|{f}", "--no-dedupe", "-p", package,
+                          _cargo_network_args()...]
             read(pipeline(setenv(`$(cargo()) $args`; dir = dir); stderr = devnull), String)
         end
     catch e
@@ -2358,7 +2362,7 @@ function _resolved_pyo3_dependency(crate_path::AbstractString, plan::PyO3LinkPla
         # it (`CARGO_TARGET_DIR`, the panic profile, `PYO3_PYTHON`) takes part in
         # resolving a dependency graph; the configuration that does is what the
         # working directory reaches.
-        parse_json(read(setenv(`$(cargo()) metadata --format-version=1 --manifest-path $manifest --filter-platform $(get_default_target()) $(plan.feature_flags)`,
+        parse_json(read(setenv(`$(cargo()) metadata $(_cargo_network_args()) --format-version=1 --manifest-path $manifest --filter-platform $(get_default_target()) $(plan.feature_flags)`,
                                ENV; dir = dirname(manifest)), String))
     catch e
         @debug "Could not resolve the target crate's pyo3 package" crate_path exception = e

@@ -485,8 +485,11 @@ function build_cargo_project(project::CargoProject; release::Bool = true,
     build_env = Dict{String, String}(build_env === nothing ? ENV : build_env)
     build_env["CARGO_TARGET_DIR"] = abspath(target_directory)
 
-    # Run cargo build
-    cd(project.path) do
+    # Run cargo build — in the project directory through the command's own
+    # `dir`, never a process-wide `cd`: the working directory is shared by every
+    # task, so a `cd` here would move another task's relative paths for the
+    # length of the build (#461).
+    let
         try
             stderr_io = IOBuffer()
             stdout_io = IOBuffer()
@@ -495,7 +498,7 @@ function build_cargo_project(project::CargoProject; release::Bool = true,
             # the inherited one so profile overrides and RUSTFLAGS match; the
             # pinned panic strategy and target directory are applied on top of
             # either.
-            cmd = setenv(`$cargo_cmd $build_args`, build_env)
+            cmd = setenv(`$cargo_cmd $build_args`, build_env; dir = project.path)
             proc = run(pipeline(cmd, stdout=stdout_io, stderr=stderr_io), wait=false)
             wait(proc)
 
