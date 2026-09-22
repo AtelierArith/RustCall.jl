@@ -1737,6 +1737,12 @@ fn crate_field_accessors(
             if !field_has_accessors(field_ty) {
                 continue;
             }
+            // A field's own `#[cfg]` gates its accessors on top of the
+            // struct's (#462): a `#[cfg(target_os = "linux")]` field does not
+            // exist elsewhere, and neither may a getter that reads it.
+            let mut field_cfgs = cfgs.to_vec();
+            field_cfgs.extend(cfg_attrs(&field.attrs));
+            let cfgs = field_cfgs.as_slice();
             let getter_name = format_ident!("{}_get_{}", stem, field_name);
             if is_string_type(field_ty) {
                 // A `String` cannot cross `extern "C"` by value: it leaves as an
@@ -2239,11 +2245,18 @@ pub fn inline_struct_wrappers(
     let stem = struct_stem(module_path, struct_name);
     let mut out = TokenStream2::new();
     let mut meta = InlineStructMeta::default();
+    // The struct's `#[cfg]` gates every item generated for it, and a field's
+    // own `#[cfg]` its accessors on top, exactly as in the crate flavour
+    // (`transform_struct_crate`, #462): without them a `#[cfg(unix)] struct`
+    // got an ungated `<Struct>_free` that names a type which does not exist
+    // off unix. The enclosing modules need nothing: the wrappers are emitted
+    // inside them.
+    let cfgs = cfg_attrs(&model.item.attrs);
 
     out.extend(struct_free_wrapper(
         &syn::parse_quote!(#struct_name),
         &stem,
-        &[],
+        &cfgs,
         PanicHook::FileOwned,
     ));
 
@@ -2278,11 +2291,11 @@ pub fn inline_struct_wrappers(
 
     if needs_owned {
         meta.has_owned_string_helper = true;
-        out.extend(owned_string_helper(&[], &owned_helper, &owned_free));
+        out.extend(owned_string_helper(&cfgs, &owned_helper, &owned_free));
     }
     if needs_borrowed {
         meta.has_borrowed_string_helper = true;
-        out.extend(borrowed_string_helper(&[], &borrowed_helper));
+        out.extend(borrowed_string_helper(&cfgs, &borrowed_helper));
     }
 
     // Field accessors (skipped when a method wrapper would take the same
@@ -2306,9 +2319,12 @@ pub fn inline_struct_wrappers(
             getter.to_string(),
             setter.to_string(),
         ));
+        let mut field_cfgs = cfgs.clone();
+        field_cfgs.extend(model.field_cfg_attrs(field_name));
         if is_string_type(field_ty) {
             out.extend(guard_struct_helper(
                 quote! {
+                    #(#field_cfgs)*
                     #[no_mangle]
                     pub extern "C" fn #getter(ptr: *const #struct_name) -> #owned_helper {
                         let mut rustcall_bytes = unsafe { (*ptr).#field_name.clone().into_bytes() };
@@ -2326,6 +2342,7 @@ pub fn inline_struct_wrappers(
         } else {
             out.extend(guard_struct_helper(
                 quote! {
+                    #(#field_cfgs)*
                     #[no_mangle]
                     pub extern "C" fn #getter(ptr: *const #struct_name) -> #field_ty {
                         unsafe { (*ptr).#field_name }
@@ -2339,7 +2356,7 @@ pub fn inline_struct_wrappers(
             field_name,
             field_ty,
             &setter,
-            &[],
+            &field_cfgs,
             PanicHook::FileOwned,
         ));
     }
@@ -2349,6 +2366,7 @@ pub fn inline_struct_wrappers(
         let clone_name = format_ident!("{}_clone", stem);
         out.extend(guard_struct_helper(
             quote! {
+                #(#cfgs)*
                 #[no_mangle]
                 pub extern "C" fn #clone_name(ptr: *const #struct_name) -> *mut #struct_name {
                     unsafe { Box::into_raw(Box::new((*ptr).clone())) }
@@ -2359,10 +2377,19 @@ pub fn inline_struct_wrappers(
     }
 
     for m in &local {
+        // A method exists only where its struct and its impl block do: the
+        // generator reads the method's own `#[cfg]` set, so those predicates
+        // join it for the wrapper only — as `transform_impl_crate` and
+        // `inline_foreign_method_wrapper` do.
+        let mut gated = (*m).clone();
+        gated
+            .func
+            .attrs
+            .splice(0..0, cfgs.iter().chain(m.enclosing_cfg.iter()).cloned());
         out.extend(inline_method_wrapper(
             struct_name,
             &stem,
-            m,
+            &gated,
             &owned_helper,
             &owned_free,
             &borrowed_helper,
