@@ -280,6 +280,9 @@ include("manifest.jl")
 # Phase 6: External crate bindings (Maturin-like feature)
 include("crate_bindings.jl")
 
+# The FFI surface report of #441: reads the manifest, builds nothing.
+include("boundary_report.jl")
+
 # PyO3 crates without a RustCall attribute: scan reporting and the link plan
 # a wrapper crate needs (#275). Depends on scan_crate from crate_bindings.jl.
 include("pyo3.jl")

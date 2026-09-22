@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **A boundary report of the FFI surface**
+  ([#441](https://github.com/AtelierArith/RustCall.jl/issues/441)).
+  `RustCall.boundary_report(crate_path)` and
+  `RustCall.inline_boundary_report(source)` read the extractor's manifest,
+  without building or loading anything, and list every argument and return
+  position of the generated wrappers that the FFI contract cannot describe.
+  Each entry names the item, the position, the Rust type and the reason. An
+  unsupported argument (a `Vec<f64>`, a `&OtherStruct`) used to compile and
+  fail only at the call, with a message about the Julia value's layout.
+  Examined: `#[julia]` functions and the wrapped methods of non-generic
+  `#[julia]` structs, including `Result` / `Option` payloads.
+
 ## [0.6.3] - 2026-09-22
 
 ### Added

@@ -1,0 +1,139 @@
+using Test
+using RustCall
+
+# `boundary_report` / `inline_boundary_report` list every argument and return
+# position of the generated FFI surface that the FFI contract cannot describe
+# (#441). An unsupported *return* type already fails when the wrapper is
+# generated, but an unsupported *argument* compiles and only fails when it is
+# called, with a layout message about the Julia value rather than the Rust
+# signature. The report surfaces both before anything is built or called.
+
+const BR_SAMPLE_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate")
+
+_br_positions(report) = Set((u.item, u.position) for u in report.unsupported)
+
+@testset "inline_boundary_report finds what the contract cannot describe (#441)" begin
+    source = raw"""
+        #[julia]
+        pub fn good(a: i32, s: &str, t: String) -> f64 { 0.0 }
+
+        #[julia]
+        pub fn takes_vec(v: Vec<f64>, n: i32) -> i32 { n }
+
+        #[julia]
+        pub fn gives_map(n: i32) -> std::collections::HashMap<String, i32> { Default::default() }
+
+        #[julia]
+        pub fn fallible(n: i32) -> Result<Vec<u8>, String> { Err(String::new()) }
+
+        #[julia]
+        pub fn maybe(n: i32) -> Option<i64> { None }
+
+        #[julia]
+        pub fn apply(f: extern "C" fn(i64) -> i64, x: i64) -> i64 { f(x) }
+
+        #[julia]
+        pub fn generic_one<T: Copy>(x: T) -> T { x }
+
+        #[no_mangle]
+        pub extern "C" fn hand_written(v: *const u8, n: usize) -> u64 { 0 }
+
+        #[julia]
+        pub struct Handle { inner: Vec<u8> }
+
+        impl Handle {
+            pub fn new() -> Self { Handle { inner: Vec::new() } }
+            pub fn combine(&self, other: &Handle) -> i32 { 0 }
+            pub fn bytes(&self) -> Vec<u8> { self.inner.clone() }
+            pub fn len(&self) -> usize { self.inner.len() }
+        }
+        """
+    report = RustCall.inline_boundary_report(source; io = devnull)
+
+    @test _br_positions(report) == Set([
+        ("takes_vec", "argument `v`"),
+        ("gives_map", "return"),
+        ("fallible", "Ok payload"),
+        ("Handle::combine", "argument `other`"),
+        ("Handle::bytes", "return"),
+    ])
+    first_vec = only(u for u in report.unsupported if u.item == "takes_vec")
+    @test first_vec.rust_type == "Vec<f64>"
+    @test !isempty(first_vec.reason)
+
+    # Everything else was examined and accepted: supported scalars and strings,
+    # a `Result` whose error payload is a `String`, an `Option<i64>`, a
+    # callback argument, and the struct's constructor and `usize` method.
+    @test report.checked > length(report.unsupported)
+    # Not RustCall's surface to police: a generic item is monomorphized later,
+    # and a plain `#[no_mangle]` function generates no wrapper.
+    @test !any(u -> u.item in ("generic_one", "hand_written"), report.unsupported)
+
+    # The printed summary names each position and its Rust type.
+    text = sprint(io -> RustCall.inline_boundary_report(source; io))
+    @test occursin("takes_vec", text) && occursin("Vec<f64>", text)
+    @test occursin("5 unsupported", text)
+end
+
+@testset "a clean surface reports nothing (#441)" begin
+    report = RustCall.inline_boundary_report(raw"""
+        #[julia]
+        pub fn add(a: i32, b: i32) -> i32 { a + b }
+        """; io = devnull)
+    @test isempty(report.unsupported)
+    @test report.checked == 3
+    @test occursin("no unsupported", sprint(io -> RustCall.inline_boundary_report(
+        "#[julia]\npub fn add(a: i32, b: i32) -> i32 { a + b }"; io)))
+end
+
+@testset "boundary_report reads a crate's #[julia] surface (#441)" begin
+    # The fixture crate is what `@rust_crate` binds in the rest of the suite,
+    # so every position it exposes must be describable.
+    report = RustCall.boundary_report(BR_SAMPLE_CRATE; io = devnull)
+    @test report.checked > 0
+    @test isempty(report.unsupported)
+
+    # The integration guide's example facade keeps its whole surface describable.
+    ledger = RustCall.boundary_report(joinpath(dirname(@__DIR__), "examples", "SafeLedger.jl",
+                                               "deps", "safe_ledger"); io = devnull)
+    @test ledger.checked == 11
+    @test isempty(ledger.unsupported)
+
+    mktempdir() do root
+        crate = joinpath(root, "br_crate")
+        mkpath(joinpath(crate, "src"))
+        write(joinpath(crate, "Cargo.toml"), """
+            [package]
+            name = "br_crate"
+            version = "0.1.0"
+            edition = "2021"
+
+            [lib]
+            crate-type = ["cdylib"]
+
+            [dependencies]
+            rustcall_julia_macros = { path = $(repr(RustCall.rustcall_runtime_crate_path())) }
+            """)
+        write(joinpath(crate, "src", "lib.rs"), """
+            use rustcall_julia_macros::julia;
+
+            #[julia]
+            fn total(values: Vec<f64>) -> f64 { values.iter().sum() }
+
+            #[julia]
+            pub struct Bag { items: Vec<i32> }
+
+            #[julia]
+            impl Bag {
+                #[julia]
+                pub fn new() -> Self { Bag { items: Vec::new() } }
+                #[julia]
+                pub fn items(&self) -> Vec<i32> { self.items.clone() }
+                // Not attributed: `@rust_crate` does not wrap it.
+                pub fn raw(&self) -> Vec<i32> { self.items.clone() }
+            }
+            """)
+        report = RustCall.boundary_report(crate; io = devnull)
+        @test _br_positions(report) == Set([("total", "argument `values`"), ("Bag::items", "return")])
+    end
+end

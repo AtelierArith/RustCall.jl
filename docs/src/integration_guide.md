@@ -162,8 +162,22 @@ Good boundary types are those with an unambiguous C-compatible representation:
 - opaque Rust-owned objects with methods that perform the complex work in Rust.
 
 Avoid exposing `Vec<T>` or a user-defined Rust struct merely because it happens
-to compile. Check the generated manifest and the [supported type
-matrix](type_contract.md) first. Unknown types fail closed by default; do not
+to compile. Check the [supported type matrix](type_contract.md) first, and run
+the boundary report, which reads the extractor's manifest and builds nothing:
+
+```julia
+RustCall.boundary_report("deps/my_facade")        # a crate bound with @rust_crate
+RustCall.inline_boundary_report(source)           # the source of a rust""" block
+# RustCall boundary report for crate deps/my_facade: 1 unsupported position(s) of 12 checked:
+#   total, argument `values`: Vec<f64> — Vec<f64>: not in the FFI contract
+```
+
+It lists every argument and return position of the generated wrappers that the
+contract cannot describe. This matters most for arguments: an unsupported return
+type fails when the wrapper is generated, but an unsupported argument compiles and
+fails only when it is called, with a message about the Julia value's layout. Run
+it in the facade's tests (`@test isempty(RustCall.boundary_report(path; io =
+devnull).unsupported)`) to keep the surface small as the facade grows. Unknown types fail closed by default; do not
 make `RustCall.FFI_STRICT[] = :warn` a production solution for an API whose layout has
 not been designed.
 
@@ -325,8 +339,10 @@ When an integration fails, identify the layer before changing the API:
    RustCall uses the artifact fallback or when the PATH compiler differs from
    the one RustToolChain selects.
 2. **Rust API:** compile and test the facade as a normal Rust crate first.
-3. **Manifest and ABI:** verify the generated manifest, `#[julia]` attributes,
-   `extern "C"` requirements where applicable, and the type contract.
+3. **Manifest and ABI:** run `RustCall.boundary_report(crate)` (or
+   `inline_boundary_report(source)`) to list positions the type contract cannot
+   describe. Then verify the `#[julia]` attributes and the `extern "C"`
+   requirements where applicable.
 4. **Loading:** check the loaded/retired libraries and whether a call or object
    still refers to an image that was unloaded.
 5. **Runtime:** reduce the failing call to a small test covering construction,
@@ -345,7 +361,7 @@ exception channel.
 | `no working rustc`, or a build that cannot find `cargo` | the `RustToolChain.rustc()` / `cargo()` versions above; on Windows, the MSVC build tools |
 | a Rust compile error in code you did not write | the generated wrapper, not your facade: `RustCall.expand_inline(source).source` shows what an inline block compiles |
 | `CargoBuildError` | Cargo's own message in the error; with `RUSTCALL_OFFLINE=1`, a crate missing from the registry cache |
-| an unsupported-type error at wrapper generation | the [type contract](type_contract.md); move the type behind the facade |
+| an unsupported-type error at wrapper generation, or "cannot pass `X` to Rust by value" at a call | `RustCall.boundary_report(crate)` names the Rust item and position; move the type behind the facade |
 | wrong values, but no error | the `extern "C"` signature against the Julia call: argument order, integer width (`Clong`), `bool` |
 | `RustPanicError` | the Rust message it carries; reproduce in `cargo test` |
 | a crash instead of `RustPanicError` | an entry point without a `#[julia]` boundary, or a panic on a thread Rust spawned |
