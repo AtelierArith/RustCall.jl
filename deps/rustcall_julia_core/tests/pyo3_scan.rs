@@ -1,8 +1,8 @@
 //! Unit tests for the PyO3 crate scan (#275 Phase 1).
 
-use rustcall_core::extract::extract;
-use rustcall_core::manifest::{skip_reason, Attribute, Function, Manifest, Mode, ReturnKind};
-use rustcall_core::pyo3::Pyo3Scan;
+use rustcall_julia_core::extract::extract;
+use rustcall_julia_core::manifest::{skip_reason, Attribute, Function, Manifest, Mode, ReturnKind};
+use rustcall_julia_core::pyo3::Pyo3Scan;
 
 fn scan(source: &str) -> Manifest {
     extract(source, Mode::Crate).expect("failed to extract crate manifest")
@@ -440,7 +440,7 @@ fn out_of_line_modules_are_reported_as_pending() {
     )
     .expect("parse");
     let mut manifest = Manifest::new(Mode::Crate);
-    let pending = rustcall_core::pyo3::extract_pyo3_items(&file.items, &mut manifest);
+    let pending = rustcall_julia_core::pyo3::extract_pyo3_items(&file.items, &mut manifest);
 
     let by = |n: &str| pending.iter().find(|m| m.name == n).unwrap();
     assert_eq!(pending.len(), 4);
@@ -1120,7 +1120,7 @@ fn a_julia_export_and_a_pyo3_item_in_another_module_both_keep_their_symbols() {
 }
 
 /// Whether any entry of the manifest carries a `symbol_collision` reason.
-fn manifest_mentions_symbol_collision(manifest: &rustcall_core::manifest::Manifest) -> bool {
+fn manifest_mentions_symbol_collision(manifest: &rustcall_julia_core::manifest::Manifest) -> bool {
     let is = |reason: &str| reason.starts_with(skip_reason::SYMBOL_COLLISION);
     manifest.functions.iter().any(|f| is(&f.skip_reason))
         || manifest

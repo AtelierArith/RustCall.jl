@@ -91,7 +91,7 @@ _hrt_write_stress(crate, generation) = write(joinpath(crate, "src", "lib.rs"), "
     }
     static BOOM_HOOK: std::sync::Once = std::sync::Once::new();
 
-    /// The quiet hook `rustcall_core::codegen` now emits beside every panic
+    /// The quiet hook `rustcall_julia_core::codegen` now emits beside every panic
     /// channel: silent while this thread is inside the boundary, delegating to
     /// the previous hook otherwise. Without it this test alone prints ~2300
     /// `thread '<unnamed>' panicked at ...` lines, because it panics on
@@ -117,7 +117,7 @@ _hrt_write_stress(crate, generation) = write(joinpath(crate, "src", "lib.rs"), "
         }
     }
 
-    /// The shape `rustcall_core::codegen` emits: the body runs inside
+    /// The shape `rustcall_julia_core::codegen` emits: the body runs inside
     /// `catch_unwind`, a panic is recorded in this wrapper's thread-local
     /// channel, and a sentinel of the right shape is returned.
     #[no_mangle]

@@ -3,7 +3,7 @@
 //! This crate provides the `#[julia]` attribute macro that simplifies creating
 //! FFI-compatible functions and structs for use with Julia through RustCall.jl.
 //!
-//! All code generation lives in the `rustcall_core` crate, which is shared with
+//! All code generation lives in the `rustcall_julia_core` crate, which is shared with
 //! the `rustcall-extract` CLI used for inline `rust"""` blocks;
 //! `rustcall_julia_macros_impl` is the thin proc-macro adapter over it, so that
 //! both front ends emit identical wrappers. This crate re-exports the attribute

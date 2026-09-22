@@ -11,6 +11,6 @@ name = "rustcall-extract"
 path = "src/main.rs"
 
 [dependencies]
-rustcall_core = { path = "../rustcall_core" }
+rustcall_julia_core = { path = "../rustcall_julia_core" }
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"

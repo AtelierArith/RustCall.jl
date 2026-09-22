@@ -15,9 +15,10 @@ using SHA: sha256
 
 The manifest compatibility identifier this RustCall.jl accepts: the
 **`MAJOR.MINOR` of its own release**, read from `Project.toml` — `"0.6"` for
-every v0.6.x. `rustcall_core::manifest::SCHEMA_VERSION` is the same string,
-and `test/test_schema_version.jl` keeps the two from drifting by pinning every
-manifest crate's `Cargo.toml` version to the package version (#372).
+every v0.6.x. `rustcall_julia_core::manifest::SCHEMA_VERSION` is the same string, kept
+as a literal in Rust because the crates' crates.io versions move independently
+of the release, and `test/test_schema_version.jl` keeps the two from drifting by
+comparing the extractor's `schema-version` output with it (#372).
 
 What that buys, and what it costs:
 
@@ -215,7 +216,7 @@ end
 
 SHA-256 over the `src/*.rs` and `Cargo.toml` files of the given crate
 directories, sorted by path. Used so that editing `rustcall_julia_macros` or
-`rustcall_core` invalidates artifacts built through Cargo.
+`rustcall_julia_core` invalidates artifacts built through Cargo.
 """
 function _rust_sources_digest(dirs::AbstractString...)
     ctx = IOBuffer()
@@ -233,10 +234,12 @@ function _rust_sources_digest(dirs::AbstractString...)
         end
         for f in sort(files)
             print(ctx, relpath(f, dir), "\0")
-            # A manifest enters without its `[package] version`
-            # (`_identity_file_bytes`, #372): the crates hashed here are
-            # versioned as the release, and a patch release must not move
-            # every cache key by rewriting that one line.
+            # A manifest enters without its `[package] version` or the
+            # exact requirement it puts on a sibling release crate
+            # (`_identity_file_bytes`, #372, #451): the crates hashed here
+            # are bumped as a set — `rustcall_extract` with the release, the
+            # published three on their own semver — and a version-only bump
+            # must not move every cache key by rewriting those lines.
             write(ctx, _identity_file_bytes(String(f)))
             print(ctx, "\0")
         end
@@ -246,11 +249,11 @@ end
 
 
 # The crates a user's build compiles from *this tree*: `rustcall_julia_macros`
-# and its proc-macro implementation, which carry `rustcall_core` into every
+# and its proc-macro implementation, which carry `rustcall_julia_core` into every
 # `#[julia]` crate's build and the runtime module `rt.rs`. The extractor is
 # identified separately, by the binary that actually runs
 # (`extractor_source_digest`).
-const _FINGERPRINT_CRATES = ("rustcall_core", "rustcall_julia_macros", "rustcall_julia_macros_impl")
+const _FINGERPRINT_CRATES = ("rustcall_julia_core", "rustcall_julia_macros", "rustcall_julia_macros_impl")
 
 # The lines `toolchain_fingerprint` hashes, and whether the compiler in them
 # was actually identified. Separate so a test can assert what is — and is
@@ -273,7 +276,7 @@ end
     toolchain_fingerprint() -> String
 
 Fingerprint of everything that influences generated code besides the user's
-source: the manifest schema identifier, the **sources** of `rustcall_core`,
+source: the manifest schema identifier, the **sources** of `rustcall_julia_core`,
 `rustcall_julia_macros` and `rustcall_extract`, the identity of the compiler
 that actually runs (`artifact_compiler_identity`) and the host target. Included
 in all cache keys.
@@ -287,7 +290,7 @@ binary — every cache key would have moved on a release that promises to keep
 them. The extractor now enters as the digest of the sources **it** was built
 from, reported by the selected binary itself (`extractor_source_digest`): that
 follows `RUSTCALL_EXTRACT` to whatever executable actually runs, and does not
-move when only a version did. The tree's `rustcall_core`,
+move when only a version did. The tree's `rustcall_julia_core`,
 `rustcall_julia_macros` and `rustcall_julia_macros_impl` sources enter
 separately, because a user's build compiles them from this tree, with each
 crate's `[package] version` left out (`_identity_file_bytes`).
@@ -1018,7 +1021,7 @@ struct WrapperCrateSource
     source_files::Vector{String}
     """
     Whether the generated `lib_rs` names `::rustcall_pyo3`, as reported by the
-    generator (`rustcall_core::wrap::WrapperCrate`).
+    generator (`rustcall_julia_core::wrap::WrapperCrate`).
 
     Not inferred here: Julia does not parse Rust (#264), and every proxy is wrong
     in one direction or the other — a refused defaulted callable leaves a

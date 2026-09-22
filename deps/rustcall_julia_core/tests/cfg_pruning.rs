@@ -1,10 +1,10 @@
 //! `#[cfg]`-disabled items must not be reported (follow-up of #264).
 
-use rustcall_core::cfg::CfgSet;
-use rustcall_core::expand::{expand, expand_with_cfg};
-use rustcall_core::extract::{extract_with_cfg, FilePosition};
-use rustcall_core::manifest::Mode;
-use rustcall_core::specialize::specialize;
+use rustcall_julia_core::cfg::CfgSet;
+use rustcall_julia_core::expand::{expand, expand_with_cfg};
+use rustcall_julia_core::extract::{extract_with_cfg, FilePosition};
+use rustcall_julia_core::manifest::Mode;
+use rustcall_julia_core::specialize::specialize;
 
 const SRC: &str = r#"
 #[cfg(unix)]
@@ -53,7 +53,7 @@ mod winmod {
 }
 "#;
 
-fn names(m: &rustcall_core::Manifest) -> Vec<String> {
+fn names(m: &rustcall_julia_core::Manifest) -> Vec<String> {
     m.functions.iter().map(|f| f.name.clone()).collect()
 }
 
@@ -569,7 +569,7 @@ fn enclosing_module_cfg_is_inherited() {
         #[julia]
         pub fn root() -> i32 { 0 }
     "#;
-    let check = |m: &rustcall_core::Manifest| {
+    let check = |m: &rustcall_julia_core::Manifest| {
         let f = |name: &str| m.functions.iter().find(|f| f.name == name).unwrap();
         assert_eq!(f("root").cfg, "");
         assert_eq!(f("run").cfg, "feature = \"x\"");
@@ -599,8 +599,8 @@ fn enclosing_module_cfg_is_inherited() {
     assert_eq!(m.structs[0].cfg, "feature = \"x\"");
     // ... and a file reached through a gated `mod a;` declaration, whose
     // predicate the tree walk hands to the file's scan.
-    let mut scan = rustcall_core::extract::TreeScan::new();
-    let mut manifest = rustcall_core::Manifest::new(Mode::Crate);
+    let mut scan = rustcall_julia_core::extract::TreeScan::new();
+    let mut manifest = rustcall_julia_core::Manifest::new(Mode::Crate);
     let pending = scan
         .file(
             "#[cfg(feature = \"x\")] pub mod a;",
@@ -676,7 +676,7 @@ fn generated_struct_helpers_carry_the_struct_cfg() {
     let item: syn::ItemStruct =
         syn::parse_str("#[cfg(feature = \"x\")] pub struct C { pub v: i32, pub label: String }")
             .unwrap();
-    let file: syn::File = syn::parse2(rustcall_core::codegen::transform_struct_crate(
+    let file: syn::File = syn::parse2(rustcall_julia_core::codegen::transform_struct_crate(
         item,
         &["a".to_string()],
     ))
@@ -711,7 +711,7 @@ fn generated_struct_helpers_carry_the_struct_cfg() {
         "#[cfg(feature = \"x\")] impl C { #[julia] pub fn get(&self) -> i32 { self.v } }",
     )
     .unwrap();
-    let file: syn::File = syn::parse2(rustcall_core::codegen::transform_impl_crate(
+    let file: syn::File = syn::parse2(rustcall_julia_core::codegen::transform_impl_crate(
         imp,
         &["a".to_string()],
     ))

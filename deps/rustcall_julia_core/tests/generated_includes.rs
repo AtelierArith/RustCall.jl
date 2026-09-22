@@ -1,4 +1,4 @@
-use rustcall_core::{
+use rustcall_julia_core::{
     extract::{FilePosition, TreeScan},
     include_paths::IncludeEnvironment,
     Manifest, Mode,

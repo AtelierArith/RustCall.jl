@@ -4,7 +4,7 @@
 # with no module path, so two `#[julia] fn run` — or two `#[pyclass] struct C`
 # — in different modules of one crate wanted the same symbol: a duplicate-symbol
 # error from rustc, or a silently wrong binding. Every symbol now hangs off the
-# item's FFI name (`rustcall_core::codegen::symbol_stem`): the bare name at the
+# item's FFI name (`rustcall_julia_core::codegen::symbol_stem`): the bare name at the
 # crate root, the module path folded in otherwise (`a::run` -> `a__run`,
 # `_` inside a segment escaped as `_0`). A proc-macro cannot see its module, so
 # `#[julia]` goes on the inline `mod` as well; the Julia side mirrors the Rust

@@ -2084,7 +2084,7 @@ const OWNED_HANDLES = _state_view(:owned_handles, Dict{Ptr{Cvoid}, Int}())
 
 The two symbols an artifact whose source RustCall generated in full exports for
 its quiet panic hook (#304). They are spelled in
-`rustcall_core::codegen::{INSTALL,UNINSTALL}_PANIC_HOOK_SYMBOL`; a mismatch
+`rustcall_julia_core::codegen::{INSTALL,UNINSTALL}_PANIC_HOOK_SYMBOL`; a mismatch
 would show up as the hook never being installed, which
 `test/test_panic_hook.jl` asserts against.
 """

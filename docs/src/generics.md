@@ -344,7 +344,7 @@ both and runs **neither** the extractor nor `rustc`; only the library is opened.
 The record is purely an optimisation — missing, unreadable or written by another
 format version, it reads as a cache miss and the instantiation is rebuilt, and
 the artifact key folds in the toolchain fingerprint, so a library built by a
-different extractor or `rustcall_core` can never be restored.
+different extractor or `rustcall_julia_core` can never be restored.
 
 Reading the cache removes the compile and nothing else. An instantiation's
 library is private to it, so it is opened from a private copy of the cached

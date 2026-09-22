@@ -18,8 +18,8 @@ end
 
 @testset "extractor identity (#409)" begin
     @testset "cargo tree lines" begin
-        p = RustCall._ei_parse_tree_line("rustcall_core v0.4.0 (/some/where/deps/rustcall_core)")
-        @test p.name == "rustcall_core" && p.version == "0.4.0" && p.source == "/some/where/deps/rustcall_core"
+        p = RustCall._ei_parse_tree_line("rustcall_julia_core v0.4.0 (/some/where/deps/rustcall_julia_core)")
+        @test p.name == "rustcall_julia_core" && p.version == "0.4.0" && p.source == "/some/where/deps/rustcall_julia_core"
         p = RustCall._ei_parse_tree_line("syn v2.0.100")
         @test p.name == "syn" && p.version == "2.0.100" && p.source === nothing
         p = RustCall._ei_parse_tree_line("thing v0.1.0 (https://github.com/x/y#abcdef) (*)")
@@ -34,10 +34,10 @@ end
 
     @testset "the decision, on gathered facts" begin
         mktempdir() do dir
-            # A stand-in tree: deps/{rustcall_extract,rustcall_core} with the
+            # A stand-in tree: deps/{rustcall_extract,rustcall_julia_core} with the
             # default layout, and a lockfile beside the extractor.
             deps = joinpath(dir, "deps")
-            for (name, body) in (("rustcall_extract", "fn main() {}\n"), ("rustcall_core", "pub fn f() {}\n"))
+            for (name, body) in (("rustcall_extract", "fn main() {}\n"), ("rustcall_julia_core", "pub fn f() {}\n"))
                 mkpath(joinpath(deps, name, "src"))
                 write(joinpath(deps, name, "src", name == "rustcall_extract" ? "main.rs" : "lib.rs"), body)
                 write(joinpath(deps, name, "Cargo.toml"), """
@@ -52,14 +52,14 @@ end
                 version = 4
 
                 [[package]]
-                name = "rustcall_core"
+                name = "rustcall_julia_core"
                 version = "0.4.0"
 
                 [[package]]
                 name = "rustcall_extract"
                 version = "0.4.0"
                 dependencies = [
-                 "rustcall_core",
+                 "rustcall_julia_core",
                  "syn",
                 ]
 
@@ -71,7 +71,7 @@ end
                 """)
             pkg(name, version, source) = (; name, version, source)
             packages = [pkg("rustcall_extract", "0.4.0", crate),
-                        pkg("rustcall_core", "0.4.0", joinpath(deps, "rustcall_core")),
+                        pkg("rustcall_julia_core", "0.4.0", joinpath(deps, "rustcall_julia_core")),
                         pkg("syn", "2.0.1", nothing)]
             root = joinpath(crate, "Cargo.toml")
             none = Pair{String, String}[]
@@ -81,24 +81,24 @@ end
             good = decide()
             @test good.canonical
             @test occursin(r"^[0-9a-f]{64}$", good.digest)
-            @test "crate:rustcall_extract" in good.inputs && "crate:rustcall_core" in good.inputs
+            @test "crate:rustcall_extract" in good.inputs && "crate:rustcall_julia_core" in good.inputs
             # Deterministic, and the same whichever order Cargo listed them in.
             @test decide(packages = reverse(packages)).digest == good.digest
 
             # A patch bump of the release crates moves nothing: their version
             # lines leave the manifests and the lockfile alike.
-            for name in ("rustcall_extract", "rustcall_core")
+            for name in ("rustcall_extract", "rustcall_julia_core")
                 m = joinpath(deps, name, "Cargo.toml")
                 write(m, replace(read(m, String), "0.4.0" => "0.4.1"))
             end
             write(joinpath(crate, "Cargo.lock"), replace(read(joinpath(crate, "Cargo.lock"), String),
                                                           "version = \"0.4.0\"" => "version = \"0.4.1\""))
             bumped = [pkg("rustcall_extract", "0.4.1", crate),
-                      pkg("rustcall_core", "0.4.1", joinpath(deps, "rustcall_core")),
+                      pkg("rustcall_julia_core", "0.4.1", joinpath(deps, "rustcall_julia_core")),
                       pkg("syn", "2.0.1", nothing)]
             @test decide(packages = bumped).digest == good.digest
             # ...while a source change, a registry bump and a lockfile edit do.
-            write(joinpath(deps, "rustcall_core", "src", "lib.rs"), "pub fn f() -> i32 { 1 }\n")
+            write(joinpath(deps, "rustcall_julia_core", "src", "lib.rs"), "pub fn f() -> i32 { 1 }\n")
             changed = decide(packages = bumped).digest
             @test changed != good.digest
             # A module behind a directory symlink inside `src` is a source
@@ -106,12 +106,12 @@ end
             if !Sys.iswindows()
                 linked = joinpath(dir, "linked_src"); mkpath(linked)
                 write(joinpath(linked, "mod.rs"), "pub fn g() {}\n")
-                symlink(linked, joinpath(deps, "rustcall_core", "src", "linked"); dir_target = true)
+                symlink(linked, joinpath(deps, "rustcall_julia_core", "src", "linked"); dir_target = true)
                 with_link = decide(packages = bumped).digest
                 @test with_link != changed
                 write(joinpath(linked, "mod.rs"), "pub fn g() -> i32 { 2 }\n")
                 @test decide(packages = bumped).digest != with_link
-                rm(joinpath(deps, "rustcall_core", "src", "linked"))
+                rm(joinpath(deps, "rustcall_julia_core", "src", "linked"))
                 changed = decide(packages = bumped).digest
             end
             write(joinpath(crate, "Cargo.lock"), replace(read(joinpath(crate, "Cargo.lock"), String),
@@ -132,8 +132,8 @@ end
                             "RUSTCALL_EXTRACT" => "/e", "RUSTCALL_HELPERS" => "/l", "RUSTCALL_CACHE_DIR" => "/c")
             r = decide(packages = bumped, env = harmless)
             @test r.canonical && r.digest == plain
-            @test r.inputs == ["crate:rustcall_core", "crate:rustcall_extract", "lockfile"] ||
-                  Set(r.inputs) == Set(["crate:rustcall_core", "crate:rustcall_extract", "lockfile"])
+            @test r.inputs == ["crate:rustcall_julia_core", "crate:rustcall_extract", "lockfile"] ||
+                  Set(r.inputs) == Set(["crate:rustcall_julia_core", "crate:rustcall_extract", "lockfile"])
             cfg = joinpath(dir, "harmless.toml")
             write(cfg, "[net]\noffline = true\n\n[term]\ncolor = \"always\"\n\n[registries.crates-io]\nprotocol = \"sparse\"\n")
             r = decide(packages = bumped, config = ["config:home:config.toml" => cfg])
@@ -187,10 +187,10 @@ end
 
             # Not this tree's layout: no digest, and a reason.
             fork = joinpath(dir, "fork_core"); mkpath(joinpath(fork, "src"))
-            write(joinpath(fork, "Cargo.toml"), "[package]\nname = \"rustcall_core\"\nversion = \"0.4.1\"\n")
+            write(joinpath(fork, "Cargo.toml"), "[package]\nname = \"rustcall_julia_core\"\nversion = \"0.4.1\"\n")
             write(joinpath(fork, "src", "lib.rs"), "")
-            r = decide(packages = [bumped[1], pkg("rustcall_core", "0.4.1", fork), bumped[3]])
-            @test !r.canonical && r.digest === nothing && occursin("not this tree's deps/rustcall_core", r.reason)
+            r = decide(packages = [bumped[1], pkg("rustcall_julia_core", "0.4.1", fork), bumped[3]])
+            @test !r.canonical && r.digest === nothing && occursin("not this tree's deps/rustcall_julia_core", r.reason)
             helper = joinpath(deps, "helper"); mkpath(joinpath(helper, "src"))
             write(joinpath(helper, "Cargo.toml"), "[package]\nname = \"helper\"\nversion = \"0.1.0\"\n")
             r = decide(packages = vcat(bumped, [pkg("helper", "0.1.0", helper)]))
@@ -204,16 +204,16 @@ end
             # A manifest-selected target root outside `src` — including one
             # that merely shares the `src` prefix.
             for (rel, setup) in (("../shared/lib.rs", () -> (mkpath(joinpath(deps, "shared")); write(joinpath(deps, "shared", "lib.rs"), ""))),
-                                 ("src_extra/lib.rs", () -> (mkpath(joinpath(deps, "rustcall_core", "src_extra")); write(joinpath(deps, "rustcall_core", "src_extra", "lib.rs"), ""))))
+                                 ("src_extra/lib.rs", () -> (mkpath(joinpath(deps, "rustcall_julia_core", "src_extra")); write(joinpath(deps, "rustcall_julia_core", "src_extra", "lib.rs"), ""))))
                 setup()
-                write(joinpath(deps, "rustcall_core", "Cargo.toml"),
-                      "[package]\nname = \"rustcall_core\"\nversion = \"0.4.1\"\n\n[lib]\npath = \"$(rel)\"\n")
+                write(joinpath(deps, "rustcall_julia_core", "Cargo.toml"),
+                      "[package]\nname = \"rustcall_julia_core\"\nversion = \"0.4.1\"\n\n[lib]\npath = \"$(rel)\"\n")
                 r = decide(packages = bumped)
                 @test !r.canonical && occursin("target root", r.reason)
             end
             # ...while a root under `src` proper is the default layout.
-            write(joinpath(deps, "rustcall_core", "Cargo.toml"),
-                  "[package]\nname = \"rustcall_core\"\nversion = \"0.4.1\"\n\n[lib]\npath = \"src/lib.rs\"\n")
+            write(joinpath(deps, "rustcall_julia_core", "Cargo.toml"),
+                  "[package]\nname = \"rustcall_julia_core\"\nversion = \"0.4.1\"\n\n[lib]\npath = \"src/lib.rs\"\n")
             @test decide(packages = bumped).canonical
         end
     end
@@ -317,13 +317,13 @@ end
             build_env = copy(ENV); build_env["CARGO_PROFILE_RELEASE_PANIC"] = "unwind"
             @test RustCall.extractor_build_identity(_EI_CRATE; cargo = cargo(), env = build_env).digest == identity.digest
             @test occursin(r"^[0-9a-f]{64}$", identity.digest)
-            # The extractor's own local closure: itself and `rustcall_core`
+            # The extractor's own local closure: itself and `rustcall_julia_core`
             # (the macro crates are inputs of a *user's* build, covered by the
             # `sources=` fingerprint line, not of this binary).
             @test Set(filter(startswith("crate:"), identity.inputs)) ==
-                  Set(["crate:rustcall_extract", "crate:rustcall_core"])
+                  Set(["crate:rustcall_extract", "crate:rustcall_julia_core"])
             # A canonical build has no input beyond the sources (#413)...
-            @test Set(identity.inputs) == Set(["crate:rustcall_core", "crate:rustcall_extract", "lockfile"])
+            @test Set(identity.inputs) == Set(["crate:rustcall_julia_core", "crate:rustcall_extract", "lockfile"])
             # ...and the binary no longer reports a digest of its own (#417):
             # the record beside it is the only source of the identity.
             binary = RustCall.extractor_path()

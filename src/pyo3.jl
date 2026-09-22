@@ -17,7 +17,7 @@
     PYO3_SKIP_REASONS
 
 Human-readable text for each `skip_reason` the extractor records
-(`rustcall_core::manifest::skip_reason`). A reason may carry a detail after a
+(`rustcall_julia_core::manifest::skip_reason`). A reason may carry a detail after a
 colon (`pyo3_type:Python<'_>`); `pyo3_skip_explanation` splits it off.
 """
 const PYO3_SKIP_REASONS = Base.ImmutableDict(Base.ImmutableDict{String, String}(),
@@ -57,9 +57,9 @@ that the interpreter is initialized, and the resulting panic crossing
 `extern "C"` aborts the process. Reading only the exception *type* would still
 need a `Python` token, which a wrapper crate by definition does not have. So the
 generated wrapper drops the `PyErr` and reports the fixed code
-`rustcall_core::wrap::PYERR_CODE`, and this is the sentence Julia raises for it.
+`rustcall_julia_core::wrap::PYERR_CODE`, and this is the sentence Julia raises for it.
 
-Must equal `rustcall_core::wrap::PYERR_MESSAGE`; `test/test_pyo3_wrapper.jl`
+Must equal `rustcall_julia_core::wrap::PYERR_MESSAGE`; `test/test_pyo3_wrapper.jl`
 checks that it does.
 """
 const PYO3_OPAQUE_ERROR =
@@ -69,7 +69,7 @@ const PYO3_OPAQUE_ERROR =
     PYO3_ERROR_CODE
 
 The `i32` a lowered `PyResult` carries in the `Err` slot
-(`rustcall_core::wrap::PYERR_CODE`). It is the only value the wrapper produces,
+(`rustcall_julia_core::wrap::PYERR_CODE`). It is the only value the wrapper produces,
 so the Julia side never decodes it — it reports `PYO3_OPAQUE_ERROR` instead —
 but the number is part of the ABI and is written down here.
 """

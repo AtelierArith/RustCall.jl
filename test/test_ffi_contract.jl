@@ -7,7 +7,7 @@
 # deleted those five tables, so the divergence tests became what they were
 # always meant to be: the regression tests for #245, #246 and #249.
 #
-# What is left of the old tables is `rustcall_core`'s `is_ffi_compatible_type` /
+# What is left of the old tables is `rustcall_julia_core`'s `is_ffi_compatible_type` /
 # `is_non_ffi_type` (mirrored here as `core_is_ffi_compatible` /
 # `core_is_non_ffi`), which stays deliberately — it is the *acceptance gate* on
 # the Rust side, deciding whether a wrapper is generated at all, not a mapping.
@@ -61,7 +61,7 @@ end
 # The Rust-side acceptance gate, as callable probes
 # ----------------------------------------------------------------------------
 
-# Table 1: `deps/rustcall_core/src/types.rs:85` / `:104`. It lives in Rust, so
+# Table 1: `deps/rustcall_julia_core/src/types.rs:85` / `:104`. It lives in Rust, so
 # it is mirrored here as data. `PRIMITIVES` is `types.rs:12` verbatim.
 const CORE_PRIMITIVES = [
     "i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128",
@@ -109,7 +109,7 @@ const ALL_SPELLINGS = vcat(
             @test entry.ownership in RustCall.FFI_OWNERSHIP_KINDS
             @test isconcretetype(entry.ccall_type) || entry.ccall_type === Cvoid
         end
-        # Every primitive `rustcall_core` accepts must be in the contract —
+        # Every primitive `rustcall_julia_core` accepts must be in the contract —
         # this is acceptance criterion 3 of #276 for the primitive subset.
         for p in CORE_PRIMITIVES
             @test RustCall.ffi_known(p)
@@ -125,7 +125,7 @@ const ALL_SPELLINGS = vcat(
         @test RustCall.ffi_julia_symbol("isize") === :Cssize_t
         @test RustCall.ffi_julia_symbol("()") === :Cvoid
         @test RustCall.ffi_ownership("f64") === :none
-        # 128-bit integers: known to `rustcall_core`, unknown to every Julia
+        # 128-bit integers: known to `rustcall_julia_core`, unknown to every Julia
         # table on `main`.
         @test RustCall.ffi_ccall_type("i128") === Int128
         @test RustCall.ffi_ccall_type("u128") === UInt128
@@ -166,7 +166,7 @@ const ALL_SPELLINGS = vcat(
 
     @testset "raw-pointer ownership is not derivable from the spelling" begin
         # A generated constructor returns `Box::into_raw`
-        # (deps/rustcall_core/src/codegen.rs:386-392) — Julia owns that
+        # (deps/rustcall_julia_core/src/codegen.rs:386-392) — Julia owns that
         # allocation and must free it. Another `*mut T` may point into memory
         # Rust keeps. Nothing in the spelling separates the two, so the default
         # is `:unknown`, never `:borrowed` (whose documented lifetime is only
@@ -198,7 +198,7 @@ const ALL_SPELLINGS = vcat(
         @test_throws ArgumentError RustCall.ffi_return_contract(
             "*mut Point"; ownership = :not_a_tag, free_symbol = "Point_free")
         # `owner` supplies only the STRING release convention
-        # (`<owner>_free_rust_string`, deps/rustcall_core/src/codegen.rs:633),
+        # (`<owner>_free_rust_string`, deps/rustcall_julia_core/src/codegen.rs:633),
         # which is wrong for a pointer — the crate exports e.g. `Point_free`.
         # So it does not satisfy the requirement here.
         @test_throws ArgumentError RustCall.ffi_return_contract(
@@ -215,7 +215,7 @@ const ALL_SPELLINGS = vcat(
 
     @testset "strings: only the manifest says whether lowering happened" begin
         # On `main` the lowering is NOT uniform: `transform_simple_function`
-        # (deps/rustcall_core/src/codegen.rs:53-58) only marks a free
+        # (deps/rustcall_julia_core/src/codegen.rs:53-58) only marks a free
         # `#[julia] fn ... -> String` signature `extern "C"` and
         # `generate_method_wrapper_crate` (:378, :414, :443) forwards the
         # original types; only `inline_method_wrapper` (:774-863) lowers to
@@ -286,7 +286,7 @@ const ALL_SPELLINGS = vcat(
         @test RustCall.ffi_argument_contract("&str"; abi = "str").aggregate_type === nothing
 
         # The free symbol is per-owner, so it appears only when the caller names
-        # the owner (`deps/rustcall_core/src/codegen.rs:633`).
+        # the owner (`deps/rustcall_julia_core/src/codegen.rs:633`).
         @test RustCall.ffi_free_symbol("shout") == "shout_free_rust_string"
         @test RustCall.ffi_return_contract("String"; abi = "string",
                                            owner = "shout").free_symbol ==
@@ -332,12 +332,12 @@ const ALL_SPELLINGS = vcat(
         @test RustCall.ffi_normalize_spelling("::mycrate::i32") == "::mycrate::i32"
         @test RustCall.ffi_lookup("::core::primitive::Widget") === nothing
 
-        # Negative: only those two prefixes. `rustcall_core` is laxer — it
+        # Negative: only those two prefixes. `rustcall_julia_core` is laxer — it
         # matches on the last path segment alone, so it also accepts
         # `mycrate::i32`, where `i32` may be a user alias with a different
         # layout. The contract refuses to infer from an unqualified last
         # segment and fails closed instead; see FFI_PRIMITIVE_PATH_PREFIXES.
-        @test core_is_ffi_compatible("mycrate::i32")     # `rustcall_core` says yes
+        @test core_is_ffi_compatible("mycrate::i32")     # `rustcall_julia_core` says yes
         @test RustCall.ffi_normalize_spelling("mycrate::i32") == "mycrate::i32"
         @test RustCall.ffi_lookup("mycrate::i32") === nothing
         @test RustCall.ffi_lookup("core::primitive::i32::Foo") === nothing
@@ -477,7 +477,7 @@ const ALL_SPELLINGS = vcat(
     end
 
     @testset "divergence: i128 / u128 / char (#245 item 2)" begin
-        # `rustcall_core` accepts these — a wrapper or accessor IS generated…
+        # `rustcall_julia_core` accepts these — a wrapper or accessor IS generated…
         for s in ("i128", "u128", "char")
             @test core_is_ffi_compatible(s)
             # …but every Julia table mistranslates them.
@@ -529,7 +529,7 @@ const ALL_SPELLINGS = vcat(
     end
 
     @testset "divergence: String / &str (#246)" begin
-        # `rustcall_core` classifies both as *non*-FFI…
+        # `rustcall_julia_core` classifies both as *non*-FFI…
         @test core_is_non_ffi("String")
         @test core_is_non_ffi("&str")
         @test core_is_ffi_compatible("String") == false
@@ -583,7 +583,7 @@ const ALL_SPELLINGS = vcat(
     end
 
     @testset "divergence: raw pointers (#245 item 2)" begin
-        # `rustcall_core` accepts every raw pointer wholesale; no Julia table
+        # `rustcall_julia_core` accepts every raw pointer wholesale; no Julia table
         # has a pointer entry, so the pointer lands on the `:Any` / `nothing`
         # path in each of them.
         for s in ("*const u8", "*mut i32", "*mut c_void")

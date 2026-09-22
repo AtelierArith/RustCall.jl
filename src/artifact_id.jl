@@ -92,7 +92,7 @@ neutral default so a caller only names what applies to it.
 - `build_env::Vector{Pair{String, String}}`: build environment that reaches the
   compiler (`RUSTFLAGS`, `CARGO_*`, …), sorted by name.
 - `toolchain::String`: `toolchain_fingerprint` — extractor digest,
-  manifest schema, `rustcall_core` / `rustcall_julia_macros` sources.
+  manifest schema, `rustcall_julia_core` / `rustcall_julia_macros` sources.
 - `compiler::String`: identity of the compiler that actually runs, from
   `RustToolChain` (see `artifact_compiler_identity`).
 - `extra::Vector{Pair{String, String}}`: escape hatch for pipeline-specific
@@ -704,23 +704,24 @@ end
 """
     RUSTCALL_RELEASE_CRATES
 
-The crates whose `[package] version` is the RustCall release version and moves
-with it (#372) — and therefore the **only** packages whose version is left out
-of an artifact identity (`_identity_file_bytes`). A user's crate, or any other
+The crates this package builds from its own `deps/` — the **only** packages
+whose `[package] version` is left out of an artifact identity
+(`_identity_file_bytes`). Their version moves on its own — a crates.io release
+for the published three, the package's for the internal ones — while their
+behaviour is their sources, which the identity hashes separately; a
+version-only bump must move nothing (#372, #409). A user's crate, or any other
 path dependency, keeps its version in the key: a crate can read
 `env!("CARGO_PKG_VERSION")` in its source or build script, so a bump of its
-version alone can change what it compiles to. These four cannot be told apart
-by their version — a patch release rewrites it with nothing else changed — and
-their behaviour is their sources, which the identity hashes separately.
+version alone can change what it compiles to.
 
 A name is not provenance. The exception applies to a manifest only when it
 *is* this package's `deps/<name>/Cargo.toml`, and to a lockfile entry only when
 the lockfile's own crate takes that dependency by path from this package's
 `deps/` — `_rustcall_release_crate_dir`, `_rustcall_release_names_in`. A fork
-or an unrelated crate that happens to be called `rustcall_core` keeps its
+or an unrelated crate that happens to be called `rustcall_julia_core` keeps its
 version like any other.
 """
-const RUSTCALL_RELEASE_CRATES = ("rustcall_core", "rustcall_extract",
+const RUSTCALL_RELEASE_CRATES = ("rustcall_julia_core", "rustcall_extract",
                                  "rustcall_julia_macros", "rustcall_julia_macros_impl")
 
 # This package's own directory for one of `RUSTCALL_RELEASE_CRATES`, canonical.
@@ -738,7 +739,7 @@ end
 # The release crates that the crate at `dir` takes as **path** dependencies
 # from this package's `deps/` — and the release crates *those* take by path in
 # turn: a `#[julia]` crate names only `rustcall_julia_macros`, and its lockfile
-# records `rustcall_julia_macros_impl` and `rustcall_core` behind it, all
+# records `rustcall_julia_macros_impl` and `rustcall_julia_core` behind it, all
 # three bumped by a patch release. Read from the manifests, not the lockfile:
 # these are the only lockfile entries whose `version` may be left out. A
 # dependency inherited from a workspace (`workspace = true`) carries no path
@@ -797,10 +798,12 @@ end
 # version` line, a `Cargo.lock` without the `version` line of any of those
 # crates resolved as a path dependency (no `source`), and every other byte of
 # either — and every other file, and every other package's version — exactly
-# as it is. Those keys are what a
-# *release* rewrites: the manifest crates are versioned as the RustCall
-# release, a patch release bumps them, and every lockfile that resolves a path
-# dependency on them records that number. Without this, `@rust_crate` and
+# as it is. Those keys are what a *bump* rewrites: `rustcall_extract` is
+# versioned as the RustCall release and moves with every patch, and the three
+# published crates share a semver of their own (#451) that moves together —
+# with the exact `version = "=x.y.z"` requirement each puts on the one below
+# it, which leaves the identity too — and every lockfile that resolves a path
+# dependency on them records those numbers. Without this, `@rust_crate` and
 # PyO3 wrapper keys moved on every patch release, against the promise the
 # schema identifier makes (`MANIFEST_SCHEMA_VERSION`). Everything else in
 # either file still counts.
@@ -867,7 +870,15 @@ function _identity_file_bytes(path::String; release_names = nothing)::Vector{UIn
         package = get(doc, "package", nothing)
         package isa AbstractDict && haskey(package, "version") &&
             _is_rustcall_release_crate(dirname(path), get(package, "name", nothing)) || return raw
-        return _without_version_lines(raw, (header, body) -> header == "[package]")
+        # The requirement a release crate puts on a sibling it takes by path —
+        # `rustcall_julia_core = { path = "...", version = "0.1.0" }` — is bumped
+        # together with the crates' own versions (#451), so it leaves the
+        # identity with the `[package] version`; only for a dependency resolved
+        # by path into this package's `deps/`, never for a registry pin.
+        pinned = _release_path_dependency_keys(doc, dirname(path))
+        return _without_version_lines(raw,
+            (header, body) -> header == "[package]" || _release_dependency_table(header, pinned);
+            rewrite = line -> _without_inline_version(line, pinned))
     end
     packages = get(doc, "package", nothing)
     packages isa AbstractVector || return raw
@@ -880,7 +891,7 @@ function _identity_file_bytes(path::String; release_names = nothing)::Vector{UIn
                   Set{String}(release_names)
     isempty(strip_names) && return raw
     # A graph holding two packages of one name — this package's crate and a
-    # fork — has Cargo qualify its references, `"rustcall_core 0.4.0"` in a
+    # fork — has Cargo qualify its references, `"rustcall_julia_core 0.4.0"` in a
     # `dependencies = [...]` list; the one naming this package's crate enters
     # as the bare name, so it reads the same before and after a bump. Which
     # version that is comes from *this lockfile* — the source-less entry of
@@ -894,6 +905,71 @@ function _identity_file_bytes(path::String; release_names = nothing)::Vector{UIn
             header == "[[package]]" && _toml_line_value(body, "name") in strip_names &&
             _toml_line_value(body, "source") === nothing;
         rewrite = line -> _unqualified_reference(line, versions))
+end
+
+# The dependency keys of `doc` (the parsed manifest at `dir`) that name one of
+# this package's release crates by path and pin its `version`: the keys whose
+# requirement is bumped with the crates (#451). Every dependency table is
+# read, including the per-target ones; `package = "..."` renames are honoured
+# — the provenance test is on the crate the path reaches, the key is what the
+# manifest line starts with.
+function _release_path_dependency_keys(doc, dir::AbstractString)::Set{String}
+    keys_ = Set{String}()
+    scopes = Any[doc]
+    targets = get(doc, "target", nothing)
+    targets isa AbstractDict && append!(scopes, (t for t in values(targets) if t isa AbstractDict))
+    for scope in scopes, table in ("dependencies", "dev-dependencies", "build-dependencies")
+        deps = get(scope, table, nothing)
+        deps isa AbstractDict || continue
+        for (dep, spec) in deps
+            spec isa AbstractDict || continue
+            path = get(spec, "path", nothing)
+            path isa AbstractString || continue
+            haskey(spec, "version") || continue
+            _is_rustcall_release_crate(joinpath(dir, path), get(spec, "package", dep)) || continue
+            push!(keys_, String(dep)::String)
+        end
+    end
+    return keys_
+end
+
+# Whether a TOML table header names one of `pinned` as a dependency table of
+# its own — `[dependencies.x]`, `[dev-dependencies.x]`, `[target.T.build-dependencies.x]`
+# — so that the `version = ...` line inside it goes the way an inline
+# `version` does.
+function _release_dependency_table(header::AbstractString, pinned::Set{String})
+    isempty(pinned) && return false
+    inner = strip(strip(header), ['[', ']'])
+    parts = split(inner, '.')
+    length(parts) >= 2 || return false
+    last_ = strip(String(parts[end]), '"')
+    table = String(parts[end - 1])
+    return last_ in pinned && table in ("dependencies", "dev-dependencies", "build-dependencies")
+end
+
+# A dependency line `key = { path = "...", version = "...", ... }` for a key in
+# `pinned`, with the `version` element and one separating comma removed and
+# every other byte kept; any other line unchanged.
+function _without_inline_version(line::AbstractString, pinned::Set{String})
+    isempty(pinned) && return line
+    any(key -> _is_toml_key_line(line, key), pinned) || return line
+    open_ = findfirst('{', line)
+    close_ = findlast('}', line)
+    (open_ === nothing || close_ === nothing || open_ > close_) && return line
+    inner = line[nextind(line, open_):prevind(line, close_)]
+    parts = split(inner, ',')
+    kept = String[p for p in parts if !_is_toml_key_line(p, "version")]
+    length(kept) == length(parts) && return line
+    # The last element's trailing whitespace sits before the `}`; when that
+    # element is the one removed, hand its tail to the new last element so
+    # `{ a = 1, version = "2" }` becomes `{ a = 1 }`, not `{ a = 1}`.
+    if !isempty(kept) && _is_toml_key_line(parts[end], "version")
+        tail_start = findlast(!isspace, parts[end])
+        trailing = tail_start === nothing ? String(parts[end]) :
+                   String(parts[end][nextind(parts[end], tail_start):end])
+        kept[end] = rstrip(kept[end]) * trailing
+    end
+    return line[1:open_] * join(kept, ',') * line[close_:end]
 end
 
 # `name => version` of the one source-less `[[package]]` entry per release

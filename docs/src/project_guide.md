@@ -70,9 +70,13 @@ every push.
 The extractor's manifest carries a `schema_version`, and RustCall refuses a
 manifest whose identifier is not its own. Since **v0.4.0** that identifier is
 the **`MAJOR.MINOR` of the release** — `"0.6"` for every v0.6.x — derived on
-the Julia side from `Project.toml` and on the Rust side from
-`rustcall_core`'s `Cargo.toml` version (#372). Through v0.3.x it was an integer
-bumped on every manifest edit, last `13`.
+the Julia side from `Project.toml`, and on the Rust side a **literal**,
+`rustcall_julia_core::manifest::SCHEMA_VERSION`, kept equal to it by hand and
+checked by `test/test_schema_version.jl` through the extractor's
+`schema-version` output (#372, #451). It is not derived from any crate's
+`Cargo.toml`: the three published crates carry a version of their own (`0.1.0`
+at first), independent of the package's. Through v0.3.x the identifier was an
+integer bumped on every manifest edit, last `13`.
 
 What that means in practice:
 
@@ -90,23 +94,39 @@ What that means in practice:
   the environment, no `[build]`, `[target]`, `[env]` or `[source]` table in
   a discovered `config.toml`; the closed rule of #413); any other build is
   identified by its bytes, which is still exact, only not stable across a
-  patch release. And the four manifest crates' `[package]
+  version bump. And this package's own release crates' `[package]
   version`, together with the lockfile lines that record it for a path
   dependency, are left out of every artifact identity. No other crate's
   version is: a crate may read `env!("CARGO_PKG_VERSION")`. The exception
   is decided by provenance, not by name: a manifest loses its version only
   when it *is* this package's `deps/<name>/Cargo.toml`, and a lockfile entry
   only when the lockfile's crate takes that name by path from this package's
-  `deps/`; a fork or a stranger called `rustcall_core` keeps its version.
+  `deps/`; a fork or a stranger called `rustcall_julia_core` keeps its version.
 - A **minor** release always changes it. `Pkg.build("RustCall")` rebuilds the
   extractor once, every cache key moves, and the manifest may change shape
   freely inside that release. A manifest change that has to ship in a *patch*
   must therefore be additive and optional.
-- The four manifest crates (`rustcall_core`, `rustcall_extract`,
-  `rustcall_julia_macros`, `rustcall_julia_macros_impl`) are versioned as the
-  package, and `test/test_schema_version.jl` fails when they drift. A version
-  bump is therefore a bump of `Project.toml` **and** those four `Cargo.toml`s
-  (plus `deps/rustcall_extract/Cargo.lock`).
+- The **published** crates (`rustcall_julia_core`, `rustcall_julia_macros`,
+  `rustcall_julia_macros_impl`) are on crates.io and share a version of their
+  own, independent of the package's: that version says what the crates' API
+  promises, while the identifier above says what manifest the release speaks.
+  `test/test_schema_version.jl` fails when the three drift. A version bump of
+  the crates is therefore a bump of their `Cargo.toml`s, of the exact
+  `version = "=x.y.z"` requirements between them, and of the committed
+  lockfiles that record them as path dependencies —
+  `deps/rustcall_extract/Cargo.lock`, the three
+  `test/fixtures/sample_crate*/Cargo.lock` and
+  `examples/SafeLedger.jl/deps/safe_ledger/Cargo.lock`, refreshed with
+  `cargo update -w --offline` in each directory (the extractor is built with
+  `--locked`, so a stale entry fails every `Pkg.build`; the same test fails
+  when an entry disagrees). Nothing else moves: `Project.toml`, the schema
+  identifier and every cache key stay where they are.
+- The **package** release is a bump of `Project.toml`, of
+  `rustcall_julia_core::manifest::SCHEMA_VERSION` when its `MAJOR.MINOR` moves (the
+  two must agree, and `test/test_schema_version.jl` compares them through the
+  extractor), and of the internal `rustcall_extract`'s `Cargo.toml` (plus
+  `deps/rustcall_extract/Cargo.lock`), which is not published and is kept in
+  step with the package.
 
 **Migrating from v0.3.x.** Nothing to do beyond `Pkg.build("RustCall")`: a
 pre-v0.4 extractor reports `13`, which never equals a release string, and the

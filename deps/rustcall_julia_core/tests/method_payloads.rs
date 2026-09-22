@@ -5,10 +5,10 @@
 //! the owner's owned-string buffer. The golden corpus pins the whole expansion;
 //! these tests pin the properties that must hold in *both* flavours.
 
-use rustcall_core::codegen::{generate_method_wrapper_crate, transform_impl_crate};
-use rustcall_core::expand::expand;
-use rustcall_core::extract::extract;
-use rustcall_core::manifest::{Mode, ReturnKind};
+use rustcall_julia_core::codegen::{generate_method_wrapper_crate, transform_impl_crate};
+use rustcall_julia_core::expand::expand;
+use rustcall_julia_core::extract::extract;
+use rustcall_julia_core::manifest::{Mode, ReturnKind};
 
 const SRC: &str = r#"
 #[julia]

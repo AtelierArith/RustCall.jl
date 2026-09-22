@@ -16,7 +16,11 @@ use std::{fs, process::Command};
 pub fn runtime_extern_arg(dir: &Path) -> String {
     let source = dir.join("rustcall_julia_macros.rs");
     let rlib = dir.join("librustcall_julia_macros.rlib");
-    fs::write(&source, rustcall_core::codegen::runtime_module_source()).unwrap();
+    fs::write(
+        &source,
+        rustcall_julia_core::codegen::runtime_module_source(),
+    )
+    .unwrap();
     let build = Command::new("rustc")
         .args([
             "--edition=2021",

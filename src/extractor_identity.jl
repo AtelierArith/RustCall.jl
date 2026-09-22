@@ -35,11 +35,11 @@ binary beside it still has that SHA-256.
 """
 const EXTRACTOR_IDENTITY_FILENAME = "rustcall-extract.identity.toml"
 
-# The crates versioned as the RustCall release, whose `[package] version` (and
-# the lockfile lines recording it) leave the identity. Mirrors
+# This package's own release crates, whose `[package] version` (and the
+# lockfile lines recording it) leave the identity. Mirrors
 # `RUSTCALL_RELEASE_CRATES` in `src/artifact_id.jl`, which this file cannot
 # see from `deps/build.jl`.
-const EXTRACTOR_RELEASE_CRATES = ("rustcall_core", "rustcall_extract",
+const EXTRACTOR_RELEASE_CRATES = ("rustcall_julia_core", "rustcall_extract",
                                   "rustcall_julia_macros", "rustcall_julia_macros_impl")
 
 _ei_canonical(path::AbstractString) = try

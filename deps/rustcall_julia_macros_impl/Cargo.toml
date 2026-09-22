@@ -1,6 +1,6 @@
 [package]
 name = "rustcall_julia_macros_impl"
-version = "0.6.5"
+version = "0.1.0"
 edition = "2021"
 description = "Proc-macro implementation behind rustcall_julia_macros; do not depend on this crate directly"
 license = "MIT"
@@ -12,7 +12,9 @@ categories = ["development-tools::ffi"]
 proc-macro = true
 
 [dependencies]
-rustcall_core = { path = "../rustcall_core" }
+# Exact, for the reason given in `rustcall_julia_macros/Cargo.toml`: the three
+# crates are one version, and Cargo must not mix two of them.
+rustcall_julia_core = { path = "../rustcall_julia_core", version = "=0.1.0" }
 quote = "1.0"
 syn = { version = "2.0", features = ["full", "parsing", "extra-traits"] }
 proc-macro2 = "1.0"

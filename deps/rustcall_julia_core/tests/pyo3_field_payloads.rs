@@ -1,4 +1,4 @@
-use rustcall_core::{extract::extract, manifest::Mode, wrap::wrapper_crate};
+use rustcall_julia_core::{extract::extract, manifest::Mode, wrap::wrapper_crate};
 
 #[test]
 fn private_defaults_use_the_original_pyo3_dispatcher_at_each_arity() {
@@ -52,7 +52,7 @@ fn string_setters_use_the_shared_byte_pair_abi() {
         assert!(wrapped.lib_rs.contains("String::from_utf8_lossy"));
         assert!(wrapped
             .lib_rs
-            .contains(&rustcall_core::codegen::panic_symbol(
+            .contains(&rustcall_julia_core::codegen::panic_symbol(
                 "rustcall_Text_set_value"
             )));
     }

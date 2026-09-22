@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **The Rust crates carry a version of their own, and `rustcall_core` is
+  `rustcall_julia_core`**
+  ([#451](https://github.com/AtelierArith/RustCall.jl/pull/451)).
+  `rustcall_julia_core`, `rustcall_julia_macros_impl` and `rustcall_julia_macros`
+  share one semver, `0.1.0` to start, independent of `Project.toml`, so they
+  can be published on crates.io — each pins the one below it exactly
+  (`version = "=0.1.0"`), so Cargo can never pair one version's facade with
+  another's proc macro; a `#[julia]` crate writes
+  `rustcall_julia_macros = "0.1"` (or the `path` it uses today) and the other
+  two are transitive. `rustcall_extract` is not published and keeps the
+  package's version. The manifest identifier is unchanged in kind:
+  `rustcall_julia_core::manifest::SCHEMA_VERSION` is a literal kept equal to
+  the release's `MAJOR.MINOR` and checked by `test/test_schema_version.jl`,
+  not derived from any crate version. A coordinated bump of the three crates
+  moves no cache key: their `[package] version` and the `version` requirement
+  each puts on the sibling it takes by path both leave the artifact identity.
+  The rename itself moves the extractor's source digest once, so every
+  cached artifact is rebuilt on first use after this release.
+  `.github/workflows/PublishCrates.yml` publishes whichever of the three is
+  not on crates.io yet after a green `CI` push run of this repository's
+  `main` (a manual dispatch is accepted only from `main`), through
+  `scripts/publish_rust_crates.sh`: idempotent, dependency-ordered, with a
+  `--dry-run` that runs `cargo publish --dry-run` where Cargo can and names
+  what it cannot check, and an index probe that tells an unreachable
+  crates.io from an unpublished version rather than guess.
+
 ## [0.6.5] - 2026-09-22
 
 ### Fixed

@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use rustcall_core::manifest::Mode;
+use rustcall_julia_core::manifest::Mode;
 
 fn corpus_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus")
@@ -57,21 +57,21 @@ fn corpus_matches_golden_files() {
             .expect("corpus source must have a file stem")
             .to_string_lossy();
 
-        let expanded = rustcall_core::expand::expand(&source)
+        let expanded = rustcall_julia_core::expand::expand(&source)
             .unwrap_or_else(|error| panic!("failed to expand {}: {error}", source_path.display()));
         let inline_toml = expanded
             .manifest
             .to_toml()
             .expect("failed to serialize inline manifest");
-        let crate_manifest = rustcall_core::extract::extract(&source, Mode::Crate)
+        let crate_manifest = rustcall_julia_core::extract::extract(&source, Mode::Crate)
             .unwrap_or_else(|error| panic!("failed to extract {}: {error}", source_path.display()));
         let crate_toml = crate_manifest
             .to_toml()
             .expect("failed to serialize crate manifest");
 
-        let expanded_again = rustcall_core::expand::expand(&source)
+        let expanded_again = rustcall_julia_core::expand::expand(&source)
             .expect("second expansion of the same corpus source failed");
-        let crate_again = rustcall_core::extract::extract(&source, Mode::Crate)
+        let crate_again = rustcall_julia_core::extract::extract(&source, Mode::Crate)
             .expect("second crate extraction of the same corpus source failed");
         assert_eq!(expanded.source, expanded_again.source);
         assert_eq!(expanded.manifest, expanded_again.manifest);
@@ -108,10 +108,11 @@ fn compilable_wrappers_build_as_cdylib() {
     for stem in ["struct_wrappers", "cross_module_impl", "callbacks"] {
         let source_path = corpus_dir().join(format!("{stem}.rs"));
         let source = fs::read_to_string(&source_path).expect("failed to read compilation corpus");
-        let expanded = rustcall_core::expand::expand(&source).expect("failed to expand corpus");
+        let expanded =
+            rustcall_julia_core::expand::expand(&source).expect("failed to expand corpus");
 
         let temp_dir = std::env::temp_dir().join(format!(
-            "rustcall_core_golden_{}_{}_{stem}",
+            "rustcall_julia_core_golden_{}_{}_{stem}",
             std::process::id(),
             std::thread::current().name().unwrap_or("test")
         ));
@@ -158,7 +159,7 @@ fn pyo3_wrapper_crates_match_golden_files() {
             .to_string_lossy()
             .into_owned();
 
-        let scanned = rustcall_core::extract::extract(&source, Mode::Crate)
+        let scanned = rustcall_julia_core::extract::extract(&source, Mode::Crate)
             .unwrap_or_else(|error| panic!("failed to extract {}: {error}", source_path.display()));
         let has_pyo3 = scanned.functions.iter().any(|f| f.attribute.is_pyo3_scan())
             || scanned.structs.iter().any(|s| s.attribute.is_pyo3_scan());
@@ -169,8 +170,8 @@ fn pyo3_wrapper_crates_match_golden_files() {
         // The corpus is scanned without a cfg file, so `cfg_resolved` is false
         // and a `#[cfg]`-carrying item is refused -- the shape a lenient scan
         // produces, which is the one `@rust_crate` uses.
-        let wrapper = rustcall_core::wrap::wrapper_crate(&scanned, "user_crate", false);
-        let again = rustcall_core::wrap::wrapper_crate(&scanned, "user_crate", false);
+        let wrapper = rustcall_julia_core::wrap::wrapper_crate(&scanned, "user_crate", false);
+        let again = rustcall_julia_core::wrap::wrapper_crate(&scanned, "user_crate", false);
         assert_eq!(wrapper, again, "wrapper generation is not deterministic");
 
         assert_or_update(

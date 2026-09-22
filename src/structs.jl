@@ -124,7 +124,7 @@ end
 
 The `ok_abi` / `err_abi` / `inner_abi` of a hand-built signature (tests, legacy
 callers). The extractor classifies the payload on the Rust side
-(`rustcall_core::codegen::payload_abi`); this reconstructs the column from the
+(`rustcall_julia_core::codegen::payload_abi`); this reconstructs the column from the
 same FFI contract the wrapper generators consult, so a hand-built signature and
 a manifest one agree. `&str` is included: a payload is always copied into an
 owned buffer, never borrowed.
@@ -182,7 +182,7 @@ end
 The `return_abi` for methods constructed by hand: a `String` return is an
 owned buffer, a `&str` return is borrowed unless the method also takes string
 arguments, in which case the wrapper copies it (see
-`rustcall_core::codegen::return_abi`).
+`rustcall_julia_core::codegen::return_abi`).
 """
 function _default_return_abi(return_type::AbstractString, arg_abis)
     rt = strip(return_type)

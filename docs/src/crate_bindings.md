@@ -230,7 +230,7 @@ keeps the bare name (#323).
 
 Every exported symbol hangs off the item's **FFI name**: the item's own name at
 the crate root, and its module path folded in otherwise
-(`rustcall_core::codegen::symbol_stem`, #300). A proc-macro cannot see the
+(`rustcall_julia_core::codegen::symbol_stem`, #300). A proc-macro cannot see the
 module an item sits in, so the module carries the marker too:
 
 ```rust

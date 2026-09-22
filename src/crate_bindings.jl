@@ -468,7 +468,7 @@ function generate_wrapper_cargo_toml(info::CrateInfo, opts::CrateBindingOptions)
     push!(lines, dep * " }")
     # `rustcall_julia_macros` is load-bearing for this crate, not a leftover: the
     # wrappers below take their quiet-panic boundary guard from it
-    # (`rustcall_core::codegen::PanicHook::Runtime`), and its rlib is what
+    # (`rustcall_julia_core::codegen::PanicHook::Runtime`), and its rlib is what
     # exports `__rustcall_install_panic_hook` from the `cdylib` for
     # `load_artifact!` to call. It is the same rlib the wrapped crate's own
     # `#[julia]` items use, so both share one hook and one depth counter — and
@@ -2473,7 +2473,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
 
     # Crate method wrappers return strings through per-method buffers:
     # `<Struct>_<method>_RustCallOwnedString`, released with
-    # `<Struct>_<method>_free_rust_string` (see rustcall_core::codegen).
+    # `<Struct>_<method>_free_rust_string` (see rustcall_julia_core::codegen).
     c = ffi_return_contract(method.return_type; abi = method.return_abi, owner = helper_owner)
 
     all_args = Any[]

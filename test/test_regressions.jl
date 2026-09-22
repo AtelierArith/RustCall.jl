@@ -1096,12 +1096,12 @@ struct Rc245Vec2Julia
     y::Float64
 end
 
-# #245: `rustcall_core` accepts `i128`, `u128` and `char`, and generates a
+# #245: `rustcall_julia_core` accepts `i128`, `u128` and `char`, and generates a
 # wrapper for them — but every Julia table stopped at 13 primitives, so the
 # generated `ccall` slot was `Any` (or the `Int64` guess). Same for a `u16`
 # struct field, which `src/structs.jl` read as `Any` while a free function read
 # it as `UInt16`.
-@testset "#245: every type rustcall_core accepts crosses correctly" begin
+@testset "#245: every type rustcall_julia_core accepts crosses correctly" begin
     if !RustCall.check_rustc_available()
         @test_skip "rustc is required"
     else
