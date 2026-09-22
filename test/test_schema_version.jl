@@ -54,6 +54,32 @@ const _PUBLISHED_CRATES = ("rustcall_julia_core", "rustcall_julia_macros",
         end
     end
 
+    @testset "the committed lockfiles record the crates' version" begin
+        # `deps/build.jl` builds the extractor with `--locked`, and the fixture
+        # and SafeLedger crates are built the same way in CI, so a crate bump
+        # that forgot a lockfile fails every build afterwards; this is where
+        # it fails first (#451 review). Every `rustcall_julia_*` entry a
+        # lockfile has must carry the shared version, and the extractor's must
+        # have the core.
+        shared = only(unique(map(_PUBLISHED_CRATES) do crate
+            VersionNumber(TOML.parsefile(joinpath(_ROOT, "deps", crate, "Cargo.toml"))["package"]["version"])
+        end))
+        lockfiles = (joinpath(_ROOT, "deps", "rustcall_extract", "Cargo.lock"),
+                     joinpath(_ROOT, "test", "fixtures", "sample_crate", "Cargo.lock"),
+                     joinpath(_ROOT, "test", "fixtures", "sample_crate_pyo3", "Cargo.lock"),
+                     joinpath(_ROOT, "test", "fixtures", "sample_crate_pyo3_mixed", "Cargo.lock"),
+                     joinpath(_ROOT, "examples", "SafeLedger.jl", "deps", "safe_ledger", "Cargo.lock"))
+        for lockfile in lockfiles
+            entries = [p for p in TOML.parsefile(lockfile)["package"] if p["name"] in _PUBLISHED_CRATES]
+            @test !isempty(entries)
+            for entry in entries
+                @test VersionNumber(entry["version"]) == shared
+            end
+        end
+        extract_lock = TOML.parsefile(lockfiles[1])
+        @test any(p -> p["name"] == "rustcall_julia_core", extract_lock["package"])
+    end
+
     @testset "the extractor keeps the package's version" begin
         # Not a published crate, so nothing on crates.io pins it: this is the
         # one place a `Project.toml` bump that forgot
