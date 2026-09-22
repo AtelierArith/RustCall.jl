@@ -316,7 +316,11 @@ Get the library file name for the project (platform-specific).
 """
 function get_project_lib_name(project::CargoProject)
     lib_ext = get_library_extension()
-    # Cargo uses underscores in library names (converts hyphens)
-    crate_name = replace(project.name, "-" => "_")
+    # The library target's name: `[lib] name` when the project's manifest sets
+    # one, otherwise the package name, with `-` mapped to `_` as Cargo does
+    # (`crate_rust_identifier`, #461).
+    manifest = joinpath(project.path, "Cargo.toml")
+    cargo_toml = isfile(manifest) ? TOML.parsefile(manifest) : Dict{String, Any}()
+    crate_name = crate_rust_identifier(project.name, cargo_toml)
     "lib$(crate_name)$(lib_ext)"
 end
