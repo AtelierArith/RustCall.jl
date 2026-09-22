@@ -26,7 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `build_pyo3_extension` built, so a package can run the interpreter-free build
   in its `__init__` or a `deps/build.jl` and keep only the import lazy. The
   interpreter's `EXT_SUFFIX` and fingerprint are read in one Python start
-  instead of two.
+  instead of two, and `pyo3_host_import(artifact)` checks both, plus the
+  fingerprint, against the running interpreter before importing. The
+  fingerprint now ends with `platform.machine()` (a universal macOS Python
+  reports the same everything else under arm64 and under Rosetta), so every
+  PyO3 artifact key moves once and is rebuilt on first use.
 
 ## [0.6.4] - 2026-09-22
 

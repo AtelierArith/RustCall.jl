@@ -243,9 +243,12 @@ end
                 @test interpreter == RustCall._python_executable_on_path()
                 @test config == RustCall._python_interpreter_fingerprint(interpreter)
                 if !isempty(interpreter)
-                    # implementation|version|SOABI|LDLIBRARY|LIBDIR|is64
-                    @test count('|', config) == 5
+                    # implementation|version|SOABI|LDLIBRARY|LIBDIR|is64|machine
+                    # (the machine since #449: a universal macOS Python is one
+                    # interpreter with two architectures)
+                    @test count('|', config) == 6
                     @test occursin(r"^[A-Za-z]+\|\d+\.\d+", config)
+                    @test !isempty(split(config, '|')[end])
                 end
             end
             @test RustCall._python_interpreter_fingerprint("") == ""

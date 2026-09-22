@@ -1140,11 +1140,14 @@ end
 # The Python expression behind `_python_interpreter_fingerprint`, shared with
 # the host path's one-start probe (`_pyo3_extension_interpreter_probe`, #449):
 # both must spell one interpreter the same way, because the fingerprint is in
-# the artifact key.
+# the artifact key. `platform.machine()` is the last field: a universal macOS
+# Python reports the same implementation, version, SOABI, library and word
+# size under arm64 and under Rosetta x86_64, and an extension built under one
+# does not load under the other (#449 review).
 const _PYTHON_FINGERPRINT_EXPR =
     "'|'.join([platform.python_implementation(), sys.version.split()[0], " *
     "sysconfig.get_config_var('SOABI') or '', sysconfig.get_config_var('LDLIBRARY') or '', " *
-    "sysconfig.get_config_var('LIBDIR') or '', str(sys.maxsize > 2**32)])"
+    "sysconfig.get_config_var('LIBDIR') or '', str(sys.maxsize > 2**32), platform.machine()])"
 
 function _python_interpreter_fingerprint(exe::AbstractString)
     isempty(exe) && return ""

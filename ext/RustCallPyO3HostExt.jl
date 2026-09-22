@@ -58,7 +58,7 @@ end
 # lets a package build ahead of time, possibly in an earlier session. So an
 # artifact handed in is checked against the interpreter this process runs
 # before it is imported, by **fingerprint** (implementation, version, SOABI,
-# library) and by the `EXT_SUFFIX` the file is named with — the suffix is what
+# library, machine) and by the `EXT_SUFFIX` the file is named with — the suffix is what
 # the import resolves by, and a build with the same fingerprint can still tag
 # its extensions differently — never by path alone: an interpreter upgraded in
 # place keeps its path and changes its ABI, and a virtual environment's
