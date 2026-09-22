@@ -141,12 +141,23 @@ artifact = RustCall.build_pyo3_extension(crate; python = PythonCall.python_execu
 mod = RustCall.pyo3_host_import(artifact)
 ```
 
-`pyo3_host_import(crate)` is exactly those two calls. The first may run in a
-package's `__init__` (PythonCall's own `__init__` has run by then, so its
-interpreter is known) or in a `deps/build.jl`, which pays the Cargo build there
-and leaves the first call with the import alone. Neither may run while the
-package precompiles: the artifact is keyed by the interpreter, and the one
-PythonCall will use is not known until it initialises.
+`pyo3_host_import(crate)` is exactly those two calls. Where the build runs
+decides what the first call has left to do:
+
+* **In the package's `__init__`** (PythonCall's own `__init__` has run by then,
+  so its interpreter is known): keep the returned `PyO3Extension` in a
+  `Ref`-like slot and the first call is `pyo3_host_import(artifact)` — the
+  interpreter check and the import, nothing else. Loading the package then
+  pays the scan, the probes and, the first time, the Cargo build.
+* **In a `deps/build.jl`**: that is another process, so its `PyO3Extension`
+  does not survive into the runtime, and there is no metadata to rebuild it
+  from. What it does is warm the cache: the runtime's `pyo3_host_import(crate)`
+  then finds the artifact and pays the scan, the probes and the lookup — well
+  under a second, with no compilation — but not the Cargo build, which is the
+  cost worth moving.
+
+Neither may run while the package precompiles: the artifact is keyed by the
+interpreter, and the one PythonCall will use is not known until it initialises.
 
 The artifact must be the one for the interpreter PythonCall runs: pyo3 links
 against that interpreter, and CPython ignores an extension whose file tag is

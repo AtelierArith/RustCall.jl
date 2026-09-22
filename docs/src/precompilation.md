@@ -327,11 +327,13 @@ scan, the cache key and the cache lookup are in RustCall's own image, and the
 import is in `RustCallPyO3HostExt`'s. What remains is the work itself — the
 extractor, the toolchain probes, `cargo tree`, one interpreter start, and the
 Cargo build when the artifact is not cached. To pay the build ahead of the first
-call, run the interpreter-free half (`RustCall.build_pyo3_extension`) in
-`__init__` or in `deps/build.jl` — with the interpreter PythonCall will run,
-which the import checks against — and keep only the import
-(`RustCall.pyo3_host_import(artifact)`) lazy; see "The first call, and paying
-it earlier" in [PyO3 Crates](pyo3.md).
+call, run the interpreter-free half (`RustCall.build_pyo3_extension`) earlier
+— with the interpreter PythonCall will run, which the import checks against.
+In `__init__` the returned artifact can be kept, and the first call is then the
+import alone (`RustCall.pyo3_host_import(artifact)`); a `deps/build.jl` runs in
+another process and only warms the cache, so the runtime's
+`pyo3_host_import(crate)` still scans and probes but no longer builds. See "The
+first call, and paying it earlier" in [PyO3 Crates](pyo3.md).
 
 ## See Also
 

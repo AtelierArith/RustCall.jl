@@ -72,7 +72,9 @@ crate's own `#[pymodule]` registration rather than through a Rust path.
 The import alone: the module `build_pyo3_extension` already built (#449). The
 one-argument form is `build_pyo3_extension(crate; python = PythonCall.python_executable_path(), ...)`
 followed by this, and the build needs no interpreter, so a package can run it
-in its `__init__` or a `deps/build.jl` and keep only the import lazy.
+in its `__init__`, keep the artifact, and leave only the import to the first
+call. (A `deps/build.jl` is another process: its artifact cannot be kept, but
+the cache it fills spares the runtime's `pyo3_host_import(crate)` the build.)
 """
 function pyo3_host_import end
 
