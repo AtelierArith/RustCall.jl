@@ -7,18 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-09-22
+
 ### Added
 - **A boundary report of the FFI surface**
-  ([#441](https://github.com/AtelierArith/RustCall.jl/issues/441)).
+  ([#441](https://github.com/AtelierArith/RustCall.jl/issues/441), #450).
   `RustCall.boundary_report(crate_path)` and
-  `RustCall.inline_boundary_report(source)` read the extractor's manifest,
-  without building or loading anything, and list every argument and return
-  position of the generated wrappers that the FFI contract cannot describe.
-  Each entry names the item, the position, the Rust type and the reason. An
-  unsupported argument (a `Vec<f64>`, a `&OtherStruct`) used to compile and
-  fail only at the call, with a message about the Julia value's layout.
-  Examined: `#[julia]` functions and the wrapped methods of non-generic
-  `#[julia]` structs, including `Result` / `Option` payloads.
+  `RustCall.inline_boundary_report(source)` read the extractor's manifest
+  without building or loading anything. No Cargo runs: a crate's target
+  configuration comes from `rustc --print cfg`. They list every position of
+  the generated wrappers that the FFI contract cannot describe: arguments,
+  returns, `Result` / `Option` payloads, and the getters of readable fields.
+  Callback arguments are checked through `ffi_callback_plan` and against the
+  callback-slot limit. Each entry names the module-qualified item, the
+  position, the Rust type and the reason, and the result can be asserted in a
+  test (`isempty(report.unsupported)`). Until now, an unsupported argument (a
+  `Vec<f64>`, a `&OtherStruct`) compiled and failed only when called, with a
+  message about the Julia value's layout. Examined: `#[julia]` functions and
+  the wrapped methods and fields of non-generic `#[julia]` structs. The
+  integration guide points its debugging workflow and troubleshooting
+  checklist at the report.
+
+### Known issues
+- A **private** field whose type is a `Vec<T>` or a bare struct name still gets
+  a generated getter, and binding the struct fails
+  ([#453](https://github.com/AtelierArith/RustCall.jl/issues/453)). The
+  boundary report lists such a field as an unsupported `field getter`. The
+  integration guide gives the workaround: box the state (`inner: Box<Inner>`).
 
 ## [0.6.3] - 2026-09-22
 
@@ -2185,7 +2200,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration tests for Rust helpers library
 - Documentation examples tests
 
-[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.3...HEAD
+[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.4...HEAD
+[0.6.4]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.0...v0.6.1
