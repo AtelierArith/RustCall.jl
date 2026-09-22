@@ -33,6 +33,9 @@ _br_positions(report) = Set((u.item, u.position) for u in report.unsupported)
         pub fn apply(f: extern "C" fn(i64) -> i64, x: i64) -> i64 { f(x) }
 
         #[julia]
+        pub fn bad_callback(f: extern "C" fn(&str) -> i32) -> i32 { 0 }
+
+        #[julia]
         pub fn generic_one<T: Copy>(x: T) -> T { x }
 
         #[no_mangle]
@@ -56,7 +59,13 @@ _br_positions(report) = Set((u.item, u.position) for u in report.unsupported)
         ("fallible", "Ok payload"),
         ("Handle::combine", "argument `other`"),
         ("Handle::bytes", "return"),
+        ("bad_callback", "argument `f`"),
     ])
+    # A callback argument is checked through the plan wrapper generation uses
+    # (#296), so a signature it would refuse is reported, with its reason
+    # (#450 review).
+    cb = only(u for u in report.unsupported if u.item == "bad_callback")
+    @test occursin("parameter 1", cb.reason)
     first_vec = only(u for u in report.unsupported if u.item == "takes_vec")
     @test first_vec.rust_type == "Vec<f64>"
     @test !isempty(first_vec.reason)
@@ -72,7 +81,7 @@ _br_positions(report) = Set((u.item, u.position) for u in report.unsupported)
     # The printed summary names each position and its Rust type.
     text = sprint(io -> RustCall.inline_boundary_report(source; io))
     @test occursin("takes_vec", text) && occursin("Vec<f64>", text)
-    @test occursin("5 unsupported", text)
+    @test occursin("6 unsupported", text)
 end
 
 @testset "a clean surface reports nothing (#441)" begin
@@ -137,3 +146,4 @@ end
         @test _br_positions(report) == Set([("total", "argument `values`"), ("Bag::items", "return")])
     end
 end
+

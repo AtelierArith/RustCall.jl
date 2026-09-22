@@ -96,9 +96,14 @@ function _boundary_check_entry!(out, checked, item::String, entry::AbstractDict;
         rust_type = String(a["rust_type"])
         abi = String(get(a, "abi", ""))
         checked[] += 1
-        # A callback is lowered through its own plan (#296), not the table.
-        abi == "callback" && continue
-        reason = _boundary_unknown(() -> ffi_argument_contract(rust_type; abi = abi), rust_type)
+        reason = if abi == "callback"
+            # Lowered through its own plan (#296), which is what wrapper
+            # generation calls and what refuses a parameter or return it
+            # cannot pass in one slot (#450 review).
+            _boundary_callback(a, item)
+        else
+            _boundary_unknown(() -> ffi_argument_contract(rust_type; abi = abi), rust_type)
+        end
         reason === nothing ||
             push!(out, _BoundaryFinding((item, "argument `$(a["name"])`", rust_type, abi, reason)))
     end
@@ -114,6 +119,18 @@ function _boundary_check_entry!(out, checked, item::String, entry::AbstractDict;
         checked[] += 1
         reason = _boundary_unknown(() -> ffi_return_contract(rust_type; abi = abi), rust_type)
         reason === nothing || push!(out, _BoundaryFinding((item, position, rust_type, abi, reason)))
+    end
+    return nothing
+end
+
+function _boundary_callback(arg::AbstractDict, item::AbstractString)
+    args = String[String(t) for t in get(arg, "callback_args", Any[])]
+    ret = String(get(arg, "callback_return", ""))
+    try
+        ffi_callback_plan(args, ret, "argument `$(arg["name"])` of `$(item)`")
+    catch e
+        e isa RustError || rethrow()
+        return e.message
     end
     return nothing
 end
