@@ -1,0 +1,58 @@
+# Publish the three crates.io crates when their version moves.
+#
+# The crates (`rustcall_julia_core`, `rustcall_julia_macros_impl`,
+# `rustcall_julia_macros`) carry their own version, independent of the package's
+# release (AGENTS.md, "Rust crate versions"). A bump lands on `main` like any
+# other change, and this job publishes whatever is not on crates.io yet.
+#
+# It runs after `CI` succeeds rather than on the push itself: a version cannot
+# be un-published, so a broken commit must not reach crates.io. `workflow_run`
+# carries the SHA of the run that finished, and the job checks out that commit
+# — the tree CI tested, not whatever `main` points at by the time this starts.
+# The branch filter is load-bearing: `workflow_run` also fires for pull-request
+# runs, and only a push to `main` may publish.
+#
+# `CARGO_REGISTRY_TOKEN` is a secret of the `release` environment, not of the
+# repository: the token can publish any crate the account owns, so it should be
+# reachable only from this job. Protect the environment (required reviewers,
+# main-branch-only deployment) so a merge is not the only gate.
+#
+# `scripts/publish_rust_crates.sh` is idempotent — a version already on
+# crates.io is skipped — so this can run on every green push and only acts on a
+# real bump. It can also be started by hand when a publish needs retrying.
+name: Publish Rust crates
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-rust-crates
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to crates.io
+    # A manual run publishes `main`; an automatic one publishes the commit CI
+    # passed. Either way only a successful `main` run reaches the secret.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Publish changed crates
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: bash scripts/publish_rust_crates.sh
