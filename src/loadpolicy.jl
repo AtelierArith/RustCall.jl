@@ -487,8 +487,8 @@ Hot reload of a `@rust_crate` crate (`src/hot_reload.jl:205`, re-registered at
 currently leaves the registry without the previous entry (#255).
 
 Like `crate_direct_policy`, the panic strategy is `:crate_profile`: `rebuild_crate`
-runs `cargo build --release --manifest-path <user crate>` against their crate
-(`src/hot_reload.jl:264`), so their profile decides.
+builds the user's crate as its own Cargo root, exactly as `build_crate_directly`
+does, so their profile decides.
 """
 hot_reload_policy() = LoadPolicy("hot-reload";
     dlopen_flags = Libdl.RTLD_LOCAL | Libdl.RTLD_NOW,

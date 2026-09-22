@@ -164,7 +164,8 @@ end
 
 # A caller that builds somewhere else passes that directory to the probe, so
 # the probe shares its build (and a build script sees the same OUT_DIR). Hot
-# reload rebuilds in the crate's own `target/` and probes there (#447 review).
+# reload rebuilds where `@rust_crate` builds — RustCall's target directory for
+# the crate, never its own `target/` — and probes there (#447 review, #461).
 @testset "the cfg probe follows an explicit target directory (#447 review)" begin
     if !_dbt_cargo_ok()
         @test_skip "cargo is required"
@@ -179,8 +180,8 @@ end
                 @test !isdir(RustCall.crate_target_directory(crate))
 
                 @test RustCall._scan_crate_signatures(crate) !== nothing
-                @test isdir(joinpath(crate, "target"))
-                @test !isdir(RustCall.crate_target_directory(crate))
+                @test !isdir(joinpath(crate, "target"))
+                @test isdir(RustCall.crate_target_directory(crate))
             end
         end
     end

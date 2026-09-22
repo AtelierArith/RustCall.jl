@@ -249,10 +249,10 @@ function _scan_crate_signatures(crate_path::String)
         # A reload re-probes rather than trusting the memo: a `build.rs` can
         # change its `cargo::rustc-cfg` output without any input RustCall is
         # able to enumerate (#255).
-        # Probed where `rebuild_crate` builds — the crate's own `target/` —
-        # so the probe shares that build and its OUT_DIR (#447 review).
-        cfg_text = _crate_build_cfg_text(crate_path; memo = false,
-                                         target_directory = joinpath(crate_path, "target"))
+        # Probed where `rebuild_crate` builds — `crate_target_directory`, the
+        # probe's own default — so the probe shares that build and its OUT_DIR
+        # (#447 review, #461).
+        cfg_text = _crate_build_cfg_text(crate_path; memo = false)
         if isempty(cfg_text)
             @debug "Hot reload: no build cfg for $(crate_path); scanning leniently"
             scan_crate(crate_path).julia_functions
@@ -316,6 +316,24 @@ function _reload_library_locked(state::HotReloadState)
               "reloading again ($(attempt)/$(MAX_RELOAD_CHASES))"
     end
     return true
+end
+
+"""
+    _reload_failure_fingerprint(e) -> String
+
+What decides whether a failed reload is "the same failure as last time": the
+rendered error, minus Cargo's transient status lines. A `CargoBuildError` carries
+Cargo's stderr, and a line such as `Blocking waiting for file lock on package
+cache` or `Compiling dep v1.0` depends on what else was building at that moment,
+not on the failure — keeping it would report one compile error again on every
+attempt (#461).
+"""
+function _reload_failure_fingerprint(e)
+    e isa CargoBuildError || return sprint(showerror, e)
+    kept = filter(split(e.stderr, '\n')) do line
+        !occursin(r"^\s*(Blocking|Compiling|Checking|Updating|Downloading|Downloaded|Locking|Adding|Fresh|Finished|Building|Running)\s", line)
+    end
+    return sprint(showerror, CargoBuildError(e.message, join(kept, '\n'), e.project_path))
 end
 
 """
@@ -405,7 +423,7 @@ function _reload_library_once(state::HotReloadState)
         # error on every tick buries the one that matters. The previous library
         # is still loaded and still works — that is the point of the ordering
         # above — so this is informational, not fatal (#255).
-        fingerprint = sprint(showerror, e)
+        fingerprint = _reload_failure_fingerprint(e)
         if fingerprint != state.last_failure
             state.last_failure = fingerprint
             @error "Hot reload: Failed to rebuild $(state.lib_name); " *
@@ -431,6 +449,14 @@ end
     rebuild_crate(crate_path::String) -> String
 
 Rebuild a Rust crate and return the path to the compiled library.
+
+The build is the one `@rust_crate` runs for a crate that is its own `cdylib`
+(`build_crate_directly`): `build_cargo_project` with RustToolChain's `cargo`,
+`--offline` under `RUSTCALL_OFFLINE`, and the output under RustCall's
+`crate_target_directory` — never the crate's own `target/`, and never wherever
+an ambient `CARGO_TARGET_DIR` points — found again under the library's `[lib]
+name`. A bare `cargo build --manifest-path` into `target/` ignored all four
+(#461).
 """
 function rebuild_crate(crate_path::String)
     # Check if it has cdylib crate-type
@@ -440,7 +466,7 @@ function rebuild_crate(crate_path::String)
     end
 
     cargo_toml = TOML.parsefile(cargo_toml_path)
-    crate_name = cargo_toml["package"]["name"]
+    crate_name = String(cargo_toml["package"]["name"])
     lib_section = get(cargo_toml, "lib", Dict())
     crate_types = get(lib_section, "crate-type", String[])
 
@@ -448,20 +474,12 @@ function rebuild_crate(crate_path::String)
         error("Crate must have crate-type = [\"cdylib\"] for hot reload")
     end
 
-    # Build in release mode
-    cmd = `cargo build --release --manifest-path $cargo_toml_path`
-    run(cmd)
-
-    # Find the compiled library
-    target_dir = joinpath(crate_path, "target", "release")
-    lib_name = _get_library_filename(crate_name)
-    lib_path = joinpath(target_dir, lib_name)
-
-    if !isfile(lib_path)
-        error("Compiled library not found: $lib_path")
-    end
-
-    return lib_path
+    # The user's manifest is the Cargo root, so the policy pins nothing and
+    # their profile decides, exactly as for `@rust_crate` (`crate_direct_policy`).
+    path = abspath(crate_path)
+    project = CargoProject(crate_name, "0.0.0", DependencySpec[], "2021", path)
+    return build_cargo_project(project; release = true, policy = crate_direct_policy(),
+                               target_directory = _mark_target_used!(crate_target_directory(path)))
 end
 
 """
@@ -1006,38 +1024,74 @@ end
 # ============================================================================
 
 """
-    enable_hot_reload_for_crate(crate_path::String; kwargs...) -> HotReloadState
+    enable_hot_reload_for_crate(crate_path::String; lib_name = nothing, kwargs...) -> HotReloadState
+    enable_hot_reload_for_crate(mod::Module, crate_path::String; kwargs...) -> HotReloadState
+    enable_hot_reload_for_crate(bindings::CrateBindings, crate_path::String; kwargs...) -> HotReloadState
 
 Enable hot reload for a crate loaded via @rust_crate.
 
-This is a convenience function that determines the library name from the crate.
+A reload reaches the module only under the registry name the module loaded
+its library as, which is `crate_library_name` of the crate — `rust_crate_<name>_<id>`,
+keyed by the crate's content and build environment — not the module name. The
+first form computes that name for the build `@rust_crate` makes by default
+(release profile, default features) from the crate as it is now, so call it
+before editing the sources; pass `lib_name` to name the entry yourself. The
+second form reads the name from the generated module (its `_LIB_NAME`) — the
+value `@rust_crate` returns, or the module itself — which is
+right whatever options the crate was loaded with. Registering under the module
+name, as before, reached nothing (#461).
 
 # Arguments
 - `crate_path::String`: Path to the Rust crate
 
 # Keyword Arguments
-- Same as `enable_hot_reload`
+- `lib_name`: the registry name to reload, overriding the computed one
+- Otherwise the same as `enable_hot_reload`
 
 # Example
 ```julia
-@rust_crate "/path/to/my_crate"
+MyCrate = @rust_crate "/path/to/my_crate"
 
 # Enable hot reload
-enable_hot_reload_for_crate("/path/to/my_crate")
+enable_hot_reload_for_crate(MyCrate, "/path/to/my_crate")
 ```
 """
-function enable_hot_reload_for_crate(crate_path::String; kwargs...)
+function enable_hot_reload_for_crate(crate_path::String;
+                                     lib_name::Union{Nothing, AbstractString} = nothing,
+                                     kwargs...)
     # Get crate name from Cargo.toml
     cargo_toml_path = joinpath(crate_path, "Cargo.toml")
     if !isfile(cargo_toml_path)
         error("Cargo.toml not found in: $crate_path")
     end
 
-    cargo_toml = TOML.parsefile(cargo_toml_path)
-    crate_name = cargo_toml["package"]["name"]
+    name = lib_name === nothing ? _crate_hot_reload_name(crate_path) : String(lib_name)
+    haskey(RUST_LIBRARIES, name) ||
+        @warn "Hot reload: no library is loaded as $(name) yet. `@rust_crate` registers " *
+              "a crate under a name keyed by its content and build options; if it was " *
+              "loaded with other options, or its sources changed since, pass the module " *
+              "(`enable_hot_reload_for_crate(mod, crate_path)`) or `lib_name`."
+    return enable_hot_reload(name, crate_path; kwargs...)
+end
 
-    # The module name is the crate name converted to PascalCase
-    lib_name = snake_to_pascal(crate_name)
+enable_hot_reload_for_crate(bindings::CrateBindings, crate_path::String; kwargs...) =
+    enable_hot_reload_for_crate(getfield(bindings, :module_ref), crate_path; kwargs...)
 
-    return enable_hot_reload(lib_name, crate_path; kwargs...)
+function enable_hot_reload_for_crate(mod::Module, crate_path::String; kwargs...)
+    # The module may have been defined in a newer world than this call.
+    Base.invokelatest(isdefined, mod, :_LIB_NAME) || throw(ArgumentError(
+        "$(mod) is not a module generated by `@rust_crate`: it has no `_LIB_NAME`."))
+    name = String(Base.invokelatest(getglobal, mod, :_LIB_NAME))
+    return enable_hot_reload_for_crate(crate_path; lib_name = name, kwargs...)
+end
+
+# The registry name `@rust_crate` gives a plain build of `crate_path` with its
+# default options (release, default features): the name `generate_bindings`
+# computes, from the same scan and the same environment snapshot.
+function _crate_hot_reload_name(crate_path::AbstractString)
+    path = abspath(String(crate_path))
+    features = String[]
+    info = _plain_scan_info(path, scan_crate(path), features, true, true)
+    return crate_library_name(info; release = true, features = features, default_features = true,
+                              build_env = _plain_crate_build_env())
 end

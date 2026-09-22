@@ -647,6 +647,30 @@ RustCall.write_bindings_to_file(
 
 4. **The generated file uses `@__DIR__`** for library paths, ensuring it works when the package is installed elsewhere.
 
+Like the in-memory module, the written file needs only `RustCall` among the
+package's dependencies: it reaches `Libdl` through RustCall (`import
+RustCall.Libdl`). Without `relative_lib_path`, the file names a copy of the
+library in RustCall's Cargo cache directory (removed by `RustCall.clear_cache()`),
+never a file inside the temporary wrapper project a crate without a `cdylib`
+target is built in.
+
+### Hot reload of a `@rust_crate` module
+
+`RustCall.enable_hot_reload_for_crate` rebuilds a crate with its own `cdylib`
+target when its sources change, and swaps the new library in under the registry
+name the module loaded it as. Pass the value `@rust_crate` returned, so that
+name is read from the module whatever options it was built with:
+
+```julia
+B = @rust_crate "deps/my_rust_crate"
+RustCall.enable_hot_reload_for_crate(B, "deps/my_rust_crate")
+```
+
+The rebuild is the build `@rust_crate` itself runs: RustToolChain's `cargo`,
+output under RustCall's own target directory for the crate (not the crate's
+`target/`), the library found under its `[lib] name`, and `--offline` under
+`RUSTCALL_OFFLINE=1`.
+
 ### API Reference
 
 #### `write_bindings_to_file`
