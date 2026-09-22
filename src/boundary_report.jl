@@ -33,7 +33,8 @@ handle and is always describable.
 Prints a summary to `io` and returns `(; unsupported, checked)`:
 
 * `unsupported` — one `(; item, position, rust_type, abi, reason)` per position,
-  where `item` is `"f"`, `"Struct::method"` or `"Struct::field"` and `position`
+  where `item` is `"f"`, `"Struct::method"` or `"Struct::field"` (module-qualified
+  below the crate root, `"a::f"`) and `position`
   is ``"argument `x`"``, `"return"`, `"Ok payload"`, `"Err payload"`,
   `"Some payload"` or `"field getter"`;
 * `checked` — how many positions were examined.
@@ -76,20 +77,23 @@ function _boundary_report(manifest::AbstractDict, label::AbstractString, io::IO)
     for f in get(manifest, "functions", Any[])
         get(f, "attribute", "none") in _BOUNDARY_ATTRIBUTES || continue
         get(f, "is_generic", false) && continue
-        _boundary_check_entry!(unsupported, checked, String(f["name"]), f)
+        _boundary_check_entry!(unsupported, checked, _boundary_name(f), f)
     end
 
-    infos = Dict(info.name => info for info in manifest_struct_infos(manifest))
+    # Keyed by module path and name: two `S` in different modules are two
+    # structs, each with its own Julia submodule (#300, #450 review).
+    infos = Dict((info.module_path, info.name) => info for info in manifest_struct_infos(manifest))
     for s in get(manifest, "structs", Any[])
         get(s, "attribute", "none") in _BOUNDARY_ATTRIBUTES || continue
         isempty(get(s, "type_params", Any[])) || continue
-        info = get(infos, String(s["name"]), nothing)
-        info === nothing || _boundary_check_fields!(unsupported, checked, info)
+        struct_name = _boundary_name(s)
+        info = get(infos, (_boundary_module_path(s), String(s["name"])), nothing)
+        info === nothing || _boundary_check_fields!(unsupported, checked, info, struct_name)
         for m in get(s, "methods", Any[])
             wrapped = inline ? get(m, "vis", "") == "pub" :
                                get(m, "attribute", "none") == "julia"
             wrapped || continue
-            _boundary_check_entry!(unsupported, checked, "$(s["name"])::$(m["name"])", m;
+            _boundary_check_entry!(unsupported, checked, "$(struct_name)::$(m["name"])", m;
                                    returns_handle = get(m, "returns_boxed_struct", false))
         end
     end
@@ -98,8 +102,18 @@ function _boundary_report(manifest::AbstractDict, label::AbstractString, io::IO)
     return (; unsupported, checked = checked[])
 end
 
+_boundary_module_path(entry) = String[String(m) for m in get(entry, "module_path", Any[])]
+
+# The item as Rust names it: module-qualified below the crate root.
+function _boundary_name(entry::AbstractDict)
+    path = _boundary_module_path(entry)
+    name = String(entry["name"])
+    return isempty(path) ? name : join(path, "::") * "::" * name
+end
+
 function _boundary_check_entry!(out, checked, item::String, entry::AbstractDict;
                                 returns_handle::Bool = false)
+    callbacks = 0
     for a in get(entry, "args", Any[])
         rust_type = String(a["rust_type"])
         abi = String(get(a, "abi", ""))
@@ -107,8 +121,17 @@ function _boundary_check_entry!(out, checked, item::String, entry::AbstractDict;
         reason = if abi == "callback"
             # Lowered through its own plan (#296), which is what wrapper
             # generation calls and what refuses a parameter or return it
-            # cannot pass in one slot (#450 review).
-            _boundary_callback(a, item)
+            # cannot pass in one slot (#450 review) — and then through one of
+            # `CALLBACK_SLOTS` trampoline slots, counted as generation counts.
+            plan_error = _boundary_callback(a, item)
+            if plan_error === nothing
+                callbacks += 1
+                callbacks <= CALLBACK_SLOTS ? nothing :
+                    "`$(item)` takes more than $(CALLBACK_SLOTS) callback arguments " *
+                    "(`$(a["name"])` is number $(callbacks)); at most $(CALLBACK_SLOTS) are supported (#296)."
+            else
+                plan_error
+            end
         else
             _boundary_unknown(() -> ffi_argument_contract(rust_type; abi = abi), rust_type)
         end
@@ -134,14 +157,14 @@ end
 # A readable field gets a generated getter, and its type is decided the way
 # generation decides it (`field_is_accessible`, `_ffi_field_return`): an
 # unsupported one fails when the struct's wrapper is generated (#450 review).
-function _boundary_check_fields!(out, checked, info::RustStructInfo)
+function _boundary_check_fields!(out, checked, info::RustStructInfo, struct_name::String)
     for (name, rust_type) in info.fields
         field_is_accessible(info, name) || continue
         checked[] += 1
         abi = get(info.field_abis, name, "")
         reason = _boundary_unknown(() -> _ffi_field_return(info, name, rust_type), rust_type)
         reason === nothing ||
-            push!(out, _BoundaryFinding(("$(info.name)::$(name)", "field getter", rust_type, abi, reason)))
+            push!(out, _BoundaryFinding(("$(struct_name)::$(name)", "field getter", rust_type, abi, reason)))
     end
     return nothing
 end

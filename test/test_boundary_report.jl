@@ -204,3 +204,40 @@ end
     @test err !== nothing
     @test occursin("OnlyFields::xs -> Vec<f64>", sprint(showerror, err))
 end
+
+# Struct identity includes the module path: two `S` in different modules are
+# two structs, each checked against its own fields, and reported under its
+# qualified name (#450 review).
+@testset "boundary report keys structs by module path (#450 review)" begin
+    report = RustCall.inline_boundary_report(raw"""
+        #[julia]
+        pub mod a {
+            #[julia]
+            pub struct S { pub x: Vec<f64> }
+            impl S { pub fn new() -> Self { S { x: Vec::new() } } }
+        }
+        #[julia]
+        pub mod b {
+            #[julia]
+            pub struct S { pub n: i32 }
+            impl S { pub fn new() -> Self { S { n: 0 } } }
+            #[julia]
+            pub fn f(v: Vec<u8>) -> i32 { 0 }
+        }
+        """; io = devnull)
+    @test _br_positions(report) == Set([("a::S::x", "field getter"), ("b::f", "argument `v`")])
+end
+
+# A call has `CALLBACK_SLOTS` trampoline slots; wrapper generation refuses a
+# function with more callback arguments than that, so the report names the
+# first one past the limit (#450 review).
+@testset "boundary report enforces the callback-slot limit (#450 review)" begin
+    n = RustCall.CALLBACK_SLOTS + 1
+    args = join(("f$(i): extern \"C\" fn(i64) -> i64" for i in 1:n), ", ")
+    report = RustCall.inline_boundary_report("#[julia]\npub fn many($(args)) -> i64 { 0 }"; io = devnull)
+    @test _br_positions(report) == Set([("many", "argument `f$(n)`")])
+    @test occursin(string(RustCall.CALLBACK_SLOTS), only(report.unsupported).reason)
+    ok = join(("f$(i): extern \"C\" fn(i64) -> i64" for i in 1:RustCall.CALLBACK_SLOTS), ", ")
+    @test isempty(RustCall.inline_boundary_report("#[julia]\npub fn most($(ok)) -> i64 { 0 }";
+                                                  io = devnull).unsupported)
+end
