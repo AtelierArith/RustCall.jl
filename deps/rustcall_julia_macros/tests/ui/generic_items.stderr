@@ -15,3 +15,9 @@ error: #[julia] method `scaled` is generic over `U`: an `extern "C"` entry point
    |
 26 |     pub fn scaled<U: Into<f64>>(&self, by: U) -> f64 {
    |                  ^^^^^^^^^^^^^^
+
+error: #[julia] function `active` is generic over `T`: an `extern "C"` entry point needs concrete types, and #[julia] cannot know which instantiations Julia will call. Write a non-generic `#[julia]` item that uses it, or define it in a `rust"""` block, where RustCall monomorphizes generics on demand.
+  --> tests/ui/generic_items.rs:43:18
+   |
+43 |     pub fn active<T: Copy>(x: T) -> T {
+   |                  ^^^^^^^^^

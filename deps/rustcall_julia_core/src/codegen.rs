@@ -1557,15 +1557,24 @@ pub fn transform_function(
     module_path: &[String],
     panic_hook: PanicHook,
 ) -> TokenStream2 {
+    // Every refusal carries the item's `#[cfg]` (PR #470 review): inside a
+    // `#[julia] mod`, and for a `#[cfg]` written after `#[julia]`, the macro
+    // runs before rustc evaluates the predicate, so an ungated
+    // `compile_error!` broke builds where the item does not exist.
+    let cfgs = cfg_attrs(&func.attrs);
     if func.sig.unsafety.is_some() {
-        return quote! {
-            compile_error!("#[julia] cannot be applied to unsafe functions directly. The function will be made extern \"C\" which has its own safety semantics.");
-        };
+        return gated_error(
+            &cfgs,
+            quote! {
+                compile_error!("#[julia] cannot be applied to unsafe functions directly. The function will be made extern \"C\" which has its own safety semantics.");
+            },
+        );
     }
     if let Some(error) = non_ffi_payload_error(&func) {
-        return error;
+        return gated_error(&cfgs, error);
     }
     if let Some(error) = generic_signature_error(&func.sig, "function") {
+        let error = gated_error(&cfgs, error);
         return quote! { #error #func };
     }
 
@@ -1619,6 +1628,21 @@ fn generic_item_error(generics: &syn::Generics, what: &str, name: &Ident) -> Opt
         params.join(", ")
     );
     Some(syn::Error::new_spanned(generics, msg).to_compile_error())
+}
+
+/// A refusal emitted in place of (or beside) an item, gated by that item's
+/// effective `#[cfg]` set so it fires only where the item exists.
+///
+/// The proc macro can run before rustc evaluates an item's predicates — for
+/// every item inside a `#[julia] mod`, and for a `#[cfg]` written after
+/// `#[julia]` — so an ungated `compile_error!` would break a build in which the
+/// item is configured away (PR #470 review). A macro-invocation item takes
+/// outer attributes like any other item, so the predicates go straight on it.
+fn gated_error(cfgs: &[Attribute], error: TokenStream2) -> TokenStream2 {
+    if cfgs.is_empty() {
+        return error;
+    }
+    quote! { #(#cfgs)* #error }
 }
 
 /// [`generic_item_error`] for a function or method signature, which may also be
@@ -1923,6 +1947,7 @@ fn struct_stem(module_path: &[String], struct_name: &Ident) -> Ident {
 /// Transform a `#[julia]` struct (crate flavour): `#[repr(C)]`, `pub`, free + accessors.
 pub fn transform_struct_crate(mut item_struct: ItemStruct, module_path: &[String]) -> TokenStream2 {
     if let Some(error) = generic_item_error(&item_struct.generics, "struct", &item_struct.ident) {
+        let error = gated_error(&cfg_attrs(&item_struct.attrs), error);
         return quote! { #error #item_struct };
     }
     let repr_c: Attribute = syn::parse_quote!(#[repr(C)]);
@@ -1966,9 +1991,12 @@ pub fn impl_target_module_path(module_path: &[String], self_ty: &Type) -> Vec<St
 /// symbols follow the struct the header names, [`impl_target_module_path`].
 pub fn transform_impl_crate(mut item_impl: ItemImpl, module_path: &[String]) -> TokenStream2 {
     if last_ident(&item_impl.self_ty).is_none() {
-        return quote! {
-            compile_error!("#[julia] on impl block requires a simple type path");
-        };
+        return gated_error(
+            &cfg_attrs(&item_impl.attrs),
+            quote! {
+                compile_error!("#[julia] on impl block requires a simple type path");
+            },
+        );
     }
     // A generic block (`impl<T> Wrapper<T>`) has no concrete receiver type to
     // wrap: refuse it at the header, and keep the block as written (#462).
@@ -1976,7 +2004,8 @@ pub fn transform_impl_crate(mut item_impl: ItemImpl, module_path: &[String]) -> 
         let name = last_ident(&item_impl.self_ty)
             .cloned()
             .expect("checked above");
-        let error = generic_item_error(&item_impl.generics, "impl block for", &name);
+        let error = generic_item_error(&item_impl.generics, "impl block for", &name)
+            .map(|error| gated_error(&cfg_attrs(&item_impl.attrs), error));
         for item in &mut item_impl.items {
             if let syn::ImplItem::Fn(method) = item {
                 method.attrs.retain(|attr| !attr.path().is_ident("julia"));
@@ -2004,7 +2033,11 @@ pub fn transform_impl_crate(mut item_impl: ItemImpl, module_path: &[String]) -> 
             if has_julia_attr {
                 method.attrs.retain(|attr| !attr.path().is_ident("julia"));
                 if let Some(error) = generic_signature_error(&method.sig, "method") {
-                    ffi_wrappers.extend(error);
+                    // Gated like the wrapper would have been: the block's
+                    // predicates and the method's own (PR #470 review).
+                    let mut cfgs = block_cfgs.clone();
+                    cfgs.extend(cfg_attrs(&method.attrs));
+                    ffi_wrappers.extend(gated_error(&cfgs, error));
                     continue;
                 }
                 // The generator reads the method's `#[cfg]` set and puts it on
@@ -2043,13 +2076,16 @@ pub fn transform_impl_crate(mut item_impl: ItemImpl, module_path: &[String]) -> 
 /// with a `compile_error!` naming the alternative (an inline module block).
 pub fn transform_module(item_mod: ItemMod, module_path: &[String]) -> TokenStream2 {
     let Some((_, items)) = item_mod.content else {
-        return quote! {
+        return gated_error(
+            &cfg_attrs(&item_mod.attrs),
+            quote! {
             compile_error!(
                 "#[julia] on a file module (`mod name;`) is not supported: attribute macros \
                  cannot expand a non-inline module. Write the module inline \
                  (`#[julia] pub mod name { ... }`) to give its items a module-qualified symbol."
             );
-        };
+            },
+        );
     };
     let mut path = module_path.to_vec();
     path.push(item_mod.ident.to_string());
@@ -2145,9 +2181,12 @@ pub fn generate_method_wrapper_crate(
     // refuses a header the macro would read differently from the struct it
     // resolves to — a renamed import among them (#315).
     let Some(struct_name) = last_ident(self_ty) else {
-        return quote! {
-            compile_error!("#[julia] on impl block requires a simple type path");
-        };
+        return gated_error(
+            &cfg_attrs(&method.attrs),
+            quote! {
+                compile_error!("#[julia] on impl block requires a simple type path");
+            },
+        );
     };
     method_wrapper_at_impl_site(
         self_ty,
@@ -2183,9 +2222,12 @@ pub fn method_wrapper_at_impl_site(
     panic_hook: PanicHook,
 ) -> TokenStream2 {
     let Type::Path(self_path) = unparen(self_ty) else {
-        return quote! {
-            compile_error!("#[julia] on impl block requires a simple type path");
-        };
+        return gated_error(
+            &cfg_attrs(&m.func.attrs),
+            quote! {
+                compile_error!("#[julia] on impl block requires a simple type path");
+            },
+        );
     };
     let stem = struct_stem(struct_module_path, struct_name);
     let owner = format_ident!("{}", method_string_owner(&stem.to_string(), &m.name()));
@@ -2701,6 +2743,17 @@ pub fn inline_generic_wrappers(model: &StructModel, module_path: &[String]) -> V
     let struct_name = &model.item.ident;
     let stem = symbol_stem(module_path, &struct_name.to_string());
     let generics = &model.item.generics;
+    // The wrappers are emitted into the expanded source next to the struct, so
+    // they exist only where it does: the struct's `#[cfg]` goes on each, a
+    // method's block and own predicates on its wrapper, a field's on its
+    // accessors — as `inline_struct_wrappers` does for a concrete struct
+    // (#462, PR #470 review).
+    let cfgs = cfg_attrs(&model.item.attrs);
+    let gated = |mut func: ItemFn, extra: &[Attribute]| -> ItemFn {
+        func.attrs
+            .splice(0..0, cfgs.iter().chain(extra.iter()).cloned());
+        func
+    };
     let (_, ty_generics, _) = generics.split_for_impl();
     let decl_generics = {
         let mut g = generics.clone();
@@ -2793,9 +2846,11 @@ pub fn inline_generic_wrappers(model: &StructModel, module_path: &[String]) -> V
                 }
             }
         };
+        let mut method_cfgs = m.enclosing_cfg.clone();
+        method_cfgs.extend(cfg_attrs(&m.func.attrs));
         wrappers.push(GenericWrapper {
             name: wrapper_name.to_string(),
-            source: fn_source(func),
+            source: fn_source(gated(func, &method_cfgs)),
             type_params: wrapper_param_names(&decl_generics, &self_ty),
         });
     }
@@ -2850,6 +2905,9 @@ pub fn inline_generic_wrappers(model: &StructModel, module_path: &[String]) -> V
                 unsafe { (*ptr).#field_name = value; }
             }
         };
+        let field_cfgs = model.field_cfg_attrs(&field_name);
+        let g = gated(g, &field_cfgs);
+        let s = gated(s, &field_cfgs);
         wrappers.push(GenericWrapper {
             name: getter.to_string(),
             source: fn_source(g),
@@ -2872,7 +2930,7 @@ pub fn inline_generic_wrappers(model: &StructModel, module_path: &[String]) -> V
     };
     wrappers.push(GenericWrapper {
         name: free_name.to_string(),
-        source: fn_source(f),
+        source: fn_source(gated(f, &[])),
         type_params: struct_param_names,
     });
 

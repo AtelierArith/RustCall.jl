@@ -118,6 +118,53 @@ fn inline_struct_helpers_carry_the_struct_and_field_cfg() {
     compiles("inline", &expanded.source, false);
 }
 
+/// A generic struct's wrappers are emitted (unexported) into the expanded
+/// source next to it, so they carry its `#[cfg]` too, and a field's or a
+/// method's own on top (PR #470 review).
+#[test]
+fn generic_inline_struct_wrappers_carry_the_cfg() {
+    let src = r#"
+        #[cfg(rustcall_never)]
+        #[julia]
+        pub struct GonePair<T> { pub a: T }
+        #[cfg(rustcall_never)]
+        impl<T: Copy> GonePair<T> {
+            pub fn new(a: T) -> Self { Self { a } }
+            pub fn first(&self) -> T { self.a }
+        }
+
+        #[julia]
+        pub struct KeptPair<T> {
+            pub a: T,
+            #[cfg(rustcall_never)]
+            pub gone: T,
+        }
+        impl<T: Copy> KeptPair<T> {
+            pub fn first(&self) -> T { self.a }
+            #[cfg(rustcall_never)]
+            pub fn gone(&self) -> T { self.gone }
+        }
+    "#;
+    let expanded = expand(src).unwrap();
+    let s = |name: &str| {
+        expanded
+            .manifest
+            .structs
+            .iter()
+            .find(|s| s.name == name)
+            .unwrap()
+    };
+    for w in &s("GonePair").generic_wrappers {
+        assert!(w.source.contains("#[cfg(rustcall_never)]"), "{}", w.source);
+    }
+    for w in &s("KeptPair").generic_wrappers {
+        let gated = w.source.contains("#[cfg(rustcall_never)]");
+        let expected = w.name.ends_with("_gone");
+        assert_eq!(gated, expected, "{}", w.source);
+    }
+    compiles("generic", &expanded.source, false);
+}
+
 #[test]
 fn crate_field_accessors_carry_the_field_cfg() {
     let item: syn::ItemStruct = syn::parse_quote! {

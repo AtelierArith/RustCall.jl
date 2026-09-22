@@ -33,7 +33,20 @@ impl Point {
     }
 }
 
+// The refusal carries the item's `#[cfg]` (PR #470 review), so where that
+// predicate holds it still fires — here inside a `#[julia] mod`, where the
+// module macro expands the item before rustc evaluates it.
+#[julia]
+pub mod nested {
+    #[cfg(all())]
+    #[julia]
+    pub fn active<T: Copy>(x: T) -> T {
+        x
+    }
+}
+
 fn main() {
+    let _ = nested::active(1);
     let w = Wrapper { value: 1 };
     let _ = w.get();
     let p = Point { x: 1.0 };
