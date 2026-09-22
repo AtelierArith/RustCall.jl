@@ -3,10 +3,10 @@ use std::process::Command;
 
 mod support;
 
-use rustcall_core::codegen::transform_struct_crate;
-use rustcall_core::expand::expand;
-use rustcall_core::extract::extract;
-use rustcall_core::manifest::Mode;
+use rustcall_julia_core::codegen::transform_struct_crate;
+use rustcall_julia_core::expand::expand;
+use rustcall_julia_core::extract::extract;
+use rustcall_julia_core::manifest::Mode;
 
 #[test]
 fn destructor_channels_participate_in_symbol_collisions() {

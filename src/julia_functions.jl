@@ -650,7 +650,7 @@ struct COptionType{T}
 end
 
 # Both mirror a `#[repr(C)]` aggregate the extractor emits (`CResult_<fn>` /
-# `COption_<fn>`, `deps/rustcall_core/src/codegen.rs`), so the by-value layout
+# `COption_<fn>`, `deps/rustcall_julia_core/src/codegen.rs`), so the by-value layout
 # assertion #245 requires is one RustCall makes about its own types — for every
 # instantiation, since the shape is the discriminant plus a payload whatever the
 # payload is.

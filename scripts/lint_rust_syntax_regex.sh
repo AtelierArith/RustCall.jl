@@ -2,7 +2,7 @@
 # Fail when Julia source in src/ tries to interpret Rust syntax with regexes.
 #
 # Since #264, Rust syntax is parsed exclusively on the Rust side
-# (deps/rustcall_core, driven by the rustcall-extract CLI). Julia consumes the
+# (deps/rustcall_julia_core, driven by the rustcall-extract CLI). Julia consumes the
 # FFI manifest. A regex in src/ that matches Rust keywords or attributes is a
 # regression of that design and must go through the manifest instead.
 #

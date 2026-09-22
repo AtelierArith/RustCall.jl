@@ -151,22 +151,24 @@ pub const SCHEMA_VERSION: &str = "0.6";
 mod schema_version_tests {
     use super::SCHEMA_VERSION;
 
-    /// The identifier is derived from the release, not chosen: it must be the
-    /// `MAJOR.MINOR` of this crate's own version, which `test/test_schema_version.jl`
-    /// in turn pins to the package's `Project.toml` (#372).
+    /// The identifier is the `MAJOR.MINOR` of the RustCall.jl **release**, not
+    /// of this crate: `rustcall_julia_core` is published on crates.io and its semver
+    /// moves on its own, while the identifier is the manifest contract between
+    /// RustCall.jl and the extractor, both of which ship from one tree. It is
+    /// therefore a literal here, cross-checked where both sides exist — the
+    /// extractor's `schema-version` output against `MANIFEST_SCHEMA_VERSION`
+    /// (from `Project.toml`) in `test/test_schema_version.jl`. This test only
+    /// pins its shape.
     #[test]
-    fn schema_version_is_the_release_major_minor() {
-        let version = env!("CARGO_PKG_VERSION");
-        let mut parts = version.split('.');
-        let expected = format!(
-            "{}.{}",
-            parts.next().expect("major"),
-            parts.next().expect("minor")
-        );
-        assert_eq!(
-            SCHEMA_VERSION, expected,
-            "SCHEMA_VERSION must be MAJOR.MINOR of {version}"
-        );
+    fn schema_version_is_major_minor() {
+        let parts: Vec<&str> = SCHEMA_VERSION.split('.').collect();
+        assert_eq!(parts.len(), 2, "SCHEMA_VERSION must be MAJOR.MINOR");
+        for part in parts {
+            assert!(
+                !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()),
+                "SCHEMA_VERSION components must be numeric, got {SCHEMA_VERSION}"
+            );
+        }
     }
 }
 

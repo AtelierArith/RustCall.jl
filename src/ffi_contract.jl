@@ -17,7 +17,7 @@
 #     points at, and through which symbol.
 #
 # What remains outside it, deliberately: `is_ffi_compatible_type` /
-# `is_non_ffi_type` (`deps/rustcall_core/src/types.rs`) is the *acceptance
+# `is_non_ffi_type` (`deps/rustcall_julia_core/src/types.rs`) is the *acceptance
 # gate* on the Rust side — it decides whether a wrapper is generated at all,
 # not what the type means — and `JULIA_TO_RUST_TYPE_MAP` covers the reverse
 # direction, which a Julia type does not determine on its own.
@@ -160,7 +160,7 @@ for the manifest `abi` column.
   value *is*, when this position passes an aggregate. Set for `:ptr_len` /
   `:ptr_len_cap` in return position (`CRustStr` / `CRustString`, matching
   `<fn>_RustCallBorrowedString` / `<fn>_RustCallOwnedString` emitted by
-  `deps/rustcall_core/src/codegen.rs:837-863`), `nothing` otherwise — arguments
+  `deps/rustcall_julia_core/src/codegen.rs:837-863`), `nothing` otherwise — arguments
   are expanded into separate slots, not passed as an aggregate.
 - `layout::Vector{Type}` — the C field layout of the value, in order, for the
   multi-word ABIs (`[Ptr{UInt8}, Csize_t]` / `[Ptr{UInt8}, Csize_t, Csize_t]`).
@@ -170,7 +170,7 @@ for the manifest `abi` column.
 - `ownership::Symbol` — one of [`FFI_OWNERSHIP_KINDS`].
 - `free_symbol::Union{Nothing,String}` — for `:owned_by_rust`, the name of the
   symbol that releases the value. The name is per-owner
-  (`<fn|Struct>_free_rust_string`, `deps/rustcall_core/src/codegen.rs:633`), so
+  (`<fn|Struct>_free_rust_string`, `deps/rustcall_julia_core/src/codegen.rs:633`), so
   it is filled in only when the caller passes `owner`; `nothing` otherwise.
 - `known::Bool` — `false` when the Rust spelling is not in the contract. A
   caller that must fail closed checks this instead of inspecting the fallback.
@@ -216,7 +216,7 @@ function _ffi_register!(entry::FFIType)
 end
 
 # -- Rust primitives ---------------------------------------------------------
-# The `PRIMITIVES` list of `deps/rustcall_core/src/types.rs:12` in full. The
+# The `PRIMITIVES` list of `deps/rustcall_julia_core/src/types.rs:12` in full. The
 # Julia-side tables stop at 13 of them; `i128`, `u128` and `char` are accepted
 # by the Rust side and map to `:Any` on the Julia side today (#245 item 2).
 # `i128` / `u128` do not round-trip on `x86_64-pc-windows-msvc`: MSVC has no
@@ -280,7 +280,7 @@ end
 #
 # On `main`, string lowering is not uniform across wrapper flavours:
 #
-#   * `transform_simple_function` (`deps/rustcall_core/src/codegen.rs:53-58`)
+#   * `transform_simple_function` (`deps/rustcall_julia_core/src/codegen.rs:53-58`)
 #     only marks a free `#[julia] fn ... -> String` signature `extern "C"` — the
 #     Rust types are forwarded as written, with no `(ptr, len)` pair and no
 #     `CRustString`;
@@ -332,8 +332,8 @@ const _FFI_PTR_CONST_PREFIX = "*const "
 const _FFI_PTR_MUT_PREFIX = "*mut "
 
 # The only path prefixes under which a trailing primitive segment is guaranteed
-# to *be* that primitive. `rustcall_core::types::is_ffi_compatible_type`
-# (`deps/rustcall_core/src/types.rs:85`) is laxer: it matches on `last_ident`
+# to *be* that primitive. `rustcall_julia_core::types::is_ffi_compatible_type`
+# (`deps/rustcall_julia_core/src/types.rs:85`) is laxer: it matches on `last_ident`
 # alone, so it also accepts `mycrate::i32`, where `i32` may be a user type
 # alias with a completely different layout. The contract deliberately does not
 # follow it that far — an unqualified last segment is not evidence — so
@@ -352,7 +352,7 @@ The table key for a Rust type spelling: whitespace trimmed, and a
 
 Only those two prefixes are stripped; see [`FFI_PRIMITIVE_PATH_PREFIXES`] for
 why an arbitrary `mycrate::i32` — rooted or not — is not normalized even though
-`rustcall_core` accepts it.
+`rustcall_julia_core` accepts it.
 """
 function ffi_normalize_spelling(rust_type::AbstractString)
     key = String(strip(rust_type))
@@ -384,8 +384,8 @@ to `Ptr{J}` where `J` is the pointee's Julia type. The pointee is resolved
 *recursively* through `ffi_lookup`, so `*const *mut i32` is `Ptr{Ptr{Int32}}`;
 only a pointee the contract genuinely cannot map (an opaque handle, or a
 multi-word type like `String` that has no single-word C form) degrades to
-`Ptr{Cvoid}`. This mirrors `rustcall_core`'s `Type::Ptr => true`
-(`deps/rustcall_core/src/types.rs:91`), which accepts every pointer wholesale.
+`Ptr{Cvoid}`. This mirrors `rustcall_julia_core`'s `Type::Ptr => true`
+(`deps/rustcall_julia_core/src/types.rs:91`), which accepts every pointer wholesale.
 
 `nothing` is the fail-closed answer. Callers must not substitute a default for
 it; that is the guess this file exists to remove (#245 item 1).
@@ -416,10 +416,10 @@ function _ffi_pointer_row(key::AbstractString, pointee::AbstractString)
     end
     note = inner === nothing ? "Opaque pointee: the contract does not know $(pointee)." : ""
     # Ownership of a raw pointer is NOT derivable from the spelling. A generated
-    # constructor returns `Box::into_raw` (`deps/rustcall_core/src/codegen.rs:386-392`),
+    # constructor returns `Box::into_raw` (`deps/rustcall_julia_core/src/codegen.rs:386-392`),
     # which Julia owns and must free, while another `*mut T` may be a pointer
     # into memory Rust keeps. `:borrowed` — valid only for the duration of the
-    # call — is reserved for `&T` / `&mut T` references, which `rustcall_core`
+    # call — is reserved for `&T` / `&mut T` references, which `rustcall_julia_core`
     # rejects as non-FFI anyway (`types.rs:104`). So the default is `:unknown`,
     # and a consumer that has the metadata states it: see
     # [`ffi_return_contract`](@ref)'s `ownership` / `free_symbol` keywords.
@@ -619,7 +619,7 @@ kind.
 
 These mirror the `<fn>_RustCallBorrowedString { ptr, len }` and
 `<fn>_RustCallOwnedString { ptr, len, cap }` helpers the wrapper generator emits
-(`deps/rustcall_core/src/codegen.rs:837-863`) and that `_call_rust_owned_string`
+(`deps/rustcall_julia_core/src/codegen.rs:837-863`) and that `_call_rust_owned_string`
 / `_call_rust_borrowed_string` already receive (`src/structs.jl:511-528`).
 """
 function ffi_aggregate_type(abi::Symbol)
@@ -633,7 +633,7 @@ end
 
 The name of the symbol that releases an `:owned_by_rust` string produced by
 `owner` (a function or struct name): `<owner>_free_rust_string`, matching
-`deps/rustcall_core/src/codegen.rs:633`.
+`deps/rustcall_julia_core/src/codegen.rs:633`.
 """
 ffi_free_symbol(owner::AbstractString) = string(owner, "_free_rust_string")
 
@@ -642,7 +642,7 @@ ffi_free_symbol(owner::AbstractString) = string(owner, "_free_rust_string")
 
 The panic-channel reader a generated wrapper exports next to itself:
 `<wrapper symbol>_take_panic`, matching
-`rustcall_core::codegen::panic_symbol` (#244).
+`rustcall_julia_core::codegen::panic_symbol` (#244).
 
 `(out, cap) -> len` semantics: the length of the pending panic message, or 0
 when the wrapper did not panic. The message is copied into `out` and the slot
@@ -661,7 +661,7 @@ ffi_panic_symbol(symbol::AbstractString) = string(symbol, "_take_panic")
     ffi_struct_free_symbol(struct_name::AbstractString) -> String
 
 The destructor of a `#[julia]` struct: `<Struct>_free`, matching what
-`deps/rustcall_core/src/codegen.rs` emits (`crate_free_fn` and its inline
+`deps/rustcall_julia_core/src/codegen.rs` emits (`crate_free_fn` and its inline
 twin).
 
 One place, because four call sites used to build this string by hand
@@ -676,7 +676,7 @@ Prefix of every exported symbol that stands in for a user-written Rust item.
 
 `#[julia]` is additive (#279): the annotated item keeps its name and the
 `extern "C"` entry point is emitted next to it under this prefix. Mirrors
-`rustcall_core::codegen::SYMBOL_PREFIX`.
+`rustcall_julia_core::codegen::SYMBOL_PREFIX`.
 """
 const FFI_SYMBOL_PREFIX = "rustcall_"
 
@@ -684,7 +684,7 @@ const FFI_SYMBOL_PREFIX = "rustcall_"
     ffi_method_symbol(struct_name, method_name) -> String
 
 The exported symbol of the wrapper of the `#[julia]` method `Struct::method`
-(`rustcall_<Struct>_<method>`, see `deps/rustcall_core/src/codegen.rs`).
+(`rustcall_<Struct>_<method>`, see `deps/rustcall_julia_core/src/codegen.rs`).
 
 This is the fallback for a `RustMethod` built by hand rather than read from a
 manifest: its six-argument constructor cannot know the struct name, so it
@@ -737,7 +737,7 @@ here: `ccall_types` holds the single `#[repr(C)]` aggregate the wrapper returns
 
 A raw-pointer return defaults to `:unknown` ownership, because the spelling does
 not say: a generated constructor returns `Box::into_raw`
-(`deps/rustcall_core/src/codegen.rs:386-392`), which Julia owns and must free,
+(`deps/rustcall_julia_core/src/codegen.rs:386-392`), which Julia owns and must free,
 while another `*mut T` may point into memory Rust keeps. A consumer that *has*
 the metadata states it with `ownership` (and, where a release is required, the
 `free_symbol` that performs it):
@@ -764,7 +764,7 @@ free it is the shape of #246 and #249 and is never recorded. Concretely:
 
 `owner` is the function or struct name the wrapper belongs to. It supplies only
 the **string** release convention (`<owner>_free_rust_string`,
-`deps/rustcall_core/src/codegen.rs:633`), so it stands in for `free_symbol` only
+`deps/rustcall_julia_core/src/codegen.rs:633`), so it stands in for `free_symbol` only
 on a lowered owned-string return (`:ptr_len_cap`). For a pointer return — where
 the releasing symbol is whatever the crate exports, e.g. `Point_free` — it does
 not apply and `free_symbol` must be given.
@@ -883,7 +883,7 @@ function _ffi_positional(key, direction, kind, surface, ownership, owner,
     final_ownership = stated_ownership === nothing ? ownership : stated_ownership
 
     # `owner` only names the *string* release convention
-    # (`<owner>_free_rust_string`, deps/rustcall_core/src/codegen.rs:633), so it
+    # (`<owner>_free_rust_string`, deps/rustcall_julia_core/src/codegen.rs:633), so it
     # may stand in for `free_symbol` only where that convention applies: the
     # lowered owned-string return. Every other owned value must name its own
     # symbol explicitly.

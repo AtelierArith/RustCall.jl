@@ -312,7 +312,7 @@ mod tests {
         // Prove it with rustc when available.
         if let Ok(rustc) = std::env::var("RUSTC").or_else(|_| Ok::<_, ()>("rustc".to_string())) {
             let dir =
-                std::env::temp_dir().join(format!("rustcall_core_gen_{}", std::process::id()));
+                std::env::temp_dir().join(format!("rustcall_julia_core_gen_{}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
             let file = dir.join("bag.rs");
             std::fs::write(&file, format!("#![allow(unused)]\n{}", e.source)).unwrap();

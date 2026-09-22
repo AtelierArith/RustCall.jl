@@ -3,12 +3,12 @@
 //! it — inline expansion, crate extraction, `specialize`, struct methods and
 //! accessors, and the PyO3 wrapper generator.
 
-use rustcall_core::codegen::{
+use rustcall_julia_core::codegen::{
     field_getter_symbol, field_setter_symbol, function_symbol, method_symbol, method_symbol_of,
     struct_free_symbol, symbol_stem,
 };
-use rustcall_core::extract::{extract, ExtractError};
-use rustcall_core::manifest::Mode;
+use rustcall_julia_core::extract::{extract, ExtractError};
+use rustcall_julia_core::manifest::Mode;
 
 fn path(segments: &[&str]) -> Vec<String> {
     segments.iter().map(|s| s.to_string()).collect()
@@ -99,7 +99,7 @@ fn inline_flavour() {
         mod b { #[julia] pub fn run() -> i32 { 2 } }
         #[julia] pub fn run() -> i32 { 0 }
     "#;
-    let e = rustcall_core::expand::expand(src).unwrap();
+    let e = rustcall_julia_core::expand::expand(src).unwrap();
     let mut symbols: Vec<(String, String)> = e
         .manifest
         .functions
@@ -184,7 +184,7 @@ fn inline_and_crate_flavours_agree() {
             }
         }
     "#;
-    let inline = rustcall_core::expand::expand(src).unwrap().manifest;
+    let inline = rustcall_julia_core::expand::expand(src).unwrap().manifest;
     let krate = extract(src, Mode::Crate).unwrap();
     assert_eq!(inline.functions[0].symbol, krate.functions[0].symbol);
     assert_eq!(inline.functions[0].ffi_name, krate.functions[0].ffi_name);
@@ -192,14 +192,14 @@ fn inline_and_crate_flavours_agree() {
     assert_eq!(si.ffi_name, "a__C");
     assert_eq!(si.ffi_name, sk.ffi_name);
     assert_eq!(si.module_path, sk.module_path);
-    let methods = |s: &rustcall_core::manifest::Struct| {
+    let methods = |s: &rustcall_julia_core::manifest::Struct| {
         let mut v: Vec<String> = s.methods.iter().map(|m| m.symbol.clone()).collect();
         v.sort();
         v
     };
     assert_eq!(methods(si), methods(sk));
     assert_eq!(methods(si), vec!["rustcall_a__C_get", "rustcall_a__C_new"]);
-    let accessors = |s: &rustcall_core::manifest::Struct| {
+    let accessors = |s: &rustcall_julia_core::manifest::Struct| {
         let mut v: Vec<String> = s
             .fields
             .iter()
@@ -226,7 +226,7 @@ fn inline_and_crate_flavours_agree() {
 #[test]
 fn specialized_flavour() {
     let src = "mod api { pub fn twice<T: std::ops::Add<Output = T> + Copy>(x: T) -> T { x + x } }";
-    let out = rustcall_core::specialize::specialize(
+    let out = rustcall_julia_core::specialize::specialize(
         src,
         "api::twice",
         &[("T".to_string(), "i32".to_string())],
@@ -242,7 +242,7 @@ fn specialized_flavour() {
         .contains("pub extern \"C\" fn rustcall_api__twice_0i32(x: i32) -> i32"));
 
     // At the crate root the instantiation keeps the bare name.
-    let root = rustcall_core::specialize::specialize(
+    let root = rustcall_julia_core::specialize::specialize(
         "pub fn twice<T: std::ops::Add<Output = T> + Copy>(x: T) -> T { x + x }",
         "twice",
         &[("T".to_string(), "i32".to_string())],
@@ -324,7 +324,7 @@ fn owned_string_buffers_are_claimed_once_each() {
 /// so the two must not claim `<Struct>_free_rust_string` twice (#342).
 #[test]
 fn a_shared_inline_buffer_is_not_a_duplicate() {
-    let inline = rustcall_core::expand::expand(
+    let inline = rustcall_julia_core::expand::expand(
         r#"
         #[julia] pub struct Tag { pub name: String }
         impl Tag {
@@ -394,7 +394,7 @@ fn pyo3_wrapper_flavour() {
         }
     "#;
     let scanned = extract(src, Mode::Crate).unwrap();
-    let wrapper = rustcall_core::wrap::wrapper_crate(&scanned, "user_crate", true);
+    let wrapper = rustcall_julia_core::wrap::wrapper_crate(&scanned, "user_crate", true);
     for needle in [
         "pub extern \"C\" fn a__C_free(ptr: *mut user_crate::a::C)",
         "pub extern \"C\" fn b__C_free(ptr: *mut user_crate::b::C)",
@@ -544,7 +544,7 @@ fn a_duplicate_method_panic_reader_fails_extraction() {
 /// pointing into generated code (#338, #342).
 #[test]
 fn an_inline_duplicate_panic_reader_is_a_compile_error() {
-    let inline = rustcall_core::expand::expand(
+    let inline = rustcall_julia_core::expand::expand(
         r#"
         #[julia] pub mod a { #[julia] pub fn run() -> i32 { 1 } }
         #[julia] pub fn a__run_take_panic() -> i32 { 2 }
@@ -570,7 +570,7 @@ fn an_inline_duplicate_panic_reader_is_a_compile_error() {
 /// (#338).
 #[test]
 fn a_hand_written_function_claims_only_its_own_name() {
-    let inline = rustcall_core::expand::expand(
+    let inline = rustcall_julia_core::expand::expand(
         r#"
         #[julia] pub fn value() -> i32 { 111 }
         #[no_mangle] pub extern "C" fn release() {}
@@ -602,7 +602,7 @@ fn a_hand_written_function_claims_only_its_own_name() {
 /// against the item that generates it.
 #[test]
 fn a_hand_written_name_may_still_collide_with_a_generated_reader() {
-    let inline = rustcall_core::expand::expand(
+    let inline = rustcall_julia_core::expand::expand(
         r#"
         #[julia] pub fn value() -> i32 { 111 }
         #[no_mangle] pub extern "C" fn rustcall_value_take_panic(_out: *mut u8, _cap: usize) -> usize { 0 }
@@ -623,7 +623,7 @@ fn a_hand_written_name_may_still_collide_with_a_generated_reader() {
 /// generated yet.
 #[test]
 fn both_scans_read_one_claim_list() {
-    use rustcall_core::claims::{function_claims, struct_claims, Policy};
+    use rustcall_julia_core::claims::{function_claims, struct_claims, Policy};
 
     let m = extract(
         r#"
@@ -636,7 +636,7 @@ fn both_scans_read_one_claim_list() {
     )
     .unwrap();
 
-    let names = |claims: Vec<rustcall_core::claims::Claim>| {
+    let names = |claims: Vec<rustcall_julia_core::claims::Claim>| {
         let mut out: Vec<String> = claims.into_iter().map(|c| c.name).collect();
         out.sort();
         out
@@ -717,7 +717,7 @@ fn both_scans_read_one_claim_list() {
 /// a clash (#338).
 #[test]
 fn the_two_policies_disagree_about_cfg_gated_entries() {
-    use rustcall_core::claims::{function_claims, Policy};
+    use rustcall_julia_core::claims::{function_claims, Policy};
 
     let m = extract(
         r#"
@@ -745,7 +745,7 @@ fn the_two_policies_disagree_about_cfg_gated_entries() {
 /// and is claimed under the scan policy (#338).
 #[test]
 fn helper_slots_are_injective_and_unclaimed() {
-    use rustcall_core::claims::{helper_panic_slot, panic_slot, struct_claims, Policy};
+    use rustcall_julia_core::claims::{helper_panic_slot, panic_slot, struct_claims, Policy};
 
     assert_eq!(panic_slot("rustcall_foo"), panic_slot("rustcall_FOO"));
     assert_ne!(
@@ -808,7 +808,7 @@ fn a_duplicate_panic_slot_fails_extraction_as_an_internal_item() {
 /// wording for an internal item.
 #[test]
 fn an_inline_duplicate_panic_slot_is_a_compile_error() {
-    let inline = rustcall_core::expand::expand(
+    let inline = rustcall_julia_core::expand::expand(
         r#"
         #[julia] pub fn foo() -> i32 { 1 }
         #[julia] pub fn FOO() -> i32 { 2 }
@@ -866,7 +866,7 @@ fn private_names_are_compared_within_their_module() {
         #[julia] pub mod a { #[julia] pub fn foo() -> i32 { 1 } }
         #[julia] pub mod A { #[julia] pub fn FOO() -> i32 { 2 } }
     "#;
-    let inline = rustcall_core::expand::expand(src).unwrap();
+    let inline = rustcall_julia_core::expand::expand(src).unwrap();
     assert!(
         inline.manifest.duplicate_claims().is_empty(),
         "{:?}",
@@ -881,7 +881,7 @@ fn private_names_are_compared_within_their_module() {
     extract(src, Mode::Crate).expect("two modules may spell one slot name");
 
     // Within *one* module they really do meet.
-    let same = rustcall_core::expand::expand(
+    let same = rustcall_julia_core::expand::expand(
         r#"
         #[julia] pub mod a {
             #[julia] pub fn foo() -> i32 { 1 }
@@ -900,7 +900,7 @@ fn private_names_are_compared_within_their_module() {
 /// refused a crate that builds (#338 review).
 #[test]
 fn claims_are_compared_within_their_rust_namespace() {
-    use rustcall_core::claims::Namespace;
+    use rustcall_julia_core::claims::Namespace;
 
     let m = extract(
         r#"
@@ -943,8 +943,8 @@ fn claims_are_compared_within_their_rust_namespace() {
 /// stamps the real module path onto every private claim (#338 review).
 #[test]
 fn a_private_claim_is_scoped_by_the_real_module_not_the_symbol_path() {
-    use rustcall_core::extract::{FilePosition, TreeScan};
-    use rustcall_core::Manifest;
+    use rustcall_julia_core::extract::{FilePosition, TreeScan};
+    use rustcall_julia_core::Manifest;
 
     let mut scan = TreeScan::new();
     let mut manifest = Manifest::new(Mode::Crate);

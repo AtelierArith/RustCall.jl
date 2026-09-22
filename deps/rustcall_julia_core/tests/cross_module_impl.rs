@@ -6,8 +6,8 @@
 //! walk the tree the way `rustcall-extract --crate-root` does, one
 //! `TreeScan::file` call per file with its real module path.
 
-use rustcall_core::extract::{extract_crate, FilePosition, TreeScan};
-use rustcall_core::manifest::{Manifest, Mode, Struct};
+use rustcall_julia_core::extract::{extract_crate, FilePosition, TreeScan};
+use rustcall_julia_core::manifest::{Manifest, Mode, Struct};
 
 /// Scan `files` — `(module path, label, source)` — as one crate.
 ///
@@ -425,7 +425,7 @@ fn the_inline_flavour_attaches_across_modules_as_well() {
             #[julia] impl super::Gauge { #[julia] pub fn read(&self) -> i32 { self.value } }
         }
     "#;
-    let inline = rustcall_core::expand::expand(src).unwrap();
+    let inline = rustcall_julia_core::expand::expand(src).unwrap();
     let gauge = the_struct(&inline.manifest, "Gauge");
     assert_eq!(method_symbols(gauge), vec!["rustcall_Gauge_read"]);
     assert!(
@@ -455,7 +455,7 @@ fn a_cross_module_wrapper_is_emitted_inside_the_impls_module() {
             }
         }
     "#;
-    let expanded = rustcall_core::expand::expand(src).unwrap();
+    let expanded = rustcall_julia_core::expand::expand(src).unwrap();
     let gauge = the_struct(&expanded.manifest, "Gauge");
     assert_eq!(method_symbols(gauge), vec!["rustcall_Gauge_read"]);
 
@@ -492,7 +492,7 @@ fn a_cross_module_string_method_owns_its_buffer_and_says_so() {
             }
         }
     "#;
-    let expanded = rustcall_core::expand::expand(src).unwrap();
+    let expanded = rustcall_julia_core::expand::expand(src).unwrap();
     let gauge = the_struct(&expanded.manifest, "Gauge");
     let owner = |name: &str| {
         gauge
@@ -539,7 +539,7 @@ fn a_struct_whose_only_string_method_is_foreign_gets_no_shared_buffer() {
             }
         }
     "#;
-    let expanded = rustcall_core::expand::expand(src).unwrap();
+    let expanded = rustcall_julia_core::expand::expand(src).unwrap();
     assert!(!the_struct(&expanded.manifest, "Gauge").has_owned_string_helper);
     assert!(
         !expanded
@@ -580,7 +580,7 @@ fn a_renamed_import_keeps_the_resolved_structs_symbols() {
             }
         }
     "#;
-    let expanded = rustcall_core::expand::expand(src).unwrap();
+    let expanded = rustcall_julia_core::expand::expand(src).unwrap();
     let gauge = the_struct(&expanded.manifest, "Gauge");
     assert_eq!(
         method_symbols(gauge),
@@ -629,7 +629,7 @@ fn two_items_wanting_one_string_buffer_are_refused() {
             }
         }
     "#;
-    let inline = rustcall_core::expand::expand(src).unwrap();
+    let inline = rustcall_julia_core::expand::expand(src).unwrap();
     assert!(
         inline
             .source
@@ -657,7 +657,7 @@ fn two_items_wanting_one_string_buffer_are_refused() {
     );
 
     // Renaming one of them is the fix the message asks for, and it expands.
-    let fixed = rustcall_core::expand::expand(&src.replace("Foo_bar", "FooBar")).unwrap();
+    let fixed = rustcall_julia_core::expand::expand(&src.replace("Foo_bar", "FooBar")).unwrap();
     assert!(!fixed.source.contains("compile_error"), "{}", fixed.source);
     compiles_as_cdylib(&fixed.source, "cross_module_buffer_clash_fixed");
 }

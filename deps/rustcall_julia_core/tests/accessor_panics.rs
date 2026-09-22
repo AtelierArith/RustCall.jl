@@ -2,7 +2,7 @@ use std::{fs, process::Command};
 
 mod support;
 
-use rustcall_core::{
+use rustcall_julia_core::{
     codegen::transform_struct_crate, expand::expand, extract::extract, manifest::Mode,
 };
 

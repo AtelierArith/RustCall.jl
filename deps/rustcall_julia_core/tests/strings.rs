@@ -1,8 +1,8 @@
 //! `#[julia]` functions with `String` / `&str` (#242).
 
-use rustcall_core::expand::expand;
-use rustcall_core::extract::extract;
-use rustcall_core::manifest::Mode;
+use rustcall_julia_core::expand::expand;
+use rustcall_julia_core::extract::extract;
+use rustcall_julia_core::manifest::Mode;
 
 const SRC: &str = r#"
 #[julia]
@@ -302,7 +302,7 @@ impl<T: Copy> Tagged<T> {
     assert!(wrapper("Tagged_new").contains("(tag: String, v: T) -> *mut Tagged<T>"));
 
     // The specialization of the wrapper gets the string ABI.
-    let out = rustcall_core::specialize::specialize(
+    let out = rustcall_julia_core::specialize::specialize(
         &wrapper("Tagged_tag_ref"),
         "Tagged_tag_ref",
         &[("T".into(), "i32".into())],
@@ -319,7 +319,7 @@ impl<T: Copy> Tagged<T> {
 
 #[test]
 fn crate_method_wrappers_use_the_string_abi() {
-    use rustcall_core::codegen::generate_method_wrapper_crate;
+    use rustcall_julia_core::codegen::generate_method_wrapper_crate;
 
     let item: syn::ItemImpl = syn::parse_str(
         r#"
@@ -442,7 +442,7 @@ impl Counter {
     // ...and so does the crate flavour, through the proc-macro entry point.
     let item: syn::ItemStruct =
         syn::parse_str("pub struct Counter { count: u32, name: String }").unwrap();
-    let crate_src = flat(&rustcall_core::codegen::transform_struct_crate(item, &[]).to_string());
+    let crate_src = flat(&rustcall_julia_core::codegen::transform_struct_crate(item, &[]).to_string());
     assert!(
         crate_src.contains("fn Counter_get_name")
             && crate_src.contains("-> Counter_RustCallOwnedString"),

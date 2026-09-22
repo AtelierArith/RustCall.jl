@@ -1,4 +1,4 @@
-use rustcall_core::{extract::extract, manifest::Mode, wrap::wrapper_crate};
+use rustcall_julia_core::{extract::extract, manifest::Mode, wrap::wrapper_crate};
 
 #[test]
 fn renamed_and_named_self_imports_expose_modules() {
@@ -45,7 +45,7 @@ fn enum_variant_globs_prevent_ambiguous_function_routes() {
 
 #[test]
 fn disabled_enum_variants_do_not_block_public_function_routes() {
-    let scanned = rustcall_core::extract::extract_with_cfg(
+    let scanned = rustcall_julia_core::extract::extract_with_cfg(
         r#"
         mod a { pub enum E { #[cfg(any())] calculate } pub use E::*; }
         mod b { #[pyfunction] pub fn calculate() -> i32 { 42 } }
@@ -53,7 +53,7 @@ fn disabled_enum_variants_do_not_block_public_function_routes() {
         pub use b::*;
     "#,
         Mode::Crate,
-        Some(&rustcall_core::cfg::CfgSet::default()),
+        Some(&rustcall_julia_core::cfg::CfgSet::default()),
     )
     .unwrap();
     assert!(scanned.functions[0].skip_reason.is_empty());
@@ -212,7 +212,7 @@ fn cfg_exclusive_classes_keep_their_methods_predicate() {
 
 #[test]
 fn public_routes_follow_the_selected_feature_and_keep_lenient_cfg() {
-    use rustcall_core::{cfg::CfgSet, extract::extract_with_cfg};
+    use rustcall_julia_core::{cfg::CfgSet, extract::extract_with_cfg};
     let source = r#"
         mod hidden { #[pyfunction] pub fn calculate() -> i32 { 42 } }
         #[cfg(feature = "api")] pub use hidden::calculate as exposed;
@@ -371,6 +371,6 @@ fn private_routes_do_not_grant_access_and_public_routes_keep_signature_checks() 
     .unwrap();
     assert_eq!(
         scanned.functions[0].skip_reason,
-        rustcall_core::manifest::skip_reason::ASYNC_FN
+        rustcall_julia_core::manifest::skip_reason::ASYNC_FN
     );
 }

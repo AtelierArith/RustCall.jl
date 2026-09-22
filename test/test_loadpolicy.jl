@@ -489,7 +489,7 @@ end
 
         # The boundary exists: exactly one generator emits it, and it emits the
         # channel next to it.
-        codegen_rs = read(joinpath(repo_root, "deps", "rustcall_core", "src", "codegen.rs"), String)
+        codegen_rs = read(joinpath(repo_root, "deps", "rustcall_julia_core", "src", "codegen.rs"), String)
         @test occursin("catch_unwind", codegen_rs)
         @test occursin("AssertUnwindSafe", codegen_rs)
         @test occursin("PANIC_SYMBOL_SUFFIX", codegen_rs)

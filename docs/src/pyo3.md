@@ -266,7 +266,7 @@ entry points for the PyO3 items and *links* the `#[julia]` ones; one
 deliberately differs from its package name, because Rust code names a
 dependency by its **library target**, which is what the generated calls use.
 
-Every one of those comes out of `rustcall_core::codegen::generate_wrapper` —
+Every one of those comes out of `rustcall_julia_core::codegen::generate_wrapper` —
 the same generator `#[julia]` goes through since #279 — so the `(ptr, len)`
 string ABI, the `CResult` / `COption` aggregates and the per-wrapper panic
 channel are identical to a `#[julia]` crate's, and the Julia side binds both

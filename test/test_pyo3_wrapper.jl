@@ -74,10 +74,10 @@ const PYO3_MIXED_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_mixed
     end
 
     @testset "the opaque PyErr message is one contract, written down twice" begin
-        # `rustcall_core::wrap::PYERR_MESSAGE` and `RustCall.PYO3_OPAQUE_ERROR`
+        # `rustcall_julia_core::wrap::PYERR_MESSAGE` and `RustCall.PYO3_OPAQUE_ERROR`
         # describe the same value; the Rust side documents it and the Julia side
         # raises it, so they must not drift.
-        rust = read(joinpath(@__DIR__, "..", "deps", "rustcall_core", "src", "wrap.rs"), String)
+        rust = read(joinpath(@__DIR__, "..", "deps", "rustcall_julia_core", "src", "wrap.rs"), String)
         @test occursin(RustCall.PYO3_OPAQUE_ERROR, rust)
         @test RustCall.PYO3_ERROR_CODE == Int32(1)
         @test occursin("pub const PYERR_CODE: i32 = 1;", rust)

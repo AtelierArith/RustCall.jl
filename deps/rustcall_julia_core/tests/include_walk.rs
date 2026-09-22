@@ -17,8 +17,8 @@
 //! inside `api.rs` wants `src/frag/nested.rs`, and it wants that whether or
 //! not the `include!` sits in an inline module.
 
-use rustcall_core::extract::{FilePosition, TreeScan};
-use rustcall_core::manifest::{Manifest, Mode};
+use rustcall_julia_core::extract::{FilePosition, TreeScan};
+use rustcall_julia_core::manifest::{Manifest, Mode};
 
 /// Scan one source at `position` and return what it pulls in.
 fn pull_ins(
@@ -27,7 +27,7 @@ fn pull_ins(
     source: &str,
     position: &FilePosition,
     label: &str,
-) -> rustcall_core::extract::PullIns {
+) -> rustcall_julia_core::extract::PullIns {
     scan.file(source, None, position, manifest, label)
         .unwrap_or_else(|e| panic!("scanning {label} failed: {e}"))
 }
@@ -336,7 +336,7 @@ fn an_unsupported_item_in_a_fragment_is_an_error_not_a_skip() {
         )
         .expect_err("a #[julia] item in an unmarked module is refused");
     assert!(
-        matches!(err, rustcall_core::extract::ExtractError::Unsupported(_)),
+        matches!(err, rustcall_julia_core::extract::ExtractError::Unsupported(_)),
         "expected Unsupported, got {err:?}"
     );
 }

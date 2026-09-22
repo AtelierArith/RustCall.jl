@@ -21,7 +21,7 @@ fn runtime_crate_module_matches_the_generator() {
     let path = runtime_module_path();
 
     if std::env::var_os("UPDATE_GOLDEN").is_some_and(|value| value == "1") {
-        fs::write(&path, rustcall_core::codegen::runtime_module_source())
+        fs::write(&path, rustcall_julia_core::codegen::runtime_module_source())
             .unwrap_or_else(|error| panic!("failed to update {}: {error}", path.display()));
         eprintln!(
             "rewrote {}; run `cargo fmt` before committing",
@@ -42,7 +42,7 @@ fn runtime_crate_module_matches_the_generator() {
     // `quote!` as a raw string literal and a parse as a plain one. Non-doc
     // comments are invisible to `syn`, so the file's header is free to explain
     // itself.
-    let expected: syn::File = syn::parse2(rustcall_core::codegen::panic_hook_items())
+    let expected: syn::File = syn::parse2(rustcall_julia_core::codegen::panic_hook_items())
         .expect("the quiet-hook items are not a valid Rust file");
     assert_eq!(
         prettyplease::unparse(&checked_in),
@@ -56,10 +56,10 @@ fn runtime_crate_module_matches_the_generator() {
 /// The two names Julia resolves on an image are the reason this file exists.
 #[test]
 fn the_runtime_module_exports_the_symbols_julia_resolves() {
-    let source = rustcall_core::codegen::runtime_module_source();
+    let source = rustcall_julia_core::codegen::runtime_module_source();
     for symbol in [
-        rustcall_core::codegen::INSTALL_PANIC_HOOK_SYMBOL,
-        rustcall_core::codegen::UNINSTALL_PANIC_HOOK_SYMBOL,
+        rustcall_julia_core::codegen::INSTALL_PANIC_HOOK_SYMBOL,
+        rustcall_julia_core::codegen::UNINSTALL_PANIC_HOOK_SYMBOL,
     ] {
         assert!(
             source.contains(&format!("pub extern \"C\" fn {symbol}()")),

@@ -1,4 +1,4 @@
-//! `rustcall-extract`: command-line front end over `rustcall_core`.
+//! `rustcall-extract`: command-line front end over `rustcall_julia_core`.
 //!
 //! ```text
 //! rustcall-extract manifest   --mode <inline|crate> [--edition YEAR] [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] (--crate-root FILE | FILE...)
@@ -23,9 +23,9 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use rustcall_core::cfg::CfgSet;
-use rustcall_core::extract::ExtractError;
-use rustcall_core::manifest::{Manifest, Mode, SCHEMA_VERSION};
+use rustcall_julia_core::cfg::CfgSet;
+use rustcall_julia_core::extract::ExtractError;
+use rustcall_julia_core::manifest::{Manifest, Mode, SCHEMA_VERSION};
 use serde::Deserialize;
 
 const USAGE: &str = "usage:
@@ -189,7 +189,7 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
             }
             let text = fs::read_to_string(path)
                 .map_err(|e| format!("cannot read build environment {}: {e}", path.display()))?;
-            Some(rustcall_core::include_paths::IncludeEnvironment(
+            Some(rustcall_julia_core::include_paths::IncludeEnvironment(
                 toml::from_str(&text)
                     .map_err(|e| format!("invalid build environment {}: {e}", path.display()))?,
             ))
@@ -201,7 +201,7 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
         (Mode::Inline, _) => {
             for f in &opts.files {
                 let src = read_source(f)?;
-                match rustcall_core::extract::extract_with_cfg(&src, opts.mode, opts.cfg.as_ref()) {
+                match rustcall_julia_core::extract::extract_with_cfg(&src, opts.mode, opts.cfg.as_ref()) {
                     Ok(m) => merged.merge(m),
                     Err(e) => skip_or_fail(e, f, opts.skip_unparsable)?,
                 }
@@ -227,7 +227,7 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
         // are still married across the files (#315) and exported symbols
         // checked crate-wide (#300).
         (Mode::Crate, None) => {
-            let mut scan = rustcall_core::extract::TreeScan::with_edition(&opts.edition);
+            let mut scan = rustcall_julia_core::extract::TreeScan::with_edition(&opts.edition);
             // A listed file that is also reached through an include must not
             // win merely because it appeared in FILE...: its root position is
             // not the position Rust gives the included items. Discover those
@@ -253,7 +253,7 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
                 .map(|f| QueuedFile {
                     dir: f.parent().unwrap_or(Path::new(".")).to_path_buf(),
                     file: f.clone(),
-                    position: rustcall_core::extract::FilePosition::module(&[], true, &[]),
+                    position: rustcall_julia_core::extract::FilePosition::module(&[], true, &[]),
                     ancestry: Vec::new(),
                     follow_modules: false,
                     fragment: false,
@@ -267,7 +267,7 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
                     queue.push(QueuedFile {
                         dir: f.parent().unwrap_or(Path::new(".")).to_path_buf(),
                         file: f.clone(),
-                        position: rustcall_core::extract::FilePosition::module(&[], true, &[]),
+                        position: rustcall_julia_core::extract::FilePosition::module(&[], true, &[]),
                         ancestry: Vec::new(),
                         follow_modules: false,
                         fragment: false,
@@ -278,7 +278,7 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
             // fragment `include!`d under two different modules is compiled
             // twice by rustc and belongs in the manifest twice, under each
             // module's own path (#343 review).
-            let mut seen: Vec<(PathBuf, rustcall_core::extract::FilePosition)> = Vec::new();
+            let mut seen: Vec<(PathBuf, rustcall_julia_core::extract::FilePosition)> = Vec::new();
             while let Some(QueuedFile {
                 file,
                 dir,
@@ -422,7 +422,7 @@ fn cmd_wrap(args: &[Arg]) -> Result<(), String> {
         files,
         edition,
     })?;
-    let wrapper = rustcall_core::wrap::wrapper_crate(&scanned, &crate_name, cfg_resolved);
+    let wrapper = rustcall_julia_core::wrap::wrapper_crate(&scanned, &crate_name, cfg_resolved);
     let text = wrapper
         .to_toml()
         .map_err(|e| format!("failed to serialize wrapper crate: {e}"))?;
@@ -507,7 +507,7 @@ fn cmd_manifest(args: &[Arg]) -> Result<(), String> {
 struct QueuedFile {
     file: PathBuf,
     dir: PathBuf,
-    position: rustcall_core::extract::FilePosition,
+    position: rustcall_julia_core::extract::FilePosition,
     /// Whether the out-of-line `mod` declarations of this file are followed.
     /// Always true when there is a crate root; without one, true only for a
     /// file reached through an `include!`, because a listed file's modules are
@@ -545,7 +545,7 @@ struct QueuedFile {
 fn pulled_in(
     file: &Path,
     dir: &Path,
-    pending: rustcall_core::extract::PullIns,
+    pending: rustcall_julia_core::extract::PullIns,
     follow_modules: bool,
     ancestry: &[PathBuf],
 ) -> Vec<QueuedFile> {
@@ -568,7 +568,7 @@ fn pulled_in(
             out.push(QueuedFile {
                 file: child_file,
                 dir: child_dir,
-                position: rustcall_core::extract::FilePosition::module(
+                position: rustcall_julia_core::extract::FilePosition::module(
                     &m.module_path,
                     m.reachable,
                     &m.cfg,
@@ -631,15 +631,15 @@ fn rootless_implicit_files(
         .map(|f| QueuedFile {
             dir: f.parent().unwrap_or(Path::new(".")).to_path_buf(),
             file: f.clone(),
-            position: rustcall_core::extract::FilePosition::module(&[], true, &[]),
+            position: rustcall_julia_core::extract::FilePosition::module(&[], true, &[]),
             ancestry: Vec::new(),
             follow_modules: false,
             fragment: false,
         })
         .collect();
-    let mut seen: Vec<(PathBuf, rustcall_core::extract::FilePosition)> = Vec::new();
+    let mut seen: Vec<(PathBuf, rustcall_julia_core::extract::FilePosition)> = Vec::new();
     let mut implicit = Vec::new();
-    let mut scan = rustcall_core::extract::TreeScan::new();
+    let mut scan = rustcall_julia_core::extract::TreeScan::new();
     let mut manifest = Manifest::new(Mode::Crate);
 
     while let Some(QueuedFile {
@@ -681,7 +681,7 @@ fn rootless_implicit_files(
 
 /// Scan a whole crate by following its module tree from `root` (#275, #315).
 ///
-/// Only this layer touches the filesystem: `rustcall_core` hands back the
+/// Only this layer touches the filesystem: `rustcall_julia_core` hands back the
 /// out-of-line `mod` declarations and the `include!` fragments of each file,
 /// and this resolves them. A `mod` is resolved the way rustc does —
 /// `#[path = "..."]` first, then `<dir>/<name>.rs`, then `<dir>/<name>/mod.rs`
@@ -695,14 +695,14 @@ fn scan_crate_tree(
     cfg: Option<&CfgSet>,
     skip_unparsable: bool,
     manifest: &mut Manifest,
-    environment: Option<rustcall_core::include_paths::IncludeEnvironment>,
+    environment: Option<rustcall_julia_core::include_paths::IncludeEnvironment>,
     edition: &str,
 ) -> Result<Vec<PathBuf>, String> {
     let root_dir = root.parent().unwrap_or(Path::new(".")).to_path_buf();
     let mut queue = vec![QueuedFile {
         file: root.to_path_buf(),
         dir: root_dir,
-        position: rustcall_core::extract::FilePosition::module(&[], true, &[]),
+        position: rustcall_julia_core::extract::FilePosition::module(&[], true, &[]),
         ancestry: Vec::new(),
         follow_modules: true,
         fragment: false,
@@ -717,16 +717,16 @@ fn scan_crate_tree(
     // both — keyed by module path alone the second was dropped and the item
     // kept whichever predicate the walk reached last (#357). One fragment
     // included twice at the *same* position is still one scan.
-    let mut visited: Vec<(PathBuf, rustcall_core::extract::FilePosition)> = Vec::new();
+    let mut visited: Vec<(PathBuf, rustcall_julia_core::extract::FilePosition)> = Vec::new();
     let mut input_paths = std::collections::BTreeSet::new();
     let mut scan = match environment {
         Some(environment) => {
-            rustcall_core::extract::TreeScan::with_include_environment_and_edition(
+            rustcall_julia_core::extract::TreeScan::with_include_environment_and_edition(
                 environment,
                 edition,
             )
         }
-        None => rustcall_core::extract::TreeScan::with_edition(edition),
+        None => rustcall_julia_core::extract::TreeScan::with_edition(edition),
     };
 
     while let Some(QueuedFile {
@@ -788,7 +788,7 @@ fn scan_crate_tree(
 /// `src/outer/child.rs`.
 fn resolve_module_file(
     dir: &Path,
-    m: &rustcall_core::pyo3::PendingModule,
+    m: &rustcall_julia_core::pyo3::PendingModule,
 ) -> Option<(PathBuf, PathBuf)> {
     let mut base = dir.to_path_buf();
     for component in &m.dir_components {
@@ -856,7 +856,7 @@ fn cmd_expand(args: &[Arg]) -> Result<(), String> {
     let file = file.ok_or("FILE is required")?;
     let cfg = read_cfg_file(cfg_file.as_deref(), cfg_lenient)?;
     let src = read_source(&file)?;
-    let expanded = rustcall_core::expand::expand_with_cfg(&src, cfg.as_ref())
+    let expanded = rustcall_julia_core::expand::expand_with_cfg(&src, cfg.as_ref())
         .map_err(|e| format!("{}: {e}", file.display()))?;
     if let Some(path) = manifest_out.as_deref() {
         write_manifest(&expanded.manifest, Some(path))?;
@@ -896,7 +896,7 @@ fn cmd_specialize(args: &[Arg]) -> Result<(), String> {
     let new_name = new_name.ok_or("--new-name is required")?;
     let file = file.ok_or("FILE is required")?;
     let src = read_source(&file)?;
-    let sp = rustcall_core::specialize::specialize(&src, &fn_name, &bindings, &new_name)
+    let sp = rustcall_julia_core::specialize::specialize(&src, &fn_name, &bindings, &new_name)
         .map_err(|e| format!("{}: {e}", file.display()))?;
     if let Some(path) = manifest_out.as_deref() {
         write_manifest(&sp.manifest, Some(path))?;
@@ -942,13 +942,13 @@ fn cmd_specialize_many(args: &[Arg]) -> Result<(), String> {
             .map_err(|e| format!("failed to read {}: {e}", spec_path.display()))?,
     )
     .map_err(|e| format!("failed to parse {}: {e}", spec_path.display()))?;
-    let requests: Vec<rustcall_core::specialize::SpecializationSpec> = specs
+    let requests: Vec<rustcall_julia_core::specialize::SpecializationSpec> = specs
         .specializations
         .into_iter()
         .map(|s| (s.fn_name, s.bindings.into_iter().collect(), s.new_name))
         .collect();
     let src = read_source(&file)?;
-    let sp = rustcall_core::specialize::specialize_many(&src, &requests)
+    let sp = rustcall_julia_core::specialize::specialize_many(&src, &requests)
         .map_err(|e| format!("{}: {e}", file.display()))?;
     if let Some(path) = manifest_out.as_deref() {
         write_manifest(&sp.manifest, Some(path))?;

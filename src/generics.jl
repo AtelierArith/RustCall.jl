@@ -140,7 +140,7 @@ not carry `member` all read as a miss, and a miss only costs the rebuild that
 used to happen unconditionally.
 
 `artifact_key` decides identity, and it folds in the toolchain fingerprint —
-the extractor digest and the `rustcall_core` sources — so a cached library can
+the extractor digest and the `rustcall_julia_core` sources — so a cached library can
 never have been emitted by a different symbol scheme than the record describes.
 
 This is the **probe**: it materializes nothing, so asking whether an

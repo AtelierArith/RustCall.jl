@@ -92,7 +92,7 @@ neutral default so a caller only names what applies to it.
 - `build_env::Vector{Pair{String, String}}`: build environment that reaches the
   compiler (`RUSTFLAGS`, `CARGO_*`, …), sorted by name.
 - `toolchain::String`: `toolchain_fingerprint` — extractor digest,
-  manifest schema, `rustcall_core` / `rustcall_julia_macros` sources.
+  manifest schema, `rustcall_julia_core` / `rustcall_julia_macros` sources.
 - `compiler::String`: identity of the compiler that actually runs, from
   `RustToolChain` (see `artifact_compiler_identity`).
 - `extra::Vector{Pair{String, String}}`: escape hatch for pipeline-specific
@@ -704,23 +704,24 @@ end
 """
     RUSTCALL_RELEASE_CRATES
 
-The crates whose `[package] version` is the RustCall release version and moves
-with it (#372) — and therefore the **only** packages whose version is left out
-of an artifact identity (`_identity_file_bytes`). A user's crate, or any other
+The crates this package builds from its own `deps/` — the **only** packages
+whose `[package] version` is left out of an artifact identity
+(`_identity_file_bytes`). Their version moves on its own — a crates.io release
+for the published three, the package's for the internal ones — while their
+behaviour is their sources, which the identity hashes separately; a
+version-only bump must move nothing (#372, #409). A user's crate, or any other
 path dependency, keeps its version in the key: a crate can read
 `env!("CARGO_PKG_VERSION")` in its source or build script, so a bump of its
-version alone can change what it compiles to. These four cannot be told apart
-by their version — a patch release rewrites it with nothing else changed — and
-their behaviour is their sources, which the identity hashes separately.
+version alone can change what it compiles to.
 
 A name is not provenance. The exception applies to a manifest only when it
 *is* this package's `deps/<name>/Cargo.toml`, and to a lockfile entry only when
 the lockfile's own crate takes that dependency by path from this package's
 `deps/` — `_rustcall_release_crate_dir`, `_rustcall_release_names_in`. A fork
-or an unrelated crate that happens to be called `rustcall_core` keeps its
+or an unrelated crate that happens to be called `rustcall_julia_core` keeps its
 version like any other.
 """
-const RUSTCALL_RELEASE_CRATES = ("rustcall_core", "rustcall_extract",
+const RUSTCALL_RELEASE_CRATES = ("rustcall_julia_core", "rustcall_extract",
                                  "rustcall_julia_macros", "rustcall_julia_macros_impl")
 
 # This package's own directory for one of `RUSTCALL_RELEASE_CRATES`, canonical.
@@ -738,7 +739,7 @@ end
 # The release crates that the crate at `dir` takes as **path** dependencies
 # from this package's `deps/` — and the release crates *those* take by path in
 # turn: a `#[julia]` crate names only `rustcall_julia_macros`, and its lockfile
-# records `rustcall_julia_macros_impl` and `rustcall_core` behind it, all
+# records `rustcall_julia_macros_impl` and `rustcall_julia_core` behind it, all
 # three bumped by a patch release. Read from the manifests, not the lockfile:
 # these are the only lockfile entries whose `version` may be left out. A
 # dependency inherited from a workspace (`workspace = true`) carries no path
@@ -880,7 +881,7 @@ function _identity_file_bytes(path::String; release_names = nothing)::Vector{UIn
                   Set{String}(release_names)
     isempty(strip_names) && return raw
     # A graph holding two packages of one name — this package's crate and a
-    # fork — has Cargo qualify its references, `"rustcall_core 0.4.0"` in a
+    # fork — has Cargo qualify its references, `"rustcall_julia_core 0.4.0"` in a
     # `dependencies = [...]` list; the one naming this package's crate enters
     # as the bare name, so it reads the same before and after a bump. Which
     # version that is comes from *this lockfile* — the source-less entry of

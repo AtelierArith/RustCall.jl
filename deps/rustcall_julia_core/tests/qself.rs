@@ -1,7 +1,7 @@
 //! Qualified paths (`<T as Trait>::Item`) are substituted by `specialize`
 //! (follow-up of #264).
 
-use rustcall_core::specialize::specialize;
+use rustcall_julia_core::specialize::specialize;
 
 #[test]
 fn substitutes_inside_qualified_paths() {

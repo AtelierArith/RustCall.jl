@@ -11,7 +11,7 @@ using RustCall
 # to silence one — and a correct hook needs a thread-local depth counter shared
 # by every wrapper in the image, because the one installed hook can only see the
 # counter it captured. That sharing is what decides *where* the counter lives
-# (`rustcall_core::codegen::PanicHook`): at the root of a file RustCall writes
+# (`rustcall_julia_core::codegen::PanicHook`): at the root of a file RustCall writes
 # whole, or — for `#[julia]`, which is handed one item at a time and can emit no
 # crate-wide state — in the `rustcall_julia_macros` rlib the crate already
 # depends on, whose `#[no_mangle]` items the `cdylib` re-exports. Both ways the
@@ -64,10 +64,10 @@ pub fn hook_probe_two(n: i32) -> i32 {
 
 @testset "quiet panic hook" begin
     @testset "the two symbol names agree with the generator" begin
-        # Julia resolves what `rustcall_core::codegen` exports; a rename on
+        # Julia resolves what `rustcall_julia_core::codegen` exports; a rename on
         # either side would show up as a hook that is never installed, which is
         # silent by nature.
-        codegen = read(joinpath(dirname(@__DIR__), "deps", "rustcall_core", "src",
+        codegen = read(joinpath(dirname(@__DIR__), "deps", "rustcall_julia_core", "src",
                                 "codegen.rs"), String)
         for symbol in (RustCall.QUIET_PANIC_INSTALL_SYMBOL,
                        RustCall.QUIET_PANIC_UNINSTALL_SYMBOL)
@@ -417,7 +417,7 @@ pub fn hook_probe_two(n: i32) -> i32 {
             # Asserted on the generated artifact, not on the generator's source:
             # the golden wrapper crate of the corpus is what a `:link_libpython`
             # build compiles.
-            golden = read(joinpath(dirname(@__DIR__), "deps", "rustcall_core", "tests",
+            golden = read(joinpath(dirname(@__DIR__), "deps", "rustcall_julia_core", "tests",
                                    "corpus", "pyo3_wrap.wrap.rs"), String)
             @test occursin("::rustcall_julia_macros::__RustCallBoundary::enter()", golden)
             @test !occursin("fn $(RustCall.QUIET_PANIC_INSTALL_SYMBOL)", golden)

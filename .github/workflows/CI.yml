@@ -41,7 +41,7 @@ jobs:
           - macos-latest
           - windows-latest
         crate:
-          - rustcall_core
+          - rustcall_julia_core
           - rustcall_extract
           - rustcall_julia_macros
           - rustcall_julia_macros_impl

@@ -469,7 +469,7 @@ using TOML
     @testset "CLI output matches the golden corpus" begin
         # The corpus is the Rust-side golden test; the CLI must produce exactly
         # the same manifests so the two front ends cannot drift apart.
-        corpus = joinpath(dirname(@__DIR__), "deps", "rustcall_core", "tests", "corpus")
+        corpus = joinpath(dirname(@__DIR__), "deps", "rustcall_julia_core", "tests", "corpus")
         sources = filter(f -> endswith(f, ".rs") && !endswith(f, ".expanded.rs"), readdir(corpus))
         @test !isempty(sources)
         for src in sources

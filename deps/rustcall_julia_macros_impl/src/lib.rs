@@ -11,7 +11,7 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{ItemFn, ItemImpl, ItemMod, ItemStruct};
 
-use rustcall_core::codegen;
+use rustcall_julia_core::codegen;
 
 /// The `#[julia]` attribute macro for FFI-compatible functions, structs, impl
 /// blocks and inline modules.
