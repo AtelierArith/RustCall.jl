@@ -32,13 +32,26 @@ const _PUBLISHED_CRATES = ("rustcall_julia_core", "rustcall_julia_macros",
         # release: their version says what the crates' own API promises, while
         # the identifier above says what manifest the release speaks.
         # `rustcall_extract` is not published — it ships inside the package and
-        # its version enters no contract, so it is not on this list.
-        # `rustcall_helpers` likewise: no manifest, its own JLL (#404).
+        # is kept in step with the package's own version (asserted below), so
+        # it is not on this list. `rustcall_helpers` likewise: no manifest,
+        # its own JLL (#404).
         versions = map(_PUBLISHED_CRATES) do crate
             toml = TOML.parsefile(joinpath(_ROOT, "deps", crate, "Cargo.toml"))
             VersionNumber(toml["package"]["version"])
         end
         @test length(unique(versions)) == 1
+    end
+
+    @testset "the extractor keeps the package's version" begin
+        # Not a published crate, so nothing on crates.io pins it: this is the
+        # one place a `Project.toml` bump that forgot
+        # `deps/rustcall_extract/Cargo.toml` — or its lockfile, which records
+        # the same number — is caught (#451 review).
+        extract = TOML.parsefile(joinpath(_ROOT, "deps", "rustcall_extract", "Cargo.toml"))
+        @test VersionNumber(extract["package"]["version"]) == release
+        lock = TOML.parsefile(joinpath(_ROOT, "deps", "rustcall_extract", "Cargo.lock"))
+        entry = only(p for p in lock["package"] if p["name"] == "rustcall_extract")
+        @test VersionNumber(entry["version"]) == release
     end
 
     @testset "the extractor reports the same identifier" begin
