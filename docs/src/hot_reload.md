@@ -13,7 +13,7 @@ using RustCall
 | Door | Hot reload |
 | --- | --- |
 | `@rust_crate` on a crate whose `[lib]` has `crate-type = ["cdylib"]` | **Supported**: `RustCall.enable_hot_reload_for_crate` |
-| `@rust_crate` on a crate with no `cdylib` target (bound through a generated wrapper crate) | Not supported: refused with an `ArgumentError` |
+| `@rust_crate` on a crate with no `cdylib` target (bound through a generated wrapper crate) | Not supported: the module form refuses it with an `ArgumentError`; the path form fails at the first rebuild |
 | `rust"""..."""` with `// cargo-deps: my_crate = { path = "..." }` | **Not supported.** Evaluate the block again instead (see below) |
 | `rust"""..."""`, `@irust`, generics | Not applicable: evaluating the source again builds a new library |
 
@@ -61,13 +61,14 @@ first_step = HotCounter.step()   # 1
 ```
 
 Turn hot reload on by passing the value `@rust_crate` returned. That way the
-reload reuses the module's registry name and build options (see below). The callback
+reload reuses the module's crate directory, registry name and build options
+(see below). The callback
 runs after every rebuild attempt; here it reports each result on a channel,
 so the example can wait for the rebuild:
 
 ```@example hotreload
 reloads = Channel{Bool}(Inf)
-state = RustCall.enable_hot_reload_for_crate(HotCounter, crate;
+state = RustCall.enable_hot_reload_for_crate(HotCounter;
     poll = true, interval = 0.25,
     callback = (lib_name, success, error) -> put!(reloads, success))
 state.lib_name == HotCounter._LIB_NAME
@@ -120,14 +121,23 @@ generated for. Two things identify that build:
   `features` and `default_features` as `_BUILD_OPTIONS`. A reload that rebuilt
   a default release build instead would compile other `#[cfg]`s under a module
   whose wrappers were generated for these ones.
+- **The crate.** The module records the directory it was generated from as
+  `_CRATE_DIR`.
 
-**Pass the module** (or the value `@rust_crate` returned). This form reads both
-records, so a reload keeps the name, the profile and the features:
+**Pass the module** (or the value `@rust_crate` returned). This form reads
+these records, so a reload rebuilds the module's own crate and keeps the name,
+the profile and the features:
 
 ```julia
 B = @rust_crate "deps/my_crate" release=false features=["simd"]
-RustCall.enable_hot_reload_for_crate(B, "deps/my_crate")   # rebuilds debug, with "simd"
+RustCall.enable_hot_reload_for_crate(B)   # rebuilds deps/my_crate, debug, with "simd"
 ```
+
+The crate path can be left out. If you pass one, it must name the module's own
+crate directory. The comparison uses `realpath`, so a relative or symlinked
+spelling is fine. A path to a different checkout is refused with an
+`ArgumentError`. A module loaded from a `write_bindings_to_file` file records
+no crate directory, so for that module the path is required.
 
 The other forms don't read the module, so they can't know how it was built:
 
@@ -141,14 +151,21 @@ The other forms don't read the module, so they can't know how it was built:
 - `RustCall.enable_hot_reload(lib_name, crate)` is the low-level call. It
   reloads the given registry name with a default release build.
 
-Both forms of `enable_hot_reload_for_crate` raise an `ArgumentError` rather
-than rebuild something else in two cases:
+The module form raises an `ArgumentError` rather than rebuild something else
+in these cases:
 
 - **A module bound through a generated wrapper crate.** This is a crate with no
   `cdylib` target of its own, and a reload cannot reproduce the wrapper build.
 - **A module with no `_BUILD_OPTIONS`**, for example a bindings file written by
   an older RustCall. Regenerate it, or use the path form with the options it
   was built with.
+- **A crate path that is not the module's own crate** (see above).
+
+The path form checks none of this up front. Given a crate with no `cdylib`
+target, it enables hot reload and starts the watcher, and the problem shows up
+only at the first rebuild. That rebuild fails: `trigger_reload` returns
+`false`, the callback receives `(lib_name, false, err)`, and nothing is
+swapped. Prefer the module form.
 
 The module form also refuses a **changed build environment**. A module records
 the environment it was built under: `RUSTFLAGS` and the other allowlisted

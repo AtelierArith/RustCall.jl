@@ -144,6 +144,9 @@ end
                 @test _hrd_get(sandbox, :rebuilt) === true
                 @test _hrd_get(sandbox, :second_step) == 2
                 @test lib_name == _hrd_get(sandbox, :HotCounter)._LIB_NAME
+                # The example omits the crate path; the module supplied its own.
+                @test realpath(_hrd_get(sandbox, :state).crate_path) ==
+                      realpath(_hrd_get(sandbox, :crate))
                 @test !RustCall.is_hot_reload_enabled(lib_name)
             finally
                 lib_name === nothing || _hrd_forget(lib_name)
@@ -183,6 +186,7 @@ end
                 # The docstring loads with `features=["simd"]`; the reload kept
                 # them (#465 review): the rebuilt library still has the feature.
                 @test collect(state.build_options.features) == ["simd"]
+                @test realpath(state.crate_path) == realpath(crate)
                 @test Base.invokelatest(mod.hrd_module_value) == 122
             finally
                 _hrd_forget(state.lib_name)

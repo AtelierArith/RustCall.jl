@@ -1135,7 +1135,7 @@ crate. Registering under the module name, as before, reached nothing (#461).
 crate_path = "path/to/my_crate"         # a #[julia] crate with crate-type = ["cdylib"]
 MyCrate = @rust_crate crate_path features=["simd"]
 
-state = RustCall.enable_hot_reload_for_crate(MyCrate, crate_path;   # keeps features=["simd"]
+state = RustCall.enable_hot_reload_for_crate(MyCrate;   # crate_path and features=["simd"] kept
     callback = (lib_name, success, error) -> @info "reloaded" lib_name success)
 # Edit the sources and the watcher rebuilds; or rebuild now:
 RustCall.trigger_reload(state.lib_name)  # true once the new library is loaded
