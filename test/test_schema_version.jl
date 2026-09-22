@@ -323,8 +323,10 @@ const _PUBLISHED_CRATES = ("rustcall_julia_core", "rustcall_julia_macros",
             @test String(RustCall._identity_file_bytes(real_manifest)) ==
                   join(map(without_pins, filter(l -> !startswith(l, "version = "), split(raw_manifest, '\n'))), '\n')
             @test occursin("rustcall_julia_macros_impl = { path = \"../rustcall_julia_macros_impl\", version = ", raw_manifest)
-            @test occursin("rustcall_julia_macros_impl = { path = \"../rustcall_julia_macros_impl\" }\n",
-                           String(RustCall._identity_file_bytes(real_manifest)))
+            # Line by line, `\r` stripped: a Windows checkout has CRLF endings.
+            identity_lines = map(l -> rstrip(l, '\r'),
+                                 split(String(RustCall._identity_file_bytes(real_manifest)), '\n'))
+            @test "rustcall_julia_macros_impl = { path = \"../rustcall_julia_macros_impl\" }" in identity_lines
             # A registry pin in the same manifest is not a release-coupled line
             # and stays (`pyo3 = { version = "0.29", ... }` in the dev-dependencies).
             @test occursin("pyo3 = { version = ", String(RustCall._identity_file_bytes(real_manifest)))
