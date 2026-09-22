@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.6] - 2026-09-22
+
 ### Changed
 - **The Rust crates carry a version of their own, and `rustcall_core` is
   `rustcall_julia_core`**
@@ -34,8 +36,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   what it cannot check, and an index probe that tells an unreachable
   crates.io from an unpublished version rather than guess.
 
-## [0.6.5] - 2026-09-22
-
 ### Fixed
 - **A `#[julia]` struct holding a `Vec` or another struct binds as a handle**
   ([#453](https://github.com/AtelierArith/RustCall.jl/issues/453)). A field
@@ -48,6 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   predicate that the manifest, the proc macro and the inline generator share.
   Every other field gets none, so the struct is an opaque handle that Julia
   reaches through its methods.
+
+## [0.6.5] - 2026-09-22
+
+### Fixed
 - **The first PyO3 host call no longer compiles RustCall's scan and cache
   code** ([#449](https://github.com/AtelierArith/RustCall.jl/issues/449)).
   With the extension module already cached, the first `pyo3_host_import` — and
@@ -2265,7 +2269,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration tests for Rust helpers library
 - Documentation examples tests
 
-[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.5...HEAD
+[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.6...HEAD
+[0.6.6]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.5...v0.6.6
 [0.6.5]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.4...v0.6.5
 [0.6.4]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.3...v0.6.4
 [0.6.3]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.2...v0.6.3
