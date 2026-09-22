@@ -1025,8 +1025,156 @@ const FFI_STRICT = _state_view(:ffi_strict, Ref{Symbol}(:error))
 
 const _FFI_WARNED_CONTEXTS = _state_view(:ffi_warned_contexts, Set{String}())
 
+# ============================================================================
+# The collecting mode of the wrapper generators (#454)
+# ============================================================================
+
 """
-    ffi_return_symbol_or_throw(rust_type, abi, ctx; strict = FFI_STRICT[]) -> Union{Symbol, Expr}
+    BoundaryPosition
+
+One argument or return position a wrapper generator examined: the item it
+belongs to, the position's label (``"argument `x`"``, `"return"`,
+`"Ok payload"`, `"Err payload"`, `"Some payload"`, `"field getter"`,
+`"field setter"`), the Rust spelling, the manifest `abi` column, and `reason`
+— `nothing` when the FFI contract describes it, otherwise why it does not.
+"""
+const BoundaryPosition = NamedTuple{(:item, :position, :rust_type, :abi, :reason),
+                                    Tuple{String, String, String, String, Union{Nothing, String}}}
+
+"""
+    BoundaryCollector
+
+What `boundary_report` is computed from (#454): every argument and return
+position the wrapper generators examined while they ran in collecting mode,
+in the order they examined them, with the reason for each one the contract
+cannot describe.
+
+The generators *are* the report. Each records the positions it decides as it
+decides them: `_string_arg_plan` its arguments; `_ffi_function_return`,
+`_ffi_method_return`, `_ffi_field_return` and the `ffi_*_or_throw` family a
+return position; `ffi_payload_symbols` a `Result` / `Option` payload. A
+refusal that raises a `RustError` outside collecting mode is recorded instead
+(`_boundary_refuse`, `_ffi_unsupported_return`) and generation carries on with
+a placeholder, so the item's remaining positions are still examined. A rule
+added to a generator is therefore in the report by construction; nothing
+walks the manifest a second time.
+
+`item` is the Rust item being generated — module-qualified, `Struct::member`
+for a method or a field (`_boundary_label`) — named by each emitter's entry
+point through `_boundary_item!`. A position recorded while no item is named
+is an error, so an emitter that forgets fails the report instead of misfiling
+its findings. Positions are keyed by `(item, position)`: the emitters decide
+one position more than once (the surface symbol and the C slot, a field's
+getter and its setter, an expression and its source text), and the first
+refusal recorded for a key is the one kept.
+"""
+mutable struct BoundaryCollector
+    item::String
+    positions::Vector{BoundaryPosition}
+    index::Dict{Tuple{String, String}, Int}
+end
+
+BoundaryCollector() = BoundaryCollector("", BoundaryPosition[], Dict{Tuple{String, String}, Int}())
+
+const _BOUNDARY_COLLECTOR_KEY = :rustcall_boundary_collector
+
+"""
+    _boundary_collector() -> Union{Nothing, BoundaryCollector}
+
+The collector of the current task, or `nothing` outside collecting mode — the
+generators' normal case, in which every recording helper below is a no-op and
+every refusal raises exactly as it always has.
+"""
+_boundary_collector() =
+    get(task_local_storage(), _BOUNDARY_COLLECTOR_KEY, nothing)::Union{Nothing, BoundaryCollector}
+
+_boundary_collecting() = _boundary_collector() !== nothing
+
+"""
+    _collect_boundary(f) -> BoundaryCollector
+
+Run `f()` — the wrapper generators — in collecting mode on the current task
+and return what they examined. Task-local, like the callback frame stack
+(#296): a `rust\"\"\"` block expanding on another task meanwhile generates
+normally. Does not nest: a report is one run of the generators.
+"""
+function _collect_boundary(f)
+    tls = task_local_storage()
+    haskey(tls, _BOUNDARY_COLLECTOR_KEY) &&
+        throw(ArgumentError("the generators' collecting mode does not nest (#454)"))
+    collector = BoundaryCollector()
+    tls[_BOUNDARY_COLLECTOR_KEY] = collector
+    try
+        f()
+    finally
+        delete!(tls, _BOUNDARY_COLLECTOR_KEY)
+    end
+    return collector
+end
+
+"""
+    _boundary_item!(label)
+
+Name the Rust item whose wrapper the emitter is about to generate; every
+position recorded until the next call is filed under it. Called at each
+emitter's entry point — before its argument plan, which is the first thing
+that records. A no-op outside collecting mode.
+"""
+function _boundary_item!(label::AbstractString)
+    c = _boundary_collector()
+    c === nothing || (c.item = String(label))
+    return nothing
+end
+
+"""
+    _boundary_examined!(position, rust_type, abi, reason)
+
+Record that generation examined `position` of the current item; `reason` is
+`nothing` when the contract describes it and the reason otherwise. Recording
+the same `(item, position)` again keeps the first reason and adds one where
+the earlier record had none, so a helper that examines a position on the way
+to the decision (the contract lookup) and the decision itself (an `or_throw`)
+count as one. A no-op outside collecting mode.
+"""
+function _boundary_examined!(position::AbstractString, rust_type::AbstractString,
+                             abi::AbstractString, reason::Union{Nothing, AbstractString})
+    c = _boundary_collector()
+    c === nothing && return nothing
+    isempty(c.item) && throw(ArgumentError(
+        "a wrapper generator examined $(position) (`$(rust_type)`) with no item named; " *
+        "the emitter's entry point must call `_boundary_item!` first (#454)"))
+    key = (c.item, String(position))
+    i = get(c.index, key, 0)
+    if i == 0
+        push!(c.positions, (; item = c.item, position = String(position),
+                              rust_type = String(rust_type), abi = String(abi),
+                              reason = reason === nothing ? nothing : String(reason)))
+        c.index[key] = length(c.positions)
+    elseif reason !== nothing && c.positions[i].reason === nothing
+        c.positions[i] = merge(c.positions[i], (; reason = String(reason)))
+    end
+    return nothing
+end
+
+"""
+    _boundary_refuse(position, rust_type, abi, message)
+
+How a wrapper generator refuses a position of its own accord — beyond what
+the contract's `or_throw` helpers decide. Outside collecting mode this throws
+`RustError(message)`, exactly as the generator always has; in collecting mode
+the refusal is recorded against the current item and the generator continues
+(the caller skips the position). Every such refusal goes through here, so it
+is in the report by construction.
+"""
+function _boundary_refuse(position::AbstractString, rust_type::AbstractString,
+                          abi::AbstractString, message::AbstractString)
+    _boundary_collecting() || throw(RustError(message))
+    _boundary_examined!(position, rust_type, abi, message)
+    return nothing
+end
+
+"""
+    ffi_return_symbol_or_throw(rust_type, abi, ctx; strict = FFI_STRICT[], position = "return") -> Union{Symbol, Expr}
 
 How the return position of `ctx` is spelled in generated code, as a Julia AST
 fragment ready to splice.
@@ -1047,20 +1195,23 @@ type: Rust `char` arrives as a `UInt32` code point and must be converted, never
 reinterpreted as Julia's left-aligned UTF-8 `Char`.
 """
 function ffi_return_symbol_or_throw(rust_type::AbstractString, abi::AbstractString,
-                                    ctx::AbstractString; strict::Symbol = FFI_STRICT[])
+                                    ctx::AbstractString; strict::Symbol = FFI_STRICT[],
+                                    position::AbstractString = "return")
     c = ffi_return_contract(rust_type; abi = abi)
-    if c.known
+    if c.known && (c.abi === :void || c.abi === :by_value || c.abi === :pointer)
+        # A decided position of the report (#454): `position` says which one
+        # of the item this is — the plain return unless the caller says a
+        # payload or a field.
+        _boundary_examined!(position, rust_type, abi, nothing)
         c.abi === :void && return :Cvoid
-        if c.abi === :by_value || c.abi === :pointer
-            # The **surface** spelling, not the raw C slot: `call_rust_function`
-            # lowers it to the slot and converts the value back
-            # (`ccall_return_type` / `convert_return` in `src/codegen.jl`), so
-            # the slot-to-surface conversion lives in one place instead of at
-            # every return site. Rust `char` is where the two differ.
-            return something(ffi_julia_symbol(rust_type), ffi_type_expr(c.surface_type))
-        end
+        # The **surface** spelling, not the raw C slot: `call_rust_function`
+        # lowers it to the slot and converts the value back
+        # (`ccall_return_type` / `convert_return` in `src/codegen.jl`), so
+        # the slot-to-surface conversion lives in one place instead of at
+        # every return site. Rust `char` is where the two differ.
+        return something(ffi_julia_symbol(rust_type), ffi_type_expr(c.surface_type))
     end
-    return _ffi_unsupported_return(rust_type, abi, ctx, strict, :Any)
+    return _ffi_unsupported_return(rust_type, abi, ctx, strict, :Any; position = position)
 end
 
 """
@@ -1079,15 +1230,15 @@ stored, and the conversion to the surface type happens after the call
 (`convert_return`).
 """
 function ffi_return_slot_symbol_or_throw(rust_type::AbstractString, abi::AbstractString,
-                                         ctx::AbstractString; strict::Symbol = FFI_STRICT[])
+                                         ctx::AbstractString; strict::Symbol = FFI_STRICT[],
+                                         position::AbstractString = "return")
     c = ffi_return_contract(rust_type; abi = abi)
-    if c.known
+    if c.known && (c.abi === :void || c.abi === :by_value || c.abi === :pointer)
+        _boundary_examined!(position, rust_type, abi, nothing)
         c.abi === :void && return :Cvoid
-        if c.abi === :by_value || c.abi === :pointer
-            return _ffi_slot_expr(rust_type, c)
-        end
+        return _ffi_slot_expr(rust_type, c)
     end
-    return _ffi_unsupported_return(rust_type, abi, ctx, strict, :Any)
+    return _ffi_unsupported_return(rust_type, abi, ctx, strict, :Any; position = position)
 end
 
 """
@@ -1106,7 +1257,7 @@ ffi_payload_is_owned_string(rust_type::AbstractString, abi::AbstractString) =
     ffi_owned_string_return(ffi_return_contract(rust_type; abi = abi))
 
 """
-    ffi_payload_symbols(rust_type, abi, ctx; strict = FFI_STRICT[]) -> (surface, slot)
+    ffi_payload_symbols(rust_type, abi, ctx; position, strict = FFI_STRICT[]) -> (surface, slot)
 
 How one `Result` / `Option` payload is spelled in generated code: the Julia
 surface type the caller sees, and the C slot the aggregate field is declared
@@ -1116,15 +1267,25 @@ For a plain payload these are what the return-position helpers give (they
 differ only for `char`). For a lowered string payload the slot is `CRustString`
 — the buffer the wrapper wrote — and the surface type is `String`, decoded and
 released by `RustCall._result_payload`.
+
+`position` names the payload for the boundary report (#454) — `"Ok payload"`,
+`"Err payload"` or `"Some payload"` — and has no default: a payload is never
+the item's plain return, and the two payloads of one `Result` must not share
+a record.
 """
 function ffi_payload_symbols(rust_type::AbstractString, abi::AbstractString,
-                             ctx::AbstractString; strict::Symbol = FFI_STRICT[])
+                             ctx::AbstractString; position::AbstractString,
+                             strict::Symbol = FFI_STRICT[])
     # Qualified: the spelling is spliced into code that lives in the user's
     # module or in a generated `@rust_crate` module, where only `RustCall`
     # itself is reliably in scope.
-    ffi_payload_is_owned_string(rust_type, abi) && return (:String, :(RustCall.CRustString))
-    return (ffi_return_symbol_or_throw(rust_type, abi, ctx; strict = strict),
-            ffi_return_slot_symbol_or_throw(rust_type, abi, ctx; strict = strict))
+    if ffi_payload_is_owned_string(rust_type, abi)
+        _boundary_examined!(position, rust_type, abi, nothing)
+        return (:String, :(RustCall.CRustString))
+    end
+    return (ffi_return_symbol_or_throw(rust_type, abi, ctx; strict = strict, position = position),
+            ffi_return_slot_symbol_or_throw(rust_type, abi, ctx; strict = strict,
+                                            position = position))
 end
 
 """
@@ -1137,16 +1298,16 @@ run time through a nine-entry table, which is how a `u16` struct field became
 `Any` (#245).
 """
 function ffi_return_type_or_throw(rust_type::AbstractString, abi::AbstractString,
-                                  ctx::AbstractString; strict::Symbol = FFI_STRICT[])
+                                  ctx::AbstractString; strict::Symbol = FFI_STRICT[],
+                                  position::AbstractString = "return")
     c = ffi_return_contract(rust_type; abi = abi)
-    if c.known
+    if c.known && (c.abi === :void || c.abi === :by_value || c.abi === :pointer)
+        _boundary_examined!(position, rust_type, abi, nothing)
         c.abi === :void && return Cvoid
-        if c.abi === :by_value || c.abi === :pointer
-            # The surface type; see [`ffi_return_symbol_or_throw`](@ref).
-            return c.surface_type
-        end
+        # The surface type; see [`ffi_return_symbol_or_throw`](@ref).
+        return c.surface_type
     end
-    return _ffi_unsupported_return(rust_type, abi, ctx, strict, Any)
+    return _ffi_unsupported_return(rust_type, abi, ctx, strict, Any; position = position)
 end
 
 """
@@ -1210,9 +1371,19 @@ function _ffi_slot_expr(rust_type::AbstractString, c::FFIContract)
     return something(ffi_julia_symbol(rust_type), ffi_type_expr(slot))
 end
 
-function _ffi_unsupported_return(rust_type, abi, ctx, strict::Symbol, fallback)
+function _ffi_unsupported_return(rust_type, abi, ctx, strict::Symbol, fallback;
+                                 position::AbstractString = "return")
     strict in (:error, :warn, :none) || throw(ArgumentError(
         "FFI_STRICT must be :error, :warn or :none, got :$strict"))
+    if _boundary_collecting()
+        # Collecting mode (#454): the refusal is a finding — the contract's
+        # own description of the position; the remedy is the report — and
+        # generation continues with the fallback whatever `strict` says, so
+        # the item's remaining positions are still examined.
+        _boundary_examined!(position, rust_type, abi,
+                            ffi_describe(rust_type; direction = :return, abi = abi))
+        return fallback
+    end
     strict === :none && return fallback
     detail = ffi_describe(rust_type; direction = :return, abi = abi)
     if strict === :error

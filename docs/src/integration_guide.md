@@ -167,7 +167,8 @@ Good boundary types are those with an unambiguous C-compatible representation:
 
 Avoid exposing `Vec<T>` or a user-defined Rust struct merely because it happens
 to compile. Check the [supported type matrix](type_contract.md) first, and run
-the boundary report, which reads the extractor's manifest and builds nothing:
+the boundary report, which runs the wrapper generators over the extractor's
+manifest and builds nothing:
 
 ```julia
 RustCall.boundary_report("deps/my_facade")        # a crate bound with @rust_crate
@@ -177,7 +178,10 @@ RustCall.inline_boundary_report(source)           # the source of a rust""" bloc
 ```
 
 It lists every argument and return position of the generated wrappers that the
-contract cannot describe. This matters most for arguments: an unsupported return
+contract cannot describe — the generators' own account, since the report is
+the generators run in a mode that records each position they decide and each
+refusal they would make, so whatever `@rust_crate` would refuse, it lists
+(#454). This matters most for arguments: an unsupported return
 type fails when the wrapper is generated, but an unsupported argument compiles and
 fails only when it is called, with a message about the Julia value's layout. Run
 it in the facade's tests (`@test isempty(RustCall.boundary_report(path; io =

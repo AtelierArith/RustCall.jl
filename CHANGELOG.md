@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **The boundary report is derived from the wrapper generators**
+  ([#454](https://github.com/AtelierArith/RustCall.jl/issues/454)).
+  `RustCall.boundary_report` and `inline_boundary_report` (#441) no longer
+  re-read the manifest with their own copy of generation's rules — each review
+  round of #450 had found one the report did not yet mirror. They run the
+  emitters `rust"""` and `@rust_crate` run, in a collecting mode where every
+  argument and return position a generator decides is recorded and a refusal
+  is a finding instead of an error, so a rule added to generation is in the
+  report by construction. The output is unchanged for every case the tests of
+  #450 cover.
+
+### Fixed
+- **An inline `#[julia]` struct's instance method returning `Self` no longer
+  fails at expansion**
+  ([#454](https://github.com/AtelierArith/RustCall.jl/issues/454)).
+  `rust"""` resolved the `Self` spelling through the return contract before
+  deciding the result was a boxed handle, so every `fn twin(&self) -> Self`
+  was refused with "the FFI contract cannot describe the return type" while
+  the report of #450 skipped it as a handle. The handle is bound to the
+  generation that allocated it, as a constructor's is, and `Self` is not
+  looked up.
+
 ## [0.6.6] - 2026-09-22
 
 ### Changed

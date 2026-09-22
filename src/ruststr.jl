@@ -407,12 +407,11 @@ macro rust_str(code)
     expanded = expand_inline(code_str; cfg = cfg_mode, cfg_text = cfg_text)
     struct_infos = manifest_struct_infos(expanded.manifest)
     julia_func_signatures = manifest_function_signatures(expanded.manifest)
-    # A static method whose name a free function of this block (or another
-    # struct's static method) also has gets no bare form (#323).
-    colliding = _static_method_collisions(julia_func_signatures, struct_infos)
-    julia_defs = [emit_julia_definitions(info; colliding = colliding) for info in struct_infos]
-
-    julia_func_wrappers = emit_julia_function_wrappers(julia_func_signatures)
+    # The block's definitions, from the one function `inline_boundary_report`
+    # runs as well (#454). A static method whose name a free function of this
+    # block (or another struct's static method) also has gets no bare form
+    # there (#323).
+    julia_defs, julia_func_wrappers = _inline_wrapper_exprs(julia_func_signatures, struct_infos)
     # The symbols this block exports, known at macro-expansion time. They are
     # recorded per *module* so that a wrapper resolves through the library its
     # own block loaded — not through whichever block ran last anywhere in the

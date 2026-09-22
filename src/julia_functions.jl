@@ -183,6 +183,11 @@ the symbol of the `CallbackFrame` the last binding pushes for the call; the
 site wraps the call with `_in_callback_frame(frame, call)`, whose `finally`
 pops it. `escape` wraps user-visible symbols (`esc` in macro context,
 `identity` inside a generated module).
+
+Every argument is a position of the boundary report (#454): each is recorded
+as it is decided, and in collecting mode a refusal — a callback signature the
+plan cannot build, one callback past `CALLBACK_SLOTS` — is recorded and the
+argument skipped rather than thrown.
 """
 function _string_arg_plan(sig::RustFunctionSignature, escape::Function)
     return _string_arg_plan(sig.arg_names, sig.arg_types, sig.arg_abis, escape;
@@ -206,11 +211,19 @@ function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
     call_args = Any[]
     prefix = _string_temp_prefix(arg_names)
     trampolines = Any[]
+    callbacks_seen = 0
     for (name, rust_type, abi, callback) in zip(arg_names, arg_types, arg_abis, callbacks)
         arg_sym = escape(Symbol(name))
+        position = "argument `$(name)`"
         # The contract, not the spelling, decides how many C slots this
         # position occupies and what goes in them (#276).
         c = ffi_argument_contract(rust_type; abi = abi)
+        # Every argument is a position of the boundary report (#454, #441). A
+        # spelling the contract does not cover is *accepted* here — the value
+        # is handed to `call_rust_function` below and fails only when called —
+        # so the report, not a refusal, is what names it.
+        _boundary_examined!(position, rust_type, abi,
+                            c.known ? nothing : ffi_describe(rust_type; direction = :argument, abi = abi))
         if c.abi === :callback
             # A Julia function handed to Rust as `extern "C" fn` (#296). The
             # pointer's own signature comes from the manifest, and the
@@ -222,12 +235,26 @@ function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
             # closure `@cfunction`, which not every platform has). The
             # trampoline keeps any Julia exception from unwinding through
             # Rust; the guard after the call re-raises it.
-            plan = ffi_callback_plan(first(callback), last(callback),
-                                     "argument `$(name)` of `$(context)`")
-            k = length(trampolines) + 1
-            k <= CALLBACK_SLOTS || throw(RustError(
-                "`$(context)` takes more than $(CALLBACK_SLOTS) callback arguments (`$(name)` is " *
-                "number $(k)); at most $(CALLBACK_SLOTS) are supported (#296)."))
+            plan = try
+                ffi_callback_plan(first(callback), last(callback),
+                                  "argument `$(name)` of `$(context)`")
+            catch e
+                (e isa RustError && _boundary_collecting()) || rethrow()
+                # Collecting mode (#454): the plan's refusal is a finding and
+                # this position gets no slot; the remaining arguments are
+                # still examined.
+                _boundary_examined!(position, rust_type, abi, e.message)
+                nothing
+            end
+            plan === nothing && continue
+            callbacks_seen += 1
+            k = callbacks_seen
+            if k > CALLBACK_SLOTS
+                _boundary_refuse(position, rust_type, abi,
+                    "`$(context)` takes more than $(CALLBACK_SLOTS) callback arguments (`$(name)` is " *
+                    "number $(k)); at most $(CALLBACK_SLOTS) are supported (#296).")
+                continue
+            end
             push!(trampolines,
                   :($(GlobalRef(@__MODULE__, :CallbackTrampoline)){$(plan.ret_expr)}($arg_sym)))
             slot = GlobalRef(@__MODULE__, Symbol("_callback_slot_", k))
@@ -348,6 +375,18 @@ _ffi_context(m::RustMethod, owner::AbstractString) =
     ffi_signature_context(m.name, m.arg_types, m.return_type; owner = owner)
 
 """
+    _boundary_label(sig) -> String
+    _boundary_label(info, member) -> String
+
+The item a boundary-report position is filed under (#454): the Rust item as
+Rust names it, module-qualified below the crate root — `f`, `a::f`,
+`a::S::method`, `S::field`.
+"""
+_boundary_label(sig::RustFunctionSignature) = qualified_name(sig.module_path, sig.name)
+_boundary_label(info::RustStructInfo, member::AbstractString) =
+    string(qualified_name(info.module_path, info.name), "::", member)
+
+"""
     _ffi_function_return(sig) -> FFIContract
 
 The return contract of a free function, with the owner set: the string helpers
@@ -356,7 +395,37 @@ comes out of the contract rather than being spelled at the call site (#246,
 #249, #300).
 """
 _ffi_function_return(sig::RustFunctionSignature) =
-    ffi_return_contract(sig.return_type; abi = sig.return_abi, owner = sig.ffi_name)
+    _ffi_item_return(sig.return_type, sig.return_abi, sig.ffi_name, sig.return_kind)
+
+"""
+    _ffi_method_return(m::RustMethod, owner) -> FFIContract
+
+The return contract of a struct method, with the owner of its string buffers
+(`_method_string_owner`). A method that returns the struct itself
+(`returns_boxed_struct`) hands back a handle bound to the generation that
+allocated it: its spelling (`Self`) is not a contract position, so nothing
+is recorded for it, and the emitter must not resolve it as one either.
+"""
+function _ffi_method_return(m::RustMethod, owner::AbstractString)
+    m.returns_boxed_struct &&
+        return ffi_return_contract(m.return_type; abi = m.return_abi, owner = owner)
+    return _ffi_item_return(m.return_type, m.return_abi, owner, m.return_kind)
+end
+
+# The contract of an item's own return position, recorded for the boundary
+# report (#454): the contract's verdict here, upgraded to a refusal by the
+# `or_throw` helper the emitter calls next when the position needs one. A
+# `Result` / `Option` return is not a position of its own — its payloads are,
+# recorded by `ffi_payload_symbols` — so its spelling, which the contract
+# never describes, is looked up but not recorded.
+function _ffi_item_return(rust_type::AbstractString, abi::AbstractString, owner::AbstractString,
+                          return_kind::Symbol)
+    c = ffi_return_contract(rust_type; abi = abi, owner = owner)
+    return_kind in (:result, :option, :py_result) && return c
+    _boundary_examined!("return", rust_type, abi,
+                        c.known ? nothing : ffi_describe(rust_type; direction = :return, abi = abi))
+    return c
+end
 
 """
     _ffi_field_return(info, field_name, field_type) -> FFIContract
@@ -367,14 +436,28 @@ the struct's FFI name; a Vec carries its element and exact release symbol in
 schema 10 so the resulting `RustVec` retains the producing allocator (#303).
 """
 function _ffi_field_return(info, field_name::AbstractString, field_type::AbstractString)
+    # A field is one position of the boundary report however many accessors
+    # read or write it (#454). The item is named here because every field
+    # emitter — getter, setter, property branch, source text — starts with
+    # this contract, and nothing records before it.
+    _boundary_item!(_boundary_label(info, field_name))
     abi = get(info.field_abis, field_name, "")
-    if abi == "vec"
+    c = if abi == "vec"
         element = get(info.field_vec_elements, field_name, "")
         free_symbol = get(info.field_free_symbols, field_name, "")
-        return ffi_owned_vec_contract(field_type, element, free_symbol)
+        ffi_owned_vec_contract(field_type, element, free_symbol)
+    else
+        ffi_return_contract(field_type; abi = abi, owner = info.ffi_name)
     end
-    return ffi_return_contract(field_type; abi = abi, owner = info.ffi_name)
+    _boundary_examined!(_ffi_field_position(info, field_name), field_type, abi,
+                        c.known ? nothing : ffi_describe(field_type; direction = :return, abi = abi))
+    return c
 end
+
+# The report's label for a field's one position: what the getter reads, or —
+# for a write-only `#[pyo3(set)]` field — what the setter writes (#454).
+_ffi_field_position(info, field_name::AbstractString) =
+    field_is_accessible(info, field_name) ? "field getter" : "field setter"
 
 # A field getter reads as `Struct::field -> T`.
 _ffi_field_context(info, field_name::AbstractString, field_type::AbstractString) =
@@ -388,8 +471,7 @@ Whether the wrapper of `sig` needs the preserving wrapper: string arguments, a
 rooted for the call (#296). The plain wrapper has no `GC.@preserve` region.
 """
 function _uses_string_ffi(sig::RustFunctionSignature)
-    ffi_return_contract(sig.return_type; abi = sig.return_abi).aggregate_type === nothing ||
-        return true
+    _ffi_function_return(sig).aggregate_type === nothing || return true
     return any(zip(sig.arg_types, sig.arg_abis)) do (rust_type, abi)
         c = ffi_argument_contract(rust_type; abi = abi)
         c.abi === :ptr_len || c.abi === :ptr_len_cap || c.abi === :callback
@@ -444,12 +526,31 @@ function emit_julia_function_wrappers(signatures::Vector{RustFunctionSignature})
 end
 
 """
+    _inline_wrapper_exprs(signatures, struct_infos) -> (struct_defs, function_wrappers)
+
+The Julia definitions of one `rust\"\"\"` block: an expression per `#[julia]`
+struct (`emit_julia_definitions`, with the block-wide static-method
+collisions of #323) and the block's function wrappers. `@rust_str` splices
+them into its expansion; `inline_boundary_report` runs them in collecting
+mode (#454), so what the report examines is what the block defines.
+"""
+function _inline_wrapper_exprs(signatures::Vector{RustFunctionSignature},
+                               struct_infos::Vector{RustStructInfo})
+    colliding = _static_method_collisions(signatures, struct_infos)
+    struct_defs = [emit_julia_definitions(info; colliding = colliding) for info in struct_infos]
+    return struct_defs, emit_julia_function_wrappers(signatures)
+end
+
+"""
     _generate_single_wrapper(sig::RustFunctionSignature) -> Union{Expr, Nothing}
 
 Generate a Julia wrapper function for a single Rust function signature.
 Uses direct function call instead of @rust macro for better scope handling.
 """
 function _generate_single_wrapper(sig::RustFunctionSignature)
+    # The item every position below is filed under (#454), named before the
+    # argument plan, which records first.
+    _boundary_item!(_boundary_label(sig))
     # The Julia wrapper keeps the Rust *name* (`add(1, 2)`); the call goes to
     # the exported *symbol*, which since #279 is `rustcall_add`.
     func_name = esc(Symbol(sig.name))
@@ -514,7 +615,7 @@ function _generate_inline_string_wrapper(sig, func_name, symbol_str, arg_syms)
     lib_sym = _generated_local("lib_name", sig.arg_names)
     # The string helpers are named after the Rust item's FFI name, not the
     # symbol; the contract turns that owner into `free_symbol` (#300).
-    c = ffi_return_contract(sig.return_type; abi = sig.return_abi, owner = sig.ffi_name)
+    c = _ffi_function_return(sig)
     rust_name = sig.name
     channel_sym = _generated_local("panic_channel", sig.arg_names)
     call = if ffi_owned_string_return(c)
@@ -563,8 +664,8 @@ function _generate_inline_result_wrapper(sig, func_name, symbol_str, arg_syms, b
     # after the call. For `char` those differ: Rust writes a `UInt32` code point
     # where Julia's `Char` would be a left-aligned UTF-8 bit pattern (#245); for
     # a `String` payload the slot is the owned `CRustString` buffer (#268).
-    ok_t, ok_slot = ffi_payload_symbols(sig.ok_type, sig.ok_abi, ctx)
-    err_t, err_slot = ffi_payload_symbols(sig.err_type, sig.err_abi, ctx)
+    ok_t, ok_slot = ffi_payload_symbols(sig.ok_type, sig.ok_abi, ctx; position = "Ok payload")
+    err_t, err_slot = ffi_payload_symbols(sig.err_type, sig.err_abi, ctx; position = "Err payload")
     free_sym = _payload_free_symbol(sig.ffi_name, (sig.ok_abi, sig.err_abi))
     c_sym = _generated_local("c_result", sig.arg_names)
     channel_sym = _generated_local("panic_channel", sig.arg_names)
@@ -592,7 +693,8 @@ end
 function _generate_inline_option_wrapper(sig, func_name, symbol_str, arg_syms, bindings, preserved, converted_args,
                                          frame::Union{Nothing, Symbol} = nothing)
     ctx = _ffi_context(sig)
-    inner_t, inner_slot = ffi_payload_symbols(sig.inner_type, sig.inner_abi, ctx)
+    inner_t, inner_slot = ffi_payload_symbols(sig.inner_type, sig.inner_abi, ctx;
+                                              position = "Some payload")
     free_sym = _payload_free_symbol(sig.ffi_name, (sig.inner_abi,))
     c_sym = _generated_local("c_option", sig.arg_names)
     channel_sym = _generated_local("panic_channel", sig.arg_names)

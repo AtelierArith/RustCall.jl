@@ -619,6 +619,9 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
         # (#279, module-qualified since #300); derived when a hand-built
         # `RustMethod` carries none.
         wrapper_name = method_wrapper_symbol(struct_stem, m)
+        # The item every position below is filed under (#454), named before
+        # the argument plan, which records first.
+        _boundary_item!(_boundary_label(info, m.name))
 
         is_ctor = m.is_constructor
 
@@ -653,8 +656,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                     info, m, fname, wrapper_name, esc_args, bindings, preserved,
                     expanded_call_args; self = nothing, static_type = esc_struct, frame))
             else
-                mc = ffi_return_contract(m.return_type; abi = m.return_abi,
-                                         owner = _method_string_owner(m, struct_stem))
+                mc = _ffi_method_return(m, _method_string_owner(m, struct_stem))
                 if ffi_owned_string_return(mc)
                     free_fn = mc.free_symbol
                     push!(exprs, quote
@@ -703,8 +705,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                 info, m, fname, wrapper_name, esc_args, bindings, preserved,
                 expanded_call_args; self = esc_struct, frame))
         else
-            mc = ffi_return_contract(m.return_type; abi = m.return_abi,
-                                     owner = _method_string_owner(m, struct_stem))
+            mc = _ffi_method_return(m, _method_string_owner(m, struct_stem))
             if ffi_owned_string_return(mc)
                 free_fn = mc.free_symbol
                 push!(exprs, quote
@@ -721,12 +722,17 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                     end
                 end)
             else
-                jl_ret_type = ffi_return_type_or_throw(m.return_type, m.return_abi,
-                                                       _ffi_context(m, struct_name_str))
                 # The manifest says whether the wrapper boxes the result
                 # (`Method.returns_boxed_struct`, schema 4); Julia no longer
                 # re-derives it by comparing the spelling against "Self".
                 is_ctor_ret = m.returns_boxed_struct
+                # A boxed result is a handle, bound below to the generation
+                # that allocated it; its spelling (`Self`) is not a contract
+                # position, and resolving it as one refused every
+                # `Self`-returning instance method at expansion (#454).
+                jl_ret_type = is_ctor_ret ? Ptr{Cvoid} :
+                    ffi_return_type_or_throw(m.return_type, m.return_abi,
+                                             _ffi_context(m, struct_name_str))
                 push!(exprs, quote
                     function $fname(self::$esc_struct, $(esc_args...))
                         $(bindings...)
@@ -762,7 +768,8 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                    ffi_borrowed_string_return(c) ? :borrowed_string : :plain
             julia_type = kind === :plain ?
                 ffi_return_type_or_throw(field_type, get(info.field_abis, field_name, ""),
-                                         _ffi_field_context(info, field_name, field_type)) :
+                                         _ffi_field_context(info, field_name, field_type);
+                                         position = _ffi_field_position(info, field_name)) :
                 Any
             free_symbol = c.free_symbol === nothing ? "" : c.free_symbol
             field_getters[field_sym] = (info.field_getters[field_name], kind, free_symbol,
@@ -901,14 +908,15 @@ function _inline_method_payload_wrapper(info::RustStructInfo, m::RustMethod, fna
     # `#[julia] impl` block in another module (#342).
     owner = _method_string_owner(m, info.ffi_name)
     if m.return_kind === :result
-        ok_t, ok_slot = ffi_payload_symbols(m.ok_type, m.ok_abi, ctx)
-        err_t, err_slot = ffi_payload_symbols(m.err_type, m.err_abi, ctx)
+        ok_t, ok_slot = ffi_payload_symbols(m.ok_type, m.ok_abi, ctx; position = "Ok payload")
+        err_t, err_slot = ffi_payload_symbols(m.err_type, m.err_abi, ctx; position = "Err payload")
         aggregate = :(RustCall.CResultType{$ok_slot, $err_slot})
         free_sym = _payload_free_symbol(owner, (m.ok_abi, m.err_abi))
         decode = (c, tgt) ->
             :(RustCall.convert_c_result_to_rust_result($c, $ok_t, $err_t, $tgt.free_ptr))
     else
-        inner_t, inner_slot = ffi_payload_symbols(m.inner_type, m.inner_abi, ctx)
+        inner_t, inner_slot = ffi_payload_symbols(m.inner_type, m.inner_abi, ctx;
+                                                  position = "Some payload")
         aggregate = :(RustCall.COptionType{$inner_slot})
         free_sym = _payload_free_symbol(owner, (m.inner_abi,))
         decode = (c, tgt) ->
