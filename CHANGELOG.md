@@ -13,7 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ([#451](https://github.com/AtelierArith/RustCall.jl/pull/451)).
   `rustcall_julia_core`, `rustcall_julia_macros_impl` and `rustcall_julia_macros`
   share one semver, `0.1.0` to start, independent of `Project.toml`, so they
-  can be published on crates.io; a `#[julia]` crate writes
+  can be published on crates.io — each pins the one below it exactly
+  (`version = "=0.1.0"`), so Cargo can never pair one version's facade with
+  another's proc macro; a `#[julia]` crate writes
   `rustcall_julia_macros = "0.1"` (or the `path` it uses today) and the other
   two are transitive. `rustcall_extract` is not published and keeps the
   package's version. The manifest identifier is unchanged in kind:
