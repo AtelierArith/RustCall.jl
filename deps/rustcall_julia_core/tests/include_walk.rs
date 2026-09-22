@@ -336,7 +336,10 @@ fn an_unsupported_item_in_a_fragment_is_an_error_not_a_skip() {
         )
         .expect_err("a #[julia] item in an unmarked module is refused");
     assert!(
-        matches!(err, rustcall_julia_core::extract::ExtractError::Unsupported(_)),
+        matches!(
+            err,
+            rustcall_julia_core::extract::ExtractError::Unsupported(_)
+        ),
         "expected Unsupported, got {err:?}"
     );
 }

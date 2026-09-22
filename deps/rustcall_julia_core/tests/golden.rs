@@ -108,7 +108,8 @@ fn compilable_wrappers_build_as_cdylib() {
     for stem in ["struct_wrappers", "cross_module_impl", "callbacks"] {
         let source_path = corpus_dir().join(format!("{stem}.rs"));
         let source = fs::read_to_string(&source_path).expect("failed to read compilation corpus");
-        let expanded = rustcall_julia_core::expand::expand(&source).expect("failed to expand corpus");
+        let expanded =
+            rustcall_julia_core::expand::expand(&source).expect("failed to expand corpus");
 
         let temp_dir = std::env::temp_dir().join(format!(
             "rustcall_julia_core_golden_{}_{}_{stem}",

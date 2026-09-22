@@ -201,7 +201,11 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
         (Mode::Inline, _) => {
             for f in &opts.files {
                 let src = read_source(f)?;
-                match rustcall_julia_core::extract::extract_with_cfg(&src, opts.mode, opts.cfg.as_ref()) {
+                match rustcall_julia_core::extract::extract_with_cfg(
+                    &src,
+                    opts.mode,
+                    opts.cfg.as_ref(),
+                ) {
                     Ok(m) => merged.merge(m),
                     Err(e) => skip_or_fail(e, f, opts.skip_unparsable)?,
                 }
@@ -267,7 +271,11 @@ fn scan(opts: &ScanOptions) -> Result<Manifest, String> {
                     queue.push(QueuedFile {
                         dir: f.parent().unwrap_or(Path::new(".")).to_path_buf(),
                         file: f.clone(),
-                        position: rustcall_julia_core::extract::FilePosition::module(&[], true, &[]),
+                        position: rustcall_julia_core::extract::FilePosition::module(
+                            &[],
+                            true,
+                            &[],
+                        ),
                         ancestry: Vec::new(),
                         follow_modules: false,
                         fragment: false,
