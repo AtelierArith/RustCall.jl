@@ -105,6 +105,50 @@ end
 # ============================================================================
 
 """
+    _crate_manifest(crate_path; cfg = :lenient, cfg_text = nothing, build_env = nothing,
+                    allow_cargo = true) -> (cargo_toml, source_files, manifest)
+
+The extractor's crate-mode manifest of the crate at `crate_path`, read the way
+`scan_crate` reads it: the crate's module tree from its library root, under the
+crate's edition. Shared by `scan_crate` and `boundary_report` (#441).
+"""
+function _crate_manifest(crate_path::AbstractString; cfg = :lenient,
+                         cfg_text::Union{Nothing, AbstractString} = nothing,
+                         build_env::Union{Nothing, AbstractDict} = nothing,
+                         allow_cargo::Bool = true)
+    crate_path = String(crate_path)
+    cargo_toml_path = joinpath(crate_path, "Cargo.toml")
+    # Parse Cargo.toml
+    cargo_toml = parse_cargo_toml(cargo_toml_path)
+    edition = _crate_rust_edition(crate_path, cargo_toml; allow_cargo = allow_cargo)
+
+    # Find all Rust source files
+    source_files = sort(find_rust_sources(crate_path))
+
+    # The extractor reports every #[julia] item exactly as the proc-macro will
+    # expand it (crate mode); Julia never reads the Rust source itself.
+    # `.rs` files that are not complete modules (include!() fragments) are
+    # skipped; Cargo is the authority on whether the crate compiles.
+    # By default Cargo builds the crate with features and a profile RustCall
+    # does not know, so only what the target decides (`unix`, `windows`,
+    # `target_*`) is pruned. A caller that *does* know — it just built the
+    # crate and probed it with `_crate_build_cfg_text` — passes that text and
+    # `cfg = :cargo`, and then every `#[cfg]` is decided, which is what lets
+    # mutually exclusive feature variants of one `#[julia] fn` collapse to the
+    # one that exists (#277 Phase B).
+    # Both scans need the crate's module tree, not a bag of files: `src/api.rs`
+    # is `api`, a `mod api;` that is not `pub` puts everything below it out of
+    # a wrapper crate's reach (#275), and a `#[julia] impl crate::Gauge` in
+    # `ops.rs` has to find the `Gauge` declared in `lib.rs` (#315).
+    lib_root, tree_files = _crate_scan_inputs(crate_path, cargo_toml, source_files)
+    manifest = extract_manifest(tree_files; mode = "crate", skip_unparsable = true,
+                                cfg = cfg, cfg_text = cfg_text,
+                                crate_root = lib_root, edition = edition,
+                                build_env = build_env)
+    return cargo_toml, source_files, manifest
+end
+
+"""
     scan_crate(crate_path::String) -> CrateInfo
 
 Scan a Rust crate and extract information about #[julia] marked items.
@@ -135,33 +179,9 @@ function scan_crate(crate_path::String; cfg = :lenient,
         error("Cargo.toml not found in: $crate_path")
     end
 
-    # Parse Cargo.toml
-    cargo_toml = parse_cargo_toml(cargo_toml_path)
-    edition = _crate_rust_edition(crate_path, cargo_toml; allow_cargo = allow_cargo)
-
-    # Find all Rust source files
-    source_files = sort(find_rust_sources(crate_path))
-
-    # The extractor reports every #[julia] item exactly as the proc-macro will
-    # expand it (crate mode); Julia never reads the Rust source itself.
-    # `.rs` files that are not complete modules (include!() fragments) are
-    # skipped; Cargo is the authority on whether the crate compiles.
-    # By default Cargo builds the crate with features and a profile RustCall
-    # does not know, so only what the target decides (`unix`, `windows`,
-    # `target_*`) is pruned. A caller that *does* know — it just built the
-    # crate and probed it with `_crate_build_cfg_text` — passes that text and
-    # `cfg = :cargo`, and then every `#[cfg]` is decided, which is what lets
-    # mutually exclusive feature variants of one `#[julia] fn` collapse to the
-    # one that exists (#277 Phase B).
-    # Both scans need the crate's module tree, not a bag of files: `src/api.rs`
-    # is `api`, a `mod api;` that is not `pub` puts everything below it out of
-    # a wrapper crate's reach (#275), and a `#[julia] impl crate::Gauge` in
-    # `ops.rs` has to find the `Gauge` declared in `lib.rs` (#315).
-    lib_root, tree_files = _crate_scan_inputs(crate_path, cargo_toml, source_files)
-    manifest = extract_manifest(tree_files; mode = "crate", skip_unparsable = true,
-                                cfg = cfg, cfg_text = cfg_text,
-                                crate_root = lib_root, edition = edition,
-                                build_env = build_env)
+    cargo_toml, source_files, manifest = _crate_manifest(crate_path; cfg = cfg, cfg_text = cfg_text,
+                                                         build_env = build_env,
+                                                         allow_cargo = allow_cargo)
     all_functions = manifest_function_signatures(manifest)
     all_structs = manifest_struct_infos(manifest)
     # Items the crate marks only for PyO3 (#275 Phase 1). They are reported so
