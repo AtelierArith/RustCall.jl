@@ -43,6 +43,7 @@
 //! | owned string buffer / release | `<owner>_RustCallOwnedString` / `<owner>_free_rust_string` |
 //! | borrowed string view | `<owner>_RustCallBorrowedString` |
 //! | panic channel of a wrapper | `<wrapper symbol>_take_panic` |
+//! | generic inline struct's wrappers (not exported, #462) | `<Struct>_<method>`, `<Struct>_get_x`, `<Struct>_free` |
 //!
 //! Only the first three wrap a user-written item and so must step aside from
 //! its name; `<owner>` is the free function, `<Struct>_<method>` or `<Struct>`
@@ -2680,11 +2681,25 @@ fn fn_source(func: ItemFn) -> String {
     prettyplease::unparse(&file)
 }
 
-/// Generate the generic wrapper functions of a generic inline struct. They are
-/// not compiled into the main library; Julia registers them for on-demand
-/// monomorphization through `specialize`.
-pub fn inline_generic_wrappers(model: &StructModel) -> Vec<GenericWrapper> {
+/// The name of the generic wrapper of `Struct::method` for a generic inline
+/// struct with FFI name `struct_stem`: `<stem>_<method>`. Like every other
+/// name of the struct it hangs off [`symbol_stem`], so two same-named generic
+/// structs in different modules register different wrappers (#462); the
+/// manifest carries it as `Method.generic_wrapper_name`.
+pub fn generic_method_wrapper_name(struct_stem: &str, method: &str) -> String {
+    format!("{struct_stem}_{method}")
+}
+
+/// Generate the generic wrapper functions of a generic inline struct living
+/// under `module_path`. They are not compiled into the main library; Julia
+/// registers them for on-demand monomorphization through `specialize`.
+///
+/// Every wrapper is named off the struct's FFI name ([`symbol_stem`]):
+/// `<stem>_<method>`, `<stem>_get_<field>` / `<stem>_set_<field>` and
+/// `<stem>_free`, exactly as a concrete struct's symbols are (#300, #462).
+pub fn inline_generic_wrappers(model: &StructModel, module_path: &[String]) -> Vec<GenericWrapper> {
     let struct_name = &model.item.ident;
+    let stem = symbol_stem(module_path, &struct_name.to_string());
     let generics = &model.item.generics;
     let (_, ty_generics, _) = generics.split_for_impl();
     let decl_generics = {
@@ -2696,7 +2711,10 @@ pub fn inline_generic_wrappers(model: &StructModel) -> Vec<GenericWrapper> {
 
     for m in &model.methods {
         let method_name = &m.func.sig.ident;
-        let wrapper_name = format_ident!("{}_{}", struct_name, method_name);
+        let wrapper_name = format_ident!(
+            "{}",
+            generic_method_wrapper_name(&stem, &method_name.to_string())
+        );
         // The wrapper must satisfy the bounds the impl block and the method
         // themselves declare (`impl<T: Copy>`, `where T: Copy`, `fn f<U>`).
         let (decl_generics, where_clause, self_ty) = wrapper_generics(model, m);
@@ -2808,11 +2826,11 @@ pub fn inline_generic_wrappers(model: &StructModel) -> Vec<GenericWrapper> {
         if !generic_field_has_accessors(&field_ty, &struct_param_names) {
             continue;
         }
-        let getter = format_ident!("{}_get_{}", struct_name, field_name);
+        let getter = format_ident!("{}", field_getter_symbol(&stem, &field_name.to_string()));
         if method_symbols.contains(&getter.to_string()) {
             continue;
         }
-        let setter = format_ident!("{}_set_{}", struct_name, field_name);
+        let setter = format_ident!("{}", field_setter_symbol(&stem, &field_name.to_string()));
         let (body, getter_where) = if is_string_type(&field_ty) {
             (
                 quote! { unsafe { (*ptr).#field_name.clone() } },
@@ -2844,7 +2862,7 @@ pub fn inline_generic_wrappers(model: &StructModel) -> Vec<GenericWrapper> {
         });
     }
 
-    let free_name = format_ident!("{}_free", struct_name);
+    let free_name = format_ident!("{}", struct_free_symbol(&stem));
     let f: ItemFn = syn::parse_quote! {
         pub fn #free_name #decl_generics (ptr: *mut #struct_name #ty_generics) #struct_where {
             if !ptr.is_null() {

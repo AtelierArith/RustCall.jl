@@ -987,6 +987,83 @@ fn a_private_claim_is_scoped_by_the_real_module_not_the_symbol_path() {
     assert!(manifest.functions.iter().all(|f| f.module_path.is_empty()));
 }
 
+/// The generic wrappers of a generic inline struct hang off its FFI name like
+/// every other name of the struct (#462): two same-named generic structs in
+/// different modules register different wrappers, and the manifest states each
+/// method's wrapper name so a consumer never re-derives it.
+#[test]
+fn generic_inline_struct_wrappers_are_module_qualified() {
+    let src = r#"
+        pub mod a {
+            #[julia]
+            pub struct Pair<T> { pub x: T }
+            impl<T: Copy> Pair<T> {
+                pub fn new(x: T) -> Self { Self { x } }
+                pub fn first(&self) -> T { self.x }
+            }
+        }
+        pub mod b {
+            #[julia]
+            pub struct Pair<T> { pub x: T }
+            impl<T: Copy> Pair<T> {
+                pub fn new(x: T) -> Self { Self { x } }
+                pub fn first(&self) -> T { self.x }
+            }
+        }
+        #[julia]
+        pub struct Pair<T> { pub x: T }
+        impl<T: Copy> Pair<T> {
+            pub fn first(&self) -> T { self.x }
+        }
+    "#;
+    let e = rustcall_julia_core::expand::expand(src).unwrap();
+    assert!(
+        e.manifest.duplicate_claims().is_empty(),
+        "{:?}",
+        e.manifest.duplicate_claims()
+    );
+    for (module, stem) in [("a", "a__Pair"), ("b", "b__Pair"), ("", "Pair")] {
+        let s = e
+            .manifest
+            .structs
+            .iter()
+            .find(|s| s.module_path.join("::") == module)
+            .unwrap();
+        assert_eq!(s.ffi_name, stem);
+        let mut names: Vec<&str> = s.generic_wrappers.iter().map(|w| w.name.as_str()).collect();
+        names.sort();
+        let mut expected: Vec<String> = ["first", "get_x", "set_x", "free"]
+            .iter()
+            .map(|n| format!("{stem}_{n}"))
+            .collect();
+        if !module.is_empty() {
+            expected.push(format!("{stem}_new"));
+        }
+        expected.sort();
+        assert_eq!(names, expected, "{module}");
+        let first = s.methods.iter().find(|m| m.name == "first").unwrap();
+        assert_eq!(first.generic_wrapper_name, format!("{stem}_first"));
+        assert!(first
+            .generic_wrapper
+            .contains(&format!("pub fn {stem}_first<")));
+        let x = s.fields.iter().find(|f| f.name == "x").unwrap();
+        assert_eq!(x.getter, format!("{stem}_get_x"));
+        assert_eq!(x.setter, format!("{stem}_set_x"));
+    }
+
+    // The wrappers sit in their struct's module, and `specialize` finds one
+    // there by its qualified path.
+    let sp = rustcall_julia_core::specialize::specialize(
+        &e.source,
+        "a::a__Pair_first",
+        &[("T".to_string(), "i32".to_string())],
+        "a__Pair_first_i32",
+    )
+    .unwrap();
+    assert_eq!(sp.manifest.functions[0].module_path, path(&["a"]));
+    assert!(sp.source.contains("pub fn b__Pair_first<"));
+}
+
 /// The `CResult_<owner>` / `COption_<owner>` type a `Result` / `Option`
 /// wrapper declares next to itself is a generated name like any other, so it
 /// is claimed (#462): a free function `Foo_bar` and a method `Foo::bar` of one
