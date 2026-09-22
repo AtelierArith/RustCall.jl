@@ -87,8 +87,11 @@ fn accessor_channels_are_reserved() {
     assert!(manifest.structs[0].fields[0].getter.is_empty());
 }
 
+/// A `Vec` field gets no accessor (#453), so the only generated helper that runs
+/// user code is the inline flavour's `<Struct>_clone`: it must contain a panic
+/// raised by an element's `Clone`.
 #[test]
-fn generated_accessors_contain_clone_and_drop_panics() {
+fn generated_clone_helper_contains_clone_panics() {
     for flavour in ["inline", "crate"] {
         let declaration = if flavour == "inline" {
             expand("#[julia] #[derive(Clone)] pub struct Fields { pub values: Vec<Explode> }")
@@ -103,19 +106,25 @@ fn generated_accessors_contain_clone_and_drop_panics() {
             )
             .to_string()
         };
+        assert!(!declaration.contains("Fields_get_values"), "{flavour}");
+        assert!(!declaration.contains("Fields_set_values"), "{flavour}");
         let clone_probe = if flavour == "inline" {
             r#"
+                let object = std::mem::ManuallyDrop::new(Fields { values: vec![Explode { fail: true }] });
+                let mut bytes = [0u8; 512];
                 assert!(Fields_clone(&*object).is_null());
                 let n = Fields_clone_take_panic(bytes.as_mut_ptr(), bytes.len());
                 assert!(std::str::from_utf8(&bytes[..n]).unwrap().contains("accessor clone panic"));
                 assert_eq!(Fields_clone_take_panic(bytes.as_mut_ptr(), bytes.len()), 0);
             "#
         } else {
-            ""
+            r#"
+                let _ = Fields { values: vec![Explode { fail: false }] };
+            "#
         };
         let source = format!(
             r#"
-            #![allow(non_snake_case, improper_ctypes_definitions)]
+            #![allow(non_snake_case, improper_ctypes_definitions, dead_code)]
             {declaration}
             pub struct Explode {{ fail: bool }}
             impl Clone for Explode {{
@@ -124,32 +133,8 @@ fn generated_accessors_contain_clone_and_drop_panics() {
                     Self {{ fail: false }}
                 }}
             }}
-            impl Drop for Explode {{
-                fn drop(&mut self) {{
-                    if self.fail {{ panic!("accessor drop panic"); }}
-                }}
-            }}
             fn main() {{
-                let mut object = std::mem::ManuallyDrop::new(Fields {{ values: vec![Explode {{ fail: true }}] }});
-                // The unwind result must be a VALID empty Vec, not zeroed Vec.
-                let sentinel = Fields_get_values(&*object);
-                assert!(sentinel.is_empty());
-                drop(sentinel);
-                let mut bytes = [0u8; 512];
-                let n = Fields_get_values_take_panic(bytes.as_mut_ptr(), bytes.len());
-                assert!(std::str::from_utf8(&bytes[..n]).unwrap().contains("accessor clone panic"));
-                assert_eq!(Fields_get_values_take_panic(bytes.as_mut_ptr(), bytes.len()), 0);
                 {clone_probe}
-                Fields_set_values(&mut *object, Vec::new());
-                let n = Fields_set_values_take_panic(bytes.as_mut_ptr(), bytes.len());
-                assert!(std::str::from_utf8(&bytes[..n]).unwrap().contains("accessor drop panic"));
-                assert_eq!(Fields_set_values_take_panic(bytes.as_mut_ptr(), bytes.len()), 0);
-                // Do not rely on the panicking setter's post-panic object state.
-                let mut quiet = Fields {{ values: vec![Explode {{ fail: false }}] }};
-                assert_eq!(Fields_get_values(&quiet).len(), 1);
-                assert_eq!(Fields_get_values_take_panic(bytes.as_mut_ptr(), bytes.len()), 0);
-                Fields_set_values(&mut quiet, Vec::new());
-                assert_eq!(Fields_set_values_take_panic(bytes.as_mut_ptr(), bytes.len()), 0);
             }}
         "#
         );

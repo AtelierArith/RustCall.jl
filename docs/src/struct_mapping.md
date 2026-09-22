@@ -186,9 +186,16 @@ resolve identically. Every Rust primitive is supported, including `i128`,
 | `String` | `String` | Read as an owned `(ptr, len, cap)` buffer and released through `<Struct>_free_rust_string` |
 | `&str` | `String` | Method returns are copied to a Julia string |
 
-A field whose type the contract does not cover raises rather than becoming
-`Any`; see [The FFI Type Contract](type_contract.md) for the full matrix and for
-`RustCall.FFI_STRICT[]`.
+Only a field whose value crosses the boundary on its own gets a getter and a
+setter: a primitive, a raw pointer or a `String`, plus, in a generic struct, a
+field typed by one of the struct's own type parameters. Any other field — a
+`Vec<T>`, a `HashMap`, a `Box`, another struct held by value — gets none,
+whether it is `pub` or not, and the struct binds as an opaque handle that Julia
+reaches through its methods
+([#453](https://github.com/AtelierArith/RustCall.jl/issues/453)). Expose such
+state through a method (`pub fn len(&self) -> usize`, or one returning a copy in
+a type the contract covers). See [The FFI Type Contract](type_contract.md) for
+the full matrix.
 
 ## Generic Structs
 

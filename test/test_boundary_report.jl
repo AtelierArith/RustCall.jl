@@ -67,10 +67,9 @@ _br_positions(report) = Set((u.item, u.position) for u in report.unsupported)
         ("Handle::combine", "argument `other`"),
         ("Handle::bytes", "return"),
         ("bad_callback", "argument `f`"),
-        ("Fields::xs", "field getter"),
-        # A private field gets a generated getter too (the manifest records
-        # one), so its `Vec<u8>` fails generation just the same.
-        ("Handle::inner", "field getter"),
+        # Neither `Fields::xs` (`pub Vec<f64>`) nor `Handle::inner` (a private
+        # `Vec<u8>`) is listed: a `Vec` field gets no generated getter (#453),
+        # so there is nothing to describe and both structs bind as handles.
     ])
     # A callback argument is checked through the plan wrapper generation uses
     # (#296), so a signature it would refuse is reported, with its reason
@@ -92,7 +91,7 @@ _br_positions(report) = Set((u.item, u.position) for u in report.unsupported)
     # The printed summary names each position and its Rust type.
     text = sprint(io -> RustCall.inline_boundary_report(source; io))
     @test occursin("takes_vec", text) && occursin("Vec<f64>", text)
-    @test occursin("8 unsupported", text)
+    @test occursin("6 unsupported", text)
 end
 
 @testset "a clean surface reports nothing (#441)" begin
@@ -154,13 +153,10 @@ end
             }
             """)
         report = RustCall.boundary_report(crate; io = devnull)
-        # `items` is private, but the manifest records a getter for a `Vec`
-        # field anyway, and `@rust_crate` refuses to bind `Bag` because of it
-        # (checked by hand: "cannot describe the return type of
-        # `Bag::items -> Vec<i32>`"), so the report names it.
+        # The private `Vec` field `items` gets no getter (#453), so only the
+        # `#[julia]` method returning a `Vec` is listed.
         @test _br_positions(report) == Set([("total", "argument `values`"),
-                                            ("Bag::items", "return"),
-                                            ("Bag::items", "field getter")])
+                                            ("Bag::items", "return")])
     end
 end
 
@@ -181,28 +177,42 @@ end
     @test out == "0 0"
 end
 
-# A readable field gets a generated getter, and an unsupported field type
-# fails when the struct's Julia wrapper is generated, exactly like an
-# unsupported return type (#450 review).
-@testset "boundary report checks field getters (#450 review)" begin
+# A field whose type the FFI contract cannot describe gets no getter (#453), so
+# a struct holding one binds, and the report agrees with generation: it lists
+# nothing for it.
+@testset "a Vec field gets no getter and the struct binds (#453)" begin
     source = raw"""
         #[julia]
         pub struct OnlyFields { pub xs: Vec<f64>, pub n: i32 }
-        impl OnlyFields { pub fn new() -> Self { OnlyFields { xs: Vec::new(), n: 0 } } }
+        impl OnlyFields {
+            pub fn new() -> Self { OnlyFields { xs: vec![1.0, 2.0], n: 7 } }
+            pub fn len(&self) -> usize { self.xs.len() }
+        }
         """
     report = RustCall.inline_boundary_report(source; io = devnull)
-    @test _br_positions(report) == Set([("OnlyFields::xs", "field getter")])
-    # And the report agrees with what generation does with that struct.
+    @test isempty(report.unsupported)
     scope = Module()
     Core.eval(scope, :(using RustCall))
-    err = try
-        Core.eval(scope, Expr(:macrocall, Symbol("@rust_str"), LineNumberNode(1), source))
-        nothing
-    catch e
-        e
-    end
-    @test err !== nothing
-    @test occursin("OnlyFields::xs -> Vec<f64>", sprint(showerror, err))
+    Core.eval(scope, Expr(:macrocall, Symbol("@rust_str"), LineNumberNode(1), source))
+    obj = Core.eval(scope, :(OnlyFields()))
+    @test Core.eval(scope, :($obj.n)) == 7
+    @test Core.eval(scope, :(len($obj))) == 2
+end
+
+# The report still checks every getter a manifest records against the contract
+# generation uses: a manifest (from any extractor) claiming a getter for a type
+# the contract cannot describe is reported, as generation would refuse it.
+@testset "boundary report checks recorded field getters (#450 review)" begin
+    manifest = RustCall.extract_manifest(raw"""
+        #[julia]
+        pub struct Recorded { pub n: i32 }
+        impl Recorded { pub fn new() -> Self { Recorded { n: 0 } } }
+        """; mode = "inline")
+    field = only(only(manifest["structs"])["fields"])
+    @test !isempty(field["getter"])
+    field["rust_type"] = "Vec<f64>"
+    report = RustCall._boundary_report(manifest, "inline block", devnull)
+    @test _br_positions(report) == Set([("Recorded::n", "field getter")])
 end
 
 # Struct identity includes the module path: two `S` in different modules are
@@ -213,8 +223,11 @@ end
         #[julia]
         pub mod a {
             #[julia]
-            pub struct S { pub x: Vec<f64> }
-            impl S { pub fn new() -> Self { S { x: Vec::new() } } }
+            pub struct S { pub x: f64 }
+            impl S {
+                pub fn new() -> Self { S { x: 0.0 } }
+                pub fn xs(&self) -> Vec<f64> { Vec::new() }
+            }
         }
         #[julia]
         pub mod b {
@@ -225,7 +238,7 @@ end
             pub fn f(v: Vec<u8>) -> i32 { 0 }
         }
         """; io = devnull)
-    @test _br_positions(report) == Set([("a::S::x", "field getter"), ("b::f", "argument `v`")])
+    @test _br_positions(report) == Set([("a::S::xs", "return"), ("b::f", "argument `v`")])
 end
 
 # A call has `CALLBACK_SLOTS` trampoline slots; wrapper generation refuses a

@@ -19,9 +19,9 @@ use crate::manifest::{
 use crate::model::{impl_has_julia, wrapped_methods, StructModel};
 use crate::paths::{imports_of_use, locate, ImplHeader, Located, ScannedImport, Unresolved};
 use crate::types::{
-    callback_signature, extract_option_type, extract_result_type, generics_to_type_params,
-    has_impl_trait, has_type_params, is_ffi_compatible_type, is_str_ref_type, is_string_type,
-    needs_clone_for_getter, return_type_to_string, type_to_string,
+    callback_signature, extract_option_type, extract_result_type, field_has_accessors,
+    generics_to_type_params, has_impl_trait, has_type_params, is_str_ref_type, is_string_type,
+    return_type_to_string, type_to_string,
 };
 
 pub fn extract(source: &str, mode: Mode) -> Result<Manifest, ExtractError> {
@@ -1264,7 +1264,7 @@ fn crate_struct_entry(
         .named_fields()
         .iter()
         .map(|(name, ty)| {
-            let ffi_compatible = is_ffi_compatible_type(ty) || needs_clone_for_getter(ty);
+            let ffi_compatible = field_has_accessors(ty);
             Field {
                 name: name.to_string(),
                 rust_type: type_to_string(ty),

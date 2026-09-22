@@ -298,14 +298,16 @@ mod tests {
     fn generic_wrappers_typecheck_generically() {
         let src = r#"
             #[julia]
-            pub struct Bag<T> where T: Copy { items: Vec<Option<T>>, first: T }
+            pub struct Bag<T> where T: Copy { items: Vec<Option<T>>, label: String, first: T }
             impl<T> Bag<T> where T: Copy {
-                pub fn new(first: T) -> Self { Self { items: Vec::new(), first } }
+                pub fn new(first: T) -> Self { Self { items: Vec::new(), label: String::new(), first } }
                 pub fn first(&self) -> T { self.first }
             }
         "#;
         let e = expand::expand(src).unwrap();
-        assert!(e.source.contains("Vec<Option<T>>: Clone"));
+        assert!(e.source.contains("String: Clone"));
+        // A `Vec` field gets no accessor (#453).
+        assert!(!e.source.contains("Bag_get_items"));
         assert!(e.source.contains("T: Copy"));
         // Prove it with rustc when available.
         if let Ok(rustc) = std::env::var("RUSTC").or_else(|_| Ok::<_, ()>("rustc".to_string())) {
