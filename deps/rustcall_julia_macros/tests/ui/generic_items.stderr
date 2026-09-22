@@ -1,0 +1,17 @@
+error: #[julia] struct `Wrapper` is generic over `T`: an `extern "C"` entry point needs concrete types, and #[julia] cannot know which instantiations Julia will call. Write a non-generic `#[julia]` item that uses it, or define it in a `rust"""` block, where RustCall monomorphizes generics on demand.
+ --> tests/ui/generic_items.rs:6:19
+  |
+6 | pub struct Wrapper<T> {
+  |                   ^^^
+
+error: #[julia] impl block for `Wrapper` is generic over `T`: an `extern "C"` entry point needs concrete types, and #[julia] cannot know which instantiations Julia will call. Write a non-generic `#[julia]` item that uses it, or define it in a `rust"""` block, where RustCall monomorphizes generics on demand.
+  --> tests/ui/generic_items.rs:16:5
+   |
+16 | impl<T: Copy> Wrapper<T> {
+   |     ^^^^^^^^^
+
+error: #[julia] method `scaled` is generic over `U`: an `extern "C"` entry point needs concrete types, and #[julia] cannot know which instantiations Julia will call. Write a non-generic `#[julia]` item that uses it, or define it in a `rust"""` block, where RustCall monomorphizes generics on demand.
+  --> tests/ui/generic_items.rs:26:18
+   |
+26 |     pub fn scaled<U: Into<f64>>(&self, by: U) -> f64 {
+   |                  ^^^^^^^^^^^^^^

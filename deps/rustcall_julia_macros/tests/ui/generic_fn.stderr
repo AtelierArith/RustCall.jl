@@ -1,0 +1,17 @@
+error: #[julia] function `identity` is generic over `T`: an `extern "C"` entry point needs concrete types, and #[julia] cannot know which instantiations Julia will call. Write a non-generic `#[julia]` item that uses it, or define it in a `rust"""` block, where RustCall monomorphizes generics on demand.
+ --> tests/ui/generic_fn.rs:6:16
+  |
+6 | pub fn identity<T: Copy>(x: T) -> T {
+  |                ^^^^^^^^^
+
+error: #[julia] function `sized` is generic over `const N`: an `extern "C"` entry point needs concrete types, and #[julia] cannot know which instantiations Julia will call. Write a non-generic `#[julia]` item that uses it, or define it in a `rust"""` block, where RustCall monomorphizes generics on demand.
+  --> tests/ui/generic_fn.rs:11:13
+   |
+11 | pub fn sized<const N: usize>(x: [u8; N]) -> usize {
+   |             ^^^^^^^^^^^^^^^^
+
+error: #[julia] function `shown` uses `impl Trait` in its signature, which makes it generic: an `extern "C"` entry point needs concrete types. Name the concrete type instead.
+  --> tests/ui/generic_fn.rs:16:5
+   |
+16 | pub fn shown(x: impl std::fmt::Display) -> usize {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

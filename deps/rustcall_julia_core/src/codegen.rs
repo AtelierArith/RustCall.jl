@@ -1564,6 +1564,9 @@ pub fn transform_function(
     if let Some(error) = non_ffi_payload_error(&func) {
         return error;
     }
+    if let Some(error) = generic_signature_error(&func.sig, "function") {
+        return quote! { #error #func };
+    }
 
     let wrapper = free_function_wrapper(
         &func,
@@ -1577,6 +1580,61 @@ pub fn transform_function(
         #func
         #wrapper
     }
+}
+
+/// Refuse a generic `#[julia]` item in the crate flavour (#462).
+///
+/// An `extern "C"` entry point needs concrete types, and the proc macro sees one
+/// item and cannot know which instantiations Julia will call, so a type or
+/// const parameter used to produce a wrapper naming an unbound `T` and rustc
+/// failed inside generated code. Crate extraction already reports such an item
+/// as not exported; this makes the build say why, at the item. Lifetime
+/// parameters are not refused: `fn f<'a>(s: &'a str) -> &'a str` lowers to a
+/// wrapper that names no lifetime at all.
+///
+/// The inline flavour never reaches this: `rust"""` emits a generic function
+/// or struct unwrapped and monomorphizes it on demand through `specialize`.
+///
+/// The caller emits the error **and** the item as written, so the one
+/// diagnostic is not followed by a cascade about a missing item.
+fn generic_item_error(generics: &syn::Generics, what: &str, name: &Ident) -> Option<TokenStream2> {
+    let params: Vec<String> = generics
+        .params
+        .iter()
+        .filter_map(|p| match p {
+            syn::GenericParam::Type(t) => Some(format!("`{}`", t.ident)),
+            syn::GenericParam::Const(c) => Some(format!("`const {}`", c.ident)),
+            syn::GenericParam::Lifetime(_) => None,
+        })
+        .collect();
+    if params.is_empty() {
+        return None;
+    }
+    let msg = format!(
+        "#[julia] {what} `{name}` is generic over {}: an `extern \"C\"` entry point needs \
+         concrete types, and #[julia] cannot know which instantiations Julia will call. \
+         Write a non-generic `#[julia]` item that uses it, or define it in a `rust\"\"\"` block, where \
+         RustCall monomorphizes generics on demand.",
+        params.join(", ")
+    );
+    Some(syn::Error::new_spanned(generics, msg).to_compile_error())
+}
+
+/// [`generic_item_error`] for a function or method signature, which may also be
+/// generic through `impl Trait` in an argument or its return type.
+fn generic_signature_error(sig: &syn::Signature, what: &str) -> Option<TokenStream2> {
+    if let Some(error) = generic_item_error(&sig.generics, what, &sig.ident) {
+        return Some(error);
+    }
+    if crate::types::has_impl_trait(sig) {
+        let msg = format!(
+            "#[julia] {what} `{}` uses `impl Trait` in its signature, which makes it generic: \
+             an `extern \"C\"` entry point needs concrete types. Name the concrete type instead.",
+            sig.ident
+        );
+        return Some(syn::Error::new_spanned(sig, msg).to_compile_error());
+    }
+    None
 }
 
 /// `Result` / `Option` payloads must survive the C ABI; refuse at compile time
@@ -1863,6 +1921,9 @@ fn struct_stem(module_path: &[String], struct_name: &Ident) -> Ident {
 
 /// Transform a `#[julia]` struct (crate flavour): `#[repr(C)]`, `pub`, free + accessors.
 pub fn transform_struct_crate(mut item_struct: ItemStruct, module_path: &[String]) -> TokenStream2 {
+    if let Some(error) = generic_item_error(&item_struct.generics, "struct", &item_struct.ident) {
+        return quote! { #error #item_struct };
+    }
     let repr_c: Attribute = syn::parse_quote!(#[repr(C)]);
     item_struct.attrs.insert(0, repr_c);
     item_struct.vis = Visibility::Public(syn::token::Pub::default());
@@ -1908,6 +1969,20 @@ pub fn transform_impl_crate(mut item_impl: ItemImpl, module_path: &[String]) -> 
             compile_error!("#[julia] on impl block requires a simple type path");
         };
     }
+    // A generic block (`impl<T> Wrapper<T>`) has no concrete receiver type to
+    // wrap: refuse it at the header, and keep the block as written (#462).
+    if crate::types::has_type_params(&item_impl.generics) {
+        let name = last_ident(&item_impl.self_ty)
+            .cloned()
+            .expect("checked above");
+        let error = generic_item_error(&item_impl.generics, "impl block for", &name);
+        for item in &mut item_impl.items {
+            if let syn::ImplItem::Fn(method) = item {
+                method.attrs.retain(|attr| !attr.path().is_ident("julia"));
+            }
+        }
+        return quote! { #error #item_impl };
+    }
     let struct_path = impl_target_module_path(module_path, &item_impl.self_ty);
     // The wrappers are emitted next to the block, in *its* module, so they
     // name the struct the way the header does (`super::Gauge`): a bare
@@ -1927,6 +2002,10 @@ pub fn transform_impl_crate(mut item_impl: ItemImpl, module_path: &[String]) -> 
                 .any(|attr| attr.path().is_ident("julia"));
             if has_julia_attr {
                 method.attrs.retain(|attr| !attr.path().is_ident("julia"));
+                if let Some(error) = generic_signature_error(&method.sig, "method") {
+                    ffi_wrappers.extend(error);
+                    continue;
+                }
                 // The generator reads the method's `#[cfg]` set and puts it on
                 // every item it emits; the block's predicates join that set
                 // for the wrapper only, the method itself is left as written.
