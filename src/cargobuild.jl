@@ -739,7 +739,25 @@ two same-named crates sharing a directory could have Cargo report the second
 as fresh and leave the first one's library in place (#447 review).
 """
 function crate_target_directory(crate_path::AbstractString)
-    return joinpath(get_cache_dir(), "targets", artifact_key(crate_target_id(crate_path)))
+    # Inside the Cargo cache, so `clear_cargo_cache` / `get_cargo_cache_size`
+    # cover it and `cleanup_old_cache` ages it (#447 review).
+    return joinpath(get_cargo_cache_dir(), "targets", artifact_key(crate_target_id(crate_path)))
+end
+
+"""
+    TARGET_LAST_USED_STAMP
+
+The file in a `crate_target_directory` whose mtime records when RustCall last
+built or probed there. `cleanup_old_cache` ages a target directory by it:
+Cargo's own files are not rewritten by a no-op build, so they cannot say
+whether a directory is still in use.
+"""
+const TARGET_LAST_USED_STAMP = ".rustcall-last-used"
+
+function _mark_target_used!(dir::AbstractString)
+    mkpath(dir)
+    touch(joinpath(dir, TARGET_LAST_USED_STAMP))
+    return String(dir)
 end
 
 """
@@ -825,13 +843,7 @@ function get_cargo_cache_size()
         return Int64(0)
     end
 
-    total_size = Int64(0)
-    for file in readdir(cache_dir)
-        filepath = joinpath(cache_dir, file)
-        if isfile(filepath)
-            total_size += filesize(filepath)
-        end
-    end
-
-    total_size
+    # The cached libraries and the per-crate target directories under
+    # `targets/` (#447 review), walked the way `get_cache_size` walks.
+    return _directory_size(cache_dir)
 end

@@ -3232,7 +3232,7 @@ function build_crate_directly(info::CrateInfo, release::Bool;
     # the output under RustCall's cache, never the crate's `target/` (#445).
     build_cargo_project(project, release=release, policy=crate_direct_policy(),
                         features=features, default_features=default_features,
-                        target_directory=crate_target_directory(info.path))
+                        target_directory=_mark_target_used!(crate_target_directory(info.path)))
 end
 
 """

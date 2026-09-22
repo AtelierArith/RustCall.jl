@@ -14,7 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `target/`, so a package installed into a read-only depot could not precompile
   its facade, and a CI cache of RustCall's cache did not carry the dependency
   build. Both now use `RustCall.crate_target_directory(crate)`, one directory
-  per crate under RustCall's cache. Cargo still reads the crate's `Cargo.lock`,
+  per crate under RustCall's Cargo cache, which `clear_cargo_cache`,
+  `get_cargo_cache_size` and `cleanup_old_cache` now cover. Cargo still reads the crate's `Cargo.lock`,
   which a read-only package must ship.
 
 ### Added

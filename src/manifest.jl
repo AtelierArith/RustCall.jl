@@ -760,7 +760,8 @@ function _crate_build_cfg_text(crate_path::AbstractString; profile::AbstractStri
                                memo::Bool = true, features::Vector{String} = String[],
                                target_directory::Union{Nothing, AbstractString} = nothing)
     path = abspath(String(crate_path))
-    target = target_directory === nothing ? crate_target_directory(path) : abspath(String(target_directory))
+    target = target_directory === nothing ? _mark_target_used!(crate_target_directory(path)) :
+             abspath(String(target_directory))
     # pyo3's configuration is an input too: a crate that depends on pyo3 gets
     # `Py_3_x` cfgs from `pyo3-build-config`, which reads `PYO3_*` (#307
     # review; `_cargo_cfg_env_key` excludes that namespace on purpose).

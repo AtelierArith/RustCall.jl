@@ -185,3 +185,52 @@ end
         end
     end
 end
+
+# The target directories are part of the Cargo cache: the documented
+# maintenance calls measure, clear and age them like the cached libraries
+# beside them (#447 review).
+@testset "Cargo cache maintenance covers the target directories (#447 review)" begin
+    mktempdir() do root
+        withenv("RUSTCALL_CACHE_DIR" => joinpath(root, "cache")) do
+            crate = mkpath(joinpath(root, "crate"))
+            target = RustCall.crate_target_directory(crate)
+            @test startswith(target, RustCall.get_cargo_cache_dir())
+
+            RustCall._mark_target_used!(target)
+            @test isfile(joinpath(target, RustCall.TARGET_LAST_USED_STAMP))
+            write(joinpath(mkpath(joinpath(target, "release", "deps")), "libdep.rlib"), zeros(UInt8, 1000))
+            @test RustCall.get_cargo_cache_size() >= 1000
+
+            # Aged by the last use RustCall recorded, not by Cargo's own files.
+            stale = RustCall.crate_target_directory(mkpath(joinpath(root, "stale")))
+            RustCall._mark_target_used!(stale)
+            if Sys.iswindows()
+                @test_skip "setting an old mtime uses POSIX touch"
+            else
+                run(`touch -t 200001010000 $(joinpath(stale, RustCall.TARGET_LAST_USED_STAMP))`)
+                RustCall.cleanup_old_cache(30)
+                @test !isdir(stale)
+                @test isdir(target)
+            end
+
+            RustCall.clear_cargo_cache()
+            @test !isdir(target)
+            @test RustCall.get_cargo_cache_size() == 0
+        end
+    end
+end
+
+@testset "a probe records that it used its target directory (#447 review)" begin
+    if !_dbt_cargo_ok()
+        @test_skip "cargo is required"
+    else
+        mktempdir() do root
+            crate = _dbt_copy_crate(root)
+            withenv("RUSTCALL_CACHE_DIR" => joinpath(root, "cache")) do
+                RustCall._crate_build_cfg_text(crate)
+                @test isfile(joinpath(RustCall.crate_target_directory(crate),
+                                      RustCall.TARGET_LAST_USED_STAMP))
+            end
+        end
+    end
+end

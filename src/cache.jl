@@ -849,16 +849,27 @@ function get_cache_size()
         return Int64(0)
     end
 
+    # The size of the *compiled* cache: the persisted lockfiles are inputs
+    # (`CACHE_INPUT_DIRS`), survive `clear_cache`, and are not counted —
+    # otherwise a cleared cache would never read as empty (#256).
+    return _directory_size(cache_dir; skip = CACHE_INPUT_DIRS)
+end
+
+"""
+    _directory_size(dir; skip = ()) -> Int64
+
+The total size of the files under `dir`, leaving out the top-level entries
+named in `skip`.
+
+The cache holds live Cargo target directories (`crate_target_directory`,
+#445), where Cargo creates and deletes temporary directories while it builds:
+an entry that vanishes, or cannot be read, between listing and descending is
+skipped rather than failing a size query.
+"""
+function _directory_size(dir::AbstractString; skip = ())
     total_size = Int64(0)
-    # The cache holds live Cargo target directories (`crate_target_directory`,
-    # #445), where Cargo creates and deletes temporary directories while it
-    # builds: an entry that vanishes, or cannot be read, between listing and
-    # descending is skipped rather than failing a size query.
-    for (root, dirs, files) in walkdir(cache_dir; onerror = _ -> nothing)
-        # The size of the *compiled* cache: the persisted lockfiles are inputs
-        # (`CACHE_INPUT_DIRS`), survive `clear_cache`, and are not counted —
-        # otherwise a cleared cache would never read as empty (#256).
-        root == cache_dir && filter!(d -> !(d in CACHE_INPUT_DIRS), dirs)
+    for (root, dirs, files) in walkdir(dir; onerror = _ -> nothing)
+        root == dir && filter!(d -> !(d in skip), dirs)
         for file in files
             file_path = joinpath(root, file)
             # One `stat`: a file removed after the listing reads as size 0,
@@ -873,7 +884,6 @@ function get_cache_size()
             isfile(st) && (total_size += st.size)
         end
     end
-
     return total_size
 end
 
@@ -943,6 +953,26 @@ function cleanup_old_cache(max_age_days::Int = 30)
             if file_mtime < cutoff_time
                 rm(file_path, force=true)
                 removed_count += 1
+            end
+        end
+    end
+
+    # Per-crate Cargo target directories, aged by the stamp RustCall writes
+    # whenever it builds or probes there (#447 review). A directory without a
+    # stamp is aged by its own mtime.
+    targets_dir = joinpath(get_cargo_cache_dir(), "targets")
+    if isdir(targets_dir)
+        for entry in readdir(targets_dir; join = true)
+            isdir(entry) || continue
+            stamp = joinpath(entry, TARGET_LAST_USED_STAMP)
+            last_used = Dates.unix2datetime(Base.Filesystem.mtime(isfile(stamp) ? stamp : entry))
+            last_used < cutoff_time || continue
+            try
+                rm(entry; recursive = true, force = true)
+                removed_count += 1
+            catch e
+                e isa Base.IOError || rethrow()
+                @debug "Could not remove a stale Cargo target directory" entry exception = e
             end
         end
     end
