@@ -141,15 +141,19 @@ end
             write(joinpath(cache, "lib.bin"), zeros(UInt8, 100))
             hidden = mkpath(joinpath(cache, "targets", "0000000000000000", "release", "deps", "rmetaXXXX"))
             write(joinpath(hidden, "partial"), zeros(UInt8, 7))
-            chmod(hidden, 0o000)
-            try
-                if Sys.iswindows() || !_dbt_is_read_only(hidden)
-                    @test_skip "a mode-000 directory is still readable here (root, or Windows)"
-                else
-                    @test RustCall.get_cache_size() == 100
+            # Listed but not searchable: the directory itself cannot be read
+            # (mode 000), or its files cannot be stat-ed (mode 444, #447 review).
+            for mode in (0o000, 0o444)
+                chmod(hidden, mode)
+                try
+                    if Sys.iswindows() || !_dbt_is_read_only(hidden)
+                        @test_skip "a mode-$(string(mode; base = 8)) directory is still accessible here (root, or Windows)"
+                    else
+                        @test RustCall.get_cache_size() == 100
+                    end
+                finally
+                    chmod(hidden, 0o755)
                 end
-            finally
-                chmod(hidden, 0o755)
             end
         end
     end

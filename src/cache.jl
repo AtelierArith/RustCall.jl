@@ -861,8 +861,15 @@ function get_cache_size()
         root == cache_dir && filter!(d -> !(d in CACHE_INPUT_DIRS), dirs)
         for file in files
             file_path = joinpath(root, file)
-            # One `stat`: a file removed after the listing reads as size 0.
-            st = stat(file_path)
+            # One `stat`: a file removed after the listing reads as size 0,
+            # and one that cannot be stat-ed (a directory that lost its
+            # search permission) is skipped (#447 review).
+            st = try
+                stat(file_path)
+            catch e
+                e isa Base.IOError || rethrow()
+                continue
+            end
             isfile(st) && (total_size += st.size)
         end
     end
