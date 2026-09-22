@@ -10,7 +10,8 @@ const _BOUNDARY_ATTRIBUTES = ("julia", "derive_julia_struct")
     inline_boundary_report(code; io = stdout) -> NamedTuple
 
 Check the FFI surface RustCall would generate for a crate (`@rust_crate`) or for
-an inline `rust\"\"\"...\"\"\"` block, **without building or loading anything**,
+an inline `rust\"\"\"...\"\"\"` block, **without building or loading anything** (no Cargo runs; a crate's target
+configuration comes from `rustc --print cfg`),
 and list every argument or return position the FFI contract (the manual's
 "The FFI Type Contract" page) cannot describe (#441).
 
@@ -49,9 +50,12 @@ RustCall.inline_boundary_report(\"\"\"
 function boundary_report(crate_path::AbstractString; io::IO = stdout)
     isfile(joinpath(crate_path, "Cargo.toml")) ||
         throw(ArgumentError("not a crate: no Cargo.toml in $(crate_path)"))
-    # The lenient scan, as `scan_crate` does by default: no Cargo runs, so a
-    # `#[cfg]`-carrying item is reported rather than decided.
-    _, _, manifest = _crate_manifest(crate_path; allow_cargo = false)
+    # The lenient scan `scan_crate` does by default, but with the target
+    # configuration from `rustc --print cfg` rather than the Cargo probe a
+    # lenient scan would otherwise start: this report runs no Cargo and builds
+    # nothing (#450 review). A feature-gated item is reported, not decided.
+    _, _, manifest = _crate_manifest(crate_path; cfg_text = _rustc_cfg_text(),
+                                     allow_cargo = false)
     return _boundary_report(manifest, "crate $(crate_path)", io)
 end
 

@@ -147,3 +147,19 @@ end
     end
 end
 
+# "Builds nothing": the crate report takes the target configuration from
+# `rustc --print cfg` and never runs the Cargo probe a lenient scan would
+# otherwise start (#450 review). Checked in a fresh process, where no earlier
+# scan has populated the probe's memo.
+@testset "boundary_report runs no Cargo (#450 review)" begin
+    script = """
+        using RustCall
+        before = length(RustCall._CARGO_CFG_TEXT)
+        RustCall.boundary_report($(repr(BR_SAMPLE_CRATE)); io = devnull)
+        print(before, " ", length(RustCall._CARGO_CFG_TEXT))
+        """
+    out = withenv("RUSTCALL_SUPPRESS_HELPERS_WARNING" => "1") do
+        readchomp(`$(Base.julia_cmd()) --startup-file=no --project=$(pkgdir(RustCall)) -e $script`)
+    end
+    @test out == "0 0"
+end
