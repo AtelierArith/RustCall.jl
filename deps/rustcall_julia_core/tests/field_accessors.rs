@@ -5,7 +5,7 @@
 //! `Vec<T>`, a struct by value or any other aggregate gets none, whatever the
 //! field's visibility, so a struct holding one binds as an opaque handle.
 
-use rustcall_core::{
+use rustcall_julia_core::{
     codegen::transform_struct_crate, expand::expand, extract::extract, manifest::Mode,
     manifest::Struct,
 };
