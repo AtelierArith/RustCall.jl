@@ -269,12 +269,25 @@ end
     # same interpreter is accepted; another fingerprint is refused, naming
     # both, even under the running interpreter's own path (an upgrade in
     # place).
-    relabel(a; interpreter = a.interpreter, fingerprint = a.fingerprint) =
-        RustCall.PyO3Extension(a.module_name, a.lib_path, a.dir, a.ext_suffix,
+    relabel(a; interpreter = a.interpreter, fingerprint = a.fingerprint,
+            ext_suffix = a.ext_suffix) =
+        RustCall.PyO3Extension(a.module_name, a.lib_path, a.dir, ext_suffix,
                                interpreter, fingerprint, a.key)
     same_by_fingerprint = relabel(again; interpreter = joinpath(mktempdir(), "python"))
     @test pyconvert(Int, RustCall.pyo3_host_import(same_by_fingerprint).add(1, 1)) == 2
     stale = "CPython|0.0.0|other|libpython0.0.so|/nowhere|True"
+    # ... and a suffix the running interpreter does not tag its extensions
+    # with is refused too, fingerprint or not: the import resolves by it.
+    other_suffix = relabel(again; ext_suffix = ".cpython-000-nowhere.so")
+    err = try
+        RustCall.pyo3_host_import(other_suffix)
+        nothing
+    catch e
+        e
+    end
+    @test err isa RustCall.RustError
+    @test occursin(".cpython-000-nowhere.so", sprint(showerror, err))
+    @test occursin(again.ext_suffix, sprint(showerror, err))
     for foreign in (relabel(again; interpreter = joinpath(mktempdir(), "python"), fingerprint = stale),
                     relabel(again; fingerprint = stale))
         err = try

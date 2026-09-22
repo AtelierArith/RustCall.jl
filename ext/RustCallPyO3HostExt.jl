@@ -58,20 +58,23 @@ end
 # lets a package build ahead of time, possibly in an earlier session. So an
 # artifact handed in is checked against the interpreter this process runs
 # before it is imported, by **fingerprint** (implementation, version, SOABI,
-# library), never by path alone: an interpreter upgraded in place keeps its
-# path and changes its ABI, and a virtual environment's launcher and its base
-# are one interpreter under two paths. The probe is one interpreter start; the
-# one-argument hook does not pay it, having just built for this interpreter
-# (#449 review).
+# library) and by the `EXT_SUFFIX` the file is named with — the suffix is what
+# the import resolves by, and a build with the same fingerprint can still tag
+# its extensions differently — never by path alone: an interpreter upgraded in
+# place keeps its path and changes its ABI, and a virtual environment's
+# launcher and its base are one interpreter under two paths. Both come from
+# the one-start probe; the one-argument hook does not pay it, having just
+# built for this interpreter (#449 review).
 function _check_interpreter(artifact::RustCall.PyO3Extension)
     runtime = PythonCall.python_executable_path()
-    fingerprint = RustCall._python_interpreter_fingerprint(runtime)
-    artifact.fingerprint == fingerprint && return nothing
+    ext_suffix, fingerprint = RustCall._pyo3_extension_interpreter_probe(runtime)
+    artifact.fingerprint == fingerprint && artifact.ext_suffix == ext_suffix && return nothing
     throw(RustCall.RustError(
         "The PyO3 extension module `$(artifact.module_name)` was built for the " *
-        "interpreter `$(artifact.interpreter)` ($(artifact.fingerprint)), but the " *
-        "Python this process runs is `$(runtime)` ($(fingerprint)). Build it for that " *
-        "interpreter: `RustCall.build_pyo3_extension(crate; python = " *
+        "interpreter `$(artifact.interpreter)` ($(artifact.fingerprint), " *
+        "$(artifact.ext_suffix)), but the Python this process runs is `$(runtime)` " *
+        "($(fingerprint), $(ext_suffix)). Build it for that interpreter: " *
+        "`RustCall.build_pyo3_extension(crate; python = " *
         "PythonCall.python_executable_path())`."))
 end
 

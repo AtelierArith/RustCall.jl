@@ -151,9 +151,10 @@ PythonCall will use is not known until it initialises.
 The artifact must be the one for the interpreter PythonCall runs: pyo3 links
 against that interpreter, and CPython ignores an extension whose file tag is
 another version's. `pyo3_host_import(artifact)` therefore checks the artifact's
-interpreter **fingerprint** (implementation, version, SOABI, library) against
-that of `PythonCall.python_executable_path()` before importing — one
-interpreter start — and raises a `RustError` naming both on a mismatch. The
+interpreter **fingerprint** (implementation, version, SOABI, library) and
+`EXT_SUFFIX` against those of `PythonCall.python_executable_path()` before
+importing — one interpreter start — and raises a `RustError` naming both on a
+mismatch. The
 path alone decides nothing: an interpreter upgraded in place keeps its path and
 changes its ABI, and a virtual environment's launcher and its base are one
 interpreter under two paths. The one-argument `pyo3_host_import(crate)` skips
