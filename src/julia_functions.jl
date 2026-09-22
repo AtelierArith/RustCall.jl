@@ -257,7 +257,10 @@ function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
             end
             push!(trampolines,
                   :($(GlobalRef(@__MODULE__, :CallbackTrampoline)){$(plan.ret_expr)}($arg_sym)))
-            slot = GlobalRef(@__MODULE__, Symbol("_callback_slot_", k))
+            # A singleton callable carrying the slot's return type, so a
+            # call with no trampoline behind it can still hand Rust a value of
+            # the right type instead of raising (#460).
+            slot = :($(GlobalRef(@__MODULE__, :CallbackSlot)){$k, $(plan.ret_expr)}())
             push!(call_args, Expr(:macrocall, :(Base.var"@cfunction"), nothing,
                                   slot, plan.ret_expr, Expr(:tuple, plan.arg_exprs...)))
         elseif c.abi === :ptr_len || c.abi === :ptr_len_cap
@@ -683,7 +686,8 @@ function _generate_inline_result_wrapper(sig, func_name, symbol_str, arg_syms, b
             # A panic returns `CResult::panicked()` — the Err discriminant with
             # an uninitialized payload — so the channel must be read before the
             # payload is decoded, and resolved before the call (#244).
-            RustCall.check_rust_panic_ptr($channel_sym.channel, $rust_name)
+            RustCall.check_rust_panic_ptr($channel_sym.channel, $rust_name, $c_sym,
+                                          $channel_sym.free_ptr)
             RustCall.convert_c_result_to_rust_result($c_sym, $ok_t, $err_t,
                                                      $channel_sym.free_ptr)
         end
@@ -706,7 +710,8 @@ function _generate_inline_option_wrapper(sig, func_name, symbol_str, arg_syms, b
                 RustCall.resolve_call_target(RustCall.module_symbol_library(@__MODULE__, $symbol_str), $symbol_str;
                                              free_symbol = $free_sym)
             $c_sym = $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) RustCall.call_rust_function($channel_sym.func_ptr, RustCall.COptionType{$inner_slot}, $(converted_args...)))))
-            RustCall.check_rust_panic_ptr($channel_sym.channel, $rust_name)
+            RustCall.check_rust_panic_ptr($channel_sym.channel, $rust_name, $c_sym,
+                                          $channel_sym.free_ptr)
             RustCall.convert_c_option_to_rust_option($c_sym, $inner_t,
                                                      $channel_sym.free_ptr)
         end

@@ -232,8 +232,11 @@ Three rules come with the feature:
   those slot types — and the Julia function it stands for lives in a frame
   the wrapper pushes onto a task-local stack for exactly the duration of the
   call (no closure `@cfunction`, which Julia does not offer on every
-  platform). Invoking the pointer after the call returned is undefined
-  behaviour, as it would be in C. A Rust side that wants to *keep* a
+  platform). Invoking the pointer after the call returned is a bug on the
+  Rust side, as it would be in C; Julia does not raise inside it (that would
+  unwind through Rust) but records a `RustError` that the next guarded Rust
+  call on the task re-raises, and returns a zero of the return type
+  (`C_NULL` for a pointer). A Rust side that wants to *keep* a
   callback — a registered handler, a `Box<dyn Fn>` stored in a struct — must
   not take it this way; keep the Julia object alive yourself and pass an
   opaque handle instead.
@@ -243,7 +246,7 @@ Three rules come with the feature:
   system cannot tell the two apart, so this is a rule for the Rust author.
 * **A Julia exception never unwinds through Rust.** The generated trampoline
   catches every exception the callback throws, stores it for the calling
-  task, and returns a zero of the return type; Rust continues on that
+  task, and returns a zero of the return type (`C_NULL` for a pointer); Rust continues on that
   sentinel, and once its frames are gone the wrapper re-raises the exception
   — the same object — at the call site. A panic Rust raised *because* of the
   sentinel is consumed, not reported: the exception is the root cause. Only

@@ -463,6 +463,18 @@ function _compute_file_checksum(path::String)::String
 end
 
 """
+    _publish_temp_path(path) -> String
+
+The temporary file a publisher writes before renaming it onto `path`. Unique
+per process and per call: a fixed `path * ".tmp"` is shared by two publishers
+of the same key — two sessions, or two tasks — and one then truncates or
+renames away the other's half-written file (#394, #460). Every
+write-then-rename in the cache takes its name from here.
+"""
+_publish_temp_path(path::AbstractString) =
+    string(path, ".", getpid(), ".", string(rand(UInt64), base = 16), ".tmp")
+
+"""
     _save_checksum(cache_key::String, lib_path::String)
 
 Save a SHA-256 checksum file alongside a cached library.
@@ -472,7 +484,7 @@ function _save_checksum(cache_key::String, lib_path::String)
     checksum_path = lib_path * ".sha256"
     # Unique per process and per call: a fixed `.tmp` is shared by two
     # publishers of the same key, and one then truncates the other's (#394).
-    tmp_path = string(checksum_path, ".", getpid(), ".", string(rand(UInt64), base = 16), ".tmp")
+    tmp_path = _publish_temp_path(checksum_path)
     open(tmp_path, "w") do io
         println(io, checksum)
     end
@@ -694,7 +706,7 @@ function _save_cache_metadata_unlocked(cache_key::String, metadata::CacheMetadat
     # Write to a temp file first, then atomically rename to prevent partial
     # reads. The name is unique per process and per call, or two publishers of
     # one key share it and one truncates the other's (#394).
-    tmp_path = string(metadata_path, ".", getpid(), ".", string(rand(UInt64), base = 16), ".tmp")
+    tmp_path = _publish_temp_path(metadata_path)
     open(tmp_path, "w") do io
         println(io, "{")
         println(io, "  \"cache_key\": \"$(metadata.cache_key)\",")

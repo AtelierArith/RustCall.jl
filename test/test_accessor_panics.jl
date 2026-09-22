@@ -88,6 +88,9 @@ end
                         (target.func_ptr, target.channel, target.free_ptr)
                 end
                 _guard_panic(value, channel, name) = RustCall.guard_rust_panic_ptr(value, channel, name)
+                # An owned-string read passes its release function (#460).
+                _guard_panic(value, channel, name, free) =
+                    RustCall.guard_rust_panic_ptr(value, channel, name, free)
             end)
             for (field, type, symbol) in (("number", "i32", "rustcall_fail_number"),
                                          ("text", "String", "rustcall_fail_text"),

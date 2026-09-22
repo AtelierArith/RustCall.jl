@@ -427,7 +427,13 @@ _rust_box_drop_symbol(::Type{Int64}) = :rust_box_drop_i64
 _rust_box_drop_symbol(::Type{Float32}) = :rust_box_drop_f32
 _rust_box_drop_symbol(::Type{Float64}) = :rust_box_drop_f64
 _rust_box_drop_symbol(::Type{Bool}) = :rust_box_drop_bool
-_rust_box_drop_symbol(::Type) = :rust_box_drop
+# No typed helper, no drop. The untyped `rust_box_drop` frees a
+# `Box<c_void>` — a 1-byte layout with no destructor — so handing it a
+# `Box<T>` of any real `T` is undefined behaviour (#460). Like `RustRc` /
+# `RustArc`, an unsupported `T` has no drop target and is never freed from
+# Julia; `RustBox{T}(value)` refuses such a `T` up front
+# (`_rust_box_new_symbol`).
+_rust_box_drop_symbol(::Type) = nothing
 
 _rust_rc_new_symbol(::Type{Int32}) = :rust_rc_new_i32
 _rust_rc_new_symbol(::Type{Int64}) = :rust_rc_new_i64
@@ -604,6 +610,14 @@ function drop_rust_box(box::RustBox{T}) where T
         end
 
         drop_sym = _rust_box_drop_symbol(T)
+        if drop_sym === nothing
+            # Unsupported type — mark as dropped without calling Rust drop;
+            # there is no helper that frees a `Box<T>` for this `T` (#460).
+            @debug "No Rust drop function for RustBox{$T}, marking as dropped"
+            box.dropped = true
+            box.ptr = C_NULL
+            return nothing
+        end
 
         lib = get_rust_helpers_lib()
         if lib === nothing

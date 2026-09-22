@@ -97,6 +97,25 @@ function get_default_target()
 end
 
 """
+    rustc_command(args) -> Cmd
+
+The `rustc` RustToolChain.jl resolves, run with `args` appended — its **whole**
+command, not just the executable. With the artifact toolchain RustToolChain
+returns `` `rustc --sysroot <prefix>` `` (Unix) or a `setenv(...)` command
+(Windows); keeping only `exec[1]` dropped both, so a build or probe ran a
+compiler with no standard library while the `rustc --print cfg` probe, which
+used the full command, saw a different one (#460). Every place RustCall runs
+`rustc` directly builds its command here, so the compile, the `@irust` type
+probe, the generic-group check and the cfg probe cannot disagree.
+
+`base` is for tests; it defaults to `rustc()`.
+"""
+function rustc_command(args::AbstractVector{<:AbstractString}; base::Cmd = rustc())
+    return Cmd(Cmd(vcat(base.exec, String.(args)));
+               ignorestatus = base.ignorestatus, env = base.env, dir = base.dir)
+end
+
+"""
     check_rustc_available() -> Bool
 
 Check if rustc is available using RustToolChain.jl.
@@ -211,32 +230,30 @@ function compile_rust_to_shared_lib(code::String; compiler::RustCompiler = get_d
         write(rs_file, code)
 
         # Build the rustc command for shared library using RustToolChain.jl
-        rustc_cmd = rustc()
-        cmd_args = vcat(
-            [string(rustc_cmd.exec[1])],  # Get the actual rustc path from RustToolChain
-            [
-                "--crate-type=cdylib",
-                "-C", "opt-level=$(compiler.optimization_level)",
-                # Unwinding is what makes the generated `catch_unwind`
-                # boundary able to catch anything at all: an aborting profile
-                # terminates the process before any boundary runs, so a Rust
-                # bug would still take the Julia session with it (#244).
-                # Pinned by the policy, not left to rustc's default, so this
-                # cannot drift from what the Cargo path does.
-                rustc_panic_flags(inline_rustc_policy())...,
-                "--target=$(compiler.target_triple)",
-                "-o", lib_file,
-                rs_file
-            ]
-        )
+        # The arguments only; `rustc_command` prepends RustToolChain's whole
+        # command (sysroot / environment included, #460).
+        cmd_args = String[
+            "--crate-type=cdylib",
+            "-C", "opt-level=$(compiler.optimization_level)",
+            # Unwinding is what makes the generated `catch_unwind`
+            # boundary able to catch anything at all: an aborting profile
+            # terminates the process before any boundary runs, so a Rust
+            # bug would still take the Julia session with it (#244).
+            # Pinned by the policy, not left to rustc's default, so this
+            # cannot drift from what the Cargo path does.
+            rustc_panic_flags(inline_rustc_policy())...,
+            "--target=$(compiler.target_triple)",
+            "-o", lib_file,
+            rs_file
+        ]
 
         if compiler.emit_debug_info
             push!(cmd_args, "-g")
         end
 
         # Run rustc and capture stderr
-        cmd = Cmd(cmd_args)
-        cmd_str = join(cmd_args, " ")
+        cmd = rustc_command(cmd_args)
+        cmd_str = join(cmd.exec, " ")
 
         try
             # Capture stderr for better error messages
@@ -542,7 +559,6 @@ function _run_type_probe(body::AbstractString, params::AbstractString,
         write(src, string("#![allow(unused)]\nfn __rustcall_irust_probe(", params, ")",
                           ret, " {\n", body, "\n}\n"))
         cmd_args = [
-            string(rustc().exec[1]),
             "--crate-type=lib",
             "--emit=metadata",
             "--error-format=json",
@@ -554,7 +570,7 @@ function _run_type_probe(body::AbstractString, params::AbstractString,
         ]
         stderr_io = IOBuffer()
         ok = try
-            proc = run(pipeline(Cmd(cmd_args), stderr = stderr_io), wait = false)
+            proc = run(pipeline(rustc_command(cmd_args), stderr = stderr_io), wait = false)
             wait(proc)
             Base.success(proc)
         catch e

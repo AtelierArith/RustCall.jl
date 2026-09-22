@@ -707,7 +707,7 @@ function _rustc_cfg_text(flags::Vector{String} = _cfg_rustc_flags())
     lock(_EXTRACTOR_LOCK) do
         get!(_RUSTC_CFG_TEXT, flags) do
             try
-                read(`$(rustc()) --print cfg $flags`, String)
+                read(rustc_command(["--print", "cfg", flags...]), String)
             catch
                 ""
             end
@@ -1269,9 +1269,17 @@ function save_specialization_record(cache_key::AbstractString, record::Specializ
                 "has_borrowed_string_helper" => fn.has_borrowed_string_helper,
             ) for (member, fn) in record.members],
         )
-        tmp = path * ".tmp"
-        open(io -> TOML.print(io, doc), tmp, "w")
-        mv(tmp, path, force = true)
+        # A unique name: `CACHE_LOCK` serializes this process only, and a
+        # fixed `path * ".tmp"` let two sessions saving one key truncate each
+        # other's file (#394, #460).
+        tmp = _publish_temp_path(path)
+        try
+            open(io -> TOML.print(io, doc), tmp, "w")
+            mv(tmp, path, force = true)
+        catch
+            rm(tmp; force = true)
+            rethrow()
+        end
         return path
     end
 end

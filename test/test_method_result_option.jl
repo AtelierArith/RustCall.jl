@@ -280,7 +280,9 @@ end
     @test at !== nothing
     body = code[first(at):end]
     body = body[1:first(findfirst("\nend", body))]
-    @test findfirst("_guard_panic(nothing,", body) < findfirst("_result_payload(", body)
+    # The guard gets the aggregate and its release function, so a callback's
+    # exception raised there cannot leak an owned payload (#460).
+    @test findfirst("_guard_panic(c_payload, panic_channel,", body) < findfirst("_result_payload(", body)
     @test Meta.parse(code) isa Expr
 
     # The in-memory emitter emits the same aggregate and decoding.
