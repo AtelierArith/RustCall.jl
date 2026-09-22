@@ -222,9 +222,8 @@ persist between CI runs:
 
 | What | Where | Filled by |
 | --- | --- | --- |
-| compiled Rust libraries, and the `Cargo.lock` of each `// cargo-deps:` set | `RustCall.get_cache_dir()`, or `RUSTCALL_CACHE_DIR` when set | the first build of each block or crate |
+| compiled Rust libraries, the `Cargo.lock` of each `// cargo-deps:` set, and the Cargo build of each `cdylib` crate | `RustCall.get_cache_dir()`, or `RUSTCALL_CACHE_DIR` when set | the first build of each block or crate |
 | crate sources from the registry | `$CARGO_HOME/registry` and `$CARGO_HOME/git` (default `~/.cargo`) | Cargo |
-| a `cdylib` facade's Cargo build, including its dependencies | the crate's own `target/` | `@rust_crate`, whose cfg probe runs Cargo there even when the library is cached ([#445](https://github.com/AtelierArith/RustCall.jl/issues/445)) |
 | Julia precompile images, including `@rust_crate` modules | the depot's `compiled/` | `Pkg.precompile()` |
 | the artifact Rust toolchain, when there is no system `rustc` | the depot's `artifacts/` | RustToolChain |
 
@@ -247,7 +246,6 @@ A GitHub Actions sketch:
       ${{ runner.temp }}/rustcall-cache
       ~/.cargo/registry
       ~/.cargo/git
-      deps/**/target                      # a cdylib facade's own Cargo build
     key: rustcall-${{ runner.os }}-${{ steps.rust.outputs.version }}-${{ hashFiles('deps/**/Cargo.toml', 'deps/**/Cargo.lock', 'deps/**/*.rs', 'src/**/*.jl', 'Manifest.toml') }}
     restore-keys: rustcall-${{ runner.os }}-
 - run: julia --project -e 'using Pkg; Pkg.instantiate(); Pkg.precompile(); Pkg.test()'
@@ -287,11 +285,12 @@ stores the result.
     depends on it by path and resolves its own graph; your `Cargo.lock` does
     not pin that build. Declare `cdylib` in the facade, or pin versions in its
     `Cargo.toml` (`serde = "=1.0.210"`).
-- A direct (`cdylib`) build currently writes `target/` inside the crate
-  directory, and so does its cfg probe. A package installed into a read-only
-  depot therefore cannot precompile its facade
-  ([#445](https://github.com/AtelierArith/RustCall.jl/issues/445)). Until that
-  is fixed, keep the package tree writable wherever it is precompiled.
+- A direct (`cdylib`) build and its cfg probe run Cargo in the crate's
+  directory but write their output under RustCall's cache
+  (`RustCall.crate_target_directory(crate)`), never into the crate. An
+  installed, read-only package can therefore build its facade, provided it
+  ships its `Cargo.lock`: Cargo writes that file beside the manifest when it is
+  missing or stale.
 - For an offline or air-gapped build, run once online to fill the registry and
   RustCall caches, then set `RUSTCALL_OFFLINE=1`. Cargo then fails at once on
   anything it would have to download, rather than hanging.
