@@ -66,16 +66,60 @@ index_path() {
     fi
 }
 
-is_published() {
-    local name="$1" version="$2"
-    curl -fsS "https://index.crates.io/$(index_path "$name")" 2>/dev/null |
-        grep -q "\"vers\":\"${version}\""
+# Whether `name` `version` is in the crates.io index. Three answers, not two:
+# 0 = published, 1 = not published (the version is absent from the crate's
+# index file, or the crate has no file yet — a 404 is how the index says a
+# name has never been published), 2 = the index could not be asked (a
+# transport failure or any other status). Treating 2 as "not published" would
+# have re-run `cargo publish` for a version that is on crates.io and failed
+# what should be an idempotent rerun, so a caller must decide what a 2 means.
+index_status() {
+    local name="$1" version="$2" body code
+    body="$(mktemp)"
+    code="$(curl -sS -o "$body" -w '%{http_code}' \
+                "https://index.crates.io/$(index_path "$name")" 2>/dev/null || echo 000)"
+    if [ "$code" = 200 ]; then
+        if grep -q "\"vers\":\"${version}\"" "$body"; then
+            rm -f "$body"
+            return 0
+        fi
+        rm -f "$body"
+        return 1
+    fi
+    rm -f "$body"
+    if [ "$code" = 404 ]; then
+        return 1
+    fi
+    return 2
 }
 
+# `index_status`, with an unreachable index retried a few times and then
+# reported as an error rather than guessed at.
+is_published() {
+    local name="$1" version="$2" rc attempt
+    for attempt in 1 2 3 4 5; do
+        rc=0
+        index_status "$name" "$version" || rc=$?
+        if [ "$rc" -ne 2 ]; then
+            return "$rc"
+        fi
+        echo "crates.io index did not answer for $name (attempt $attempt); retrying" >&2
+        sleep 5
+    done
+    echo "::error::the crates.io index could not be reached for $name $version;" \
+         "not publishing on a guess" >&2
+    exit 1
+}
+
+# After an upload, the version takes a moment to reach the sparse index. An
+# index that does not answer during the wait is "not there yet", not an
+# error: the upload has happened, and the next run finds it.
 wait_for_index() {
-    local name="$1" version="$2"
+    local name="$1" version="$2" rc
     for _ in $(seq 1 60); do
-        if is_published "$name" "$version"; then
+        rc=0
+        index_status "$name" "$version" || rc=$?
+        if [ "$rc" -eq 0 ]; then
             return 0
         fi
         sleep 5
