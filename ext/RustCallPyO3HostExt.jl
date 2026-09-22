@@ -29,7 +29,9 @@ function RustCall.pyo3_host_import(crate_path::AbstractString;
                                              default_features = default_features,
                                              release = release,
                                              cache_enabled = cache_enabled)
-    return RustCall.pyo3_host_import(artifact)
+    # Built for `python_executable_path()` a moment ago, so the interpreter
+    # check of the artifact overload would only repeat the probe that just ran.
+    return _import_artifact(artifact)
 end
 
 """
@@ -43,21 +45,26 @@ interpreter of its choosing — and keep only this import lazy (#449).
 """
 function RustCall.pyo3_host_import(artifact::RustCall.PyO3Extension)
     _check_interpreter(artifact)
+    return _import_artifact(artifact)
+end
+
+function _import_artifact(artifact::RustCall.PyO3Extension)
     _ensure_importable(artifact.dir)
     return PythonCall.pyimport(artifact.module_name)
 end
 
 # An artifact is built for one interpreter — pyo3 links against it, and CPython
 # ignores an extension whose file tag is another version's — and the split API
-# lets a package build ahead of time with an interpreter it chose. So the
-# artifact is checked against the interpreter this process runs before it is
-# imported: the same path is the common case and costs nothing; a different
-# path is accepted when it is the same interpreter by fingerprint (a venv's
-# launcher and its base, say), and refused with both spellings named otherwise
+# lets a package build ahead of time, possibly in an earlier session. So an
+# artifact handed in is checked against the interpreter this process runs
+# before it is imported, by **fingerprint** (implementation, version, SOABI,
+# library), never by path alone: an interpreter upgraded in place keeps its
+# path and changes its ABI, and a virtual environment's launcher and its base
+# are one interpreter under two paths. The probe is one interpreter start; the
+# one-argument hook does not pay it, having just built for this interpreter
 # (#449 review).
 function _check_interpreter(artifact::RustCall.PyO3Extension)
     runtime = PythonCall.python_executable_path()
-    artifact.interpreter == runtime && return nothing
     fingerprint = RustCall._python_interpreter_fingerprint(runtime)
     artifact.fingerprint == fingerprint && return nothing
     throw(RustCall.RustError(
