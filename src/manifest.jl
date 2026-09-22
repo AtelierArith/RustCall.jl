@@ -751,13 +751,16 @@ with. They are passed directly to each probe.
 
 `--print cfg` still resolves and builds the crate's dependencies, but every
 caller today has just built the crate anyway. It builds them into
-`crate_target_directory(crate_path)`, the directory the direct build of the
-same crate uses, so the two share that work and neither writes into the crate
-(#445).
+`target_directory`: by default `crate_target_directory(crate_path)`, the
+directory the direct build of the same crate uses, so the two share that work
+and neither writes into the crate (#445). A caller that builds elsewhere —
+hot reload, in the crate's own `target/` — passes that directory instead.
 """
 function _crate_build_cfg_text(crate_path::AbstractString; profile::AbstractString = "release",
-                               memo::Bool = true, features::Vector{String} = String[])
+                               memo::Bool = true, features::Vector{String} = String[],
+                               target_directory::Union{Nothing, AbstractString} = nothing)
     path = abspath(String(crate_path))
+    target = target_directory === nothing ? crate_target_directory(path) : abspath(String(target_directory))
     # pyo3's configuration is an input too: a crate that depends on pyo3 gets
     # `Py_3_x` cfgs from `pyo3-build-config`, which reads `PYO3_*` (#307
     # review; `_cargo_cfg_env_key` excludes that namespace on purpose).
@@ -768,10 +771,12 @@ function _crate_build_cfg_text(crate_path::AbstractString; profile::AbstractStri
             try
                 flag = profile == "release" ? `--release` : ``
                 # The probe compiles the crate's dependencies. They go where
-                # the direct build of the same crate puts them, under
-                # RustCall's cache: never the crate's own `target/` (#445).
+                # the build of the same crate puts them — by default the direct
+                # build's directory under RustCall's cache, never the crate's
+                # own `target/` (#445) — so the two share that work and a build
+                # script sees one OUT_DIR.
                 cmd = setenv(`$(cargo()) rustc -q $flag $features --lib -- --print cfg`; dir = path)
-                cmd = addenv(cmd, "CARGO_TARGET_DIR" => crate_target_directory(path))
+                cmd = addenv(cmd, "CARGO_TARGET_DIR" => target)
                 out = read(cmd, String)
                 join(filter(l -> occursin(r"^[A-Za-z_][A-Za-z0-9_]*(=\".*\")?$", l), split(out, '\n')), "\n") * "\n"
             catch e

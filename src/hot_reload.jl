@@ -249,7 +249,10 @@ function _scan_crate_signatures(crate_path::String)
         # A reload re-probes rather than trusting the memo: a `build.rs` can
         # change its `cargo::rustc-cfg` output without any input RustCall is
         # able to enumerate (#255).
-        cfg_text = _crate_build_cfg_text(crate_path; memo = false)
+        # Probed where `rebuild_crate` builds — the crate's own `target/` —
+        # so the probe shares that build and its OUT_DIR (#447 review).
+        cfg_text = _crate_build_cfg_text(crate_path; memo = false,
+                                         target_directory = joinpath(crate_path, "target"))
         if isempty(cfg_text)
             @debug "Hot reload: no build cfg for $(crate_path); scanning leniently"
             scan_crate(crate_path).julia_functions
