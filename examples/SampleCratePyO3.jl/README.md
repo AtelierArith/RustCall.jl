@@ -11,8 +11,10 @@ maturin. Both call the same Rust and get the same results.
 The example is **self-contained**: everything it builds and tests is inside
 this directory. The one reference outside it is the `rustcall_julia_macros` path
 dependency in `deps/sample_crate_pyo3/Cargo.toml`
-(`../../../../deps/rustcall_julia_macros`, the proc-macro crate of this checkout),
-because `rustcall_julia_macros` is not on crates.io yet.
+(`../../../../deps/rustcall_julia_macros`, the `#[julia]` attribute crate of this
+checkout). `rustcall_julia_macros` is on crates.io; the example takes it by path
+so that it is tested with the attribute of the same tree as the RustCall it runs
+against.
 
 ## Layout: Rust and Julia in separate files
 

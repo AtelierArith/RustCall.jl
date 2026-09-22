@@ -41,7 +41,8 @@ Every `examples/*.jl` directory is a Julia package, and each is self-contained:
 the crate it binds lives under its own `deps/<crate>/`, in the layout the
 [Precompilation Support](precompilation.md) guide prescribes, and the only
 reference it makes outside its directory is the `rustcall_julia_macros` path
-dependency (the proc-macro crate is not on crates.io yet; the PyO3-only crate
+dependency (the crate is on crates.io, but an example takes this checkout's
+copy so that it tests the attribute of the same tree; the PyO3-only crate
 has none, its generated wrapper being what depends on `rustcall_julia_macros`). Run
 its tests against the RustCall of this checkout from the repository root:
 
