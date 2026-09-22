@@ -1413,8 +1413,8 @@ end
         @test !occursin("outside REGISTRY_LOCK", src)  # the old unload-first comment
         # The rescan happens before the build, so the manifest describes the
         # sources that were compiled.
-        scan_at = findfirst("_scan_crate_signatures(state.crate_path)", src)
-        build_at = findfirst("rebuild_crate(state.crate_path)", src)
+        scan_at = findfirst("_scan_crate_signatures(state.crate_path", src)
+        build_at = findfirst("rebuild_crate(state.crate_path", src)
         @test scan_at !== nothing && build_at !== nothing
         @test first(scan_at) < first(build_at)
     end

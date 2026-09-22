@@ -658,13 +658,21 @@ target is built in.
 
 `RustCall.enable_hot_reload_for_crate` rebuilds a crate with its own `cdylib`
 target when its sources change, and swaps the new library in under the registry
-name the module loaded it as. Pass the value `@rust_crate` returned, so that
-name is read from the module whatever options it was built with:
+name the module loaded it as. Pass the value `@rust_crate` returned: the module
+records both that name (`_LIB_NAME`) and the build it was made from
+(`_BUILD_OPTIONS`: profile, `features`, `default_features`), and every reload
+rebuilds that same build, so the rebuilt library has the `#[cfg]`s the module's
+wrappers were generated for:
 
 ```julia
-B = @rust_crate "deps/my_rust_crate"
-RustCall.enable_hot_reload_for_crate(B, "deps/my_rust_crate")
+B = @rust_crate "deps/my_rust_crate" release=false features=["simd"]
+RustCall.enable_hot_reload_for_crate(B, "deps/my_rust_crate")  # rebuilds debug, with "simd"
 ```
+
+The path-only form, `enable_hot_reload_for_crate(crate_path; release, features,
+default_features)`, takes the build as keywords (defaulting to `@rust_crate`'s
+defaults) and does not guess it. Only a crate that is its own `cdylib` can be
+reloaded; a module bound through a generated wrapper crate is refused.
 
 The rebuild is the build `@rust_crate` itself runs: RustToolChain's `cargo`,
 output under RustCall's own target directory for the crate (not the crate's

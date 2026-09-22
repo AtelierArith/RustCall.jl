@@ -154,12 +154,18 @@ const _CBP_MISSING_DEP = "rustcall_nonexistent_crate_461 = \"=0.0.1\""
         # `nothing` and the caller falls back — so the flag is not observable
         # from outside; the source is where it can be asserted. The builds,
         # whose failures do surface, are checked by behaviour below.
-        pyo3_src = read(joinpath(_CBP_ROOT, "src", "pyo3.jl"), String)
-        manifest_src = read(joinpath(_CBP_ROOT, "src", "manifest.jl"), String)
+        # Line endings normalised: a Windows checkout may have CRLF.
+        source(file) = replace(read(joinpath(_CBP_ROOT, "src", file), String), "\r\n" => "\n")
+        pyo3_src = source("pyo3.jl")
+        manifest_src = source("manifest.jl")
+        # The text of one top-level function, from its signature to the first
+        # `end` at column 0. A missing anchor is a failure that names it, never
+        # an index into `nothing`.
         function body(src, name)
             start = findfirst("function $(name)(", src)
-            @test start !== nothing
+            start === nothing && error("source-level check: `function $(name)(` not found")
             stop = findnext("\nend\n", src, last(start))
+            stop === nothing && error("source-level check: no closing `end` for `$(name)`")
             return src[first(start):last(stop)]
         end
         probe = body(pyo3_src, "_wrapper_probe_context")
@@ -226,11 +232,16 @@ const _CBP_MISSING_DEP = "rustcall_nonexistent_crate_461 = \"=0.0.1\""
                 m = Module(:CbpRlibHost461)
                 Core.eval(m, :(using RustCall))
                 Base.include(m, out)
-                bindings = getfield(m, :CbpRlib461)
-                lib_path = getfield(bindings, :_LIB_PATH)
+                # The module was defined after this function's world.
+                binding(mod, name) = Base.invokelatest(getglobal, mod, name)
+                bindings = binding(m, :CbpRlib461)
+                lib_path = binding(bindings, :_LIB_PATH)
                 @test isfile(lib_path)
-                @test Base.invokelatest(getfield(bindings, :cbp_add461), Int32(40), Int32(2)) == 42
-                RustCall.unload_library(getfield(bindings, :_LIB_NAME); close = true)
+                @test Base.invokelatest(binding(bindings, :cbp_add461), Int32(40), Int32(2)) == 42
+                @test binding(bindings, :_BUILD_OPTIONS).kind === :wrapper
+                # Closed before `mktempdir` removes the tree: a mapped DLL
+                # cannot be deleted on Windows.
+                RustCall.unload_library(binding(bindings, :_LIB_NAME); close = true)
             end
         end
     end
@@ -296,7 +307,87 @@ const _CBP_MISSING_DEP = "rustcall_nonexistent_crate_461 = \"=0.0.1\""
             finally
                 RustCall.disable_hot_reload(name)
                 delete!(RustCall.HOT_RELOAD_REGISTRY, name)
-                RustCall.unload_library(name)
+                RustCall.unload_library(name; close = true)
+            end
+        end
+    end
+
+    # #461 review: a reload publishes under the module's registry name, so it
+    # must rebuild the build the module was generated for — its profile and
+    # its features — not a release build with default features.
+    @testset "a reload keeps the module's profile and features (#461 review)" begin
+        mktempdir() do dir
+            source(value) = """
+                use rustcall_julia_macros::julia;
+
+                #[cfg(feature = "extra")]
+                #[julia]
+                pub fn cbp_gated461() -> i32 { $(value) }
+
+                #[cfg(debug_assertions)]
+                #[julia]
+                pub fn cbp_debug461() -> i32 { $(value) }
+                """
+            crate = _cbp_crate(joinpath(dir, "crate"); package = "cbp_opts_461",
+                               body = "", extra_deps = "\n[features]\nextra = []\n")
+            write(joinpath(crate, "src", "lib.rs"), source(1))
+            bindings = @rust_crate crate name = "CbpOpts461" release = false features = ["extra"]
+            name = bindings._LIB_NAME
+            @test bindings._BUILD_OPTIONS ==
+                  (release = false, features = ("extra",), default_features = true, kind = :direct)
+            # The path form does not guess: with the defaults it names another
+            # build, and with the options it names this one.
+            @test RustCall._crate_hot_reload_name(crate) != name
+            @test RustCall._crate_hot_reload_name(crate,
+                RustCall.crate_build_options(release = false, features = ["extra"])) == name
+            try
+                state = RustCall.enable_hot_reload_for_crate(bindings, crate;
+                                                             poll = true, interval = 60.0)
+                @test state.lib_name == name
+                @test state.build_options == bindings._BUILD_OPTIONS
+                @test Base.invokelatest(bindings.cbp_gated461) == 1
+                @test Base.invokelatest(bindings.cbp_debug461) == 1
+                write(joinpath(crate, "src", "lib.rs"), source(2))
+                @test RustCall.trigger_reload(name) == true
+                # Both symbols exist only in a debug build with `extra` on; a
+                # release build with default features would have dropped them.
+                @test Base.invokelatest(bindings.cbp_gated461) == 2
+                @test Base.invokelatest(bindings.cbp_debug461) == 2
+            finally
+                RustCall.disable_hot_reload(name)
+                delete!(RustCall.HOT_RELOAD_REGISTRY, name)
+                RustCall.unload_library(name; close = true)
+            end
+
+            # The explicit path form reaches the same entry with the options.
+            try
+                state = RustCall.enable_hot_reload_for_crate(crate; release = false,
+                                                             features = ["extra"],
+                                                             poll = true, interval = 60.0)
+                @test state.build_options.release == false
+                @test state.build_options.features == ("extra",)
+            finally
+                for n in collect(keys(RustCall.HOT_RELOAD_REGISTRY))
+                    RustCall.disable_hot_reload(n)
+                    delete!(RustCall.HOT_RELOAD_REGISTRY, n)
+                end
+            end
+        end
+    end
+
+    @testset "a module built through a wrapper crate is not reloaded (#461 review)" begin
+        mktempdir() do dir
+            crate = _cbp_crate(joinpath(dir, "crate"); package = "cbp_wrapped_461",
+                               cdylib = false,
+                               body = "#[julia]\npub fn cbp_w461() -> i32 { 1 }\n")
+            bindings = @rust_crate crate name = "CbpWrapped461"
+            try
+                @test bindings._BUILD_OPTIONS.kind === :wrapper
+                @test_throws ArgumentError RustCall.enable_hot_reload_for_crate(bindings, crate)
+                @test_throws ArgumentError RustCall.rebuild_crate(crate;
+                    build_options = bindings._BUILD_OPTIONS)
+            finally
+                RustCall.unload_library(bindings._LIB_NAME; close = true)
             end
         end
     end

@@ -1037,6 +1037,22 @@ function _warn_if_build_env_changed(recorded, crate_path::AbstractString, lib_na
 end
 
 """
+    crate_build_options(; release, features, default_features, kind) -> NamedTuple
+
+The build a generated `@rust_crate` module was made from, as the module records
+it in `_BUILD_OPTIONS`: the profile, the feature selection, and `kind` — how the
+library was produced (`:direct`, the crate built as its own `cdylib`;
+`:wrapper`, a generated wrapper crate around an rlib; `:pyo3_wrapper`, the PyO3
+wrapper of #275). Hot reload rebuilds from it (`enable_hot_reload_for_crate`),
+so a reload publishes a build with the same `#[cfg]`s under the module's
+registry name rather than a release build with default features (#461 review).
+"""
+crate_build_options(; release::Bool = true, features::Vector{String} = String[],
+                    default_features::Bool = true, kind::Symbol = :direct) =
+    (release = release, features = Tuple(features), default_features = default_features,
+     kind = kind)
+
+"""
     emit_crate_module(info::CrateInfo, lib_path::String; module_name::Union{String, Nothing}=nothing) -> Expr
 
 Generate a Julia module expression containing bindings for the crate.
@@ -1058,7 +1074,8 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
                            preload::Vector{String} = String[],
                            extra_inputs::Vector{String} = String[],
                            python::Bool = false,
-                           pin_library::Bool = false)
+                           pin_library::Bool = false,
+                           build_options::NamedTuple = crate_build_options(release = build_release))
     # Determine module name
     mod_name = if module_name !== nothing
         Symbol(module_name)
@@ -1138,6 +1155,10 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
         # runs in a later session, which must still find this file.
         const _LIB_PATH = $lib_path
         const _LIB_NAME = $lib_key
+        # The profile, features and kind of build `_LIB_PATH` is: what a hot
+        # reload rebuilds, so the image it publishes under `_LIB_NAME` has the
+        # `#[cfg]`s these wrappers were generated for (#461 review).
+        const _BUILD_OPTIONS = $build_options
         # Libraries the image imports by name that the loader would not find on
         # its own — a PyO3 wrapper's `python3xy.dll` on Windows, where there is
         # no rpath — opened before it (`PyO3LinkPlan.runtime_libraries`).
@@ -3111,7 +3132,11 @@ function generate_bindings(crate_path::String;
                                                                  dirname.(wrapper.source.source_files))),
                                      python = links_python,
                                      pin_library = any(_python_owned_handle,
-                                                       wrapper.info.julia_structs))
+                                                       wrapper.info.julia_structs),
+                                     build_options = crate_build_options(
+                                         release = build_release, features = features,
+                                         default_features = default_features,
+                                         kind = :pyo3_wrapper))
         end
     end
     info = _plain_scan_info(crate_path, info, features, default_features, build_release)
@@ -3211,7 +3236,11 @@ function generate_bindings(crate_path::String;
                              lib_name=crate_library_name(info; release = build_release,
                                                          features = features,
                                                          default_features = default_features,
-                                                         build_env = build_env_snapshot))
+                                                         build_env = build_env_snapshot),
+                             build_options = crate_build_options(
+                                 release = build_release, features = features,
+                                 default_features = default_features,
+                                 kind = crate_has_cdylib(crate_path) ? :direct : :wrapper))
 end
 
 """
@@ -3950,6 +3979,8 @@ function write_bindings_to_file(crate_path::String, output_path::String;
     lib_name === nothing &&
         (lib_name = crate_library_name(info; release = build_release,
                                        features = features, default_features = default_features))
+    build_kind = !isempty(wrapper_lib_path) ? :pyo3_wrapper :
+                 crate_has_cdylib(crate_path) ? :direct : :wrapper
     lib_path = if !isempty(wrapper_lib_path)
         wrapper_lib_path
     elseif crate_has_cdylib(crate_path)
@@ -4020,6 +4051,9 @@ function write_bindings_to_file(crate_path::String, output_path::String;
         lib_name = lib_name,
         preload = preload,
         pin_library = any(_python_owned_handle, info.julia_structs),
+        build_options = crate_build_options(release = build_release, features = features,
+                                            default_features = default_features,
+                                            kind = build_kind),
     )
 
     # Write to file
@@ -4060,7 +4094,8 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     strict::Symbol = FFI_STRICT[],
     lib_name::Union{String, Nothing} = nothing,
     preload::Vector{String} = String[],
-    pin_library::Bool = false
+    pin_library::Bool = false,
+    build_options::NamedTuple = crate_build_options(release = build_release)
 )
     # Determine module name
     mod_name = if module_name !== nothing
@@ -4105,6 +4140,10 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     end
     push!(lines, "const _LIB_NAME = $(repr(lib_name === nothing ?
         crate_library_name(info; release = build_release) : lib_name))")
+    # What a hot reload rebuilds (#461 review). A plain value, read by
+    # `enable_hot_reload_for_crate` only, so the file still loads under a
+    # RustCall that does not know it.
+    push!(lines, "const _BUILD_OPTIONS = $(repr(build_options))")
     if !isempty(preload)
         push!(lines, "# Libraries the image imports by name that the loader would not find on")
         push!(lines, "# its own (a PyO3 wrapper's Python DLL on Windows, which has no rpath),")
