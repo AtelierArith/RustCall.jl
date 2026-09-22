@@ -986,3 +986,77 @@ fn a_private_claim_is_scoped_by_the_real_module_not_the_symbol_path() {
     assert!(symbols.contains(&"rustcall_FOO"), "{symbols:?}");
     assert!(manifest.functions.iter().all(|f| f.module_path.is_empty()));
 }
+
+/// The `CResult_<owner>` / `COption_<owner>` type a `Result` / `Option`
+/// wrapper declares next to itself is a generated name like any other, so it
+/// is claimed (#462): a free function `Foo_bar` and a method `Foo::bar` of one
+/// module, both returning a `Result`, define `CResult_Foo_bar` twice.
+///
+/// The aggregate's owner is the stem the wrapper symbol `rustcall_<owner>`
+/// hangs off, so such a pair also shares its exported symbol and was already
+/// refused through it; the claim makes the list the diagnostics read complete,
+/// and names the generated type as the second thing the pair would redefine.
+#[test]
+fn result_and_option_aggregates_are_claimed() {
+    use rustcall_julia_core::claims::{Namespace, Scope};
+
+    for (ret, aggregate) in [
+        ("Result<i32, i32>", "CResult_Foo_bar"),
+        ("Option<i32>", "COption_Foo_bar"),
+    ] {
+        let src = format!(
+            r#"
+            #[julia] pub fn Foo_bar() -> {ret} {{ todo!() }}
+            #[julia] pub struct Foo {{ pub x: i32 }}
+            #[julia] impl Foo {{ #[julia] pub fn bar(&self) -> {ret} {{ todo!() }} }}
+            "#
+        );
+
+        // Each wrapper claims its aggregate as a type of its module.
+        let inline = rustcall_julia_core::expand::expand(&src).unwrap();
+        for claims in [
+            inline.manifest.functions[0].claims(),
+            inline.manifest.structs[0].claims(),
+        ] {
+            let claim = claims
+                .iter()
+                .map(|(c, _)| c)
+                .find(|c| c.name == aggregate)
+                .unwrap_or_else(|| panic!("{aggregate} is not claimed: {claims:?}"));
+            assert!(!claim.exported);
+            assert_eq!(claim.namespace, Namespace::Type);
+            assert_eq!(claim.scope, Scope::Module(Vec::new()));
+        }
+
+        // ...so the pair is reported on both names, and fails closed.
+        let dups: Vec<String> = inline
+            .manifest
+            .duplicate_claims()
+            .into_iter()
+            .map(|(c, _, _)| c.name)
+            .collect();
+        assert!(dups.contains(&aggregate.to_string()), "{dups:?}");
+        assert!(dups.contains(&"rustcall_Foo_bar".to_string()), "{dups:?}");
+        assert!(inline.source.contains("compile_error"), "{}", inline.source);
+        extract(&src, Mode::Crate).unwrap_err();
+    }
+
+    // Methods of one name on same-named structs of two modules have two
+    // owners, and so two aggregates.
+    let apart = r#"
+        #[julia] pub fn Foo_baz() -> Result<i32, i32> { todo!() }
+        #[julia] pub struct Foo { pub x: i32 }
+        #[julia] impl Foo { #[julia] pub fn bar(&self) -> Option<i32> { todo!() } }
+        #[julia] pub mod m {
+            #[julia] pub struct Foo { pub x: i32 }
+            #[julia] impl Foo { #[julia] pub fn bar(&self) -> Result<i32, i32> { todo!() } }
+        }
+    "#;
+    extract(apart, Mode::Crate).expect("distinct aggregates");
+    let inline = rustcall_julia_core::expand::expand(apart).unwrap();
+    assert!(
+        inline.manifest.duplicate_claims().is_empty(),
+        "{:?}",
+        inline.manifest.duplicate_claims()
+    );
+}
