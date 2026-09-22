@@ -145,6 +145,11 @@ const _CBP_MISSING_DEP = "rustcall_nonexistent_crate_461 = \"=0.0.1\""
                                          "error: something else\n", "/p")
         fp = RustCall._reload_failure_fingerprint
         @test fp(quiet) == fp(noisy)
+        # Coloured, as Cargo prints it under `CARGO_TERM_COLOR=always` (the
+        # Windows CI job): the escape sequence precedes the word.
+        coloured = RustCall.CargoBuildError("Cargo build failed",
+            "\e[1m\e[92m    Blocking\e[0m waiting for file lock on package cache\n" * error_text, "/p")
+        @test fp(quiet) == fp(coloured)
         @test fp(quiet) != fp(other)
         @test fp(ErrorException("x")) == sprint(showerror, ErrorException("x"))
     end
@@ -455,6 +460,39 @@ const _CBP_MISSING_DEP = "rustcall_nonexistent_crate_461 = \"=0.0.1\""
                 code = read(out, String)
                 @test occursin("joinpath(@__DIR__, ", code)
                 @test length(readdir(joinpath(dir, "pkg", "lib"))) == 1
+            end
+        end
+    end
+
+    # #461 review: the module form rebuilds the crate the module was generated
+    # from, never another checkout published under the module's name.
+    @testset "a reload rebuilds the module's own crate (#461 review)" begin
+        mktempdir() do dir
+            body = "#[julia]\npub fn cbp_where461() -> i32 { 1 }\n"
+            crate = _cbp_crate(joinpath(dir, "crate"); package = "cbp_where_461", body = body)
+            other = _cbp_crate(joinpath(dir, "other"); package = "cbp_where_461", body = body)
+            bindings = @rust_crate crate name = "CbpWhere461"
+            name = bindings._LIB_NAME
+            enable(args...) = RustCall.enable_hot_reload_for_crate(bindings, args...;
+                                                                   poll = true, interval = 60.0)
+            stop() = (RustCall.disable_hot_reload(name); delete!(RustCall.HOT_RELOAD_REGISTRY, name))
+            try
+                @test_throws ArgumentError enable(other)
+                @test !haskey(RustCall.HOT_RELOAD_REGISTRY, name)
+                # Another spelling of the same directory is the same crate.
+                for spelling in (relpath(crate, pwd()),
+                                 joinpath(dir, "other", "..", "crate"))
+                    state = enable(spelling)
+                    @test state.lib_name == name
+                    @test realpath(state.crate_path) == realpath(crate)
+                    stop()
+                end
+                # And the path may be omitted: the module records it.
+                state = enable()
+                @test realpath(state.crate_path) == realpath(crate)
+            finally
+                stop()
+                RustCall.unload_library(name; close = true)
             end
         end
     end

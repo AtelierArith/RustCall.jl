@@ -666,8 +666,13 @@ wrappers were generated for:
 
 ```julia
 B = @rust_crate "deps/my_rust_crate" release=false features=["simd"]
-RustCall.enable_hot_reload_for_crate(B, "deps/my_rust_crate")  # rebuilds debug, with "simd"
+RustCall.enable_hot_reload_for_crate(B)  # rebuilds debug, with "simd"
 ```
+
+The crate is the one the module was generated from, which the module records
+too, so the path may be omitted. When it is given it must name that same
+directory (a relative or symlinked spelling is fine); another checkout is
+refused rather than published under the module's registry name.
 
 The module also records the build environment it was made under (`RUSTFLAGS`
 and the rest of the allowlisted variables, the effective Cargo configuration,
