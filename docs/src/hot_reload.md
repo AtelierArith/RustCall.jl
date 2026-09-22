@@ -74,19 +74,30 @@ state.lib_name == HotCounter._LIB_NAME
 ```
 
 Edit the source. The watcher sees the change, rebuilds and swaps the library,
-and the same module now calls the new code:
+and the same module now calls the new code. The watcher detects a change by
+modification time, so the loop after `write` makes sure the time moved on a
+filesystem with coarse timestamps:
 
 ```@example hotreload
-write(joinpath(crate, "src", "lib.rs"), """
+source = joinpath(crate, "src", "lib.rs")
+old_mtime = mtime(source)
+write(source, """
     use rustcall_julia_macros::julia;
 
     #[julia]
     pub fn step() -> i32 { 2 }
     """)
+while mtime(source) <= old_mtime
+    sleep(0.1); touch(source)
+end
 
-timedwait(() -> isready(reloads), 600.0)   # a release build can take a while
-rebuilt = take!(reloads)                   # true: the new library is loaded
-second_step = HotCounter.step()            # 2
+# A release build can take a while; give up after ten minutes.
+if timedwait(() -> isready(reloads), 600.0) !== :ok
+    RustCall.disable_hot_reload(state.lib_name)
+    error("the watcher did not rebuild $(crate) within 600 s")
+end
+rebuilt = take!(reloads)            # true: the new library is loaded
+second_step = HotCounter.step()     # 2
 ```
 
 Stop watching when you are done:
@@ -125,6 +136,8 @@ The other forms don't read the module, so they can't know how it was built:
   defaults. It computes the registry name for that build of the crate *as it is
   now*, so call it before editing the sources. It doesn't guess: a crate loaded
   with other options is reached only if you pass them, or pass `lib_name`.
+  It has no record of the build environment, so it rebuilds under the current
+  one.
 - `RustCall.enable_hot_reload(lib_name, crate)` is the low-level call. It
   reloads the given registry name with a default release build.
 
@@ -136,6 +149,23 @@ than rebuild something else in two cases:
 - **A module with no `_BUILD_OPTIONS`**, for example a bindings file written by
   an older RustCall. Regenerate it, or use the path form with the options it
   was built with.
+
+The module form also refuses a **changed build environment**. A module records
+the environment it was built under: `RUSTFLAGS` and the other allowlisted
+variables, the effective Cargo configuration, and the toolchain. A rebuild
+under a different environment would publish a library the module was not
+generated for. The module form compares that record with the current
+environment at two points:
+
+- **When hot reload is enabled.** A mismatch raises an `ArgumentError`.
+- **Before every rebuild.** A mismatch fails that reload: the previous library
+  stays loaded, `trigger_reload` returns `false`, and the callback receives
+  `(lib_name, false, err)` with an `ArgumentError`.
+
+To reload again, restore the environment, or load the crate again with
+`@rust_crate` under the new one and enable hot reload on that module. A module
+from `write_bindings_to_file` records no environment and is not checked. See
+also [External Crate Bindings](crate_bindings.md).
 
 ## What a reload does
 
@@ -149,10 +179,20 @@ The steps of one reload, in order:
    `RUSTCALL_OFFLINE=1`.
 3. The new library is **swapped in** under the same name in one transaction.
 
-If any step fails, for example a compile error, the swap never happens. The
-previous library stays loaded and keeps working, and the error is reported
-once. The same failure repeated on later attempts is not printed again.
-Fixing the source reloads as usual.
+If the **build** fails (a compile error, say) or the new library cannot be
+loaded, the swap never happens. The previous library stays loaded and keeps
+working, and the error is reported once. The same failure repeated on later
+attempts is not printed again. Fixing the source reloads as usual.
+
+The **rescan** (step 1) is different. If it fails, a warning is logged, but
+the build goes ahead and a successful build is still swapped in and reported
+as a success. The new library is then registered without its name-to-symbol
+mappings. The `@rust_crate` module's own functions keep working, because they
+call the exported symbols directly. `@rust f(...)` by name does not find the
+crate's `#[julia]` functions until the next successful reload. The same
+happens when the sources change while the build is running, and in that case
+another reload follows immediately. Making a rescan failure abort the swap is
+tracked in #473.
 
 A reload replaces the *code*. It does not regenerate the Julia module:
 the module's functions, their argument and return types, and its struct types
