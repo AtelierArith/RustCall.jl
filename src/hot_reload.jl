@@ -898,27 +898,31 @@ Enable hot reload for a Rust crate.
 - `crate_path::String`: Path to the Rust crate root
 
 # Keyword Arguments
-- `interval::Float64`: Check interval in seconds (default: 1.0)
-- `callback::Union{Function, Nothing}`: Callback after rebuild (receives lib_name, success, error)
+- `interval::Float64`: seconds; the timeout of each wait for a file event, or
+  the polling period with `poll = true` (default: 1.0)
+- `poll::Bool`: check modification times every `interval` instead of waiting on
+  filesystem events, for filesystems that do not deliver them (default: false)
+- `callback::Union{Function, Nothing}`: called after each rebuild attempt as
+  `callback(lib_name, success, error)`
 
 # Returns
 - `HotReloadState`: The hot reload state for the crate
 
+A reload rebuilds the crate (a `cdylib`) with `build_options` (default: release,
+default features) and swaps it in under `lib_name`. For an `@rust_crate` module,
+prefer `enable_hot_reload_for_crate(module, crate_path)`, which reads both.
+
 # Example
 ```julia
-# Load a Rust crate
-rust\"\"\"
-// cargo-deps: my_crate = { path = "./my_rust_crate" }
-use my_crate::*;
-\"\"\"
+crate_path = "path/to/my_crate"         # a #[julia] crate with crate-type = ["cdylib"]
+MyCrate = @rust_crate crate_path
+lib_name = MyCrate._LIB_NAME             # the name @rust_crate loaded the library as
 
-# Enable hot reload
-state = enable_hot_reload("my_crate", "./my_rust_crate")
+state = RustCall.enable_hot_reload(lib_name, crate_path; interval = 0.5)
+# Edit the sources and the watcher rebuilds; or rebuild now:
+RustCall.trigger_reload(lib_name)        # true once the new library is loaded
 
-# Now modify Rust code and it will automatically reload!
-
-# When done, disable hot reload
-disable_hot_reload("my_crate")
+RustCall.disable_hot_reload(lib_name)
 ```
 """
 function enable_hot_reload(lib_name::String, crate_path::String;
@@ -1128,10 +1132,15 @@ crate. Registering under the module name, as before, reached nothing (#461).
 
 # Example
 ```julia
-MyCrate = @rust_crate "/path/to/my_crate" features=["simd"]
+crate_path = "path/to/my_crate"         # a #[julia] crate with crate-type = ["cdylib"]
+MyCrate = @rust_crate crate_path features=["simd"]
 
-# Enable hot reload; the rebuild keeps `features = ["simd"]`
-enable_hot_reload_for_crate(MyCrate, "/path/to/my_crate")
+state = RustCall.enable_hot_reload_for_crate(MyCrate, crate_path;   # keeps features=["simd"]
+    callback = (lib_name, success, error) -> @info "reloaded" lib_name success)
+# Edit the sources and the watcher rebuilds; or rebuild now:
+RustCall.trigger_reload(state.lib_name)  # true once the new library is loaded
+
+RustCall.disable_hot_reload(state.lib_name)
 ```
 """
 function enable_hot_reload_for_crate(crate_path::String;

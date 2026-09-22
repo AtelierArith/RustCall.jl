@@ -714,6 +714,10 @@ output under RustCall's own target directory for the crate (not the crate's
 `target/`), the library found under its `[lib] name`, and `--offline` under
 `RUSTCALL_OFFLINE=1`.
 
+[Hot Reload](hot_reload.md) is the full guide: a runnable example, what a
+reload does to objects and call sites, the watcher's options and how to turn it
+off.
+
 ### API Reference
 
 #### `write_bindings_to_file`
