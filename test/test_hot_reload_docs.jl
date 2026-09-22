@@ -73,14 +73,21 @@ function _hrd_crate(dir::AbstractString, package::AbstractString, value::Integer
         [lib]
         crate-type = ["cdylib"]
 
+        [features]
+        simd = []
+
         [dependencies]
         rustcall_julia_macros = { path = "$(runtime)" }
         """)
+    # Returns `value`, plus 100 when built with the `simd` feature: a reload
+    # that dropped the module's features would be visible in the result.
     write(joinpath(dir, "src", "lib.rs"), """
         use rustcall_julia_macros::julia;
 
         #[julia]
-        pub fn $(package)_value() -> i32 { $(value) }
+        pub fn $(package)_value() -> i32 {
+            if cfg!(feature = "simd") { $(value) + 100 } else { $(value) }
+        }
         """)
     return String(dir)
 end
@@ -173,7 +180,10 @@ end
                 @test state.generation > 0
                 @test isempty(state.last_failure)
                 @test !RustCall.is_hot_reload_enabled(state.lib_name)
-                @test Base.invokelatest(mod.hrd_module_value) == 22
+                # The docstring loads with `features=["simd"]`; the reload kept
+                # them (#465 review): the rebuilt library still has the feature.
+                @test collect(state.build_options.features) == ["simd"]
+                @test Base.invokelatest(mod.hrd_module_value) == 122
             finally
                 _hrd_forget(state.lib_name)
             end

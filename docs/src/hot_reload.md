@@ -13,7 +13,7 @@ using RustCall
 | Door | Hot reload |
 | --- | --- |
 | `@rust_crate` on a crate whose `[lib]` has `crate-type = ["cdylib"]` | **Supported**: `RustCall.enable_hot_reload_for_crate` |
-| `@rust_crate` on a crate with no `cdylib` target (bound through a generated wrapper crate) | Not supported: the rebuild refuses a crate that is not its own `cdylib` |
+| `@rust_crate` on a crate with no `cdylib` target (bound through a generated wrapper crate) | Not supported: refused with an `ArgumentError` |
 | `rust"""..."""` with `// cargo-deps: my_crate = { path = "..." }` | **Not supported.** Evaluate the block again instead (see below) |
 | `rust"""..."""`, `@irust`, generics | Not applicable: evaluating the source again builds a new library |
 
@@ -60,7 +60,8 @@ HotCounter = @rust_crate crate
 first_step = HotCounter.step()   # 1
 ```
 
-Turn hot reload on by passing the value `@rust_crate` returned. The callback
+Turn hot reload on by passing the value `@rust_crate` returned. That way the
+reload reuses the module's registry name and build options (see below). The callback
 runs after every rebuild attempt; here it reports each result on a channel,
 so the example can wait for the rebuild:
 
@@ -95,23 +96,46 @@ RustCall.disable_hot_reload(state.lib_name)
 RustCall.is_hot_reload_enabled(state.lib_name)   # false
 ```
 
-## Which library is reloaded
+## Which library is reloaded, and which build
 
-A reload replaces the library registered under one name. `@rust_crate` loads a
-crate under `rust_crate_<name>_<id>`, where the id is derived from the crate's
-content and build options, not from the module's name. The generated module
-stores that name in `_LIB_NAME`. So the most reliable call passes the module (or
-the value `@rust_crate` returned), which reads it:
+A reload must reach the module and must rebuild the *same build* the module was
+generated for. Two things identify that build:
+
+- **The registry name.** `@rust_crate` loads a crate under
+  `rust_crate_<name>_<id>`, where the id comes from the crate's content and
+  build options, not from the module's name. The module records it as
+  `_LIB_NAME`.
+- **The build options.** The module records its profile (`release`),
+  `features` and `default_features` as `_BUILD_OPTIONS`. A reload that rebuilt
+  a default release build instead would compile other `#[cfg]`s under a module
+  whose wrappers were generated for these ones.
+
+**Pass the module** (or the value `@rust_crate` returned). This form reads both
+records, so a reload keeps the name, the profile and the features:
 
 ```julia
-RustCall.enable_hot_reload_for_crate(HotCounter, crate)
+B = @rust_crate "deps/my_crate" release=false features=["simd"]
+RustCall.enable_hot_reload_for_crate(B, "deps/my_crate")   # rebuilds debug, with "simd"
 ```
 
-`RustCall.enable_hot_reload_for_crate(crate)` without the module computes the
-name for a default build of the crate as it is *now*: release profile, default
-features. Call it before editing the sources, and pass `lib_name = ...` if the
-crate was loaded with other options. `RustCall.enable_hot_reload(lib_name,
-crate)` is the underlying call. It takes the registry name explicitly.
+The other forms don't read the module, so they can't know how it was built:
+
+- `RustCall.enable_hot_reload_for_crate(crate; release, features,
+  default_features)` takes the build as keywords, defaulting to `@rust_crate`'s
+  defaults. It computes the registry name for that build of the crate *as it is
+  now*, so call it before editing the sources. It doesn't guess: a crate loaded
+  with other options is reached only if you pass them, or pass `lib_name`.
+- `RustCall.enable_hot_reload(lib_name, crate)` is the low-level call. It
+  reloads the given registry name with a default release build.
+
+Both forms of `enable_hot_reload_for_crate` raise an `ArgumentError` rather
+than rebuild something else in two cases:
+
+- **A module bound through a generated wrapper crate.** This is a crate with no
+  `cdylib` target of its own, and a reload cannot reproduce the wrapper build.
+- **A module with no `_BUILD_OPTIONS`**, for example a bindings file written by
+  an older RustCall. Regenerate it, or use the path form with the options it
+  was built with.
 
 ## What a reload does
 
@@ -120,8 +144,9 @@ The steps of one reload, in order:
 1. The crate is **rescanned** for its `#[julia]` items, under its own build
    configuration (features, `build.rs` cfgs).
 2. It is **rebuilt** the way `@rust_crate` built it: RustToolChain's `cargo`,
-   `--release`, output under RustCall's own target directory for the crate (not
-   the crate's `target/`), `--offline` under `RUSTCALL_OFFLINE=1`.
+   the module's profile and features, output under RustCall's own target
+   directory for the crate (not the crate's `target/`), `--offline` under
+   `RUSTCALL_OFFLINE=1`.
 3. The new library is **swapped in** under the same name in one transaction.
 
 If any step fails, for example a compile error, the swap never happens. The
