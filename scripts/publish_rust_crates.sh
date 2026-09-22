@@ -79,7 +79,7 @@ index_status() {
     code="$(curl -sS -o "$body" -w '%{http_code}' \
                 "https://index.crates.io/$(index_path "$name")" 2>/dev/null || echo 000)"
     if [ "$code" = 200 ]; then
-        if grep -q "\"vers\":\"${version}\"" "$body"; then
+        if grep -qF "\"vers\":\"${version}\"" "$body"; then  # -F: a version is not a pattern
             rm -f "$body"
             return 0
         fi
