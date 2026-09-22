@@ -22,10 +22,14 @@ use serde::{Deserialize, Serialize};
 /// installed extractor stay valid across it; a **minor** release always does,
 /// so every consumer rebuilds once and a manifest can change shape freely
 /// inside that release; and the extractor and the package cannot disagree,
-/// because `test/test_schema_version.jl` asserts this crate's `Cargo.toml`
-/// version equals the package version and the unit test below asserts this
-/// constant is that version's `MAJOR.MINOR`. A pre-v0.4 consumer meets a
-/// string where it expects `13` and refuses it, which is the intended answer.
+/// because `test/test_schema_version.jl` reads this constant back through
+/// the extractor's `schema-version` output and compares it with the
+/// `MAJOR.MINOR` of `Project.toml`. It is a **literal** here, not derived
+/// from this crate's version: since #451 the published crates carry a
+/// semver of their own (`0.1.0` at first), so a package minor release edits
+/// this line by hand (the unit test below only pins its shape). A pre-v0.4
+/// consumer meets a string where it expects `13` and refuses it, which is
+/// the intended answer.
 ///
 /// History of the integer scheme:
 /// * 1: initial manifest (#264).

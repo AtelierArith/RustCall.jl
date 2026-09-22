@@ -234,10 +234,12 @@ function _rust_sources_digest(dirs::AbstractString...)
         end
         for f in sort(files)
             print(ctx, relpath(f, dir), "\0")
-            # A manifest enters without its `[package] version`
-            # (`_identity_file_bytes`, #372): the crates hashed here are
-            # versioned as the release, and a patch release must not move
-            # every cache key by rewriting that one line.
+            # A manifest enters without its `[package] version` or the
+            # exact requirement it puts on a sibling release crate
+            # (`_identity_file_bytes`, #372, #451): the crates hashed here
+            # are bumped as a set — `rustcall_extract` with the release, the
+            # published three on their own semver — and a version-only bump
+            # must not move every cache key by rewriting those lines.
             write(ctx, _identity_file_bytes(String(f)))
             print(ctx, "\0")
         end

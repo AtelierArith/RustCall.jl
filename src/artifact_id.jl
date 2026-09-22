@@ -798,10 +798,12 @@ end
 # version` line, a `Cargo.lock` without the `version` line of any of those
 # crates resolved as a path dependency (no `source`), and every other byte of
 # either — and every other file, and every other package's version — exactly
-# as it is. Those keys are what a
-# *release* rewrites: the manifest crates are versioned as the RustCall
-# release, a patch release bumps them, and every lockfile that resolves a path
-# dependency on them records that number. Without this, `@rust_crate` and
+# as it is. Those keys are what a *bump* rewrites: `rustcall_extract` is
+# versioned as the RustCall release and moves with every patch, and the three
+# published crates share a semver of their own (#451) that moves together —
+# with the exact `version = "=x.y.z"` requirement each puts on the one below
+# it, which leaves the identity too — and every lockfile that resolves a path
+# dependency on them records those numbers. Without this, `@rust_crate` and
 # PyO3 wrapper keys moved on every patch release, against the promise the
 # schema identifier makes (`MANIFEST_SCHEMA_VERSION`). Everything else in
 # either file still counts.
