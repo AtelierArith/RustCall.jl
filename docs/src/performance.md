@@ -235,8 +235,8 @@ generated crate module is also written out as Julia source by
 `write_bindings_to_file`, so its call sites cannot be handed a spliced object.
 Each declares a `RustCall.CrateTargetCache` beside its wrapper instead. Nothing
 about this is visible in the bindings you call — but it is visible in a file you
-regenerate, and the `Bindings format:` marker at the top of a generated file is
-now `11`.
+regenerate: the `Bindings format:` marker at the top of a generated file became
+`11` with this change (it is `12` since #460).
 
 ### Annotate the return type, or use `#[julia]`
 

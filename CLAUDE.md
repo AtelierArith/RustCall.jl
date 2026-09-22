@@ -291,8 +291,11 @@ work:
   constructor's populated cache would be flagged, because the snapshot it keeps
   contains the image's liveness `Ref{Bool}`.
 
-`BINDINGS_FORMAT_VERSION` is 11 for this: a file emitted here names
-`RustCall.CrateTargetCache`, which an older RustCall does not have.
+`BINDINGS_FORMAT_VERSION` became 11 for this: a file emitted here names
+`RustCall.CrateTargetCache`, which an older RustCall does not have. It is 12
+since #460 (`RustCall.CallbackSlot` and the four-argument `_guard_panic`);
+`docs/src/crate_bindings.md` states the current value, and
+`test/test_crate_bindings.jl` asserts the two agree.
 
 **The panic channel is thread-local.** A generated wrapper records a panic in a `thread_local!` slot of its own library and returns a sentinel; Julia reads that slot with a second `ccall` immediately after the first. A Julia task may migrate to another OS thread at any yield point, so nothing that can yield — a lock, logging, I/O — may sit between the two `ccall`s; the channel pointer is resolved *before* the call (cached at load time). `test/test_panics.jl` stresses this with hundreds of tasks on the 4-thread CI job.
 
