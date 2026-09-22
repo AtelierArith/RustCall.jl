@@ -312,6 +312,29 @@ rust_multiply(a, b) = Bindings.multiply(Float64(a), Float64(b))
 end
 ```
 
+## The Python host path
+
+`@rust_crate ... pyo3_host=true` and `RustCall.pyo3_host_import` build nothing
+while a package precompiles: the artifact is keyed by the Python interpreter
+PythonCall provides, which is not known until PythonCall's `__init__`, and an
+interpreter may not be started during precompilation. The generated bindings
+are compiled into the package image; the build and the import happen on the
+first call.
+
+That first call compiles nothing of RustCall's
+([#449](https://github.com/AtelierArith/RustCall.jl/issues/449)): the crate
+scan, the cache key and the cache lookup are in RustCall's own image, and the
+import is in `RustCallPyO3HostExt`'s. What remains is the work itself — the
+extractor, the toolchain probes, `cargo tree`, one interpreter start, and the
+Cargo build when the artifact is not cached. To pay the build ahead of the first
+call, run the interpreter-free half (`RustCall.build_pyo3_extension`) earlier
+— with the interpreter PythonCall will run, which the import checks against.
+In `__init__` the returned artifact can be kept, and the first call is then the
+import alone (`RustCall.pyo3_host_import(artifact)`); a `deps/build.jl` runs in
+another process and only warms the cache, so the runtime's
+`pyo3_host_import(crate)` still scans and probes but no longer builds. See "The
+first call, and paying it earlier" in [PyO3 Crates](pyo3.md).
+
 ## See Also
 
 - [External Crate Bindings](crate_bindings.md) - Full API reference

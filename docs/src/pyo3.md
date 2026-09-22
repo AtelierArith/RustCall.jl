@@ -62,7 +62,8 @@ What changes:
 * **The crate is built lazily**, on the first call: pyo3's build is pinned with
   `PYO3_PYTHON = PythonCall.python_executable_path()`, and a Python interpreter
   may not be started during precompilation. The crate's sources and that
-  interpreter are part of the artifact cache key.
+  interpreter are part of the artifact cache key. What the first call costs,
+  and how to pay part of it earlier, is under "The first call" below.
 
 Three examples use it, and one shows why it exists:
 
@@ -110,6 +111,67 @@ PyO3 crate actually uses are handled rather than reported as skips:
 `PyResult<T>` remains `RustResult{T, String}` on this path too; the `Err` payload
 is the interpreter's own message, so a caller keeps one error surface whether
 the crate was bound from outside or imported as the extension it is.
+
+### The first call, and paying it earlier (#449)
+
+The first host call in a session — `RustCall.pyo3_host_import(crate)`, or the
+first call of a binding `@rust_crate ... pyo3_host=true` generated — scans the
+crate, computes its cache key, finds (or builds) the extension module and
+imports it. With the artifact already cached that is a few subprocesses (the
+extractor, the toolchain probes, `cargo tree`, one start of the interpreter for
+its `EXT_SUFFIX` and fingerprint) and **no compilation of RustCall's code**:
+RustCall's own package image carries the scan and the cache lookup
+(`src/precompile.jl` runs that interpreter-free half against a throwaway crate
+while RustCall precompiles), and `RustCallPyO3HostExt`'s image carries the
+import. A downstream package needs no `precompile` directive of its own for it.
+Before #449 the same first call spent most of a second compiling RustCall's
+scan and cache code, and nothing downstream could bake it: the path is reached
+through dynamic dispatch, so `Base.precompile` stopped at the thin method, and
+executing it during precompilation needs an interpreter.
+
+The two halves are separately callable when the remaining cost should move
+elsewhere:
+
+```julia
+# interpreter-free: scan, key, the cached artifact — or the build. Python runs
+# only as a subprocess, for the module suffix and the interpreter fingerprint.
+artifact = RustCall.build_pyo3_extension(crate; python = PythonCall.python_executable_path())
+
+# needs the interpreter: put the artifact's directory on `sys.path` and import.
+mod = RustCall.pyo3_host_import(artifact)
+```
+
+`pyo3_host_import(crate)` is exactly those two calls. Where the build runs
+decides what the first call has left to do:
+
+* **In the package's `__init__`** (PythonCall's own `__init__` has run by then,
+  so its interpreter is known): keep the returned `PyO3Extension` in a
+  `Ref`-like slot and the first call is `pyo3_host_import(artifact)` — the
+  interpreter check and the import, nothing else. Loading the package then
+  pays the scan, the probes and, the first time, the Cargo build.
+* **In a `deps/build.jl`**: that is another process, so its `PyO3Extension`
+  does not survive into the runtime, and there is no metadata to rebuild it
+  from. What it does is warm the cache: the runtime's `pyo3_host_import(crate)`
+  then finds the artifact and pays the scan, the probes and the lookup — well
+  under a second, with no compilation — but not the Cargo build, which is the
+  cost worth moving.
+
+Neither may run while the package precompiles: the artifact is keyed by the
+interpreter, and the one PythonCall will use is not known until it initialises.
+
+The artifact must be the one for the interpreter PythonCall runs: pyo3 links
+against that interpreter, and CPython ignores an extension whose file tag is
+another version's. `pyo3_host_import(artifact)` therefore checks the artifact's
+interpreter **fingerprint** (implementation, version, SOABI, library, machine
+architecture) and `EXT_SUFFIX` against those of `PythonCall.python_executable_path()` before
+importing — one interpreter start — and raises a `RustError` naming both on a
+mismatch. The
+path alone decides nothing: an interpreter upgraded in place keeps its path and
+changes its ABI, and a virtual environment's launcher and its base are one
+interpreter under two paths. The one-argument `pyo3_host_import(crate)` skips
+the check, having just built for this interpreter. A `deps/build.jl` should
+build with the interpreter PythonCall will use (the one CondaPkg resolves, or
+`JULIA_PYTHONCALL_EXE`), not one of its own choosing.
 
 ## Which pyo3 versions work
 

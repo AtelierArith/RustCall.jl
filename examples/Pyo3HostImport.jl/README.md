@@ -127,3 +127,15 @@ With a registered RustCall, `Pkg.instantiate()` is enough. The host path needs
 PythonCall; CondaPkg provides its interpreter, and RustCall pins pyo3's build to
 that same interpreter. Each crate is built on the first call, never while the
 package is precompiled.
+
+With the artifact cached, that first call is the crate scan, the toolchain
+probes and the import, and it compiles no RustCall code
+([RustCall.jl#449](https://github.com/AtelierArith/RustCall.jl/issues/449)).
+To pay the build earlier — in this package's `__init__`, say — run the
+interpreter-free half and keep only the import lazy:
+
+```julia
+artifact = RustCall.build_pyo3_extension(_DIRECT_CRATE;
+                                         python = PythonCall.python_executable_path())
+RustCall.pyo3_host_import(artifact)      # the import alone
+```

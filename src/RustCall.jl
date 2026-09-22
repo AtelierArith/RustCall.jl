@@ -156,34 +156,58 @@ function _state_read(view::StateView, f::Function)
 end
 _state_read(f::Function, view::StateView) = _state_read(view, f)
 
-Base.getindex(view::StateView) = _state_read(view) do value
+# Named callables rather than `do`-block closures, for the reason `_StateMutation`
+# (`state_filter.jl`) exists: a closure handed to `_state_read` is specialised on
+# the concrete container type at the `f(::Any)` call inside it, so every
+# registry read through `view[]`, `view[key]`, `get(view, key, default)`,
+# `haskey(view, key)` or the probe of `get!(f, view, key)` paid a fresh compile
+# per container type — several at `using`, several more on the first crate
+# scan (#449). `@nospecialize` keeps one method per operation; the container
+# dispatch inside is dynamic, which these lock-taking slow paths already were at
+# their boundary, and the result type was `Any` either way.
+struct _StateSnapshot <: Function end
+(::_StateSnapshot)(@nospecialize(value)) =
     value isa Ref ? value[] :
         value isa Union{AbstractDict, AbstractVector, AbstractSet} ? copy(value) : value
+
+struct _StateGetIndex <: Function
+    key::Tuple
 end
+(g::_StateGetIndex)(@nospecialize(value)) = getindex(value, g.key...)
+
+struct _StateGet <: Function
+    key::Any
+    default::Any
+end
+(g::_StateGet)(@nospecialize(value)) = get(value, g.key, g.default)
+
+struct _StateHasKey <: Function
+    key::Any
+end
+(g::_StateHasKey)(@nospecialize(value)) = haskey(value, g.key)
+
+struct _StateProbe <: Function
+    key::Any
+end
+(g::_StateProbe)(@nospecialize(value)) = haskey(value, g.key) ? Some(value[g.key]) : nothing
+
+Base.getindex(view::StateView) = _state_read(view, _StateSnapshot())
 Base.isassigned(view::StateView) = _state_read(view) do value
     value isa Ref ? isassigned(value) : true
 end
-Base.getindex(view::StateView, key...) = _state_read(view) do value
-    getindex(value, key...)
-end
+Base.getindex(view::StateView, key...) = _state_read(view, _StateGetIndex(key))
 Base.setindex!(view::StateView, value, key...) = _state_mutate(view, :setindex!, value, key...)
-Base.get(view::StateView, key, default) = _state_read(view) do state_value
-    get(state_value, key, default)
-end
+Base.get(view::StateView, key, default) = _state_read(view, _StateGet(key, default))
 Base.get!(view::StateView, key, default) = _state_mutate(view, :get!, key, default)
 function Base.get!(default::Function, view::StateView, key)
-    cached = _state_read(view) do state_value
-        haskey(state_value, key) ? Some(state_value[key]) : nothing
-    end
+    cached = _state_read(view, _StateProbe(key))
     cached === nothing || return something(cached)
     # A default may run rustc/Cargo or arbitrary caller code. Do not hold
     # STATE during its evaluation; another publisher may win in the meantime.
     candidate = default()
     return get!(view, key, candidate)
 end
-Base.haskey(view::StateView, key) = _state_read(view) do state_value
-    haskey(state_value, key)
-end
+Base.haskey(view::StateView, key) = _state_read(view, _StateHasKey(key))
 Base.delete!(view::StateView, key) = _state_mutate(view, :delete!, key)
 Base.deleteat!(view::StateView, indices) = _state_mutate(view, :deleteat!, indices)
 Base.empty!(view::StateView) = _state_mutate(view, :empty!)
