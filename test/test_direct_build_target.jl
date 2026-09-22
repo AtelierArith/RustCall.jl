@@ -77,6 +77,9 @@ end
             # ...and distinct between crates: two crates with the same package
             # name would otherwise overwrite each other's `target/release/lib*`.
             @test RustCall.crate_target_directory(b) != ta
+            # The name is the full digest: it isolates builds, so it is a lookup
+            # key, never a truncated label (#447 review).
+            @test occursin(r"^[0-9a-f]{64}$", basename(ta))
         end
     end
 end
@@ -158,3 +161,4 @@ end
         end
     end
 end
+

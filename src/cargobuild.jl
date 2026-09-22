@@ -733,13 +733,13 @@ build as well. One directory per crate rather than one shared by all, because
 Cargo writes the final library as `target/<profile>/lib<name>.*`, so two
 crates with the same package name would overwrite each other's output.
 
-The name is `artifact_short_id` of `crate_target_id`: a directory Cargo nests
-deeply, where a full digest would push Windows paths towards `MAX_PATH`. A
-collision would only make two crates share a Cargo target directory, which
-Cargo's own fingerprinting and locking handle; nothing is looked up by it.
+The name is the full `artifact_key` of `crate_target_id`. It isolates one
+crate's build from another's, so it is a lookup key and is never truncated:
+two same-named crates sharing a directory could have Cargo report the second
+as fresh and leave the first one's library in place (#447 review).
 """
 function crate_target_directory(crate_path::AbstractString)
-    return joinpath(get_cache_dir(), "targets", artifact_short_id(crate_target_id(crate_path)))
+    return joinpath(get_cache_dir(), "targets", artifact_key(crate_target_id(crate_path)))
 end
 
 """
