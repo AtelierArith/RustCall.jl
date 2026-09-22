@@ -29,6 +29,19 @@ function RustCall.pyo3_host_import(crate_path::AbstractString;
                                              default_features = default_features,
                                              release = release,
                                              cache_enabled = cache_enabled)
+    return RustCall.pyo3_host_import(artifact)
+end
+
+"""
+    RustCall.pyo3_host_import(artifact::RustCall.PyO3Extension) -> Py
+
+Import an extension module `RustCall.build_pyo3_extension` already built, and
+return the Python module object. This is the half of `pyo3_host_import(crate)`
+that needs the interpreter; the build is interpreter-free, so a package can run
+it ahead of time — in its `__init__`, or in a `deps/build.jl` with an
+interpreter of its choosing — and keep only this import lazy (#449).
+"""
+function RustCall.pyo3_host_import(artifact::RustCall.PyO3Extension)
     _ensure_importable(artifact.dir)
     return PythonCall.pyimport(artifact.module_name)
 end
@@ -43,6 +56,16 @@ function _ensure_importable(dir::AbstractString)
     pyconvert(Bool, pycontains(path, dir)) && return nothing
     path.insert(0, dir)
     return nothing
+end
+
+# The hook and the import are what a downstream package's first host call runs
+# after RustCall's own image has done the scan and the cache lookup (#449);
+# `precompile` compiles them without starting an interpreter, which a
+# workload here could not do.
+if ccall(:jl_generating_output, Cint, ()) == 1
+    precompile(RustCall.pyo3_host_import, (String,))
+    precompile(RustCall.pyo3_host_import, (RustCall.PyO3Extension,))
+    precompile(_ensure_importable, (String,))
 end
 
 end

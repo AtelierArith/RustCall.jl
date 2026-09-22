@@ -195,10 +195,15 @@ function scan_crate(crate_path::String; cfg = :lenient,
     version = _package_field(crate_path, cargo_toml, "version", "0.1.0";
                              allow_cargo = allow_cargo)
 
+    # `String(...)::String`: the manifest's values are `Any`, and a constructor
+    # called on `Any` is compiled through `convert(String, ::Any)`, which any
+    # later package adding a `convert(::Type{String}, ...)` method invalidates
+    # — PythonCall's JSON does — so the precompiled scan was recompiled on the
+    # first call after `using PythonCall` (#449).
     CrateInfo(
-        cargo_toml["package"]["name"],
+        String(cargo_toml["package"]["name"])::String,
         abspath(crate_path),
-        version,
+        String(version)::String,
         dependencies,
         all_functions,
         all_structs,

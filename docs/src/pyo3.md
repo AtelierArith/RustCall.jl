@@ -62,7 +62,8 @@ What changes:
 * **The crate is built lazily**, on the first call: pyo3's build is pinned with
   `PYO3_PYTHON = PythonCall.python_executable_path()`, and a Python interpreter
   may not be started during precompilation. The crate's sources and that
-  interpreter are part of the artifact cache key.
+  interpreter are part of the artifact cache key. What the first call costs,
+  and how to pay part of it earlier, is under "The first call" below.
 
 Three examples use it, and one shows why it exists:
 
@@ -110,6 +111,43 @@ PyO3 crate actually uses are handled rather than reported as skips:
 `PyResult<T>` remains `RustResult{T, String}` on this path too; the `Err` payload
 is the interpreter's own message, so a caller keeps one error surface whether
 the crate was bound from outside or imported as the extension it is.
+
+### The first call, and paying it earlier (#449)
+
+The first host call in a session — `RustCall.pyo3_host_import(crate)`, or the
+first call of a binding `@rust_crate ... pyo3_host=true` generated — scans the
+crate, computes its cache key, finds (or builds) the extension module and
+imports it. With the artifact already cached that is a few subprocesses (the
+extractor, the toolchain probes, `cargo tree`, one start of the interpreter for
+its `EXT_SUFFIX` and fingerprint) and **no compilation of RustCall's code**:
+RustCall's own package image carries the scan and the cache lookup
+(`src/precompile.jl` runs that interpreter-free half against a throwaway crate
+while RustCall precompiles), and `RustCallPyO3HostExt`'s image carries the
+import. A downstream package needs no `precompile` directive of its own for it.
+Before #449 the same first call spent most of a second compiling RustCall's
+scan and cache code, and nothing downstream could bake it: the path is reached
+through dynamic dispatch, so `Base.precompile` stopped at the thin method, and
+executing it during precompilation needs an interpreter.
+
+The two halves are separately callable when the remaining cost should move
+elsewhere:
+
+```julia
+# interpreter-free: scan, key, the cached artifact — or the build. Python runs
+# only as a subprocess, for the module suffix and the interpreter fingerprint.
+artifact = RustCall.build_pyo3_extension(crate; python = PythonCall.python_executable_path())
+
+# needs the interpreter: put the artifact's directory on `sys.path` and import.
+mod = RustCall.pyo3_host_import(artifact)
+```
+
+`pyo3_host_import(crate)` is exactly those two calls. The first may run in a
+package's `__init__` (PythonCall's own `__init__` has run by then, so its
+interpreter is known) or in a `deps/build.jl` with an interpreter of the
+package's choosing, which pays the Cargo build there and leaves the first call
+with the import alone. Neither may run while the package precompiles: the
+artifact is keyed by the interpreter, and the one PythonCall will use is not
+known until it initialises.
 
 ## Which pyo3 versions work
 

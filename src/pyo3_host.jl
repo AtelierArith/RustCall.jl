@@ -66,6 +66,13 @@ The crate is built unmodified. A `#[pyfunction] fn f(...)` that is **not `pub`**
 a signature using `Python<'_>` or `pyo3::Bound`, numpy arrays and Python
 callables all become reachable, because the call goes through CPython and the
 crate's own `#[pymodule]` registration rather than through a Rust path.
+
+    pyo3_host_import(artifact::PyO3Extension) -> Py
+
+The import alone: the module `build_pyo3_extension` already built (#449). The
+one-argument form is `build_pyo3_extension(crate; python = PythonCall.python_executable_path(), ...)`
+followed by this, and the build needs no interpreter, so a package can run it
+in its `__init__` or a `deps/build.jl` and keep only the import lazy.
 """
 function pyo3_host_import end
 
@@ -102,9 +109,15 @@ own builds. The platform's extension-module link flags (macOS
 `-undefined dynamic_lookup`, which pyo3's build script cannot deliver to the
 final cdylib) travel as trailing rustc arguments, not through `RUSTFLAGS`.
 
-The result is cached under `RustCall.get_cache_dir()/cargo/pyo3-host/`, keyed by
+The result is cached under `RustCall.get_cache_dir()/pyo3-host/`, keyed by
 the crate path, the feature set, the profile, the module name and the
 interpreter's fingerprint; `cache_enabled = false` builds every time.
+
+This is the interpreter-free half of `pyo3_host_import` (#449): `python` runs
+only as a subprocess, for the module's `EXT_SUFFIX` and the interpreter's
+fingerprint, so it may run before any Python is loaded into the process — but
+not while a package precompiles, because the interpreter it is keyed by is
+not known then.
 """
 function build_pyo3_extension(crate_path::AbstractString;
                               python::AbstractString,
@@ -128,12 +141,51 @@ function build_pyo3_extension(crate_path::AbstractString;
         "No `#[pymodule]` initializer was found in `$(crate_path)`. The host path " *
         "builds the crate as a Python extension and imports it, so a crate without " *
         "one has nothing to import."))
-    ext_suffix = _pyo3_extension_ext_suffix(python)
+    ext_suffix, fingerprint = _pyo3_extension_interpreter_probe(python)
     isempty(ext_suffix) && throw(RustError(
         "The interpreter `$(python)` did not report a sysconfig `EXT_SUFFIX`, so " *
         "the extension module cannot be named. Is it a runnable CPython?"))
-    fingerprint = _python_interpreter_fingerprint(python)
 
+    # `::String` for the same reason as in `_run_extractor`: the memoized read
+    # returns `Any`, and the call below is then dynamic and compiled at the
+    # first call (#449).
+    artifact = _pyo3_extension_artifact(get_cache_dir()::String, info, module_name, python,
+                                        ext_suffix, fingerprint;
+                                        features = features,
+                                        default_features = default_features,
+                                        release = release)
+    if cache_enabled && isfile(artifact.lib_path)
+        @debug "Using cached PyO3 extension module" key = artifact_short_id(artifact.key, 8)
+        return artifact
+    end
+
+    built = _build_pyo3_extension_library(path, cargo_toml, module_name;
+                                          python = python, features = features,
+                                          default_features = default_features,
+                                          release = release)
+    # Publish, never overwrite (#394): two sessions may build one key at once.
+    published = _publish_cache_file(built, artifact.lib_path)
+    return PyO3Extension(module_name, published.path, artifact.dir, ext_suffix,
+                         String(python), fingerprint, artifact.key)
+end
+
+"""
+    _pyo3_extension_artifact(cache_dir, info, module_name, python, ext_suffix, fingerprint;
+                             features, default_features, release) -> PyO3Extension
+
+Where the extension module of `info` built for `python` lives under `cache_dir`:
+the cache key and the paths it decides, computed without touching the
+interpreter, Cargo or the cache directory. `build_pyo3_extension` is this plus
+the interpreter probe and the build; the precompile workload of #449 runs this
+on its own, because a Python interpreter may not be started while precompiling
+and the key must not depend on one.
+"""
+function _pyo3_extension_artifact(cache_dir::AbstractString, info::CrateInfo,
+                                  module_name::AbstractString, python::AbstractString,
+                                  ext_suffix::AbstractString, fingerprint::AbstractString;
+                                  features::Vector{String} = String[],
+                                  default_features::Bool = true,
+                                  release::Bool = true)
     # The crate's own content is in the key (`compute_crate_hash` digests the
     # source, the path dependency graph and the Cargo configuration), so an
     # edited crate rebuilds instead of reusing an artifact of its old self; the
@@ -143,29 +195,15 @@ function build_pyo3_extension(crate_path::AbstractString;
                              features = features, default_features = default_features,
                              build_env = Pair{String, String}[
                                  "PYO3_PYTHON" => String(python),
-                                 "interpreter-fingerprint" => fingerprint,
-                                 "module" => module_name])
+                                 "interpreter-fingerprint" => String(fingerprint),
+                                 "module" => String(module_name)])
     # Its own tree, not the Cargo cache: an extension module is not a cached
     # cdylib, and `test_cargo` asserts the Cargo cache holds exactly one entry
     # (#287). Both `clear_cache()` and this directory's owner are one place.
-    dir = joinpath(get_cache_dir(), "pyo3-host", artifact_short_id(key))
-    lib_path = joinpath(dir, module_name * ext_suffix)
-    artifact = PyO3Extension(module_name, lib_path, dir, ext_suffix, String(python),
-                             fingerprint, key)
-
-    if cache_enabled && isfile(lib_path)
-        @debug "Using cached PyO3 extension module" key = artifact_short_id(key, 8)
-        return artifact
-    end
-
-    built = _build_pyo3_extension_library(path, cargo_toml, module_name;
-                                          python = python, features = features,
-                                          default_features = default_features,
-                                          release = release)
-    # Publish, never overwrite (#394): two sessions may build one key at once.
-    published = _publish_cache_file(built, lib_path)
-    return PyO3Extension(module_name, published.path, dir, ext_suffix, String(python),
-                         fingerprint, key)
+    dir = joinpath(String(cache_dir), "pyo3-host", artifact_short_id(key))
+    lib_path = joinpath(dir, String(module_name) * String(ext_suffix))
+    return PyO3Extension(String(module_name), lib_path, dir, String(ext_suffix),
+                         String(python), String(fingerprint), key)
 end
 
 # The `#[pymodule]` initializer's Python name: `name = "..."` when given,
@@ -193,6 +231,28 @@ function _pyo3_extension_ext_suffix(python::AbstractString)
     catch
         return ""
     end
+end
+
+# `EXT_SUFFIX` and `_python_interpreter_fingerprint` of `python` from **one**
+# interpreter start rather than two: on the host path both are needed on every
+# call, cached artifact or not, and a CPython start is 20–40 ms of the first
+# call's time once nothing is left to compile (#449). `("", "")` when the
+# interpreter cannot run; the fingerprint line uses the same expression as
+# `_python_interpreter_fingerprint`, so the two spellings of one interpreter
+# are equal and the cache key does not depend on which probe filled it.
+function _pyo3_extension_interpreter_probe(python::AbstractString)
+    isempty(python) && return ("", "")
+    code = "import platform, sys, sysconfig; " *
+           "print(sysconfig.get_config_var('EXT_SUFFIX') or ''); " *
+           "print($(_PYTHON_FINGERPRINT_EXPR))"
+    out = try
+        read(`$python -c $code`, String)
+    catch
+        return ("", "")
+    end
+    lines = split(out, '\n')
+    length(lines) >= 2 || return ("", "")
+    return (String(strip(lines[1])), String(strip(lines[2])))
 end
 
 # `[lib] name` when set, otherwise Cargo's default: the package name with `-`

@@ -97,6 +97,37 @@ end
             JULIA_ONLY_CRATE; python = "/usr/bin/python3")
     end
 
+    @testset "the artifact is located without an interpreter (#449)" begin
+        # `build_pyo3_extension` is the interpreter probe plus this; the
+        # precompile workload runs this half on its own, so it must need
+        # nothing but the scan and the cache directory it is given.
+        info = RustCall.scan_crate(PYO3_HOST_CRATE)
+        name = RustCall._pyo3_extension_module_name(info)
+        mktempdir() do cache
+            a = RustCall._pyo3_extension_artifact(cache, info, name, "/py/one", ".one.so", "fp-1")
+            @test a.module_name == "sample_crate_pyo3_host"
+            @test a.dir == joinpath(cache, "pyo3-host", RustCall.artifact_short_id(a.key))
+            @test a.lib_path == joinpath(a.dir, "sample_crate_pyo3_host.one.so")
+            @test a.interpreter == "/py/one" && a.fingerprint == "fp-1" && a.ext_suffix == ".one.so"
+            @test !isfile(a.lib_path)
+            # The interpreter's path, its fingerprint and the feature set are
+            # each in the key; the same inputs give the same key.
+            same = RustCall._pyo3_extension_artifact(cache, info, name, "/py/one", ".one.so", "fp-1")
+            @test same.key == a.key
+            @test RustCall._pyo3_extension_artifact(cache, info, name, "/py/two", ".one.so", "fp-1").key != a.key
+            @test RustCall._pyo3_extension_artifact(cache, info, name, "/py/one", ".one.so", "fp-2").key != a.key
+            @test RustCall._pyo3_extension_artifact(cache, info, name, "/py/one", ".one.so", "fp-1";
+                                                    release = false).key != a.key
+        end
+    end
+
+    @testset "the interpreter probe is one process, and refuses cleanly" begin
+        @test RustCall._pyo3_extension_interpreter_probe("") == ("", "")
+        missing_python = joinpath(mktempdir(), "no-such-python")
+        @test RustCall._pyo3_extension_interpreter_probe(missing_python) == ("", "")
+        @test RustCall._pyo3_extension_ext_suffix(missing_python) == ""
+    end
+
     @testset "requesting the host without PythonCall names the fix" begin
         # Only meaningful where the extension is absent: with PythonCall
         # loaded the same call is the one the Phase 3 testset exercises.
@@ -228,6 +259,18 @@ end
     @test again.lib_path == RustCall.build_pyo3_extension(
         PYO3_HOST_CRATE; python = PythonCall.python_executable_path()).lib_path
     @test isfile(again.lib_path)
+
+    # The split hook (#449): the build is the interpreter-free half a package
+    # can run ahead of time, and `pyo3_host_import(artifact)` is the import.
+    imported = RustCall.pyo3_host_import(again)
+    @test pyconvert(Int, imported.add(20, 22)) == 42
+    # The one-process probe reports what the two single probes report, so the
+    # key it fills is the key the wrapper path would compute.
+    python = PythonCall.python_executable_path()
+    @test RustCall._pyo3_extension_interpreter_probe(python) ==
+          (RustCall._pyo3_extension_ext_suffix(python),
+           RustCall._python_interpreter_fingerprint(python))
+    @test again.fingerprint == RustCall._python_interpreter_fingerprint(python)
 end
 
 @testset "PyO3 Python-host typed bindings (#424 Phase 2)" begin

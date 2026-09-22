@@ -515,8 +515,11 @@ const _ARTIFACT_DIGEST_LOCK = ReentrantLock()
 
 # canonical crate dir => (manifest stamps of every crate in the graph,
 #                          (strategy, dirs))
+# The stamps are typed as `_graph_stamps` returns them rather than as `Any`: a
+# concrete value type is what lets `src/precompile.jl` derive the registry's
+# `setindex!` directive, and this write is on the first crate scan (#449).
 const _PATH_DEP_GRAPH_CACHE = _state_view(:path_dep_graph_cache,
-    Dict{String, Tuple{Any, Tuple{String, Vector{String}}}}())
+    Dict{String, Tuple{Vector{Pair{String, Any}}, Tuple{String, Vector{String}}}}())
 
 """
     CARGO_TREE_INVOCATIONS
@@ -777,8 +780,11 @@ function _rustcall_release_names_in(dir::AbstractString)
                 package = get(spec, "package", dep)
                 target = joinpath(here, path)
                 _is_rustcall_release_crate(target, package) || continue
-                String(package) in names && continue
-                push!(names, String(package))
+                # `::String` before the membership test, for the reason given
+                # in `_pathed_release_versions` (#449).
+                package_name = String(package)::String
+                package_name in names && continue
+                push!(names, package_name)
                 push!(pending, target)
             end
         end
@@ -897,6 +903,11 @@ function _pathed_release_versions(doc, strip_names)
     for entry in get(doc, "package", Any[])
         entry isa AbstractDict || continue
         name = get(entry, "name", nothing)
+        # Typed before the membership test: `in(::Any, ::Set{String})` is
+        # compiled through `isequal(::Any, ::String)`, an invalidation root for
+        # the whole hash path (#449).
+        name isa AbstractString || continue
+        name = String(name)::String
         name in strip_names && !haskey(entry, "source") || continue
         version = get(entry, "version", nothing)
         version isa AbstractString && push!(get!(seen, String(name), String[]), String(version))
@@ -1054,11 +1065,16 @@ function artifact_path_dependency_digest(path::AbstractString)::String
     return bytes2hex(sha256(take!(io)))
 end
 
-function _canonical_dir(dir::AbstractString)::String
+# Two methods rather than one `AbstractString` method with a `::String` return:
+# the abstract instance converted its result through `convert(String, ::Any)`,
+# and everything above it in the hash path was invalidated when a later package
+# added such a method (#449).
+_canonical_dir(dir::AbstractString) = _canonical_dir(String(dir)::String)
+function _canonical_dir(dir::String)::String
     try
-        return realpath(String(dir))
+        return realpath(dir)
     catch
-        return String(dir)
+        return dir
     end
 end
 

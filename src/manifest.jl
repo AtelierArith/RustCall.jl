@@ -367,7 +367,11 @@ end
 # ----------------------------------------------------------------------------
 
 function _run_extractor(args::Vector{String}; stdin_data::Union{Nothing, String} = nothing)
-    exe = extractor_path()
+    # `::String` so the spawn below is inferred from here: `extractor_path()`
+    # reads a registry under a lock and returns `Any`, and behind an `Any` the
+    # command construction and the spawn are dynamic calls the image cannot keep
+    # (#449).
+    exe = extractor_path()::String
     out = IOBuffer()
     err = IOBuffer()
     cmd = `$exe $args`
@@ -859,7 +863,10 @@ The file holds `cfg_text` and is written once per distinct text. Empty for
 function _cfg_file_args(cfg; cfg_text::AbstractString = _cfg_snapshot(cfg))
     mode = _cfg_mode(cfg)
     mode === :none && return String[]
-    text = String(cfg_text)
+    # `::String`: with an `AbstractString` argument the conversion is a
+    # dynamic call and the digest below is compiled on `Any`, an invalidation
+    # root (#449).
+    text = String(cfg_text)::String
     isempty(text) && return String[]
     digest = bytes2hex(sha256(text))
     path = lock(_EXTRACTOR_LOCK) do

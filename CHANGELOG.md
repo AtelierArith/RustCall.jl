@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **The first PyO3 host call no longer compiles RustCall's scan and cache
+  code** ([#449](https://github.com/AtelierArith/RustCall.jl/issues/449)).
+  With the extension module already cached, the first `pyo3_host_import` — and
+  the first call of any `@rust_crate ... pyo3_host=true` binding — spent most
+  of a second compiling `scan_crate`, `compute_crate_hash` and the cache
+  lookup, and a downstream package could neither `precompile` it (the path is
+  reached through dynamic dispatch) nor execute it while precompiling (it needs
+  an interpreter). RustCall's own precompilation now runs that interpreter-free
+  half against a throwaway crate, with no `rustc`, `cargo` or Python started
+  and nothing left in the state it serialises; `RustCallPyO3HostExt`
+  precompiles the import. Measured on Julia 1.13 the first host call went from
+  5.7 s to 0.6 s with a warm cache, and `using RustCall` from ~210 ms to
+  ~105 ms, because the registry directives are now derived from the containers
+  rather than listed by hand (one had drifted). The hook is also split:
+  `RustCall.pyo3_host_import(artifact::PyO3Extension)` imports what
+  `build_pyo3_extension` built, so a package can run the interpreter-free build
+  in its `__init__` or a `deps/build.jl` and keep only the import lazy. The
+  interpreter's `EXT_SUFFIX` and fingerprint are read in one Python start
+  instead of two.
+
 ## [0.6.4] - 2026-09-22
 
 ### Added

@@ -1137,12 +1137,18 @@ end
 # Python — a different artifact, the way `artifact_compiler_identity` records
 # what `rustc` *is* rather than where it lives (#307 review, #278). "" when
 # the interpreter cannot be run.
+# The Python expression behind `_python_interpreter_fingerprint`, shared with
+# the host path's one-start probe (`_pyo3_extension_interpreter_probe`, #449):
+# both must spell one interpreter the same way, because the fingerprint is in
+# the artifact key.
+const _PYTHON_FINGERPRINT_EXPR =
+    "'|'.join([platform.python_implementation(), sys.version.split()[0], " *
+    "sysconfig.get_config_var('SOABI') or '', sysconfig.get_config_var('LDLIBRARY') or '', " *
+    "sysconfig.get_config_var('LIBDIR') or '', str(sys.maxsize > 2**32)])"
+
 function _python_interpreter_fingerprint(exe::AbstractString)
     isempty(exe) && return ""
-    code = "import platform, sys, sysconfig; " *
-           "print('|'.join([platform.python_implementation(), sys.version.split()[0], " *
-           "sysconfig.get_config_var('SOABI') or '', sysconfig.get_config_var('LDLIBRARY') or '', " *
-           "sysconfig.get_config_var('LIBDIR') or '', str(sys.maxsize > 2**32)]))"
+    code = "import platform, sys, sysconfig; print($(_PYTHON_FINGERPRINT_EXPR))"
     try
         return String(strip(read(`$exe -c $code`, String)))
     catch
