@@ -96,6 +96,13 @@ end
 # workload here could not do.
 if ccall(:jl_generating_output, Cint, ()) == 1
     precompile(RustCall.pyo3_host_import, (String,))
+    # A generated `@rust_crate ... pyo3_host=true` module calls the hook with
+    # `features`, `default_features` and `release` (`_pyo3_module` in
+    # `src/pyo3_host.jl`), which is a different entry point from the plain
+    # call (#449 review).
+    precompile(Core.kwcall, (NamedTuple{(:features, :default_features, :release),
+                                        Tuple{Vector{String}, Bool, Bool}},
+                             typeof(RustCall.pyo3_host_import), String))
     precompile(RustCall.pyo3_host_import, (RustCall.PyO3Extension,))
     precompile(_ensure_importable, (String,))
 end

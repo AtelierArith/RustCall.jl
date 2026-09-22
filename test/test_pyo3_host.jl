@@ -452,6 +452,39 @@ end
     @test Host.Point(3.0, 4.0).x == 3.0
 end
 
+# The first call of a generated host binding compiles nothing of RustCall's or
+# of the extension's (#449): the hook's keyword entry point, the build and the
+# import all come from the package images. A child process, because the
+# property is about a fresh session; `--trace-compile` prints what is compiled
+# at run time, and none of it may be the hook. The generated module itself is
+# expected there — it is evaluated in the child.
+@testset "a generated host call is served from the images (#449)" begin
+    if !RustCall.pyo3_host_available()
+        @info "skipping the generated-host image testset" reason =
+            "PythonCall is not loaded; `using PythonCall` enables RustCallPyO3HostExt"
+        return
+    end
+    # Build first, in this process, so the child measures a warm cache.
+    RustCall.build_pyo3_extension(PYO3_HOST_CRATE;
+                                  python = PythonCall.python_executable_path())
+    trace = tempname()
+    script = """
+        using RustCall, PythonCall
+        @rust_crate $(repr(abspath(PYO3_HOST_CRATE))) submodule="Bindings" pyo3_host=true
+        Bindings.add(Int32(2), Int32(3))
+        """
+    cmd = `$(Base.julia_cmd()) --startup-file=no --project=$(Base.active_project()) --trace-compile=$trace -e $script`
+    @test success(pipeline(cmd; stdout = devnull, stderr = stderr))
+    compiled = isfile(trace) ? readlines(trace) : String[]
+    leaked = filter(line -> occursin("pyo3_host_import", line) ||
+                            occursin("RustCallPyO3HostExt", line) ||
+                            occursin("RustCall.build_pyo3_extension", line) ||
+                            occursin("RustCall.scan_crate", line), compiled)
+    @test isempty(leaked)
+    isempty(leaked) || foreach(println, leaked)
+    rm(trace; force = true)
+end
+
 @testset "a one-argument #[new] precompiles (#433)" begin
     if !RustCall.pyo3_host_available()
         @info "skipping the one-argument #[new] precompile testset" reason =
