@@ -375,6 +375,90 @@ const _CBP_MISSING_DEP = "rustcall_nonexistent_crate_461 = \"=0.0.1\""
         end
     end
 
+    # #461 review: the module form also compares the build environment the
+    # module recorded (`_BUILD_ENV`) with the current one, at enable time and
+    # before every rebuild, and refuses on a mismatch.
+    @testset "a reload refuses a changed build environment (#461 review)" begin
+        mktempdir() do dir
+            source(value) = """
+                use rustcall_julia_macros::julia;
+
+                #[cfg(cbp_custom461)]
+                #[julia]
+                pub fn cbp_custom461() -> i32 { $(value) }
+                """
+            crate = _cbp_crate(joinpath(dir, "crate"); package = "cbp_env_461", body = "")
+            write(joinpath(crate, "src", "lib.rs"), source(1))
+            flags = "--cfg cbp_custom461"
+            bindings = withenv(() -> (@rust_crate crate name = "CbpEnv461"), "RUSTFLAGS" => flags)
+            name = bindings._LIB_NAME
+            @test Base.invokelatest(bindings.cbp_custom461) == 1
+            outcomes = Any[]
+            try
+                # Enabling under another environment is refused outright.
+                err = withenv("RUSTFLAGS" => nothing) do
+                    try
+                        RustCall.enable_hot_reload_for_crate(bindings, crate;
+                                                             poll = true, interval = 60.0)
+                        nothing
+                    catch e
+                        e
+                    end
+                end
+                @test err isa ArgumentError
+                @test err !== nothing && occursin("RUSTFLAGS", sprint(showerror, err))
+                @test !haskey(RustCall.HOT_RELOAD_REGISTRY, name)
+
+                # Under the recorded one it is enabled, and a reload works.
+                state = withenv("RUSTFLAGS" => flags) do
+                    RustCall.enable_hot_reload_for_crate(bindings, crate; poll = true,
+                        interval = 60.0, callback = (lib, ok, e) -> push!(outcomes, (ok, e)))
+                end
+                @test state.build_env_record !== nothing
+                write(joinpath(crate, "src", "lib.rs"), source(2))
+                @test withenv(() -> RustCall.trigger_reload(name), "RUSTFLAGS" => flags) == true
+                @test Base.invokelatest(bindings.cbp_custom461) == 2
+
+                # A reload under a changed environment fails, reports it, and
+                # leaves the previous library in place.
+                write(joinpath(crate, "src", "lib.rs"), source(3))
+                @test withenv(() -> RustCall.trigger_reload(name), "RUSTFLAGS" => nothing) == false
+                @test occursin("build environment", state.last_failure)
+                @test last(outcomes)[1] == false
+                @test last(outcomes)[2] isa ArgumentError
+                @test Base.invokelatest(bindings.cbp_custom461) == 2
+            finally
+                RustCall.disable_hot_reload(name)
+                delete!(RustCall.HOT_RELOAD_REGISTRY, name)
+                RustCall.unload_library(name; close = true)
+            end
+        end
+    end
+
+    # #461 review: with `relative_lib_path`, a wrapper-built library goes
+    # straight to its destination; no durable `uncached_*` copy is left in the
+    # cache on each regeneration.
+    @testset "relative_lib_path leaves no uncached copy behind (#461 review)" begin
+        mktempdir() do dir
+            crate = _cbp_crate(joinpath(dir, "crate"); package = "cbp_rel_461", cdylib = false,
+                               body = "#[julia]\npub fn cbp_rel461() -> i32 { 7 }\n")
+            withenv("RUSTCALL_CACHE_DIR" => joinpath(dir, "cache")) do
+                uncached() = (d = RustCall.get_cargo_cache_dir();
+                              isdir(d) ? filter(n -> startswith(n, "uncached_"), readdir(d)) : String[])
+                before = uncached()
+                out = joinpath(dir, "pkg", "src", "bindings.jl")
+                for _ in 1:2
+                    RustCall.write_bindings_to_file(crate, out; output_module_name = "CbpRel461",
+                                                    relative_lib_path = "../lib")
+                end
+                @test uncached() == before
+                code = read(out, String)
+                @test occursin("joinpath(@__DIR__, ", code)
+                @test length(readdir(joinpath(dir, "pkg", "lib"))) == 1
+            end
+        end
+    end
+
     @testset "a module built through a wrapper crate is not reloaded (#461 review)" begin
         mktempdir() do dir
             crate = _cbp_crate(joinpath(dir, "crate"); package = "cbp_wrapped_461",

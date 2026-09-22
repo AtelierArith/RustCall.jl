@@ -977,6 +977,40 @@ function _warn_if_build_env_changed(recorded, crate_path::AbstractString, lib_na
                                     recorded_toolchain::AbstractString = "";
                                     python::Bool = false,
                                     strict::Bool = false)
+    changed = _build_env_changes(recorded, crate_path, recorded_cargo_config,
+                                 recorded_toolchain; python = python)
+    (changed === nothing || isempty(changed)) && return nothing
+    message = """
+    RustCall: the build environment changed since `$(lib_name)` was compiled into this package's
+    precompile image, and Julia cannot see that — it invalidates an image from files, and these
+    are not files. The library that is about to load was built under the previous values.
+
+    Variables: $(join(changed, ", ")). Force a rebuild with `Pkg.precompile(; force = true)`, or
+    touch a source file of the crate.
+    """
+    if strict
+        throw(RustError(String(strip(message))))
+    end
+    @warn message crate = crate_path variables = changed
+    return nothing
+end
+
+"""
+    _build_env_changes(recorded, crate_path, recorded_cargo_config = "",
+                       recorded_toolchain = ""; python = false) -> Union{Nothing, Vector{String}}
+
+What differs between the build environment a generated module recorded
+(`_BUILD_ENV`, `_CARGO_CONFIG`, `_TOOLCHAIN`) and the current one: the names of
+the changed allowlisted variables, plus `<effective Cargo configuration>` and
+`<Rust toolchain>` when those moved. `nothing` when the current environment
+cannot be read. The one comparison both a module's `__init__`
+(`_warn_if_build_env_changed`) and a hot reload of that module
+(`enable_hot_reload_for_crate`) make.
+"""
+function _build_env_changes(recorded, crate_path::AbstractString,
+                            recorded_cargo_config::AbstractString = "",
+                            recorded_toolchain::AbstractString = "";
+                            python::Bool = false)
     current = try
         _recorded_build_env(; python = python)
     catch e
@@ -1016,24 +1050,11 @@ function _warn_if_build_env_changed(recorded, crate_path::AbstractString, lib_na
             recorded_toolchain
         end
         if now_toolchain != recorded_toolchain
-            @debug "Generated crate toolchain mismatch" lib_name crate_path recorded_toolchain now_toolchain
+            @debug "Generated crate toolchain mismatch" crate_path recorded_toolchain now_toolchain
             push!(changed, "<Rust toolchain>")
         end
     end
-    isempty(changed) && return nothing
-    message = """
-    RustCall: the build environment changed since `$(lib_name)` was compiled into this package's
-    precompile image, and Julia cannot see that — it invalidates an image from files, and these
-    are not files. The library that is about to load was built under the previous values.
-
-    Variables: $(join(changed, ", ")). Force a rebuild with `Pkg.precompile(; force = true)`, or
-    touch a source file of the crate.
-    """
-    if strict
-        throw(RustError(String(strip(message))))
-    end
-    @warn message crate = crate_path variables = changed
-    return nothing
+    return changed
 end
 
 """
@@ -4011,11 +4032,14 @@ function write_bindings_to_file(crate_path::String, output_path::String;
             built = build_cargo_project(wrapper_project, release=build_release,
                                         policy=crate_wrapper_policy())
             # The library must leave the wrapper project before the `finally`
-            # deletes it, as in `generate_bindings`: the copy below and the
-            # file's `_LIB_PATH` would otherwise name a file that no longer
-            # exists (#461). A written file is not a cache entry, so it gets a
-            # durable home of its own (`_uncached_library_home`).
-            _uncached_library_home(built)
+            # deletes it, as in `generate_bindings`: the file's `_LIB_PATH`
+            # would otherwise name a file that no longer exists (#461). With a
+            # relative destination it goes straight there — that copy is the
+            # one the file names, and a durable staging copy beside it would
+            # be left behind on every regeneration (#461 review). Otherwise it
+            # gets a durable home of its own (`_uncached_library_home`).
+            relative_lib_path === nothing ? _uncached_library_home(built) :
+                _copy_to_relative_lib(built, output_path, relative_lib_path)
         finally
             cleanup_cargo_project(wrapper_project)
         end
@@ -4023,19 +4047,11 @@ function write_bindings_to_file(crate_path::String, output_path::String;
 
     # Determine the library path to use in the generated code
     if relative_lib_path !== nothing
-        # Copy the library to the relative path
-        output_dir = dirname(output_path)
-        lib_dest_dir = normpath(joinpath(output_dir, relative_lib_path))
-        mkpath(lib_dest_dir)
-
-        lib_filename = basename(lib_path)
-        lib_dest_path = joinpath(lib_dest_dir, lib_filename)
-
-        cp(lib_path, lib_dest_path, force=true)
-        @info "Copied library to $lib_dest_path"
-
+        # Copy the library to the relative path (a wrapper build already put
+        # it there).
+        lib_dest_path = _copy_to_relative_lib(lib_path, output_path, relative_lib_path)
         # Use @__DIR__ based path in generated code
-        lib_path_for_code = joinpath(relative_lib_path, lib_filename)
+        lib_path_for_code = joinpath(relative_lib_path, basename(lib_dest_path))
     else
         lib_path_for_code = lib_path
     end
@@ -4062,6 +4078,20 @@ function write_bindings_to_file(crate_path::String, output_path::String;
 
     @info "Generated bindings written to $output_path"
     return output_path
+end
+
+# `lib_path` copied to `relative_lib_path` resolved against the directory of
+# `output_path`, and that copy's path; a no-op when it is already there.
+function _copy_to_relative_lib(lib_path::AbstractString, output_path::AbstractString,
+                               relative_lib_path::AbstractString)
+    lib_dest_dir = normpath(joinpath(dirname(output_path), relative_lib_path))
+    mkpath(lib_dest_dir)
+    lib_dest_path = joinpath(lib_dest_dir, basename(lib_path))
+    if abspath(lib_dest_path) != abspath(lib_path)
+        cp(lib_path, lib_dest_path, force = true)
+        @info "Copied library to $lib_dest_path"
+    end
+    return String(lib_dest_path)
 end
 
 """

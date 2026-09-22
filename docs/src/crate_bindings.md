@@ -669,9 +669,18 @@ B = @rust_crate "deps/my_rust_crate" release=false features=["simd"]
 RustCall.enable_hot_reload_for_crate(B, "deps/my_rust_crate")  # rebuilds debug, with "simd"
 ```
 
+The module also records the build environment it was made under (`RUSTFLAGS`
+and the rest of the allowlisted variables, the effective Cargo configuration,
+the toolchain). The module form compares it with the current environment when
+hot reload is enabled — an `ArgumentError` on a mismatch — and again before every
+rebuild, where a mismatch fails the reload and keeps the previous library loaded
+(reported like any failed rebuild, through the callback). Restore the
+environment, or load the crate again under the new one.
+
 The path-only form, `enable_hot_reload_for_crate(crate_path; release, features,
 default_features)`, takes the build as keywords (defaulting to `@rust_crate`'s
-defaults) and does not guess it. Only a crate that is its own `cdylib` can be
+defaults) and does not guess it; it has no record of the environment, so it
+rebuilds under the current one. Only a crate that is its own `cdylib` can be
 reloaded; a module bound through a generated wrapper crate is refused.
 
 The rebuild is the build `@rust_crate` itself runs: RustToolChain's `cargo`,

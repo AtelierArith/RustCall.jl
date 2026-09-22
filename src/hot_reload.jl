@@ -47,6 +47,13 @@ mutable struct HotReloadState
     # under that library's registry name, whose wrappers were generated for its
     # `#[cfg]`s (#461 review). `crate_build_options` shape.
     build_options::NamedTuple
+    # The build environment the replaced library was made under, as its module
+    # recorded it (`_BUILD_ENV`, `_CRATE_DIR`, `_CARGO_CONFIG`, `_TOOLCHAIN`,
+    # `_RECORDS_PYTHON`), or `nothing` when there is no record. A reload under a
+    # different environment would publish another `#[cfg]` under the same
+    # registry name, so every reload compares first and refuses on a mismatch
+    # (#461 review).
+    build_env_record::Union{Nothing, NamedTuple}
 end
 
 # Backwards-compatible positional constructor: the fields below are
@@ -54,9 +61,27 @@ end
 # reload always made before (release, default features).
 HotReloadState(crate_path, lib_path, lib_name, source_files, last_modified,
                watch_task, enabled, rebuild_callback;
-               build_options::NamedTuple = crate_build_options()) =
+               build_options::NamedTuple = crate_build_options(),
+               build_env_record::Union{Nothing, NamedTuple} = nothing) =
     HotReloadState(crate_path, lib_path, lib_name, source_files, last_modified,
-                   watch_task, enabled, rebuild_callback, 0, "", build_options)
+                   watch_task, enabled, rebuild_callback, 0, "", build_options,
+                   build_env_record)
+
+# The variables (and `<...>` markers) whose value differs from `record`, empty
+# when nothing does or there is no record. `_build_env_changes` is the
+# comparison a module's `__init__` makes.
+function _build_env_mismatch(record::Union{Nothing, NamedTuple})
+    record === nothing && return String[]
+    changed = _build_env_changes(record.env, record.crate_dir, record.cargo_config,
+                                 record.toolchain; python = record.python)
+    return changed === nothing ? String[] : changed
+end
+
+_build_env_mismatch_message(lib_name, changed) =
+    "Hot reload of $(lib_name): the build environment differs from the one its module " *
+    "was built under ($(join(changed, ", "))). A rebuild now would publish a library " *
+    "with other `#[cfg]`s under the module's registry name, so it is refused. Restore " *
+    "the environment, or load the crate again with `@rust_crate` under the new one."
 
 """
 Registry of hot-reloadable crates.
@@ -367,6 +392,13 @@ function _reload_library_once(state::HotReloadState)
     try
         # Fingerprint the sources by content, then scan them. Scanning runs
         # the extractor and must not hold REGISTRY_LOCK.
+        # The environment first: a rebuild under another one is refused and the
+        # previous library stays loaded, reported like any failed rebuild
+        # (#461 review).
+        changed = _build_env_mismatch(state.build_env_record)
+        isempty(changed) ||
+            throw(ArgumentError(_build_env_mismatch_message(state.lib_name, changed)))
+
         before = _source_fingerprint(state.crate_path)
         signatures = _scan_crate_signatures(state.crate_path;
                                             build_options = state.build_options)
@@ -889,7 +921,8 @@ function enable_hot_reload(lib_name::String, crate_path::String;
     interval::Float64 = 1.0,
     callback::Union{Function, Nothing} = nothing,
     poll::Bool = false,
-    build_options::NamedTuple = crate_build_options()
+    build_options::NamedTuple = crate_build_options(),
+    build_env_record::Union{Nothing, NamedTuple} = nothing
 )
     # Validate inputs
     if !isdir(crate_path)
@@ -931,7 +964,8 @@ function enable_hot_reload(lib_name::String, crate_path::String;
         nothing,
         true,
         callback;
-        build_options = build_options
+        build_options = build_options,
+        build_env_record = build_env_record
     )
 
     # Register (protect HOT_RELOAD_REGISTRY with REGISTRY_LOCK)
@@ -1063,14 +1097,19 @@ generated for. The module form — the value `@rust_crate` returns, or the
 generated module itself — reads both from the module: the registry name it
 loaded its library as (`_LIB_NAME`) and the profile and features it was built
 with (`_BUILD_OPTIONS`), so a module made with `build_release = false` or
-`features = [...]` is rebuilt the same way. Prefer it.
+`features = [...]` is rebuilt the same way. It also reads the build environment
+the module recorded (`_BUILD_ENV`, the allowlisted variables such as `RUSTFLAGS`,
+the effective Cargo configuration and the toolchain) and refuses when the current
+one differs — at enable time with an `ArgumentError`, and at every reload, where
+the rebuild fails and the previous library stays loaded. Prefer it.
 
 The path form takes the build as keywords — `release`, `features`,
 `default_features`, the `@rust_crate` options of the same names — and computes
 the registry name `@rust_crate` gives that build of the crate as it is now, so
 call it before editing the sources; `lib_name` names the entry instead of
 computing it. It does not guess: a crate loaded with other options is reached
-only when they are passed.
+only when they are passed. It has no record of the environment the library was
+built under, so it rebuilds under the current one.
 
 Only a crate that is its own `cdylib` can be reloaded: a module built through a
 generated wrapper crate is refused rather than replaced by a build of the bare
@@ -1118,7 +1157,18 @@ function enable_hot_reload_for_crate(mod::Module, crate_path::String; kwargs...)
         "$(mod) does not record the build it was made from (`_BUILD_OPTIONS`); " *
         "regenerate it, or use `enable_hot_reload_for_crate(crate_path; lib_name, " *
         "release, features, default_features)` with the options it was built with."))
-    return _enable_crate_hot_reload(crate_path, String(lib_name), options; kwargs...)
+    # The environment it was built under, when the module records it (every
+    # `@rust_crate` module does; a written file does not).
+    env = recorded(:_BUILD_ENV)
+    record = env === nothing ? nothing :
+        (env = env, crate_dir = String(something(recorded(:_CRATE_DIR), crate_path)),
+         cargo_config = String(something(recorded(:_CARGO_CONFIG), "")),
+         toolchain = String(something(recorded(:_TOOLCHAIN), "")),
+         python = something(recorded(:_RECORDS_PYTHON), false)::Bool)
+    changed = _build_env_mismatch(record)
+    isempty(changed) || throw(ArgumentError(_build_env_mismatch_message(lib_name, changed)))
+    return _enable_crate_hot_reload(crate_path, String(lib_name), options;
+                                    build_env_record = record, kwargs...)
 end
 
 function _enable_crate_hot_reload(crate_path::String, lib_name, options::NamedTuple; kwargs...)
