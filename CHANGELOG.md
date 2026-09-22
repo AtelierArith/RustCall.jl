@@ -7,38 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- **A `cdylib` crate bound with `@rust_crate` is built without writing into
-  it** ([#445](https://github.com/AtelierArith/RustCall.jl/issues/445)). The
-  direct build and its `--print cfg` probe ran Cargo with the crate's own
-  `target/`, so a package installed into a read-only depot could not precompile
-  its facade, and a CI cache of RustCall's cache did not carry the dependency
-  build. Both now use `RustCall.crate_target_directory(crate)`, one directory
-  per crate under RustCall's Cargo cache, which `clear_cargo_cache`,
-  `get_cargo_cache_size` and `cleanup_old_cache` now cover. Cargo still reads the crate's `Cargo.lock`,
-  which a read-only package must ship.
+## [0.6.3] - 2026-09-22
 
 ### Added
+- **A safe Rust/Julia integration guide**
+  ([#441](https://github.com/AtelierArith/RustCall.jl/issues/441), #442):
+  `docs/src/integration_guide.md` recommends a Rust-side facade that exposes
+  only simple FFI types and opaque, Rust-owned handles. It covers ownership and
+  lifetime rules, the FFI type surface, callbacks, panic boundaries, build and
+  CI practice, and a layer-by-layer debugging workflow.
 - **A runnable safe-integration example, `examples/SafeLedger.jl`**
-  ([#441](https://github.com/AtelierArith/RustCall.jl/issues/441)): a facade
-  crate with one opaque `#[julia]` struct, bound with `@rust_crate`, behind a
-  Julia API with typed errors and explicit release. Its tests (construction,
-  normal use, the error path, release, unload) also run in RustCall's own suite
-  as `test/test_integration_example.jl`. The integration guide gains a
-  walkthrough of it, a limitation matrix, a troubleshooting checklist, and
-  cache-warming, lockfile and toolchain guidance for CI.
+  ([#441](https://github.com/AtelierArith/RustCall.jl/issues/441), #444): a
+  facade crate with one opaque `#[julia]` struct, bound with `@rust_crate`,
+  behind a Julia API with typed errors and explicit release. Its tests
+  (construction, normal use, the error path, release, unload) run in the
+  Examples workflow and in RustCall's own suite as
+  `test/test_integration_example.jl`. The guide gains a walkthrough of it, a
+  limitation matrix, a troubleshooting checklist, and cache-warming, lockfile
+  and toolchain guidance for CI.
 
 ### Fixed
 - **An inline `#[julia]` struct's constructor and static methods resolve
   through their own module**
-  ([#443](https://github.com/AtelierArith/RustCall.jl/issues/443)). They
-  used the session's last-compiled library (`get_current_library()`). So in a
-  precompiled package whose first Rust call was a constructor they failed with
-  "No Rust library loaded", and after another module compiled a block defining
-  the same struct they called that module's code. They now go through
+  ([#443](https://github.com/AtelierArith/RustCall.jl/issues/443), #446).
+  They used the session's last-compiled library (`get_current_library()`). So
+  in a precompiled package whose first Rust call was a constructor they failed
+  with "No Rust library loaded", and after another module compiled a block
+  defining the same struct they called that module's code. They now go through
   `module_symbol_library(@__MODULE__, symbol)`, like free `#[julia]` functions:
   it restores the module's recorded blocks first. The block records their
   wrapper symbols as its own.
+- **A `cdylib` crate bound with `@rust_crate` is built without writing into
+  it** ([#445](https://github.com/AtelierArith/RustCall.jl/issues/445), #447).
+  The direct build and its `--print cfg` probe ran Cargo with the crate's own
+  `target/`, so a package installed into a read-only depot could not
+  precompile its facade, and a CI cache of RustCall's cache did not carry the
+  dependency build. Both now use `RustCall.crate_target_directory(crate)`, one
+  directory per crate under RustCall's Cargo cache, named by the full
+  `artifact_key` of the crate's canonical path. `clear_cargo_cache`,
+  `get_cargo_cache_size` and `cleanup_old_cache` cover these directories;
+  `cleanup_old_cache` ages them by a last-used stamp. Hot reload probes in
+  `<crate>/target`, where it builds. `get_cache_size` tolerates entries that
+  vanish mid-walk. Cargo still reads the crate's `Cargo.lock`, which a
+  read-only package must ship.
 
 ## [0.6.2] - 2026-09-20
 
@@ -2161,7 +2172,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration tests for Rust helpers library
 - Documentation examples tests
 
-[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.3...HEAD
+[0.6.3]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/atelierarith/RustCall.jl/compare/v0.5.1...v0.6.0
