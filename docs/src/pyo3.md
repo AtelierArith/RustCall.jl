@@ -143,11 +143,20 @@ mod = RustCall.pyo3_host_import(artifact)
 
 `pyo3_host_import(crate)` is exactly those two calls. The first may run in a
 package's `__init__` (PythonCall's own `__init__` has run by then, so its
-interpreter is known) or in a `deps/build.jl` with an interpreter of the
-package's choosing, which pays the Cargo build there and leaves the first call
-with the import alone. Neither may run while the package precompiles: the
-artifact is keyed by the interpreter, and the one PythonCall will use is not
-known until it initialises.
+interpreter is known) or in a `deps/build.jl`, which pays the Cargo build there
+and leaves the first call with the import alone. Neither may run while the
+package precompiles: the artifact is keyed by the interpreter, and the one
+PythonCall will use is not known until it initialises.
+
+The artifact must be the one for the interpreter PythonCall runs: pyo3 links
+against that interpreter, and CPython ignores an extension whose file tag is
+another version's. `pyo3_host_import(artifact)` therefore checks the artifact's
+interpreter against `PythonCall.python_executable_path()` before importing — the
+same path is accepted at no cost, a different path is accepted when it is the
+same interpreter by fingerprint (a virtual environment's launcher and its base,
+say), and anything else raises a `RustError` naming both. A `deps/build.jl`
+should build with the interpreter PythonCall will use (the one CondaPkg
+resolves, or `JULIA_PYTHONCALL_EXE`), not one of its own choosing.
 
 ## Which pyo3 versions work
 

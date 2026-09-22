@@ -264,6 +264,25 @@ end
     # can run ahead of time, and `pyo3_host_import(artifact)` is the import.
     imported = RustCall.pyo3_host_import(again)
     @test pyconvert(Int, imported.add(20, 22)) == 42
+    # The import checks the artifact against the interpreter this process runs
+    # (#449 review): another path for the same interpreter — by fingerprint —
+    # is accepted; another interpreter is refused, naming both.
+    relabel(a; interpreter = a.interpreter, fingerprint = a.fingerprint) =
+        RustCall.PyO3Extension(a.module_name, a.lib_path, a.dir, a.ext_suffix,
+                               interpreter, fingerprint, a.key)
+    same_by_fingerprint = relabel(again; interpreter = joinpath(mktempdir(), "python"))
+    @test pyconvert(Int, RustCall.pyo3_host_import(same_by_fingerprint).add(1, 1)) == 2
+    foreign = relabel(again; interpreter = joinpath(mktempdir(), "python"),
+                      fingerprint = "CPython|0.0.0|other|libpython0.0.so|/nowhere|True")
+    err = try
+        RustCall.pyo3_host_import(foreign)
+        nothing
+    catch e
+        e
+    end
+    @test err isa RustCall.RustError
+    @test occursin(foreign.interpreter, sprint(showerror, err))
+    @test occursin(PythonCall.python_executable_path(), sprint(showerror, err))
     # The one-process probe reports what the two single probes report, so the
     # key it fills is the key the wrapper path would compute.
     python = PythonCall.python_executable_path()

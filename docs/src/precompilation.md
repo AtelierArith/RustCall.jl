@@ -328,7 +328,8 @@ import is in `RustCallPyO3HostExt`'s. What remains is the work itself — the
 extractor, the toolchain probes, `cargo tree`, one interpreter start, and the
 Cargo build when the artifact is not cached. To pay the build ahead of the first
 call, run the interpreter-free half (`RustCall.build_pyo3_extension`) in
-`__init__` or in `deps/build.jl` and keep only the import
+`__init__` or in `deps/build.jl` — with the interpreter PythonCall will run,
+which the import checks against — and keep only the import
 (`RustCall.pyo3_host_import(artifact)`) lazy; see "The first call, and paying
 it earlier" in [PyO3 Crates](pyo3.md).
 

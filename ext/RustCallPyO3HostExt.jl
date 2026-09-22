@@ -42,8 +42,30 @@ it ahead of time — in its `__init__`, or in a `deps/build.jl` with an
 interpreter of its choosing — and keep only this import lazy (#449).
 """
 function RustCall.pyo3_host_import(artifact::RustCall.PyO3Extension)
+    _check_interpreter(artifact)
     _ensure_importable(artifact.dir)
     return PythonCall.pyimport(artifact.module_name)
+end
+
+# An artifact is built for one interpreter — pyo3 links against it, and CPython
+# ignores an extension whose file tag is another version's — and the split API
+# lets a package build ahead of time with an interpreter it chose. So the
+# artifact is checked against the interpreter this process runs before it is
+# imported: the same path is the common case and costs nothing; a different
+# path is accepted when it is the same interpreter by fingerprint (a venv's
+# launcher and its base, say), and refused with both spellings named otherwise
+# (#449 review).
+function _check_interpreter(artifact::RustCall.PyO3Extension)
+    runtime = PythonCall.python_executable_path()
+    artifact.interpreter == runtime && return nothing
+    fingerprint = RustCall._python_interpreter_fingerprint(runtime)
+    artifact.fingerprint == fingerprint && return nothing
+    throw(RustCall.RustError(
+        "The PyO3 extension module `$(artifact.module_name)` was built for the " *
+        "interpreter `$(artifact.interpreter)` ($(artifact.fingerprint)), but the " *
+        "Python this process runs is `$(runtime)` ($(fingerprint)). Build it for that " *
+        "interpreter: `RustCall.build_pyo3_extension(crate; python = " *
+        "PythonCall.python_executable_path())`."))
 end
 
 # Put the artifact's directory on `sys.path` once. The module is imported by
