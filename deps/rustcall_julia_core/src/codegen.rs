@@ -1021,10 +1021,10 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
         let predicates = &environment.where_clause;
         quote! { #environment #predicates #(#arg_types)* #(#returned)* }
     };
-    if let Some(span) = crate::environment::leftover_self(spelled_types) {
+    if let Some((span, in_macro)) = crate::environment::leftover_self(spelled_types) {
         return gated_error(
             &cfg_attrs,
-            crate::environment::leftover_self_error(span, &julia_name),
+            crate::environment::leftover_self_error(span, in_macro.as_deref(), &julia_name),
         );
     }
     if let Some(error) = crate::environment::lowered_lifetime_error(

@@ -46,6 +46,16 @@ impl<'x> Rel<&'static Buf> for &'x Buf {
 pub trait Any2<T> {}
 impl<A: ?Sized, B> Any2<B> for A {}
 
+pub trait Counted {
+    const M: usize;
+}
+
+impl Counted for Buf {
+    const M: usize = 3;
+}
+
+pub struct Holder<const K: usize>;
+
 #[julia]
 pub struct Buf {
     pub n: i32,
@@ -140,6 +150,35 @@ impl Buf {
         Self: Tagged,
     {
         o.n * self.n
+    }
+
+    // `Self` in expression position: an associated const in an array length,
+    // qualified through a trait, and as a const generic argument (PR #483
+    // review).
+    pub const N: usize = 2;
+
+    #[julia]
+    pub fn self_const(&self) -> i32
+    where
+        [(); Self::N]: Sized,
+    {
+        self.n + Self::N as i32
+    }
+
+    #[julia]
+    pub fn self_trait_const(&self) -> i32
+    where
+        [(); <Self as Counted>::M]: Sized,
+    {
+        self.n + <Self as Counted>::M as i32
+    }
+
+    #[julia]
+    pub fn self_const_arg(&self) -> i32
+    where
+        Holder<{ Self::N }>: Sized,
+    {
+        self.n * Self::N as i32
     }
 
     // No lifetimes.
@@ -286,6 +325,9 @@ fn every_predicate_shape_is_called_through_its_wrapper() {
         assert_eq!(rustcall_Buf_self_assoc(p, &o).assume_init(), 7);
         assert_eq!(rustcall_Buf_self_proof(p, &OTHER).assume_init(), 4);
         assert_eq!(rustcall_Buf_self_arg(p, &o).assume_init(), 10);
+        assert_eq!(rustcall_Buf_self_const(p).assume_init(), 7);
+        assert_eq!(rustcall_Buf_self_trait_const(p).assume_init(), 8);
+        assert_eq!(rustcall_Buf_self_const_arg(p).assume_init(), 10);
         assert_eq!(rustcall_Buf_no_lifetimes(p).assume_init(), 5);
         assert_eq!(rustcall_Buf_mixed(p, &o).assume_init(), 2);
         assert_eq!(

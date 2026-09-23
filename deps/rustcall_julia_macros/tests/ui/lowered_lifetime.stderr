@@ -28,7 +28,7 @@ error: `Buf::predicated`: argument `s` arrives from Julia as a pointer and a len
 44 |     pub fn predicated<'c>(&self, s: &'c str) -> i32
    |                                      ^^
 
-error: `Buf::in_macro`: this `Self` is inside a macro invocation, so RustCall cannot spell it as the impl's type on the `extern "C"` wrapper, which is a free function. Write the type instead of `Self` here (#482).
+error: `Buf::in_macro`: this `Self` is inside an invocation of `same!`, whose tokens are not a type until the macro has run, so RustCall cannot spell it as the impl's type on the `extern "C"` wrapper, which is a free function. Write the type instead of `Self` here (#482).
   --> tests/ui/lowered_lifetime.rs:55:15
    |
 55 |         same!(Self): Sized,
