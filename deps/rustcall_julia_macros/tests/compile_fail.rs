@@ -10,4 +10,7 @@ fn ui_tests() {
     // #482: a lowered string whose lifetime must outlive the call, and a
     // `Self` the wrapper cannot spell, are refused at the method.
     t.compile_fail("tests/ui/lowered_lifetime.rs");
+    // #484: an elided return lifetime that would borrow a lowered string is
+    // refused at that argument, not with E0106 inside the wrapper.
+    t.compile_fail("tests/ui/elided_return.rs");
 }

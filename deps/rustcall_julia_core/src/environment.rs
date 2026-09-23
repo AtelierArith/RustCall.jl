@@ -26,6 +26,13 @@
 //! length and is rebuilt into a local, so the item's `'a` is instantiated with
 //! a region that ends inside the wrapper. [`lowered_lifetime_error`] proves
 //! that such an instantiation exists, or refuses the item at the argument.
+//!
+//! An output lifetime the item leaves to elision (`-> &i32`) is the other
+//! (#484): the wrapper's receiver is a raw pointer and a lowered string a
+//! pointer and a length, so elision on the wrapper would find nothing.
+//! [`name_elided_return`] applies Rust's rules to the item's signature and
+//! spells out the lifetime they pick, or refuses an item whose returned value
+//! would borrow a lowered string.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -604,4 +611,231 @@ pub(crate) fn lowered_lifetime_error(
         }
     }
     None
+}
+
+/// The lifetime positions of a type as Rust's elision rules count them
+/// (#484): a reference's, a lifetime argument's (`Foo<'a>`, `Foo<'_>`) and a
+/// bound's (`dyn Trait + 'a`). A fn-pointer type, `Fn(..)` sugar and a
+/// `for<'b>` bound bind their own and are not entered. With `rename`, every
+/// elided position (`&T`, `'_`) is given that lifetime.
+struct Positions<'l> {
+    rename: Option<&'l syn::Lifetime>,
+    /// Where each elided position is: a reference's `&`, or the `'_`.
+    elided: Vec<Span>,
+    named: BTreeSet<String>,
+}
+
+impl Positions<'_> {
+    fn lifetime(&mut self, lifetime: &mut syn::Lifetime) {
+        if lifetime.ident == "_" {
+            self.elided.push(lifetime.span());
+            if let Some(name) = self.rename {
+                *lifetime = name.clone();
+            }
+        } else {
+            self.named.insert(lifetime.ident.to_string());
+        }
+    }
+}
+
+impl VisitMut for Positions<'_> {
+    fn visit_type_reference_mut(&mut self, r: &mut syn::TypeReference) {
+        match &mut r.lifetime {
+            Some(lifetime) => self.lifetime(lifetime),
+            None => {
+                self.elided.push(r.and_token.span);
+                r.lifetime = self.rename.cloned();
+            }
+        }
+        self.visit_type_mut(&mut r.elem);
+    }
+
+    fn visit_lifetime_mut(&mut self, lifetime: &mut syn::Lifetime) {
+        self.lifetime(lifetime);
+    }
+
+    fn visit_type_bare_fn_mut(&mut self, _: &mut syn::TypeBareFn) {}
+
+    fn visit_parenthesized_generic_arguments_mut(
+        &mut self,
+        _: &mut syn::ParenthesizedGenericArguments,
+    ) {
+    }
+
+    fn visit_trait_bound_mut(&mut self, bound: &mut syn::TraitBound) {
+        if bound.lifetimes.is_none() {
+            syn::visit_mut::visit_trait_bound_mut(self, bound);
+        }
+    }
+}
+
+fn positions(ty: &mut Type, rename: Option<&syn::Lifetime>) -> (Vec<Span>, BTreeSet<String>) {
+    let mut p = Positions {
+        rename,
+        elided: Vec::new(),
+        named: BTreeSet::new(),
+    };
+    p.visit_type_mut(ty);
+    (p.elided, p.named)
+}
+
+/// Whether `ty` leaves an output lifetime to elision (`&T`, `'_`).
+pub(crate) fn has_elided_lifetime(ty: &Type) -> bool {
+    !positions(&mut ty.clone(), None).0.is_empty()
+}
+
+/// Give every elided lifetime of `ty` the name `lifetime`.
+pub(crate) fn name_elided_lifetimes(ty: &mut Type, lifetime: &syn::Lifetime) {
+    positions(ty, Some(lifetime));
+}
+
+/// The receiver of the item a wrapper calls, as lifetime elision sees it.
+#[derive(Clone, Debug)]
+pub(crate) enum SelfBorrow {
+    /// No receiver, or one that is not a reference (`self`, `self: Box<Self>`).
+    None,
+    /// `&self`, `&'a mut self`, `self: &Self`: the lifetime as written, or
+    /// `None` where it is elided.
+    Ref(Option<syn::Lifetime>),
+}
+
+impl SelfBorrow {
+    pub(crate) fn of(receiver: &syn::Receiver) -> Self {
+        match crate::types::unparen(&receiver.ty) {
+            Type::Reference(r) => SelfBorrow::Ref(r.lifetime.clone().filter(|l| l.ident != "_")),
+            _ => SelfBorrow::None,
+        }
+    }
+}
+
+/// The lifetime a wrapper declares for an output lifetime elision picks
+/// (#484): `'rustcall`, or the first `'rustcall<n>` that `spelled` — the
+/// wrapper's generics, `where` clause and types — names nowhere. The one rule
+/// for a concrete wrapper ([`name_elided_return`]) and a generic struct's
+/// (`inline_generic_wrappers`), so a user lifetime spelled `'rustcall` is
+/// never declared twice (PR #498 review).
+pub(crate) fn fresh_lifetime(spelled: TokenStream2) -> syn::Lifetime {
+    let taken = names_of(spelled);
+    let name = std::iter::once("rustcall".to_string())
+        .chain((1..).map(|n| format!("rustcall{n}")))
+        .find(|n| !taken.contains(n))
+        .expect("an unbounded sequence has a free name");
+    syn::Lifetime::new(&format!("'{name}"), Span::call_site())
+}
+
+/// What [`name_elided_return`] decided.
+pub(crate) enum ElidedReturn {
+    /// Every lifetime of the return is named now; declare the wrapper.
+    Named,
+    /// The item's own signature leaves its output lifetime undecidable: more
+    /// than one input lifetime and no reference receiver. That is E0106 at
+    /// the user's signature, where rustc reports it; a wrapper would only
+    /// repeat the error inside generated code, so none is emitted.
+    Undecidable,
+    /// Refused, with this bare `compile_error!`.
+    Refused(TokenStream2),
+}
+
+/// Name the output lifetimes the item's return type leaves to elision (#484).
+///
+/// A wrapper cannot copy an elided return as written: its inputs are not the
+/// item's — the receiver is a raw pointer and a lowered string a pointer and a
+/// length, neither of which has a lifetime — so elision on the wrapper finds
+/// nothing (E0106 inside generated code), or something else. Rust's rules are
+/// applied to the **item's** signature instead, and the lifetime they pick is
+/// spelled out:
+///
+/// * a reference receiver (`&self`, `&'a mut self`) gives its lifetime: `'a`
+///   as written, or a fresh one declared on the wrapper. The wrapper's
+///   receiver is `&*ptr`, which is unbounded, so the call instantiates the
+///   method's receiver lifetime with it — what `&'a self -> &'a T` written
+///   out already did;
+/// * otherwise, the one lifetime the arguments name, elided or not: a named
+///   one is used as is, an elided one on a passed-through argument is given a
+///   fresh name there and in the return;
+/// * an elided one on a lowered string (`s: &str`) is **refused** at that
+///   argument: the string is rebuilt into a local, so the returned value would
+///   borrow a string that is gone when the wrapper returns. A *named* one
+///   (`s: &'a str`, `-> &'a i32` or `-> &i32`) is left to
+///   [`lowered_lifetime_error`], which refuses it for the same reason once the
+///   return names it.
+pub(crate) fn name_elided_return(
+    environment: &mut syn::Generics,
+    receiver: &SelfBorrow,
+    args: &mut [(Ident, Type)],
+    returned: Vec<&mut Type>,
+    julia_name: &str,
+) -> ElidedReturn {
+    if !returned.iter().any(|ty| has_elided_lifetime(ty)) {
+        return ElidedReturn::Named;
+    }
+    let fresh = {
+        let predicates = &environment.where_clause;
+        let arg_types = args.iter().map(|(_, ty)| ty);
+        let returned = &returned;
+        fresh_lifetime(quote! { #environment #predicates #(#arg_types)* #(#returned)* })
+    };
+    let declare = |environment: &mut syn::Generics, lifetime: &syn::Lifetime| {
+        environment
+            .params
+            .push(syn::GenericParam::Lifetime(syn::LifetimeParam::new(
+                lifetime.clone(),
+            )));
+        environment.lt_token.get_or_insert_with(Default::default);
+        environment.gt_token.get_or_insert_with(Default::default);
+    };
+
+    let lifetime = match receiver {
+        SelfBorrow::Ref(Some(named)) => named.clone(),
+        SelfBorrow::Ref(None) => {
+            declare(environment, &fresh);
+            fresh
+        }
+        SelfBorrow::None => {
+            let mut elided: Vec<(usize, Span)> = Vec::new();
+            let mut named: BTreeSet<String> = BTreeSet::new();
+            for (i, (_, ty)) in args.iter().enumerate() {
+                let (spans, names) = positions(&mut ty.clone(), None);
+                elided.extend(spans.into_iter().map(|s| (i, s)));
+                named.extend(names);
+            }
+            match (elided.as_slice(), named.len()) {
+                ([], 1) => {
+                    let name = named.into_iter().next().expect("one name");
+                    syn::Lifetime::new(&format!("'{name}"), Span::call_site())
+                }
+                ([(i, span)], 0) => {
+                    let (arg, ty) = &mut args[*i];
+                    if is_str_ref_type(ty) {
+                        let msg = format!(
+                            "`{julia_name}`: the returned reference borrows from argument `{arg}` \
+                             by lifetime elision, but `{arg}` arrives from Julia as a pointer and \
+                             a length and is rebuilt into a string that lives only for the call, \
+                             so nothing borrowed from it can be returned. Return an owned value, \
+                             or give the returned reference a lifetime that does not come from \
+                             `{arg}` (#484)."
+                        );
+                        let span = *span;
+                        return ElidedReturn::Refused(
+                            quote_spanned! {span=> compile_error!(#msg); },
+                        );
+                    }
+                    name_elided_lifetimes(ty, &fresh);
+                    declare(environment, &fresh);
+                    fresh
+                }
+                // No lifetime is visible in the arguments: the item's is one
+                // hidden in a path (`w: Wrapper` for `Wrapper<'a>`), or it has
+                // none and its own signature is E0106. The wrapper passes every
+                // such argument through as written, so elision on the wrapper
+                // decides exactly as it does on the item.
+                ([], 0) => return ElidedReturn::Named,
+                _ => return ElidedReturn::Undecidable,
+            }
+        }
+    };
+    for ty in returned {
+        name_elided_lifetimes(ty, &lifetime);
+    }
+    ElidedReturn::Named
 }

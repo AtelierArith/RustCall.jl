@@ -347,6 +347,10 @@ pub(crate) struct WrapperReceiver {
     /// because the type lives in a dependency.
     pub ty: syn::Path,
     pub mutable: bool,
+    /// The item's receiver as lifetime elision sees it (#484): the lifetime
+    /// an elided output lifetime of the method takes. The wrapper's own
+    /// receiver is a raw pointer, which has none.
+    pub borrow: crate::environment::SelfBorrow,
 }
 
 /// The item the wrapper calls. Always the original, under its own name.
@@ -1032,6 +1036,26 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
             &cfg_attrs,
             crate::environment::leftover_self_error(span, in_macro.as_deref(), &julia_name),
         );
+    }
+    // An elided output lifetime takes the one Rust's elision rules pick on
+    // the item's signature, spelled out: the wrapper's own inputs are raw
+    // pointers and byte pairs, from which elision would pick nothing (#484).
+    let borrow = receiver
+        .as_ref()
+        .map(|r| r.borrow.clone())
+        .unwrap_or(crate::environment::SelfBorrow::None);
+    match crate::environment::name_elided_return(
+        &mut environment,
+        &borrow,
+        &mut args,
+        ret.types_mut(),
+        &julia_name,
+    ) {
+        crate::environment::ElidedReturn::Named => {}
+        crate::environment::ElidedReturn::Undecidable => return TokenStream2::new(),
+        crate::environment::ElidedReturn::Refused(error) => {
+            return gated_error(&cfg_attrs, error);
+        }
     }
     if let Some(error) = crate::environment::lowered_lifetime_error(
         &environment,
@@ -2749,6 +2773,12 @@ fn method_spec(
     let receiver = (!m.is_static).then(|| WrapperReceiver {
         ty: self_path.clone(),
         mutable: m.is_mutable,
+        borrow: m
+            .func
+            .sig
+            .receiver()
+            .map(crate::environment::SelfBorrow::of)
+            .unwrap_or(crate::environment::SelfBorrow::None),
     });
     let target = if m.is_static {
         CallTarget::Assoc {
@@ -3035,26 +3065,54 @@ pub fn inline_generic_wrappers(model: &StructModel, module_path: &[String]) -> V
             call_args.push(quote! { #name });
         }
         let is_ctor = inline_method_is_ctor(struct_name, m);
-        // An elided `&str` return borrows from `self`, which the wrapper
-        // receives as a raw pointer; name the lifetime so the wrapper itself
-        // is valid Rust (`&*ptr` is unbounded and coerces to it).
-        let (decl_generics, ret) = match &m.func.sig.output {
-            ReturnType::Type(_, ty)
-                if !m.is_static
-                    && is_str_ref_type(ty)
-                    && matches!(unparen(ty), Type::Reference(r) if r.lifetime.is_none()) =>
+        // An elided return lifetime (`-> &str`, `-> &T`) borrows from a
+        // reference receiver, which the wrapper receives as a raw pointer;
+        // name the lifetime so the wrapper itself is valid Rust (`&*ptr` is
+        // unbounded and coerces to it, #484). A static method's arguments
+        // are passed through as written, so elision on the wrapper picks
+        // what it picks on the method; a lowered string among them is
+        // refused when the instance is wrapped (`name_elided_return`).
+        let borrow = m
+            .func
+            .sig
+            .receiver()
+            .map(crate::environment::SelfBorrow::of)
+            .unwrap_or(crate::environment::SelfBorrow::None);
+        let (decl_generics, ret) = match (&m.func.sig.output, &borrow) {
+            (ReturnType::Type(_, ty), crate::environment::SelfBorrow::Ref(named))
+                if crate::environment::has_elided_lifetime(ty) =>
             {
                 let mut g = decl_generics.clone();
-                // `&'rustcall Self<T>` requires every type parameter to outlive it.
-                for param in g.params.iter_mut() {
-                    if let syn::GenericParam::Type(tp) = param {
-                        tp.bounds.push(syn::parse_quote!('rustcall));
+                let lifetime: syn::Lifetime = match named {
+                    Some(named) => named.clone(),
+                    None => {
+                        // A name the method's own lifetimes do not already
+                        // use, by the rule concrete wrappers follow.
+                        let fresh = {
+                            let predicates = &where_clause;
+                            crate::environment::fresh_lifetime(
+                                quote! { #g #predicates #(#wrapper_args)* #ty },
+                            )
+                        };
+                        // `&'fresh Self<T>` requires every type parameter to
+                        // outlive it.
+                        for param in g.params.iter_mut() {
+                            if let syn::GenericParam::Type(tp) = param {
+                                tp.bounds.push(syn::TypeParamBound::Lifetime(fresh.clone()));
+                            }
+                        }
+                        g.params.insert(
+                            0,
+                            syn::GenericParam::Lifetime(syn::LifetimeParam::new(fresh.clone())),
+                        );
+                        fresh
                     }
-                }
-                g.params.insert(0, syn::parse_quote!('rustcall));
-                (g, quote! { -> &'rustcall str })
+                };
+                let mut ty = (**ty).clone();
+                crate::environment::name_elided_lifetimes(&mut ty, &lifetime);
+                (g, quote! { -> #ty })
             }
-            other => (decl_generics.clone(), quote! { #other }),
+            (other, _) => (decl_generics.clone(), quote! { #other }),
         };
         let ret = &ret;
         let func: ItemFn = if is_ctor {

@@ -1512,6 +1512,9 @@ fn method_wrapper(
     let receiver = (!m.is_static).then(|| WrapperReceiver {
         ty: class.clone(),
         mutable: m.is_mutable,
+        // Spelled from a manifest: `return_plan` hands back no reference, so
+        // there is no elided output lifetime to name (#484).
+        borrow: crate::environment::SelfBorrow::None,
     });
     let target = if m.is_static {
         CallTarget::Assoc {
