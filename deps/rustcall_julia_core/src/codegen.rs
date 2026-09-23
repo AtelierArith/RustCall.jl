@@ -352,11 +352,23 @@ fn lifetime_names(tokens: TokenStream2, out: &mut std::collections::BTreeSet<Str
     }
 }
 
+/// Whether `tokens` spell `Self` anywhere (`Self: Trait`, `Self::Assoc`,
+/// `<Self as Trait>::Assoc`).
+fn names_self(tokens: TokenStream2) -> bool {
+    tokens.into_iter().any(|tree| match tree {
+        proc_macro2::TokenTree::Ident(i) => i == "Self",
+        proc_macro2::TokenTree::Group(g) => names_self(g.stream()),
+        _ => false,
+    })
+}
+
 /// The part of `lifetimes` ([`lifetime_generics`]) a wrapper whose signature is
 /// `signature` declares: the lifetimes that signature names, their bounds
-/// among themselves, and the `where` predicates that name none of the item's
-/// other lifetime parameters — a name a `for<'b>` binder introduces, or
-/// `'static`, never removes one (PR #480 review). A
+/// among themselves, and the other `where` predicates that relate those
+/// lifetimes, name none of the item's other lifetime parameters (a `for<'b>`
+/// binder's name or `'static` never counts) and do not name `Self` (PR #480
+/// review). Every other predicate stays on the item only, as all of them did
+/// before a wrapper declared anything. A
 /// relation to a lifetime the signature does not name is left to inference at
 /// the call, where it is satisfied or not exactly as it was before (#477).
 fn declared_lifetimes(lifetimes: &syn::Generics, signature: TokenStream2) -> syn::Generics {
@@ -393,17 +405,28 @@ fn declared_lifetimes(lifetimes: &syn::Generics, signature: TokenStream2) -> syn
                 (!pl.bounds.is_empty()).then_some(syn::WherePredicate::Lifetime(pl))
             }
             syn::WherePredicate::Lifetime(_) => None,
+            // Any other predicate is carried over only when it relates the
+            // lifetimes the wrapper declares — the one thing the wrapper adds
+            // (#477). One that names none of them is not needed there: the
+            // call proves it, as it did before a wrapper declared anything.
             // Only the item's own lifetime parameters can be missing from the
             // wrapper: a name bound by a `for<'b>` binder inside the predicate
             // (Rust forbids it to shadow one of them) or `'static` is always
-            // in scope, so it never drops the predicate (PR #480 review).
+            // in scope, so it never drops the predicate. A predicate naming
+            // `Self` (`Self: Trait`, `<Self as Trait>::Assoc`) stays on the
+            // method, since the wrapper is a free function where `Self` does
+            // not exist (E0411; PR #480 review).
             other => {
+                let tokens = quote! { #other };
                 let mut names = std::collections::BTreeSet::new();
-                lifetime_names(quote! { #other }, &mut names);
-                names
+                lifetime_names(tokens.clone(), &mut names);
+                let relates = names
                     .iter()
-                    .all(|n| !declared.contains(n) || used.contains(n))
-                    .then(|| other.clone())
+                    .any(|n| declared.contains(n) && used.contains(n));
+                let complete = names
+                    .iter()
+                    .all(|n| !declared.contains(n) || used.contains(n));
+                (relates && complete && !names_self(tokens)).then(|| other.clone())
             }
         })
         .collect();

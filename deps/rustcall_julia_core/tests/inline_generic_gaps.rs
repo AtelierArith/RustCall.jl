@@ -320,3 +320,43 @@ fn a_higher_ranked_bound_is_kept_on_the_wrapper() {
     );
     assert_compiles("higher_ranked", &expanded.source);
 }
+
+/// A method `where` predicate naming `Self` (or `Self::Assoc`) is valid in the
+/// impl but not on the wrapper, a free function where `Self` does not exist
+/// (E0411). A predicate that names none of the lifetimes the wrapper declares
+/// is not carried over at all — the wrapper compiled without it before #477 —
+/// and one that does but also names `Self` is not either (PR #480 review).
+#[test]
+fn a_self_predicate_is_not_carried_onto_the_wrapper() {
+    let expanded = expand(
+        r#"
+        pub trait Tagged { type Tag; fn tag() -> i32; }
+        impl Tagged for Buf { type Tag = i32; fn tag() -> i32 { 3 } }
+        pub trait Rel<T> { fn rel(&self, other: T) -> i32; }
+        impl<'x, 'y> Rel<&'y Buf> for &'x Buf {
+            fn rel(&self, other: &'y Buf) -> i32 { self.n - other.n }
+        }
+
+        #[julia]
+        pub struct Buf { pub n: i32 }
+        impl Buf {
+            pub fn new(n: i32) -> Self { Buf { n } }
+            pub fn run(&self) -> i32 where Self: Tagged { <Self as Tagged>::tag() + self.n }
+            pub fn assoc(&self) -> i32 where Self: Tagged, <Self as Tagged>::Tag: Copy { self.n }
+            pub fn plain(&self) -> i32 where Buf: Tagged { self.n }
+            pub fn both<'a>(&self, other: &'a Buf) -> i32 where for<'b> &'b Self: Rel<&'a Buf> { (&*self).rel(other) }
+        }
+    "#,
+    )
+    .unwrap();
+    let source = flat(&expanded.source);
+    for sig in [
+        "pub extern \"C\" fn rustcall_Buf_run(ptr: *const Buf) -> ::std::mem::MaybeUninit<i32> {",
+        "pub extern \"C\" fn rustcall_Buf_assoc(ptr: *const Buf) -> ::std::mem::MaybeUninit<i32> {",
+        "pub extern \"C\" fn rustcall_Buf_plain(ptr: *const Buf) -> ::std::mem::MaybeUninit<i32> {",
+        "pub extern \"C\" fn rustcall_Buf_both<'a>(ptr: *const Buf, other: &'a Buf) -> ::std::mem::MaybeUninit<i32> {",
+    ] {
+        assert!(source.contains(sig), "missing `{sig}`:\n{source}");
+    }
+    assert_compiles("self_predicates", &expanded.source);
+}
