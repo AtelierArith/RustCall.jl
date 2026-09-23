@@ -198,13 +198,11 @@ pub mod skip_reason {
     /// colon), so there is no handle type to hang it off.
     pub const OWNER_SKIPPED: &str = "owner_skipped";
     /// Another item already claims this entry's exported symbol (it follows the
-    /// colon, module-qualified). The symbol scheme is `rustcall_<name>` (#279)
-    /// and carries no module path, so two `pub fn run` in different modules of
-    /// one crate collide; a single wrapper crate cannot export both.
-    ///
-    /// `#[julia]` has the identical collision, so the scheme has to change for
-    /// both kinds at once rather than gaining a PyO3-only variant here: #300
-    /// owns that, and this reason goes away when it lands.
+    /// colon). Since #300 the symbol folds the module path in, so items in
+    /// different modules no longer collide; what remains is a coincidence
+    /// such as a crate-root `fn a__run` next to `a::run`, or a `#[julia]` item
+    /// and a PyO3 entry on one name. A single wrapper crate cannot export a
+    /// symbol twice.
     pub const SYMBOL_COLLISION: &str = "symbol_collision";
     /// The wrapper generator cannot lower an argument: its type is neither
     /// FFI-compatible nor a `String` / `&str`, or its name is not an
@@ -907,33 +905,6 @@ impl Function {
             .map(|claim| (claim, who.clone()))
             .collect()
     }
-
-    /// [`Function::claims`] narrowed to the exported ones.
-    pub fn claimed_symbols(&self) -> Vec<(String, String)> {
-        exported_only(self.claims())
-    }
-}
-
-/// Project a claim list onto the `#[no_mangle]` names alone.
-fn exported_only(claims: Vec<(crate::claims::Claim, String)>) -> Vec<(String, String)> {
-    claims
-        .into_iter()
-        .filter(|(claim, _)| claim.exported)
-        .map(|(claim, who)| (claim.name, who))
-        .collect()
-}
-
-impl Method {
-    /// Whether this method's wrapper hands back an owned string buffer — as a
-    /// result or as a `Result` / `Option` payload — and so needs the
-    /// `<string_owner>_free_rust_string` release function. A borrowed `&str`
-    /// (`return_abi == "str"`) travels through a *type* and exports nothing.
-    pub fn declares_owned_string(&self) -> bool {
-        self.return_abi == "string"
-            || self.ok_abi == "string"
-            || self.err_abi == "string"
-            || self.inner_abi == "string"
-    }
 }
 
 impl Struct {
@@ -956,11 +927,6 @@ impl Struct {
             .into_iter()
             .map(|claim| (claim, who.clone()))
             .collect()
-    }
-
-    /// [`Struct::claims`] narrowed to the exported ones.
-    pub fn claimed_symbols(&self) -> Vec<(String, String)> {
-        exported_only(self.claims())
     }
 }
 
@@ -1020,7 +986,11 @@ impl Manifest {
     /// not a clash. PyO3-scanned items are not listed either: the scan marks
     /// their clashes with a `skip_reason` (`crate::pyo3`).
     pub fn symbol_owners(&self) -> Vec<(String, String)> {
-        exported_only(self.claim_owners())
+        self.claim_owners()
+            .into_iter()
+            .filter(|(claim, _)| claim.exported)
+            .map(|(claim, who)| (claim.name, who))
+            .collect()
     }
 
     /// The same, widened to every name the generated code defines: the

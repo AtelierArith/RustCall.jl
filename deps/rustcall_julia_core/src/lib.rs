@@ -3,7 +3,9 @@
 //! This crate is the single place where Rust syntax is interpreted on behalf
 //! of RustCall.jl. It is consumed by two front ends:
 //!
-//! * `rustcall_julia_macros` (proc-macro) for `@rust_crate`;
+//! * `rustcall_julia_macros_impl`, the `#[julia]` proc-macro a user's crate
+//!   reaches through `rustcall_julia_macros` (the crates `@rust_crate`
+//!   builds);
 //! * `rustcall_extract` (CLI) for `rust"""` blocks, `@rust_crate` scanning and
 //!   generic monomorphization.
 //!

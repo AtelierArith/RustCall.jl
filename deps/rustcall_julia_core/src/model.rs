@@ -6,7 +6,6 @@ use syn::{FnArg, ImplItem, ImplItemFn, Item, ItemImpl, ItemStruct, Type, Visibil
 
 use crate::attrs::{derive_list, is_julia_attr, rustcall_attribute};
 use crate::manifest::{Attribute, Mode};
-use crate::types::last_ident;
 
 /// Where a method's `#[julia] impl` block was written: the module the block
 /// sits in, and the path its header spells the struct with (`super::Gauge`).
@@ -39,8 +38,8 @@ pub struct MethodModel {
     pub enclosing_cfg: Vec<syn::Attribute>,
     /// Where the block that declared the method was written (#342). `None`
     /// for a method not collected from a block ([`MethodModel::from_fn`]) and
-    /// for a scan that matches blocks within one level only, where a block is
-    /// its struct's neighbour by construction.
+    /// for a block attached without a module (`attach_impl` with `None`),
+    /// which is then its struct's neighbour.
     pub site: Option<ImplSite>,
 }
 
@@ -106,7 +105,6 @@ impl StructModel {
             .collect()
     }
 
-    /// Named fields `(ident, type)`; tuple and unit structs yield nothing.
     /// The `#[cfg]` / `#[cfg_attr]` attributes of the named field `name`: a
     /// generated accessor exists only where its field does (#462).
     pub fn field_cfg_attrs(&self, name: &syn::Ident) -> Vec<syn::Attribute> {
@@ -121,6 +119,7 @@ impl StructModel {
         }
     }
 
+    /// Named fields `(ident, type)`; tuple and unit structs yield nothing.
     pub fn named_fields(&self) -> Vec<(syn::Ident, Type)> {
         match &self.item.fields {
             syn::Fields::Named(named) => named
@@ -163,10 +162,10 @@ impl StructModel {
     /// #315); a method already seen under the same name is not added twice.
     /// `enclosing_cfg` is the `#[cfg]` of every module enclosing the block.
     ///
-    /// `block_module` is the module the block sits in, for a caller that
-    /// matched across the module tree; `None` from a caller that matches
-    /// within one level, where the block is the struct's neighbour by
-    /// construction. It is recorded on every method as [`MethodModel::site`],
+    /// `block_module` is the module the block sits in (both callers,
+    /// [`ModelTree::collect`] and the crate scan, match across the module
+    /// tree and pass it); `None` records the block as the struct's
+    /// neighbour. It is recorded on every method as [`MethodModel::site`],
     /// which is what decides where the inline expander emits the wrapper
     /// (#342).
     pub fn attach_impl(
@@ -230,20 +229,6 @@ pub fn wrapped_methods(
             m
         })
         .collect()
-}
-
-fn impl_target_name(item: &ItemImpl) -> Option<String> {
-    if item.trait_.is_some() {
-        return None;
-    }
-    last_ident(&item.self_ty).map(|id| id.to_string())
-}
-
-/// Collect `#[julia]` structs (and, in inline mode, `#[derive(JuliaStruct)]`
-/// structs) together with their inherent impl blocks and the methods that get
-/// wrapped under the given mode.
-pub fn collect_struct_models(file: &syn::File, mode: Mode) -> Vec<StructModel> {
-    collect_struct_models_in(&file.items, mode)
 }
 
 /// The struct models of a whole item tree, every inherent impl block attached
@@ -408,30 +393,4 @@ pub struct ForeignMethod<'a> {
     /// module it is emitted into, which may be an alias.
     pub self_ty: &'a Type,
     pub method: &'a MethodModel,
-}
-
-/// Same as [`collect_struct_models`] for one level of items (a file or the body
-/// of an inline `mod`). Impl blocks are matched within the same level only;
-/// [`ModelTree`] and the crate scan (`crate::extract::CrateScan`) match them
-/// across the whole module tree (#315).
-pub fn collect_struct_models_in(items: &[Item], mode: Mode) -> Vec<StructModel> {
-    let mut models: Vec<StructModel> = items
-        .iter()
-        .filter_map(|item| match item {
-            Item::Struct(s) => StructModel::of(s, mode),
-            _ => None,
-        })
-        .collect();
-
-    for item in items {
-        let Item::Impl(imp) = item else { continue };
-        let Some(target) = impl_target_name(imp) else {
-            continue;
-        };
-        if let Some(model) = models.iter_mut().find(|m| m.name() == target) {
-            model.attach_impl(imp, mode, &[], None);
-        }
-    }
-
-    models
 }

@@ -822,23 +822,11 @@ fn mark_julia_surface_collisions_pass(
     }
 }
 
-/// Flag every wrappable PyO3 entry whose exported symbol another one already
-/// claims (#275).
-///
-/// The symbol scheme is `rustcall_<name>` (#279), which does not include the
-/// module path, so two `pub fn run` in different modules of one crate both want
-/// `rustcall_run` — and a single wrapper crate cannot export both. The scan
-/// reports the clash rather than emitting a manifest that cannot be built;
-/// changing the scheme is a decision that has to be made for `#[julia]` at the
-/// same time, since it has the identical collision (#300).
-///
-/// The first entry in manifest order keeps the symbol so the outcome does not
-/// depend on which file was visited first.
 pub(crate) use crate::cfg::cfg_exclusive;
 
 /// Whether two items whose symbols coincide really clash: they do unless their
 /// predicates are provably exclusive — copies rustc never compiles together.
-/// The same exemption `claimed_symbols` applies on the `#[julia]` side.
+/// The same exemption `Manifest::symbol_owners` applies on the `#[julia]` side.
 fn cfg_clash(a: &str, b: &str) -> bool {
     !cfg_exclusive(a, b)
 }
@@ -983,6 +971,19 @@ pub fn remark_collisions(manifest: &mut Manifest, lowered: &Manifest, known: &mu
     *manifest != before
 }
 
+/// Flag every wrappable PyO3 entry whose exported symbol another one already
+/// claims (#275).
+///
+/// Since #300 the symbol folds the module path in (`codegen::symbol_stem`:
+/// `a::run` → `rustcall_a__run`), so two `pub fn run` in different modules no
+/// longer meet. What is left is a coincidence the scheme cannot exclude — a
+/// crate-root `fn a__run` next to `a::run`, or a `#[julia]` item and a PyO3
+/// entry that land on one name — and a single wrapper crate cannot export a
+/// symbol twice. The scan reports the clash (`skip_reason::SYMBOL_COLLISION`)
+/// rather than emitting a manifest that cannot be built.
+///
+/// The first entry in manifest order keeps the symbol so the outcome does not
+/// depend on which file was visited first.
 fn mark_symbol_collisions(manifest: &mut Manifest, emitted: &Emitted) {
     // One table for every exported symbol of the whole manifest, whatever
     // produces it: a `#[julia]` function's wrapper, a `#[julia]` struct's
@@ -1321,8 +1322,10 @@ fn is_string_spelling(spelling: &str) -> bool {
 /// `foo` and `FOO` would therefore share. A clash on any of them is a duplicate
 /// definition in the generated crate — `foo` and `foo_take_panic` as two
 /// `#[pyfunction]`s both want `rustcall_foo_take_panic` — so all are reserved
-/// and all are checked (#307 review). Field accessors have no reader and
-/// derive nothing.
+/// and all are checked (#307 review). A struct helper — destructor, `clone`,
+/// field accessor — exports a reader too, but drains a hex-encoded slot
+/// (`claims::helper_panic_slot`) that cannot collide, so it reserves only its
+/// entry point and reader (`claims::helper_claims`).
 fn wrapper_symbols(symbol: &str) -> [String; 3] {
     let claims = crate::claims::wrapper_claims(symbol);
     let mut names = claims.into_iter().map(|c| c.name);

@@ -195,15 +195,6 @@ pub fn field_setter_symbol(struct_stem: &str, field: &str) -> String {
 // Signature predicates (shared)
 // ============================================================================
 
-/// Whether a `#[julia]` function takes or returns `String` / `&str` (#242).
-pub fn function_uses_strings(sig: &syn::Signature) -> bool {
-    let arg_strings = sig.inputs.iter().any(|a| match a {
-        FnArg::Typed(pt) => is_string_type(&pt.ty) || is_str_ref_type(&pt.ty),
-        FnArg::Receiver(_) => false,
-    });
-    arg_strings || function_returns_string(sig) || function_returns_str_ref(sig)
-}
-
 pub fn function_returns_string(sig: &syn::Signature) -> bool {
     matches!(&sig.output, ReturnType::Type(_, ty) if is_string_type(ty))
 }
@@ -686,6 +677,20 @@ fn panic_channel(cfg_attrs: &[Attribute], slot: &Ident, reader: &Ident) -> Token
     }
 }
 
+/// Whether `items` already declares the quiet-panic hook.
+///
+/// `specialize` is handed a source that is sometimes the *expanded* form of a
+/// block — a generic struct registers the expansion, wrappers and all — so
+/// adding the items unconditionally would define them twice. Asking first makes
+/// the insertion idempotent for any input that is already a generated file.
+pub fn panic_hook_items_present(items: &[Item]) -> bool {
+    items.iter().any(|item| match item {
+        Item::Struct(s) => s.ident == "__RustCallBoundary",
+        Item::Fn(f) => f.sig.ident == INSTALL_PANIC_HOOK_SYMBOL,
+        _ => false,
+    })
+}
+
 /// The four items a file-owned artifact keeps at its root so that a panic
 /// RustCall catches leaves no `panicked at` line on stderr (#304).
 ///
@@ -718,20 +723,6 @@ fn panic_channel(cfg_attrs: &[Attribute], slot: &Ident, reader: &Ident) -> Token
 /// root is externally reachable and never reported as dead. Attributes and doc
 /// text emitted here also land in the generated source, where the `#[cfg_attr]`
 /// tests count what a user's own attribute did (`tests/cfg_pruning.rs`).
-/// Whether `items` already declares the quiet-panic hook.
-///
-/// `specialize` is handed a source that is sometimes the *expanded* form of a
-/// block — a generic struct registers the expansion, wrappers and all — so
-/// adding the items unconditionally would define them twice. Asking first makes
-/// the insertion idempotent for any input that is already a generated file.
-pub fn panic_hook_items_present(items: &[Item]) -> bool {
-    items.iter().any(|item| match item {
-        Item::Struct(s) => s.ident == "__RustCallBoundary",
-        Item::Fn(f) => f.sig.ident == INSTALL_PANIC_HOOK_SYMBOL,
-        _ => false,
-    })
-}
-
 pub fn panic_hook_items() -> TokenStream2 {
     let install = format_ident!("{}", INSTALL_PANIC_HOOK_SYMBOL);
     let uninstall = format_ident!("{}", UNINSTALL_PANIC_HOOK_SYMBOL);
@@ -1087,8 +1078,8 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
                 std::mem::forget(rustcall_bytes);
                 rustcall_ret
             };
-            // An empty buffer: `ptr` is dangling-but-aligned, `cap == 0`, so
-            // the release function is a no-op on it.
+            // An empty buffer: `ptr` is null and `cap == 0`, so the release
+            // function is a no-op on it.
             let sentinel = quote! {
                 #helper { ptr: ::std::ptr::null_mut(), len: 0, cap: 0 }
             };
@@ -2485,21 +2476,12 @@ pub fn inline_struct_wrappers(
         out.extend(borrowed_string_helper(&cfgs, &borrowed_helper));
     }
 
-    // Field accessors (skipped when a method wrapper would take the same
-    // symbol; since #279 the method wrappers are prefixed, so this can only
-    // happen through a deliberately named accessor-shaped method).
-    let method_symbols: Vec<String> = model
-        .methods
-        .iter()
-        .map(|m| method_symbol_of(&stem.to_string(), &m.name()))
-        .collect();
+    // Field accessors. A method wrapper cannot take an accessor's symbol:
+    // since #279 it is `rustcall_<stem>_<method>`, and `rustcall_` followed by
+    // `<stem>` never continues with the `_get_` / `_set_` an accessor
+    // `<stem>_get_<field>` has at that position.
     for (field_name, field_ty) in &accessible {
         let getter = format_ident!("{}_get_{}", stem, field_name);
-        if method_symbols.contains(&getter.to_string()) {
-            meta.accessors
-                .push((field_name.to_string(), getter.to_string(), String::new()));
-            continue;
-        }
         let setter = format_ident!("{}_set_{}", stem, field_name);
         meta.accessors.push((
             field_name.to_string(),
@@ -2695,9 +2677,6 @@ fn inline_method_wrapper(
     ))
 }
 
-/// Generics for a generic-struct method wrapper: the enclosing impl block's
-/// parameters and `where` predicates, plus the method's own. Falls back to the
-/// struct's parameters when no impl block declares the method.
 /// Type parameter names of a wrapper in the struct's parameter order: for
 /// `struct S<T>` and `impl<U> S<U>`, the name bound at the struct's `T` position
 /// is `U`. Remaining impl/method parameters follow.
@@ -2735,6 +2714,9 @@ fn wrapper_param_names(decl: &syn::Generics, self_ty: &Type) -> Vec<String> {
     ordered
 }
 
+/// Generics for a generic-struct method wrapper: the enclosing impl block's
+/// parameters and `where` predicates, plus the method's own. Falls back to the
+/// struct's parameters when no impl block declares the method.
 fn wrapper_generics(
     model: &StructModel,
     m: &MethodModel,
