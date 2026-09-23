@@ -574,7 +574,7 @@ function rebuild_crate(record::CrateBuildRecord; env::Union{Nothing, AbstractDic
                                policy = crate_direct_policy(),
                                features = collect(String, record.features),
                                default_features = record.default_features,
-                               target_directory = _mark_target_used!(crate_target_directory(crate_path)))
+                               target_directory = _crate_target!(crate_path))
 end
 
 rebuild_crate(crate_path::AbstractString; build_options::NamedTuple = crate_build_options()) =

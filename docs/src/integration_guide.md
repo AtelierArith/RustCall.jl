@@ -266,7 +266,7 @@ persist between CI runs:
 
 | What | Where | Filled by |
 | --- | --- | --- |
-| compiled Rust libraries, the `Cargo.lock` of each `// cargo-deps:` set, and the Cargo build of each `cdylib` crate | `RustCall.get_cache_dir()`, or `RUSTCALL_CACHE_DIR` when set | the first build of each block or crate |
+| compiled Rust libraries, the `Cargo.lock` of each `// cargo-deps:` set, and the Cargo builds of each `@rust_crate` crate | `RustCall.get_cache_dir()`, or `RUSTCALL_CACHE_DIR` when set | the first build of each block or crate |
 | crate sources from the registry | `$CARGO_HOME/registry` and `$CARGO_HOME/git` (default `~/.cargo`) | Cargo |
 | Julia precompile images, including `@rust_crate` modules | the depot's `compiled/` | `Pkg.precompile()` |
 | the artifact Rust toolchain, when there is no system `rustc` | the depot's `artifacts/` | RustToolChain |
@@ -329,15 +329,49 @@ stores the result.
     depends on it by path and resolves its own graph; your `Cargo.lock` does
     not pin that build. Declare `cdylib` in the facade, or pin versions in its
     `Cargo.toml` (`serde = "=1.0.210"`).
-- A direct (`cdylib`) build and its cfg probe run Cargo in the crate's
-  directory but write their output under RustCall's cache
-  (`RustCall.crate_target_directory(crate)`), never into the crate. An
-  installed, read-only package can therefore build its facade, provided it
-  ships its `Cargo.lock`: Cargo writes that file beside the manifest when it is
-  missing or stale.
+- Where each `@rust_crate` flavour writes its output, and what a read-only
+  crate must ship, is in the next section.
 - For an offline or air-gapped build, run once online to fill the registry and
   RustCall caches, then set `RUSTCALL_OFFLINE=1`. Cargo then fails at once on
   anything it would have to download, rather than hanging.
+
+### Where `@rust_crate` builds
+
+Every `@rust_crate` flavour runs Cargo on your crate **in place** — in its
+directory, so its `.cargo/config.toml`, `rust-toolchain.toml`, `[patch]` and
+`Cargo.lock` apply — and writes the output under RustCall's cache, **never into
+the crate**. One function decides the directory for every flavour,
+`RustCall.crate_target_directory(crate, flavour)` (#486):
+
+| Flavour | What runs Cargo | Output under RustCall's cache | `--locked` | Read-only crate tree |
+| --- | --- | --- | --- | --- |
+| direct `cdylib` (`crate-type = ["cdylib"]`) | the build and its cfg probe | `crate_target_directory(crate)` | no | supported |
+| hot reload (`enable_hot_reload_for_crate`) | the rescan's cfg probe and the rebuild | the same directory as the direct build it replaces | no | supported |
+| `pyo3_host = true` | the extension-module build | `crate_target_directory(crate, :pyo3_host)` | no | supported |
+| PyO3 wrapper (a crate with `#[pyfunction]` / `#[pyclass]`) | the cfg and feature probes and the generated wrapper crate, run from the crate with `--manifest-path` | `crate_target_directory(crate, :pyo3_wrapper)` | no | supported |
+| generated wrapper (any other crate) | a temporary wrapper project that depends on the crate by path | the temporary project | no | supported |
+
+The `--locked` rule is the same for every flavour: RustCall never passes it to
+a build of your crate. Your crate's `Cargo.lock` is authoritative the way Cargo
+always treats it — used as it is when it is current, and rewritten beside the
+manifest when it is missing or stale. The PyO3 wrapper and its probes start
+from a *copy* of that file, so they never write it.
+
+A crate in a **read-only** tree — an installed package under a depot, a
+read-only mount — therefore builds with every flavour, provided it **ships a
+current `Cargo.lock`**. Without one, or with one that no longer matches the
+manifest, Cargo has to write it and the build fails with a permission error.
+Commit the file and keep it up to date.
+
+The directories of one crate sit together under
+`<cache>/cargo/targets/<digest of the crate's path>`, so `RustCall.clear_cache()`,
+`clear_cargo_cache()` and `cleanup_old_cache()` treat them as one. They hold
+Cargo's own incremental state, not a result RustCall looks up: the library
+each build produces is copied into the cache under its artifact key.
+
+(`// cargo-deps:` blocks are not `@rust_crate` builds: RustCall writes those
+projects itself and builds them with `--locked` against a persisted lockfile,
+as the first bullet above says.)
 
 ### Toolchain and platform requirements
 

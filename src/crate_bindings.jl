@@ -3320,7 +3320,7 @@ the cache copy when caching is on, and `built` itself when it is off or the
 cache could not be written.
 
 Caching is what makes the path *durable*. `built` is either Cargo's output
-under the crate's own `target/` — rewritten by the next build of the crate —
+under `crate_target_directory(crate)` — rewritten by the next build of the crate —
 or a file inside a wrapper project that is about to be deleted; the cache copy
 is neither, which is what a module compiled into a package's precompile image
 needs when its `__init__` runs in a later session (#339).
@@ -3571,7 +3571,7 @@ function generate_bindings(crate_path::String;
             # Before anything is cached: the interpreter pyo3 was configured
             # for is still the one the key and the record name (#481).
             _verify_build_interpreter(record, snapshot)
-            # Cargo's own output under the crate's `target/`: durable, but the
+            # Cargo's own output under `crate_target_directory`: durable, but the
             # next `cargo build` of the crate rewrites it, so with caching on
             # the module names the cache copy instead — which is what a module
             # precompiled into a package needs when its `__init__` runs in a
@@ -3739,7 +3739,7 @@ function build_crate_directly(info::CrateInfo, release::Bool;
     # the output under RustCall's cache, never the crate's `target/` (#445).
     build_cargo_project(project, release=release, policy=crate_direct_policy(),
                         features=features, default_features=default_features, env=env,
-                        target_directory=_mark_target_used!(crate_target_directory(info.path)))
+                        target_directory=_crate_target!(info.path))
 end
 
 """

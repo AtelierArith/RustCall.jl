@@ -764,15 +764,16 @@ with. They are passed directly to each probe.
 caller today has just built the crate anyway. It builds them into
 `target_directory`: by default `crate_target_directory(crate_path)`, the
 directory the direct build of the same crate uses, so the two share that work
-and neither writes into the crate (#445). A caller that builds elsewhere —
-hot reload, in the crate's own `target/` — passes that directory instead.
+and neither writes into the crate (#445). Hot reload rebuilds the direct build,
+so it probes there too; a caller that builds elsewhere passes that directory
+instead.
 """
 function _crate_build_cfg_text(crate_path::AbstractString; profile::AbstractString = "release",
                                memo::Bool = true, features::Vector{String} = String[],
                                target_directory::Union{Nothing, AbstractString} = nothing,
                                env::Union{Nothing, AbstractDict} = nothing)
     path = abspath(String(crate_path))
-    target = target_directory === nothing ? _mark_target_used!(crate_target_directory(path)) :
+    target = target_directory === nothing ? _crate_target!(path) :
              abspath(String(target_directory))
     probe = () -> begin
             try

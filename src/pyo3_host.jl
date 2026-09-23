@@ -334,7 +334,8 @@ end
 """
     _build_pyo3_extension_library([snapshot,] crate_path, cargo_toml, module_name; kwargs...) -> String
 
-Run `cargo rustc --crate-type cdylib` in the crate's own directory and return
+Run `cargo rustc --crate-type cdylib` in the crate's own directory, with the
+output under `crate_target_directory(crate_path, :pyo3_host)` (#486), and return
 the built extension file, which is a temporary Cargo output — copy it out
 before the next build replaces it. It runs under `snapshot` (the build's, from
 `build_pyo3_extension`); the form without one takes a snapshot of `ENV` now.
@@ -362,11 +363,12 @@ function _build_pyo3_extension_library(snapshot::BuildEnvSnapshot,
     isempty(features) || push!(args, "--features", join(features, ","))
     link_args = _pyo3_extension_link_args()
 
-    # The dependency outputs are shared with the crate's own `target/`, so the
-    # build reuses the user's dependency artifacts; an ambient `CARGO_TARGET_DIR`
-    # would send the library somewhere this function never looks (and apart from
-    # the user's own builds), so it is pinned as `build_cargo_project` does.
-    target_dir = joinpath(crate_path, "target")
+    # Under RustCall's cache, never the crate's own `target/`: an installed
+    # package is read-only, and every `@rust_crate` flavour builds where
+    # `crate_target_directory` says (#486). An ambient `CARGO_TARGET_DIR`
+    # would send the library somewhere this function never looks, so it is
+    # pinned as `build_cargo_project` does.
+    target_dir = _crate_target!(crate_path, :pyo3_host)
     env = snapshot_env(snapshot)
     env["PYO3_PYTHON"] = String(python)
     env["CARGO_TARGET_DIR"] = target_dir

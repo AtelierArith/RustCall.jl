@@ -821,8 +821,10 @@ end
         end
         @test pinned["PYO3_PYTHON"] == python
         @test pinned["CARGO_PROFILE_RELEASE_PANIC"] == "unwind"
+        # The wrapper's own target directory under RustCall's cache, never
+        # the crate's `target/` (#486).
         @test pinned["CARGO_TARGET_DIR"] ==
-              joinpath(@__DIR__, "target", "rustcall-pyo3-probe", "target")
+              RustCall.crate_target_directory(@__DIR__, :pyo3_wrapper)
         # No interpreter to pin (a `:python_free` build, or none found): the
         # environment is left as it is, so pyo3's own lookup still applies.
         unpinned = withenv("PYO3_PYTHON" => nothing) do
@@ -1276,8 +1278,8 @@ end
         # than the dispatcher needs, or one from a registry the alias cannot
         # name. Those are expected outcomes, and the project directory
         # `_wrapper_shaped_project` has already created must go with them
-        # rather than accumulating under the crate's `target/` for the life of
-        # the process.
+        # rather than accumulating under the crate's target directory for the
+        # life of the process.
         root = mktempdir()
         try
             mkpath(joinpath(root, "src"))
@@ -1297,13 +1299,15 @@ end
             # wrapper needs the dispatcher and Cargo names no direct pyo3.
             source = RustCall.WrapperCrateSource("refused_probe", "", Dict{String, Any}(),
                                                  String[], true)
-            parent = joinpath(root, "target", "rustcall-pyo3-wrapper")
+            parent = joinpath(RustCall.crate_target_directory(root, :pyo3_wrapper),
+                              "rustcall-pyo3-wrapper")
             @test_throws RustCall.RustError RustCall._build_pyo3_wrapper_project(
                 info, plan, source, String[], true, "deadbeef", false)
             # The parent may exist; what must not survive is a project tree.
             leftovers = isdir(parent) ?
                 filter(startswith("project_"), readdir(parent)) : String[]
             @test isempty(leftovers)
+            @test !isdir(joinpath(root, "target"))
         finally
             rm(root; force = true, recursive = true)
         end
@@ -1384,7 +1388,8 @@ end
                     if readable
                         @test_skip "this user ignores file permissions"
                     else
-                        parent = joinpath(root, "target", "rustcall-pyo3-test")
+                        parent = joinpath(RustCall.crate_target_directory(root, :pyo3_wrapper),
+                                          "rustcall-pyo3-test")
                         @test_throws Exception RustCall._wrapper_shaped_project(
                             root, "rustcall-pyo3-test")
                         entries = isdir(parent) ? readdir(parent) : String[]

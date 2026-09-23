@@ -890,11 +890,16 @@ build script configures itself for (`PYO3_PYTHON`, `plan.interpreter`).
 6. otherwise the `python3` / `python` on `PATH` and the directory it reports.
 
 The wrapper crate — and the cfg probe that decides what it can call — is
-built under the target crate's own `target/`, seeded with the crate's
-`Cargo.lock` and root `[patch]` / `[replace]` tables, so the crate's
-`.cargo/config.toml`, its pins and its overrides apply to the wrapper exactly
-as they apply to the crate
-itself; Cargo gives none of the three to a dependency of a root elsewhere.
+written under RustCall's cache (`RustCall.crate_target_directory(crate,
+:pyo3_wrapper)`, never the target crate's own `target/`, #486), seeded with the
+crate's `Cargo.lock` and root `[patch]` / `[replace]` tables, and built by a
+Cargo that runs in the crate's directory and names the wrapper with
+`--manifest-path`. So the crate's `.cargo/config.toml`, its pins and its
+overrides apply to the wrapper exactly as they apply to the crate itself —
+Cargo gives none of the three to a dependency of a root elsewhere — and a crate
+in a read-only tree can be wrapped. The `pyo3_host = true` build writes under
+`crate_target_directory(crate, :pyo3_host)` for the same reason; the
+integration guide's table lists every flavour.
 
 The interpreter — its path *and* what it reports about itself
 (implementation, version, ABI tag, the library it links; `plan.interpreter_config`)

@@ -447,15 +447,16 @@ The probe project has the wrapper's shape: a `cdylib` root depending on the
 crate by path, with the requested feature set in its `[dependencies]` entry —
 the only place a dependency's features can be named; `cargo rustc --features`
 is refused for a package outside the workspace — and the profile lines the
-generated wrapper carries. It lives under `<crate>/target/rustcall-pyo3-probe/`
-with the crate's lockfile and `[patch]` table (`_wrapper_shaped_project`), so
-the crate's `.cargo/config.toml`, pins and overrides apply to the probe as to
-the wrapper; and it runs under the wrapper policy's environment
-(`_cargo_panic_env`), so an inherited `CARGO_PROFILE_*_PANIC` cannot make it
-describe a build the wrapper never makes. Then
-`cargo rustc -p <crate> --lib -- --print cfg`. The build cache is
-`<crate>/target/rustcall-pyo3-probe/target`, so Cargo still reuses compiled
-dependencies, but the cfg answer itself is not memoized: build scripts can
+generated wrapper carries. It lives under RustCall's cache
+(`_wrapper_shaped_project`, never the crate's own `target/`, #486) with the
+crate's lockfile and `[patch]` table, and Cargo runs **from the crate**,
+naming the probe by `--manifest-path`, so the crate's `.cargo/config.toml`,
+pins and overrides apply to the probe as to the wrapper; and it runs under the
+wrapper policy's environment (`_cargo_panic_env`), so an inherited
+`CARGO_PROFILE_*_PANIC` cannot make it describe a build the wrapper never
+makes. Then `cargo rustc -p <crate> --lib -- --print cfg`. The build cache is
+the wrapper's, `crate_target_directory(crate, :pyo3_wrapper)`, so Cargo still
+reuses compiled dependencies, but the cfg answer itself is not memoized: build scripts can
 observe inputs outside a stable digest (#291). `""` means Cargo did not
 answer.
 
@@ -489,7 +490,7 @@ function _wrapper_probe_context(crate_path::AbstractString, base_env::AbstractDi
     isempty(package) && return (cfg_text = "", build_env = nothing, build_inputs = String[])
     probe = () -> begin
         try
-            # Under the crate's `target/`, with its lockfile and `[patch]`, so
+            # With the crate's lockfile and `[patch]`, run from the crate, so
             # the probe resolves as the wrapper will (`_with_shaped_project`),
             # and with a lease the sweep in another process can see (#425).
             _with_shaped_project(path, "rustcall-pyo3-probe") do dir
@@ -507,16 +508,20 @@ function _wrapper_probe_context(crate_path::AbstractString, base_env::AbstractDi
                 # `--offline` under `RUSTCALL_OFFLINE` on every Cargo command
                 # of the probe, as on the build it describes (#461).
                 network = _cargo_network_args(env)
-                cmd = setenv(`$(cargo()) rustc -q $flag $network --message-format=json -p $package --lib -- --print cfg`,
-                             env; dir = dir)
+                # Run from the crate, naming the probe by its manifest: Cargo
+                # finds `.cargo/config.toml` from its working directory, and
+                # the probe project lives under RustCall's cache (#486).
+                manifest = joinpath(dir, "Cargo.toml")
+                cmd = setenv(`$(cargo()) rustc -q $flag $network --message-format=json --manifest-path $manifest -p $package --lib -- --print cfg`,
+                             env; dir = path)
                 out = read(cmd, String)
                 # `pkgid` requires Cargo.lock. The successful probe first
                 # resolves it, including for a fresh crate without a lockfile.
-                package_id = strip(read(setenv(`$(cargo()) pkgid $network -p $package`, env; dir = dir), String))
+                package_id = strip(read(setenv(`$(cargo()) pkgid $network --manifest-path $manifest -p $package`, env; dir = path), String))
                 # Package metadata is independent of feature resolution. Ask
                 # Cargo to expand workspace inheritance without traversing or
                 # downloading the target's entire dependency graph.
-                metadata = _cargo_package_metadata(path; env = env, dir = dir)
+                metadata = _cargo_package_metadata(path; env = env, dir = path)
                 builtins = _cargo_package_environment(metadata, package_id)
                 _cargo_probe_context(out, package_id, path; builtins = builtins)
             end
@@ -613,7 +618,7 @@ end
 function _wrapper_probe_env(base_env::AbstractDict, path::AbstractString, release::Bool,
                            interpreter::AbstractString)
     env = _cargo_panic_env(crate_wrapper_policy(), Dict{String, String}(base_env), release)
-    env["CARGO_TARGET_DIR"] = joinpath(path, "target", "rustcall-pyo3-probe", "target")
+    env["CARGO_TARGET_DIR"] = crate_target_directory(path, :pyo3_wrapper)
     isempty(interpreter) || (env["PYO3_PYTHON"] = String(interpreter))
     return env
 end
@@ -763,10 +768,13 @@ function _cargo_resolved_features(snapshot::BuildEnvSnapshot, crate_path::Abstra
             write(joinpath(dir, "Cargo.toml"),
                   _probe_cargo_toml(package, path, features, default_features) *
                   _root_patch_toml(path))
+            # From the crate, naming the project by its manifest, as the cfg
+            # probe runs (#486).
             args = String["tree", "-e", "features,normal", "--prefix", "none",
-                          "--format", "{p}|{f}", "--no-dedupe", "-p", package,
+                          "--format", "{p}|{f}", "--no-dedupe",
+                          "--manifest-path", joinpath(dir, "Cargo.toml"), "-p", package,
                           _cargo_network_args(snapshot_env(snapshot))...]
-            read(pipeline(setenv(`$(cargo()) $args`, snapshot_env(snapshot); dir = dir);
+            read(pipeline(setenv(`$(cargo()) $args`, snapshot_env(snapshot); dir = path);
                           stderr = devnull), String)
         end
     catch e
@@ -1758,18 +1766,20 @@ end
 """
     _build_pyo3_wrapper_project(info, plan, source, rustflags, release, key, cache_enabled) -> String
 
-Write the generated wrapper crate to a directory of its own under the target
-crate's `target/`, build it, and return a path to the result that **outlives
-that directory**.
+Write the generated wrapper crate to a directory of its own under
+`crate_target_directory(crate, :pyo3_wrapper)` — RustCall's cache, never the
+crate's own `target/` (#486) — build it from the crate's directory, and return a
+path to the result that **outlives that directory**.
 
 The wrapper is a Cargo root of its own, and Cargo gives a root three things it
 does not give a dependency: `.cargo/config.toml` discovery (from the working
 directory upwards), the lockfile, and the `[patch]` table. A wrapper written to
 an unrelated temporary directory therefore resolved and compiled the crate
 differently from the crate's own build — no config, a fresh resolution, no
-overrides. `_wrapper_shaped_project` puts it under `<crate>/target/` and seeds
-it with the crate's `Cargo.lock` and `[patch]`, so the three apply as they do
-to the crate itself (#307 review).
+overrides. `_wrapper_shaped_project` seeds it with the crate's `Cargo.lock`
+and `[patch]`, and Cargo runs in the crate's directory with `--manifest-path`
+naming the wrapper, so the three apply as they do to the crate itself (#307
+review, #486).
 
 A generated `build.rs` carries the plan's link options
 (`_pyo3_wrapper_build_script`); `PYO3_PYTHON` pins the interpreter pyo3's build
@@ -1794,8 +1804,8 @@ function _build_pyo3_wrapper_project(snapshot::BuildEnvSnapshot, info::CrateInfo
                                      source::WrapperCrateSource,
                                      rustflags::Vector{String}, release::Bool,
                                      key::String, cache_enabled::Bool)
-    # Under the crate's own `target/`, with its lockfile and `[patch]` table,
-    # so the wrapper resolves as the crate does (`_with_shaped_project`), and
+    # With the crate's lockfile and `[patch]` table, built from the crate's
+    # directory, so the wrapper resolves as the crate does (`_with_shaped_project`), and
     # with a lease the sweep in another process can see (#425).
     return _with_shaped_project(info.path, "rustcall-pyo3-wrapper") do wrapper_path
         # Dependency outputs are shared with the probe. Distinct wrapper
@@ -1808,9 +1818,8 @@ function _build_pyo3_wrapper_project(snapshot::BuildEnvSnapshot, info::CrateInfo
         # not at the build. Writing the manifest can *refuse* — a pyo3 older
         # than the dispatcher needs, or one from a registry the alias cannot
         # name — and those are expected outcomes, not crashes. Entering the
-        # `try` only at `build_cargo_project` left a project tree under the
-        # crate's `target/` for every refused attempt, for the life of the
-        # process (#392 review).
+        # `try` only at `build_cargo_project` left a project tree behind for
+        # every refused attempt, for the life of the process (#392 review).
         try
             # The same choice `wrap_crate` was given, from the same function:
             # the dependency table has to be keyed on the identifier the
@@ -1853,7 +1862,8 @@ function _build_pyo3_wrapper_project(snapshot::BuildEnvSnapshot, info::CrateInfo
             end
             built = build_cargo_project(project; release = release, env = env,
                                         policy = crate_wrapper_policy(),
-                                        target_directory = joinpath(info.path, "target", "rustcall-pyo3-probe", "target"))
+                                        target_directory = _crate_target!(info.path, :pyo3_wrapper),
+                                        working_directory = info.path)
             # The key names the interpreter by what it reported when the plan
             # was made; an interpreter replaced in place since then configured
             # this build for another Python. Refused before anything is cached
@@ -1915,16 +1925,18 @@ end
     _wrapper_shaped_project(crate_path, subdir) -> (dir, lease)
 
 A fresh directory for a Cargo project that stands in for the wrapper crate —
-the generated wrapper itself, or the cfg probe — placed **under the target
-crate's `target/<subdir>/`** and seeded with the root-only inputs of the
-crate's own build, so Cargo resolves the project the way it resolves the crate
-(#307 review):
+the generated wrapper itself, or the cfg probe — placed under
+`crate_target_directory(crate, :pyo3_wrapper)/<subdir>/`, in RustCall's cache
+and never in the crate, so a read-only crate can be wrapped (#486), and seeded
+with the root-only inputs of the crate's own build, so Cargo resolves the
+project the way it resolves the crate (#307 review):
 
-* `.cargo/config.toml` is discovered from the working directory upwards, so a
-  project under `<crate>/target/` finds the crate's config exactly as a build
-  in the crate does — a temporary directory elsewhere found nothing, and an
-  item that exists only under the config's `rustflags` was a compile error in
-  generated code;
+* `.cargo/config.toml` is discovered from the working directory upwards, so
+  every Cargo command on the project runs **in the crate's directory** and
+  names the project with `--manifest-path`: it finds the crate's config exactly
+  as a build in the crate does — a project run from elsewhere found nothing,
+  and an item that exists only under the config's `rustflags` was a compile
+  error in generated code;
 * `Cargo.lock` is the root's, so the lockfile of the crate's Cargo root — the
   crate itself, or the workspace it is a member of (`_workspace_root_dir`) — is
   copied in; Cargo adds the project's own entry to the copy and pins everything
@@ -1932,9 +1944,10 @@ crate's own build, so Cargo resolves the project the way it resolves the crate
 * `[patch]` is honoured only in the root manifest, so that root's table is
   carried over by `_root_patch_toml`, relative paths made absolute.
 
-Both generated manifests declare an empty `[workspace]`: under a workspace
-member's `target/` Cargo would otherwise climb to the workspace and reject a
-crate it does not list ("believes it's in a workspace when it's not").
+Both generated manifests declare an empty `[workspace]`: a project below a
+workspace (a cache directory inside one, or the crate's own `target/` before
+#486) would otherwise make Cargo climb to it and reject a crate it does not list
+("believes it's in a workspace when it's not").
 
 The claim comes before the directory: `_publish_shaped_project_lease` names the
 project, locks its lease under a staging name and renames it into place, and
@@ -1944,7 +1957,7 @@ stream (or `nothing` where there is no lock); pass both to
 `_remove_shaped_project` when done.
 """
 function _wrapper_shaped_project(crate_path::AbstractString, subdir::AbstractString)
-    parent = joinpath(String(crate_path), "target", String(subdir))
+    parent = joinpath(_crate_target!(crate_path, :pyo3_wrapper), String(subdir))
     mkpath(parent)
     _sweep_abandoned_projects(parent)
     dir = _new_shaped_project_dir(parent)
@@ -1952,7 +1965,10 @@ function _wrapper_shaped_project(crate_path::AbstractString, subdir::AbstractStr
     try
         mkpath(joinpath(dir, "src"))
         lock = joinpath(_cargo_root_dir(crate_path), "Cargo.lock")
-        isfile(lock) && cp(lock, joinpath(dir, "Cargo.lock"); force = true)
+        # Its contents, not the file: `cp` keeps the mode, and the lockfile of
+        # a read-only crate is read-only, while Cargo has to add the project's
+        # own entry to this copy (#486).
+        isfile(lock) && write(joinpath(dir, "Cargo.lock"), read(lock))
     catch
         # The claim is already held, so `_with_shaped_project` will never see
         # this project to clean it up: do it here, or the locked lease and the
@@ -2341,9 +2357,8 @@ function generate_pyo3_wrapper_cargo_toml(info::CrateInfo, plan::PyO3LinkPlan;
         "[lib]",
         "crate-type = [\"cdylib\"]",
         "",
-        "# A root of its own. The wrapper lives under the target crate's `target/`,",
-        "# and when that crate is a workspace member Cargo would otherwise climb to",
-        "# the workspace and reject a crate it does not list (#307 review).",
+        "# A root of its own: were the wrapper below a workspace, Cargo would climb",
+        "# to it and reject a crate it does not list (#307 review).",
         "[workspace]",
         "",
         # Cargo keys an ordinary dependency table on the **package** name, which

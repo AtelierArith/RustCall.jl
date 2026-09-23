@@ -586,14 +586,15 @@ replaced in place during the build, the build is refused before the library is
 cached or loaded.
 
 `cache=false` is not the shape to use in a package. The library is then not
-the cache copy but whatever the build produced: Cargo's own output under the
-crate's `target/` for a crate that is already a `cdylib`, and a copy in a
+the cache copy but whatever the build produced: Cargo's own output under
+RustCall's target directory for the crate (`RustCall.crate_target_directory`)
+for a crate that is already a `cdylib`, and a copy in a
 directory of its own under RustCall's Cargo cache — one the cache lookup never
 returns, and that only `RustCall.clear_cache()` removes — for a crate RustCall
 has to wrap. The copy outlives the process that made it on purpose: a package
 precompiled with `cache=false` is loaded by another process, which must still
-find the file. In the first case the next `cargo build` of the crate
-invalidates the package's cache; in the second every precompilation leaves a
+find the file. In the first case the next build of the crate by RustCall
+rewrites that file; in the second every precompilation leaves a
 copy behind until the cache is cleared.
 
 The naming rule: **`submodule="Bindings"` is what defines** the module as
