@@ -1866,34 +1866,68 @@ function _build_pyo3_wrapper_project(snapshot::BuildEnvSnapshot, info::CrateInfo
             if plan.mode === :link_libpython && !isempty(plan.interpreter)
                 env["PYO3_PYTHON"] = plan.interpreter
             end
-            built = build_cargo_project(project; release = release, env = env,
-                                        policy = crate_wrapper_policy(),
-                                        target_directory = _crate_target!(info.path, :pyo3_wrapper),
-                                        working_directory = info.path)
-            # The key names the interpreter by what it reported when the plan
-            # was made; an interpreter replaced in place since then configured
-            # this build for another Python. Refused before anything is cached
-            # (#481).
-            if plan.mode === :link_libpython
-                _verify_build_interpreter(snapshot, plan.interpreter, plan.interpreter_config,
-                                          info.name)
-            end
-            if cache_enabled
-                try
-                    save_cargo_cached_library(key, built)
-                    cached = get_cargo_cached_library(key)
-                    cached === nothing || return cached
-                catch e
-                    @debug "Failed to cache PyO3 wrapper library: $e"
+            target = _crate_target!(info.path, :pyo3_wrapper)
+            # Two builds whose full keys share the short id name one package
+            # and write one `<profile>/librustcall_wrapper_<short>.*`. Cargo's
+            # own lock ends when Cargo exits, before the file is copied out, so
+            # the build, the check and the copy hold one lock of that name
+            # together: the copy is always of this build's output (#495 review).
+            return _with_wrapper_output_lock(joinpath(target, wrapper_name * ".lock")) do
+                built = build_cargo_project(project; release = release, env = env,
+                                            policy = crate_wrapper_policy(),
+                                            target_directory = target,
+                                            working_directory = info.path)
+                # The key names the interpreter by what it reported when the plan
+                # was made; an interpreter replaced in place since then configured
+                # this build for another Python. Refused before anything is cached
+                # (#481).
+                if plan.mode === :link_libpython
+                    _verify_build_interpreter(snapshot, plan.interpreter, plan.interpreter_config,
+                                              info.name)
                 end
+                if cache_enabled
+                    try
+                        save_cargo_cached_library(key, built)
+                        cached = get_cargo_cached_library(key)
+                        cached === nothing || return cached
+                    catch e
+                        @debug "Failed to cache PyO3 wrapper library: $e"
+                    end
+                end
+                # No cache: keep the library somewhere the cleanup below does not
+                # reach — and that outlives this process, since the module that
+                # records the path may be loaded by a later one (#339 review).
+                return _uncached_library_home(built)
             end
-            # No cache: keep the library somewhere the cleanup below does not
-            # reach — and that outlives this process, since the module that
-            # records the path may be loaded by a later one (#339 review).
-            return _uncached_library_home(built)
         finally
             cleanup_cargo_project(project)
         end
+    end
+end
+
+"""
+    _with_wrapper_output_lock(f, lock_path; poll = 0.05)
+
+Run `f()` holding an exclusive lock on `lock_path`, waiting for it while
+another holder has it — another process, or another task of this one (the lock
+belongs to the open file description, `_try_lock_lease`). A PyO3 wrapper build
+holds it from the Cargo build until its output is copied out, keyed by the
+output's name, so two builds that write the same file take turns (#495
+review). The lock is released when the file is closed, and a holder that dies
+releases it with the process; the file itself is left in place, since removing
+it would let a waiter lock a file a newcomer no longer opens. Where the file
+system has no locking at all, `f` runs unlocked.
+"""
+function _with_wrapper_output_lock(f::Function, lock_path::AbstractString; poll::Real = 0.05)
+    mkpath(dirname(String(lock_path)))
+    io = open(String(lock_path), "a")
+    try
+        while _try_lock_lease(io) === false
+            sleep(poll)
+        end
+        return f()
+    finally
+        close(io)
     end
 end
 
