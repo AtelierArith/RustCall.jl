@@ -1431,4 +1431,23 @@ end
     Core.eval(ok, :(const _BINDINGS_FORMAT = RustCall.check_bindings_format($(fmt))))
     Core.eval(ok, :(const _LIB_GEN = RustCall.StateView(:crate_generation, @__MODULE__)))
     @test Core.eval(ok, :(RustCall.register_handle_mirror!("bindings_format_current_489", _LIB_GEN))) === nothing
+    # A file older than the `StateView` mirror (format 7 and the like) keeps its
+    # generation in a `Ref{CrateGeneration}` and registers that from `__init__`:
+    # it gets the same regeneration refusal, not only the #402 diagnostic
+    # (#489 review).
+    pre = Module(:BindingsFormatPreStateView489)
+    Core.eval(pre, :(import RustCall))
+    Core.eval(pre, :(const _LIB_NAME = "bindings_format_pre_stateview_489"))
+    Core.eval(pre, :(const _LIB_GEN = Ref(RustCall.CrateGeneration())))
+    err = try
+        Core.eval(pre, :(RustCall.register_handle_mirror!(_LIB_NAME, _LIB_GEN)))
+        nothing
+    catch e
+        e
+    end
+    @test err isa RustCall.RustError
+    msg = sprint(showerror, err)
+    @test occursin("write_bindings_to_file", msg)
+    @test occursin("no longer readable", msg)
+    @test occursin("regenerate it", msg)
 end

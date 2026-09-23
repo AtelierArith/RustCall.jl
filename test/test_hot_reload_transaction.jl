@@ -243,9 +243,12 @@ end
             catch err
                 err
             end
-            @test refused isa ArgumentError
+            # A `RustError`: the caller that actually reaches this is a
+            # pre-`StateView` bindings file, refused for regeneration (#489).
+            @test refused isa RustCall.RustError
             @test occursin("CrateGenerationCell", sprint(showerror, refused))
             @test occursin("#402", sprint(showerror, refused))
+            @test occursin("write_bindings_to_file", sprint(showerror, refused))
         end
 
         @testset "a reader never sees a mixture" begin
