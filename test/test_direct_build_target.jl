@@ -197,6 +197,74 @@ end
     end
 end
 
+# Two crates whose short ids collide race for one directory. The owner record
+# is created exclusively, so exactly one claimant wins and every other one is
+# refused — never two owners of one directory (#495 review: a check-then-rename
+# let two claimants both pass the check, the later rename replacing the first
+# record). Many claimants, on threads where there are several, each with a
+# distinct full key; and several processes started together.
+@testset "one owner per crate target directory, however claims race (#495 review)" begin
+    mktempdir() do root
+        base = joinpath(root, "0123456789abcdef")
+        keys = [string(i; base = 16, pad = 64) for i in 1:32]
+        outcome = Vector{Any}(undef, length(keys))
+        tasks = [Threads.@spawn begin
+                     try
+                         RustCall._claim_crate_target!(base, keys[i], "crate$(i)"; wait = 5)
+                         outcome[i] = :won
+                     catch e
+                         outcome[i] = e
+                     end
+                 end for i in eachindex(keys)]
+        foreach(wait, tasks)
+        winners = findall(==(:won), outcome)
+        @test length(winners) == 1
+        @test all(o -> o === :won || o isa RustCall.RustError, outcome)
+        @test read(joinpath(base, RustCall.CRATE_TARGET_KEY_FILE), String) == keys[only(winners)]
+        # The winner claims again; a loser is still refused.
+        @test RustCall._claim_crate_target!(base, keys[only(winners)], "again") === nothing
+        loser = first(setdiff(eachindex(keys), winners))
+        @test_throws RustCall.RustError RustCall._claim_crate_target!(base, keys[loser], "x"; wait = 0)
+    end
+    mktempdir() do root
+        base = joinpath(root, "fedcba9876543210")
+        go = joinpath(root, "go")
+        script(i) = """
+            using RustCall
+            while !isfile($(repr(go))); sleep(0.01); end
+            try
+                RustCall._claim_crate_target!($(repr(base)), $(repr(string(i; base = 16, pad = 64))), "p"; wait = 10)
+                print("won")
+            catch e
+                e isa RustCall.RustError || rethrow()
+                print("lost")
+            end
+            """
+        procs = [open(`$(Base.julia_cmd()) --startup-file=no --project=$(pkgdir(RustCall)) -e $(script(i))`, "r")
+                 for i in 1:4]
+        sleep(15)                      # let every child load RustCall and wait
+        touch(go)
+        results = [read(p, String) for p in procs]
+        foreach(wait, procs)
+        @test count(==("won"), results) == 1
+        @test count(==("lost"), results) == 3
+    end
+    # A record left empty by a claimant that died before writing its key is
+    # reported as such after the wait, not taken for a collision or ignored.
+    mktempdir() do root
+        base = mkpath(joinpath(root, "0000000000000000"))
+        touch(joinpath(base, RustCall.CRATE_TARGET_KEY_FILE))
+        err = try
+            RustCall._claim_crate_target!(base, "a"^64, "c"; wait = 0.2)
+            nothing
+        catch e
+            e
+        end
+        @test err isa RustCall.RustError
+        @test occursin("incomplete", sprint(showerror, err))
+    end
+end
+
 # The target directories are part of the Cargo cache: the documented
 # maintenance calls measure, clear and age them like the cached libraries
 # beside them (#447 review).

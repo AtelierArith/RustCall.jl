@@ -824,32 +824,38 @@ of the crate it belongs to; see `crate_target_directory`.
 """
 const CRATE_TARGET_KEY_FILE = ".rustcall-crate-key"
 
-# Record `key` as the owner of `base`, or confirm it already is. Published by a
-# rename, so a reader never sees a partial key; a directory that another key
-# owns is refused, never shared.
+# Record `key` as the owner of `base`, or confirm it already is; a directory
+# that another key owns is refused, never shared.
+#
+# The record is created with the exclusive-create claim `_publish_lockfile!`
+# uses (`_claim_lockfile!`, `O_CREAT | O_EXCL`), so of two claimants — two
+# processes building two crates whose short ids collide — exactly one creates
+# it; the other reads it and compares the full key. A check-then-rename was not
+# that: both could pass the check, and the second rename replaced the first
+# record, leaving two crates in one directory (#495 review). The winner writes
+# the key after creating the file, so a loser that finds it empty or partial
+# waits `wait` seconds for the whole key before deciding.
 function _claim_crate_target!(base::AbstractString, key::AbstractString,
-                              crate_path::AbstractString)
+                              crate_path::AbstractString; wait::Real = 10.0)
     mkpath(base)
     record = joinpath(base, CRATE_TARGET_KEY_FILE)
-    if !isfile(record)
-        staged = tempname(base; cleanup = false)
-        write(staged, key)
-        try
-            # Not `force`: a concurrent claimant that won keeps its record, and
-            # the comparison below decides.
-            isfile(record) || mv(staged, record)
-        catch e
-            e isa Base.IOError || e isa ArgumentError || rethrow()
-        finally
-            rm(staged; force = true)
-        end
+    if _claim_lockfile!(record)
+        write(record, key)
+        return nothing
     end
+    deadline = time() + Float64(wait)
     owner = strip(read(record, String))
-    owner == key || throw(RustError(
-        "RustCall's Cargo target directory `$(base)` already belongs to another crate " *
-        "(its short id collides with that of `$(crate_path)`). Remove the directory, or " *
+    while length(owner) < length(key) && time() < deadline
+        sleep(0.05)
+        owner = strip(read(record, String))
+    end
+    owner == key && return nothing
+    reason = length(owner) < length(key) ?
+        "holds an incomplete owner record (a process died while claiming it)" :
+        "already belongs to another crate (its short id collides with that of `$(crate_path)`)"
+    throw(RustError(
+        "RustCall's Cargo target directory `$(base)` $(reason). Remove the directory, or " *
         "clear it with `RustCall.clear_cargo_cache()`, and build again."))
-    return nothing
 end
 
 """
