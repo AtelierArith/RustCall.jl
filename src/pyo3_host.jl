@@ -106,8 +106,11 @@ requirement, an rlib-only crate is fine here.
 
 The build runs `cargo rustc --crate-type cdylib` in the crate's own directory,
 so the crate's `.cargo/config.toml`, lockfile and `[patch]` tables apply as they
-do to the crate itself, and its dependency outputs are shared with the user's
-own builds. The platform's extension-module link flags (macOS
+do to the crate itself. Its output — dependencies included — goes under
+`crate_target_directory(crate_path, :pyo3_host)` in RustCall's cache, never the
+crate's own `target/` (#486), so a crate in a read-only tree builds; successive
+host builds of the crate reuse those dependency outputs, and the user's own
+`cargo build` in the crate neither shares them nor is disturbed by them. The platform's extension-module link flags (macOS
 `-undefined dynamic_lookup`, which pyo3's build script cannot deliver to the
 final cdylib) travel as trailing rustc arguments, not through `RUSTFLAGS`.
 

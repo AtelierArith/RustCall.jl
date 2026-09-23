@@ -1302,7 +1302,7 @@ end
             parent = joinpath(RustCall.crate_target_directory(root, :pyo3_wrapper),
                               "rustcall-pyo3-wrapper")
             @test_throws RustCall.RustError RustCall._build_pyo3_wrapper_project(
-                info, plan, source, String[], true, "deadbeef", false)
+                info, plan, source, String[], true, "deadbeef"^8, false)
             # The parent may exist; what must not survive is a project tree.
             leftovers = isdir(parent) ?
                 filter(startswith("project_"), readdir(parent)) : String[]

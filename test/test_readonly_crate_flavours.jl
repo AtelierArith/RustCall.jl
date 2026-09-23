@@ -75,8 +75,9 @@ end
 # are restored in `finally`, so the temporary tree can be removed. Where the
 # copy stays writable (root, or Windows, whose directory attributes do not stop
 # file creation) the listing check still holds.
-function _ro_with_read_only_crate(f, fixture, root)
+function _ro_with_read_only_crate(f, fixture, root; prepare = identity)
     crate = _ro_copy_crate(fixture, root)
+    prepare(crate)
     before = _ro_listing(crate)
     _ro_set_writable!(crate, false)
     _ro_is_read_only(crate) ||
@@ -113,6 +114,22 @@ end
             @test all(d -> !startswith(d, crate), dirs)
             @test_throws ArgumentError RustCall.crate_target_directory(crate, :nope)
 
+            # Windows' 260-character path limit (#486). The cache root there is
+            # about 100 characters, and Cargo nests up to about 90 more below a
+            # target directory for a dependency's build script
+            # (`release/build/target-lexicon-<16>/build_script_build-<16>.exe`),
+            # so what RustCall adds between the Cargo cache and Cargo's own
+            # layout must stay small. The full 64-hex key did not: a
+            # `pyo3_host` build failed with LNK1104 at 262 characters.
+            cargo_cache = RustCall.get_cargo_cache_dir()
+            for d in dirs
+                @test length(relpath(d, cargo_cache)) <= 40
+            end
+            # So must the generated wrapper's package name, which Cargo puts
+            # in `build/<package>-<16>/` for the wrapper's own build script.
+            @test occursin("rustcall_wrapper_\$(artifact_short_id(key))",
+                           read(joinpath(pkgdir(RustCall), "src", "pyo3.jl"), String))
+
             # Using a flavour's directory refreshes the crate's one stamp.
             dir = RustCall._crate_target!(crate, :pyo3_host)
             @test isdir(dir)
@@ -137,8 +154,24 @@ end
         @test_skip "rustc and cargo are required"
     else
         mktempdir() do root
-            _ro_with_read_only_crate("sample_crate", root) do crate
+            # CRLF line endings, as a Windows checkout with `core.autocrlf`
+            # gives the fixture: the edit below must not depend on them (the
+            # first Windows run matched a `\n`-only pattern, edited nothing,
+            # and reloaded the old source).
+            crlf!(crate) = (lib = joinpath(crate, "src", "lib.rs");
+                            write(lib, replace(replace(read(lib, String), "\r\n" => "\n"),
+                                               "\n" => "\r\n")))
+            _ro_with_read_only_crate("sample_crate", root; prepare = crlf!) do crate
                 lib_rs = joinpath(crate, "src", "lib.rs")
+                original = read(lib_rs, String)
+                @test occursin("\r\n", original)
+                edited = replace(original,
+                                 r"(fn add\(a: i32, b: i32\) -> i32 \{\r?\n\s*a \+ b)(\r?\n\})" =>
+                                 s"\1 + 100\2"; count = 1)
+                @test edited != original
+                # Outside the crate; the child copies it over `lib.rs`.
+                edited_path = joinpath(root, "edited_lib.rs")
+                write(edited_path, edited)
                 # A fresh process with a cold cache: the direct build, its cfg
                 # probe, and a hot reload's rescan and rebuild all run. The
                 # source is edited in place between the two builds — the file is
@@ -154,9 +187,7 @@ end
                     # watcher to notice it has been stopped.
                     state = RustCall.enable_hot_reload_for_crate(bindings; interval = 0.5)
                     chmod(lib_rs, 0o644)
-                    write(lib_rs, replace(read(lib_rs, String),
-                                          "fn add(a: i32, b: i32) -> i32 {\\n    a + b\\n}" =>
-                                          "fn add(a: i32, b: i32) -> i32 {\\n    a + b + 100\\n}"))
+                    write(lib_rs, read($(repr(edited_path)), String))
                     chmod(lib_rs, 0o444)
                     reloaded = RustCall.trigger_reload(state.lib_name)
                     second = Base.invokelatest(bindings.add, Int32(2), Int32(3))

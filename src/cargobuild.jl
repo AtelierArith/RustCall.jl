@@ -755,7 +755,7 @@ names a directory of its own.
 | `:pyo3_host`    | the extension module of `pyo3_host = true` (`build_pyo3_extension`)     | `<base>/pyo3-host`     |
 | `:pyo3_wrapper` | a PyO3 crate's generated wrapper and the cfg / feature probes that describe it (`_build_pyo3_wrapper_project`, `_wrapper_probe_context`); their generated projects live under it too (`_wrapper_shaped_project`) | `<base>/pyo3-wrapper`  |
 
-`<base>` is `<Cargo cache>/targets/<artifact_key(crate_target_id(crate_path))>`.
+`<base>` is `<Cargo cache>/targets/<artifact_short_id(crate_target_id(crate_path))>`.
 Never the crate's own `target/`: a package installed under a depot is
 read-only, and a CI cache that carries RustCall's cache then carries these
 builds as well. A hot reload rebuilds the direct build, so it shares that
@@ -769,18 +769,29 @@ own and builds in its own `target/`, not here.
 
 One `<base>` per crate rather than one shared by all, because Cargo writes the
 final library as `target/<profile>/lib<name>.*`, so two crates with the same
-package name would overwrite each other's output. The name is the full
-`artifact_key` of `crate_target_id`: it isolates one crate's build from
-another's, so it is a lookup key and is never truncated — two same-named crates
-sharing a directory could have Cargo report the second as fresh and leave the
-first one's library in place (#447 review). Every flavour lives under the same
-`<base>`, so `cleanup_old_cache` ages and removes a crate's builds together, by
-the stamp `_crate_target!` refreshes.
+package name would overwrite each other's output. Every flavour lives under the
+same `<base>`, so `cleanup_old_cache` ages and removes a crate's builds
+together, by the stamp `_crate_target!` refreshes.
+
+**The name is short, and verified.** Windows limits a path to 260 characters
+(`MAX_PATH`; `link.exe` enforces it, whatever the system's long-path setting),
+the cache root there is already about 100 of them, and Cargo nests
+`<profile>/build/<package>-<hash>/build_script_build-<hash>.exe` below the
+target directory. The full 64-hex `artifact_key` left no room: a `pyo3_host`
+build of a crate depending on `target-lexicon` failed with `LNK1104` at 262
+characters (#486). The directory is therefore named by the key's
+`artifact_short_id`, and the full key is written inside it
+(`CRATE_TARGET_KEY_FILE`) by the first `_crate_target!` and compared by every
+later one. Isolation is still decided by the full key: two crates whose short
+ids collide are refused with an error rather than sharing a directory, which
+could have Cargo report the second as fresh and leave the first one's library
+in place (#447 review).
 """
 function crate_target_directory(crate_path::AbstractString, flavour::Symbol = :direct)
     # Inside the Cargo cache, so `clear_cargo_cache` / `get_cargo_cache_size`
     # cover it and `cleanup_old_cache` ages it (#447 review).
-    base = joinpath(get_cargo_cache_dir(), "targets", artifact_key(crate_target_id(crate_path)))
+    # Short, for Windows' path limit; `_crate_target!` verifies the full key.
+    base = joinpath(get_cargo_cache_dir(), "targets", artifact_short_id(crate_target_id(crate_path)))
     flavour === :direct && return base
     flavour === :pyo3_host && return joinpath(base, "pyo3-host")
     flavour === :pyo3_wrapper && return joinpath(base, "pyo3-wrapper")
@@ -797,10 +808,48 @@ Cargo there. The stamp is the crate's `<base>` one whatever the flavour, since
 `cleanup_old_cache` ages the whole `<base>`.
 """
 function _crate_target!(crate_path::AbstractString, flavour::Symbol = :direct)
+    base = crate_target_directory(crate_path)
+    _claim_crate_target!(base, artifact_key(crate_target_id(crate_path)), crate_path)
+    _mark_target_used!(base)
     dir = crate_target_directory(crate_path, flavour)
-    _mark_target_used!(crate_target_directory(crate_path))
     mkpath(dir)
     return dir
+end
+
+"""
+    CRATE_TARGET_KEY_FILE
+
+The file in a crate's `<base>` target directory holding the full `artifact_key`
+of the crate it belongs to; see `crate_target_directory`.
+"""
+const CRATE_TARGET_KEY_FILE = ".rustcall-crate-key"
+
+# Record `key` as the owner of `base`, or confirm it already is. Published by a
+# rename, so a reader never sees a partial key; a directory that another key
+# owns is refused, never shared.
+function _claim_crate_target!(base::AbstractString, key::AbstractString,
+                              crate_path::AbstractString)
+    mkpath(base)
+    record = joinpath(base, CRATE_TARGET_KEY_FILE)
+    if !isfile(record)
+        staged = tempname(base; cleanup = false)
+        write(staged, key)
+        try
+            # Not `force`: a concurrent claimant that won keeps its record, and
+            # the comparison below decides.
+            isfile(record) || mv(staged, record)
+        catch e
+            e isa Base.IOError || e isa ArgumentError || rethrow()
+        finally
+            rm(staged; force = true)
+        end
+    end
+    owner = strip(read(record, String))
+    owner == key || throw(RustError(
+        "RustCall's Cargo target directory `$(base)` already belongs to another crate " *
+        "(its short id collides with that of `$(crate_path)`). Remove the directory, or " *
+        "clear it with `RustCall.clear_cargo_cache()`, and build again."))
+    return nothing
 end
 
 """

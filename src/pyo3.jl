@@ -1811,7 +1811,13 @@ function _build_pyo3_wrapper_project(snapshot::BuildEnvSnapshot, info::CrateInfo
         # Dependency outputs are shared with the probe. Distinct wrapper
         # artifacts must not overwrite one shared cdylib between Cargo exiting
         # and our copy.
-        wrapper_name = "rustcall_wrapper_$(key)"
+        # Named by the key's short id, not the full key: Cargo nests
+        # `build/<package>-<hash>/build_script_build-<hash>.exe` under the
+        # target directory, and a 64-hex package name put that past Windows'
+        # 260-character path limit (#486). The name only keeps two concurrent
+        # wrapper builds from writing one output file; the library is copied
+        # out under the full key.
+        wrapper_name = "rustcall_wrapper_$(artifact_short_id(key))"
         project = CargoProject(wrapper_name, "0.1.0", DependencySpec[],
                                "2021", wrapper_path)
         # The cleanup scope opens here, at the directory that already exists,

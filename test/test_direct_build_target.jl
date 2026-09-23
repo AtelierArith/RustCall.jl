@@ -77,9 +77,19 @@ end
             # ...and distinct between crates: two crates with the same package
             # name would otherwise overwrite each other's `target/release/lib*`.
             @test RustCall.crate_target_directory(b) != ta
-            # The name is the full digest: it isolates builds, so it is a lookup
-            # key, never a truncated label (#447 review).
-            @test occursin(r"^[0-9a-f]{64}$", basename(ta))
+            # The name is the short id, for Windows' path limit (#486); the
+            # full key is recorded inside and decides isolation (#447 review).
+            key = RustCall.artifact_key(RustCall.crate_target_id(a))
+            @test basename(ta) == RustCall.artifact_short_id(key)
+            RustCall._crate_target!(a)
+            @test read(joinpath(ta, RustCall.CRATE_TARGET_KEY_FILE), String) == key
+            # A second claim by the same crate is accepted...
+            @test RustCall._crate_target!(a) == ta
+            # ...one by a crate whose short id collides is refused, never
+            # shared: a forged record stands in for the other crate.
+            write(joinpath(ta, RustCall.CRATE_TARGET_KEY_FILE), "f"^64)
+            @test_throws RustCall.RustError RustCall._crate_target!(a)
+            rm(joinpath(ta, RustCall.CRATE_TARGET_KEY_FILE))
         end
     end
 end

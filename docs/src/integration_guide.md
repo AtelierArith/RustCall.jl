@@ -367,7 +367,10 @@ The directories of one crate sit together under
 `<cache>/cargo/targets/<digest of the crate's path>`, so `RustCall.clear_cache()`,
 `clear_cargo_cache()` and `cleanup_old_cache()` treat them as one. They hold
 Cargo's own incremental state, not a result RustCall looks up: the library
-each build produces is copied into the cache under its artifact key.
+each build produces is copied into the cache under its artifact key. The
+directory name is a 16-character short id of the crate's path, with the full
+digest recorded inside it and checked on every use, because Windows limits a
+path to 260 characters and Cargo nests deep below a target directory.
 
 (`// cargo-deps:` blocks are not `@rust_crate` builds: RustCall writes those
 projects itself and builds them with `--locked` against a persisted lockfile,
