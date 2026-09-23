@@ -39,7 +39,8 @@ Pages = [joinpath("src", "RustCall.jl")]
   (`dependencies.jl`, `dependency_resolution.jl`, `cargoproject.jl`,
   `cargobuild.jl`).
 - [External crates and hot reload](reference/crates.md) — `@rust_crate`
-  bindings and hot reload (`crate_bindings.jl`, `hot_reload.jl`).
+  bindings and hot reload (`crate_bindings.jl`, `hot_reload.jl`); the
+  [Hot Reload](hot_reload.md) guide has a runnable example.
 - [PyO3 crates](reference/pyo3.md) — the wrapper crate built around a PyO3
   extension module, its link plan and skip reasons (`pyo3.jl`).
 - [Types, memory and ownership](reference/ownership.md) — `RustResult`,
