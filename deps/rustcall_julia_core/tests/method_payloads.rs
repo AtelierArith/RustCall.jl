@@ -99,7 +99,7 @@ fn inline_methods_get_payload_aggregates() {
 
     // A plain method is untouched.
     assert!(
-        src.contains("pub extern \"C\" fn rustcall_Div_plain(ptr: *const Div) -> i32"),
+        src.contains("pub extern \"C\" fn rustcall_Div_plain(ptr: *const Div) -> ::std::mem::MaybeUninit<i32>"),
         "{src}"
     );
 }

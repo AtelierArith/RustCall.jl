@@ -391,6 +391,7 @@ fn methods_of(
                 return_type: return_type_to_string(&m.func.sig.output),
                 return_abi: crate::codegen::return_abi(&m.func.sig).to_string(),
                 generic_wrapper: String::new(),
+                generic_wrapper_name: String::new(),
                 // The block's and its modules' predicates gate the method as
                 // much as its own do (#300 review, #315).
                 cfg: crate::cfg::predicate_string(&crate::cfg::effective_cfg_attrs(
@@ -471,7 +472,11 @@ fn generic_struct_entry(
     enclosing_cfg: &[syn::Attribute],
 ) -> Struct {
     let effective_cfg = crate::cfg::effective_cfg_attrs(enclosing_cfg, &model.item.attrs);
-    let wrappers = inline_generic_wrappers(model);
+    // Every wrapper name hangs off the struct's FFI name, module path folded
+    // in (#300, #462), and the manifest states each one so a consumer never
+    // re-derives it.
+    let stem = crate::codegen::symbol_stem(module_path, &model.name());
+    let wrappers = inline_generic_wrappers(model, module_path);
     let wrapper_names: Vec<&str> = wrappers.iter().map(|w| w.name.as_str()).collect();
     let type_params = model.type_param_names();
     let accessors: Vec<(String, String, String)> = model
@@ -479,8 +484,8 @@ fn generic_struct_entry(
         .iter()
         .filter(|(_, ty)| generic_field_has_accessors(ty, &type_params))
         .map(|(n, _)| {
-            let getter = format!("{}_get_{}", model.name(), n);
-            let setter = format!("{}_set_{}", model.name(), n);
+            let getter = crate::codegen::field_getter_symbol(&stem, &n.to_string());
+            let setter = crate::codegen::field_setter_symbol(&stem, &n.to_string());
             let has_setter = wrapper_names.contains(&setter.as_str());
             (
                 n.to_string(),
@@ -503,14 +508,13 @@ fn generic_struct_entry(
     }
 
     // A generic struct exports nothing itself: its wrappers are instantiated
-    // by `specialize` under names Julia chooses, so the stem is recorded for
-    // the consumer and never spelled into a symbol here.
-    let stem = crate::codegen::symbol_stem(module_path, &model.name());
+    // by `specialize` under names Julia chooses.
     let mut methods = methods_of(model, false, &stem, module_path);
     for m in &mut methods {
-        let wrapper_name = format!("{}_{}", model.name(), m.name);
+        let wrapper_name = crate::codegen::generic_method_wrapper_name(&stem, &m.name);
         if let Some(w) = wrappers.iter().find(|w| w.name == wrapper_name) {
             m.generic_wrapper = w.source.clone();
+            m.generic_wrapper_name = wrapper_name;
         }
     }
 

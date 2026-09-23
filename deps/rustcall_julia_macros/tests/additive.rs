@@ -93,11 +93,14 @@ fn the_c_entry_point_is_the_rustcall_symbol() {
     assert!(some.is_some());
     assert_eq!(*some.some().unwrap(), 2);
 
-    assert_eq!(rustcall_plain_add(2, 3), 5);
+    assert_eq!(unsafe { rustcall_plain_add(2, 3).assume_init() }, 5);
 
     // `String` / `&str` arguments and returns travel as the byte-pair ABI (#242).
     let input = "hi";
-    assert_eq!(rustcall_byte_len(input.as_ptr(), input.len()), 2);
+    assert_eq!(
+        unsafe { rustcall_byte_len(input.as_ptr(), input.len()).assume_init() },
+        2
+    );
     let out = rustcall_shout(input.as_ptr(), input.len());
     let bytes = unsafe { std::slice::from_raw_parts(out.ptr, out.len) };
     assert_eq!(std::str::from_utf8(bytes).unwrap(), "HI");
@@ -107,6 +110,6 @@ fn the_c_entry_point_is_the_rustcall_symbol() {
 #[test]
 fn method_wrappers_are_prefixed_too() {
     let ptr = rustcall_Counter_new(10);
-    assert_eq!(rustcall_Counter_bump(ptr, 5), 15);
+    assert_eq!(unsafe { rustcall_Counter_bump(ptr, 5).assume_init() }, 15);
     unsafe { drop(Box::from_raw(ptr)) };
 }

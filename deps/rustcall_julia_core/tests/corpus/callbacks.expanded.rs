@@ -41,10 +41,13 @@ pub extern "C" fn rustcall_apply_take_panic(out: *mut u8, cap: usize) -> usize {
         })
 }
 #[no_mangle]
-pub extern "C" fn rustcall_apply(f: extern "C" fn(i64) -> i64, x: i64) -> i64 {
+pub extern "C" fn rustcall_apply(
+    f: extern "C" fn(i64) -> i64,
+    x: i64,
+) -> ::std::mem::MaybeUninit<i64> {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
-        ::std::panic::AssertUnwindSafe(|| { apply(f, x) }),
+        ::std::panic::AssertUnwindSafe(|| { ::std::mem::MaybeUninit::new(apply(f, x)) }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
         ::std::result::Result::Err(rustcall_payload) => {
@@ -69,7 +72,7 @@ pub extern "C" fn rustcall_apply(f: extern "C" fn(i64) -> i64, x: i64) -> i64 {
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<i64>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
@@ -192,9 +195,13 @@ pub extern "C" fn rustcall_probe_take_panic(out: *mut u8, cap: usize) -> usize {
         })
 }
 #[no_mangle]
-pub extern "C" fn rustcall_probe(cb: extern "C" fn(*const u8) -> bool) -> bool {
+pub extern "C" fn rustcall_probe(
+    cb: extern "C" fn(*const u8) -> bool,
+) -> ::std::mem::MaybeUninit<bool> {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
-    match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| { probe(cb) })) {
+    match ::std::panic::catch_unwind(
+        ::std::panic::AssertUnwindSafe(|| { ::std::mem::MaybeUninit::new(probe(cb)) }),
+    ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
         ::std::result::Result::Err(rustcall_payload) => {
             let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
@@ -218,7 +225,7 @@ pub extern "C" fn rustcall_probe(cb: extern "C" fn(*const u8) -> bool) -> bool {
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<bool>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
@@ -266,10 +273,10 @@ pub extern "C" fn rustcall_rust_abi_take_panic(out: *mut u8, cap: usize) -> usiz
         })
 }
 #[no_mangle]
-pub extern "C" fn rustcall_rust_abi(f: fn(i64) -> i64) -> i64 {
+pub extern "C" fn rustcall_rust_abi(f: fn(i64) -> i64) -> ::std::mem::MaybeUninit<i64> {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
-        ::std::panic::AssertUnwindSafe(|| { rust_abi(f) }),
+        ::std::panic::AssertUnwindSafe(|| { ::std::mem::MaybeUninit::new(rust_abi(f)) }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
         ::std::result::Result::Err(rustcall_payload) => {
@@ -294,7 +301,7 @@ pub extern "C" fn rustcall_rust_abi(f: fn(i64) -> i64) -> i64 {
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<i64>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
@@ -420,10 +427,12 @@ pub extern "C" fn Acc_get_total_take_panic(out: *mut u8, cap: usize) -> usize {
         })
 }
 #[no_mangle]
-pub extern "C" fn Acc_get_total(ptr: *const Acc) -> i64 {
+pub extern "C" fn Acc_get_total(ptr: *const Acc) -> ::std::mem::MaybeUninit<i64> {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
-        ::std::panic::AssertUnwindSafe(|| { { unsafe { (*ptr).total } } }),
+        ::std::panic::AssertUnwindSafe(|| {
+            ::std::mem::MaybeUninit::new({ unsafe { (*ptr).total } })
+        }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
         ::std::result::Result::Err(rustcall_payload) => {
@@ -448,7 +457,7 @@ pub extern "C" fn Acc_get_total(ptr: *const Acc) -> i64 {
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<i64>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
@@ -650,12 +659,12 @@ pub extern "C" fn rustcall_Acc_fold_take_panic(out: *mut u8, cap: usize) -> usiz
 pub extern "C" fn rustcall_Acc_fold(
     ptr: *const Acc,
     f: extern "C" fn(i64) -> i64,
-) -> i64 {
+) -> ::std::mem::MaybeUninit<i64> {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
-            self_obj.fold(f)
+            ::std::mem::MaybeUninit::new(self_obj.fold(f))
         }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
@@ -681,7 +690,7 @@ pub extern "C" fn rustcall_Acc_fold(
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<i64>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }

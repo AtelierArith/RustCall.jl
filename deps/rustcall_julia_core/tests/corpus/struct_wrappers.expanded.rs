@@ -141,11 +141,13 @@ pub extern "C" fn Greeter_get_name_take_panic(out: *mut u8, cap: usize) -> usize
         })
 }
 #[no_mangle]
-pub extern "C" fn Greeter_get_name(ptr: *const Greeter) -> Greeter_RustCallOwnedString {
+pub extern "C" fn Greeter_get_name(
+    ptr: *const Greeter,
+) -> ::std::mem::MaybeUninit<Greeter_RustCallOwnedString> {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
-            {
+            ::std::mem::MaybeUninit::new({
                 let mut rustcall_bytes = unsafe { (*ptr).name.clone().into_bytes() };
                 let rustcall_ret = Greeter_RustCallOwnedString {
                     ptr: rustcall_bytes.as_mut_ptr(),
@@ -154,7 +156,7 @@ pub extern "C" fn Greeter_get_name(ptr: *const Greeter) -> Greeter_RustCallOwned
                 };
                 std::mem::forget(rustcall_bytes);
                 rustcall_ret
-            }
+            })
         }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
@@ -180,7 +182,7 @@ pub extern "C" fn Greeter_get_name(ptr: *const Greeter) -> Greeter_RustCallOwned
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<Greeter_RustCallOwnedString>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
@@ -311,10 +313,14 @@ pub extern "C" fn Greeter_get_visits_take_panic(out: *mut u8, cap: usize) -> usi
         })
 }
 #[no_mangle]
-pub extern "C" fn Greeter_get_visits(ptr: *const Greeter) -> u32 {
+pub extern "C" fn Greeter_get_visits(
+    ptr: *const Greeter,
+) -> ::std::mem::MaybeUninit<u32> {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
-        ::std::panic::AssertUnwindSafe(|| { { unsafe { (*ptr).visits } } }),
+        ::std::panic::AssertUnwindSafe(|| {
+            ::std::mem::MaybeUninit::new({ unsafe { (*ptr).visits } })
+        }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
         ::std::result::Result::Err(rustcall_payload) => {
@@ -339,7 +345,7 @@ pub extern "C" fn Greeter_get_visits(ptr: *const Greeter) -> u32 {
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<u32>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
@@ -462,11 +468,15 @@ pub extern "C" fn Greeter_clone_take_panic(out: *mut u8, cap: usize) -> usize {
         })
 }
 #[no_mangle]
-pub extern "C" fn Greeter_clone(ptr: *const Greeter) -> *mut Greeter {
+pub extern "C" fn Greeter_clone(
+    ptr: *const Greeter,
+) -> ::std::mem::MaybeUninit<*mut Greeter> {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
-            { unsafe { Box::into_raw(Box::new((*ptr).clone())) } }
+            ::std::mem::MaybeUninit::new({
+                unsafe { Box::into_raw(Box::new((*ptr).clone())) }
+            })
         }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
@@ -492,7 +502,7 @@ pub extern "C" fn Greeter_clone(ptr: *const Greeter) -> *mut Greeter {
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<*mut Greeter>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
@@ -1258,10 +1268,14 @@ pub extern "C" fn Divider_get_scale_take_panic(out: *mut u8, cap: usize) -> usiz
         })
 }
 #[no_mangle]
-pub extern "C" fn Divider_get_scale(ptr: *const Divider) -> i32 {
+pub extern "C" fn Divider_get_scale(
+    ptr: *const Divider,
+) -> ::std::mem::MaybeUninit<i32> {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
-        ::std::panic::AssertUnwindSafe(|| { { unsafe { (*ptr).scale } } }),
+        ::std::panic::AssertUnwindSafe(|| {
+            ::std::mem::MaybeUninit::new({ unsafe { (*ptr).scale } })
+        }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
         ::std::result::Result::Err(rustcall_payload) => {
@@ -1286,7 +1300,7 @@ pub extern "C" fn Divider_get_scale(ptr: *const Divider) -> i32 {
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<i32>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }

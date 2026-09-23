@@ -18,6 +18,8 @@ A method of a `#[julia]` struct as recorded in the manifest.
   (manifest `Method.returns_boxed_struct`, schema 4). Julia used to re-derive
   this by comparing `return_type` against `"Self"` (#276)
 - `generic_wrapper`: generic wrapper source registered for monomorphization
+- `generic_wrapper_name`: the name that wrapper is registered under
+  (`<ffi_name>_<method>`, module-qualified, #462), stated by the manifest
 - `attribute`: the attribute of the **impl block** the method came from —
   `:julia`, `:py_methods` for a scanned `#[pymethods]` block, `:none` for an
   inline-mode impl (which carries none) or a hand-built method. It need not be
@@ -81,6 +83,11 @@ struct RustMethod
     # so Python's call passes the class as the first argument. `is_static` is
     # true for it too (neither takes `self`).
     is_classmethod::Bool
+    # A generic struct's method: the name its `generic_wrapper` is registered
+    # and monomorphized under (`Method.generic_wrapper_name`, additive within
+    # schema 0.6, #462) — `<ffi_name>_<method>`, module-qualified like every
+    # other name of the struct. Empty otherwise; see `_generic_method_wrapper_name`.
+    generic_wrapper_name::String
 end
 
 function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::Vector{String},
@@ -104,7 +111,8 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
                     python_kinds::Vector{String} = fill("", length(arg_names)),
                     callback_args::Vector{Vector{String}} = Vector{String}[String[] for _ in arg_names],
                     callback_returns::Vector{String} = fill("", length(arg_names)),
-                    is_classmethod::Bool = false)
+                    is_classmethod::Bool = false,
+                    generic_wrapper_name::String = "")
     length(python_defaults) == length(arg_names) ||
         throw(ArgumentError("python_defaults must have one entry per argument"))
     length(python_kinds) == length(arg_names) ||
@@ -116,7 +124,7 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
                returns_boxed_struct, vis, skip_reason, python_name, accessor,
                return_kind, ok_type, err_type, inner_type, ok_abi, err_abi, inner_abi,
                string_owner, attribute, python_defaults, python_kinds,
-               callback_args, callback_returns, is_classmethod)
+               callback_args, callback_returns, is_classmethod, generic_wrapper_name)
 end
 
 """
@@ -158,6 +166,24 @@ emitted at the block. Deriving the owner from the flavour, as Julia did before
 """
 _method_string_owner(m::RustMethod, fallback::AbstractString) =
     isempty(m.string_owner) ? String(fallback) : m.string_owner
+
+"""
+    _generic_method_wrapper_name(info::RustStructInfo, m::RustMethod) -> String
+
+The name the generic wrapper of `m`, a method of the generic struct `info`, is
+registered and monomorphized under.
+
+The manifest states it (`Method.generic_wrapper_name`, #462): the extractor
+names every wrapper of a generic struct off its FFI name, module path folded
+in (`a__Pair_new`), so two same-named generic structs in different modules of
+one block register different wrappers. Deriving it from `info.name` here — as
+Julia did before — gave both `Pair_new`, and the second registration replaced
+the first. The fallback is for a hand-built `RustMethod`, which states none; it
+uses the same scheme on the FFI name, never the bare name.
+"""
+_generic_method_wrapper_name(info, m::RustMethod) =
+    isempty(m.generic_wrapper_name) ? string(info.ffi_name, "_", m.name) :
+    m.generic_wrapper_name
 
 """
     method_wrapper_symbol(struct_name, method::RustMethod) -> String
@@ -342,7 +368,7 @@ function register_generic_struct_wrappers(info::RustStructInfo, expanded_source:
         for (sp, wp) in zip(Symbol.(info.type_params), type_params)
             haskey(info.constraints, sp) && (constraints[wp] = info.constraints[sp])
         end
-        m = findfirst(mm -> "$(info.name)_$(mm.name)" == wrapper_name, info.methods)
+        m = findfirst(mm -> _generic_method_wrapper_name(info, mm) == wrapper_name, info.methods)
         arg_types = m === nothing ? String[] : info.methods[m].arg_types
         push!(members, _prepare_generic_function(wrapper_name, expanded_source, type_params, constraints, "";
                                   arg_types = arg_types,
@@ -394,8 +420,9 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
     struct_name_str = info.name
     # Exported symbols hang off the FFI name, which carries the module path
     # (#300); `struct_name_str` stays the Julia type name and the label in
-    # diagnostics. A generic struct exports nothing itself — its wrappers are
-    # instantiated under names Julia chooses — so its branch keeps `name`.
+    # diagnostics. A generic struct's wrappers — methods, accessors, `_free` —
+    # are registered under names off the same FFI name (#462), which the
+    # manifest states.
     struct_stem = info.ffi_name
     esc_struct = esc(Symbol(struct_name_str))
 
@@ -416,7 +443,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
         # `generic_struct_generation_snapshot` does the instantiation here and
         # hands back the pointer *and* the liveness flag of the image that
         # exports it, which the object carries (#249, #277).
-        generic_free_name = ffi_struct_free_symbol(struct_name_str)
+        generic_free_name = ffi_struct_free_symbol(struct_stem)
         push!(exprs, quote
             mutable struct $where_clause
                 ptr::Ptr{Cvoid}
@@ -454,7 +481,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
         # 2. Methods
         for m in info.methods
             fname = esc(Symbol(m.name))
-            wrapper_name = "$(struct_name_str)_$(m.name)"
+            wrapper_name = _generic_method_wrapper_name(info, m)
             is_ctor = m.is_constructor
 
             arg_names = [Symbol(an) for an in m.arg_names]
@@ -484,7 +511,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                              # Point_new<T>(...)
                              # Pass args and types as tuples to separate them
                              ptr_val, lib_val, gen = _call_generic_constructor(
-                                 $wrapper_name, $struct_name_str,
+                                 $wrapper_name, $struct_stem,
                                  ($(esc_args...),), ($(esc_T_params...),))
                              return $esc_struct{$(esc_T_params...)}(ptr_val, lib_val,
                                                                     gen.free_ptr, gen.alive, gen.free_channel)
@@ -1365,6 +1392,10 @@ end
 
 Run a generic constructor and hand back the pointer **and** the snapshot the
 object it allocated must capture.
+
+`struct_name` is the struct's FFI name (`RustStructInfo.ffi_name`): the
+destructor it looks for is `<ffi_name>_free`, module-qualified like the
+constructor (#462).
 
 The generic-struct group specializes the constructor, methods, accessors, and
 `<Struct>_free` into the constructor's image, so one instantiation has one

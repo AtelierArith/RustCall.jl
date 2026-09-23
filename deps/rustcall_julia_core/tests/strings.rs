@@ -45,13 +45,15 @@ fn string_functions_get_ptr_len_wrappers() {
     assert!(!src.contains("shout_inner"));
     assert!(src.contains("pub extern \"C\" fn rustcall_concat(a_ptr: *const u8, a_len: usize, b_ptr: *const u8, b_len: usize, times: u32) -> concat_RustCallOwnedString"), "{src}");
     assert!(src.contains(
-        "pub extern \"C\" fn rustcall_byte_len(s_ptr: *const u8, s_len: usize) -> usize"
+        "pub extern \"C\" fn rustcall_byte_len(s_ptr: *const u8, s_len: usize) -> ::std::mem::MaybeUninit<usize>"
     ));
     assert!(
         src.contains("pub extern \"C\" fn rustcall_greeting() -> greeting_RustCallBorrowedString")
     );
     assert!(!src.contains("greeting_free_rust_string"));
-    assert!(src.contains("pub extern \"C\" fn rustcall_plain(x: i32) -> i32"));
+    assert!(
+        src.contains("pub extern \"C\" fn rustcall_plain(x: i32) -> ::std::mem::MaybeUninit<i32>")
+    );
     // Result / Option functions convert string arguments too.
     assert!(
         src.contains(
@@ -77,7 +79,7 @@ fn string_functions_get_ptr_len_wrappers() {
     assert!(src.contains("pub extern \"C\" fn rustcall_qualified(s_ptr: *const u8, s_len: usize) -> qualified_RustCallOwnedString"), "{src}");
     assert!(
         src.contains(
-            "pub extern \"C\" fn rustcall_qualified2(s_ptr: *const u8, s_len: usize) -> usize"
+            "pub extern \"C\" fn rustcall_qualified2(s_ptr: *const u8, s_len: usize) -> ::std::mem::MaybeUninit<usize>"
         ),
         "{src}"
     );
@@ -146,13 +148,13 @@ pub fn paren_res(s: (String)) -> (Result<i32, i32>) { s.parse().map_err(|_| -1) 
     let source = flat(&e.source);
     assert!(
         source.contains(
-            "pub extern \"C\" fn rustcall_consume(s_ptr: *const u8, s_len: usize) -> usize"
+            "pub extern \"C\" fn rustcall_consume(s_ptr: *const u8, s_len: usize) -> ::std::mem::MaybeUninit<usize>"
         ),
         "{source}"
     );
     assert!(
         source.contains(
-            "pub extern \"C\" fn rustcall_paren_ref(s_ptr: *const u8, s_len: usize) -> (usize)"
+            "pub extern \"C\" fn rustcall_paren_ref(s_ptr: *const u8, s_len: usize) -> ::std::mem::MaybeUninit<(usize)>"
         ),
         "{source}"
     );
@@ -201,13 +203,13 @@ impl Holder {
     let source = flat(&e.source);
     assert!(
         source.contains(
-            "pub extern \"C\" fn rustcall_f(s_ptr_: *const u8, s_len: usize, s_ptr: usize) -> usize"
+            "pub extern \"C\" fn rustcall_f(s_ptr_: *const u8, s_len: usize, s_ptr: usize) -> ::std::mem::MaybeUninit<usize>"
         ),
         "{source}"
     );
     assert!(source.contains("fn f(s: String, s_ptr: usize) -> usize"));
     assert!(
-        source.contains("pub extern \"C\" fn rustcall_g(s_ptr: *const u8, s_len_: usize, s_bytes: i32, s_cow: i32, s_len: i32) -> i32"),
+        source.contains("pub extern \"C\" fn rustcall_g(s_ptr: *const u8, s_len_: usize, s_bytes: i32, s_cow: i32, s_len: i32) -> ::std::mem::MaybeUninit<i32>"),
         "{source}"
     );
     assert!(
@@ -223,12 +225,12 @@ impl Holder {
     assert!(source.contains("h(s_ptr_, s)"), "{source}");
     assert!(
         source.contains(
-            "pub extern \"C\" fn rustcall_h(s_ptr_: u8, s_ptr: *const u8, s_len: usize) -> usize"
+            "pub extern \"C\" fn rustcall_h(s_ptr_: u8, s_ptr: *const u8, s_len: usize) -> ::std::mem::MaybeUninit<usize>"
         ),
         "{source}"
     );
     assert!(
-        source.contains("pub extern \"C\" fn rustcall_Holder_m(ptr_: *const Holder, ptr: u32, self_obj: u32, s_ptr: *const u8, s_len: usize, s_bytes: u32) -> u32"),
+        source.contains("pub extern \"C\" fn rustcall_Holder_m(ptr_: *const Holder, ptr: u32, self_obj: u32, s_ptr: *const u8, s_len: usize, s_bytes: u32) -> ::std::mem::MaybeUninit<u32>"),
         "{source}"
     );
     assert!(
@@ -366,11 +368,11 @@ impl Greeter {
         "{source}"
     );
     assert!(
-        source.contains("pub extern \"C\" fn rustcall_Greeter_take(ptr: *mut Greeter, s_ptr: *const u8, s_len: usize) -> usize"),
+        source.contains("pub extern \"C\" fn rustcall_Greeter_take(ptr: *mut Greeter, s_ptr: *const u8, s_len: usize) -> ::std::mem::MaybeUninit<usize>"),
         "{source}"
     );
     assert!(source.contains(
-        "pub extern \"C\" fn rustcall_Greeter_plain(ptr: *const Greeter, x: i32) -> i32"
+        "pub extern \"C\" fn rustcall_Greeter_plain(ptr: *const Greeter, x: i32) -> ::std::mem::MaybeUninit<i32>"
     ));
     assert!(!source.contains("from_utf8_unchecked"));
 
@@ -434,7 +436,7 @@ impl Counter {
     let e = expand(src).unwrap();
     assert!(
         flat(&e.source).contains(
-            "pub extern \"C\" fn Counter_get_name(ptr: *const Counter) -> Counter_RustCallOwnedString"
+            "pub extern \"C\" fn Counter_get_name(ptr: *const Counter) -> ::std::mem::MaybeUninit<Counter_RustCallOwnedString>"
         ),
         "{}",
         e.source
@@ -446,7 +448,8 @@ impl Counter {
         flat(&rustcall_julia_core::codegen::transform_struct_crate(item, &[]).to_string());
     assert!(
         crate_src.contains("fn Counter_get_name")
-            && crate_src.contains("-> Counter_RustCallOwnedString"),
+            && crate_src
+                .contains("-> :: std :: mem :: MaybeUninit < Counter_RustCallOwnedString >"),
         "{crate_src}"
     );
     assert!(

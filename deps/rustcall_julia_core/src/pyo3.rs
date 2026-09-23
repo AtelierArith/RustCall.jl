@@ -1714,6 +1714,7 @@ fn method_entry(
         return_type: return_type_to_string(&func.sig.output),
         return_abi: String::new(),
         generic_wrapper: String::new(),
+        generic_wrapper_name: String::new(),
         cfg: predicate_string(&effective_cfg),
     }
 }

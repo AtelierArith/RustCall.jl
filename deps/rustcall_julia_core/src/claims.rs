@@ -23,7 +23,7 @@
 //! exported, and callers that care (a Julia-facing diagnostic, say) filter.
 
 use crate::codegen::{panic_symbol, struct_free_symbol};
-use crate::manifest::{Arg, Function, Struct};
+use crate::manifest::{Arg, Function, ReturnKind, Struct};
 
 /// Which of Rust's two name spaces a generated item occupies. `struct Foo`
 /// and `fn Foo` may coexist in one module, so two claims of one spelling are
@@ -280,6 +280,32 @@ pub fn string_claims(owner: &str, owned: bool, borrowed: bool, policy: Policy) -
     out
 }
 
+/// The `#[repr(C)]` aggregate a `Result` / `Option` wrapper of `owner` declares
+/// next to itself: `CResult_<owner>` for [`ReturnKind::Result`] and
+/// [`ReturnKind::PyResult`], `COption_<owner>` for [`ReturnKind::Option`], none
+/// otherwise (`codegen::generate_wrapper`, `crate::wrap`).
+///
+/// A free function `Foo_bar` and a method `Foo::bar` of one module, both
+/// returning a `Result`, spell one `CResult_Foo_bar` — a duplicate type rustc
+/// reports inside generated code unless it is claimed here (#462).
+pub fn aggregate_name(kind: ReturnKind, owner: &str) -> Option<String> {
+    match kind {
+        ReturnKind::Result | ReturnKind::PyResult => Some(format!("CResult_{owner}")),
+        ReturnKind::Option => Some(format!("COption_{owner}")),
+        ReturnKind::Plain | ReturnKind::Unit => None,
+    }
+}
+
+/// The aggregate claims of an entry point for `owner` and every arity variant
+/// a trailing Python default adds (`default_arity_name`, #370): each variant
+/// is a wrapper of its own and declares its own aggregate.
+fn aggregate_claims(kind: ReturnKind, owner: &str, args: &[Arg]) -> Vec<Claim> {
+    (0..=trailing_default_count(args))
+        .filter_map(|omitted| aggregate_name(kind, &default_arity_name(owner, omitted)))
+        .map(|name| Claim::private(name, Namespace::Type))
+        .collect()
+}
+
 /// Whether a wrapper for an item with these ABI columns hands back an owned
 /// string buffer — as the result or as a `Result` / `Option` payload.
 pub fn declares_owned_string(abis: [&str; 4]) -> bool {
@@ -342,6 +368,7 @@ pub fn function_claims(f: &Function, policy: Policy) -> Vec<Claim> {
             f.has_borrowed_string_helper,
             policy,
         ));
+        out.extend(aggregate_claims(f.return_kind, &f.ffi_name, &f.args));
     }
     // The wrapper and its private items are emitted next to the function.
     exported_first(scoped(out, &Scope::Module(f.module_path.clone())))
@@ -437,7 +464,16 @@ pub fn struct_claims(s: &Struct, policy: Policy) -> Vec<Claim> {
             } else {
                 Scope::Unknown
             };
-            out.extend(scoped(wrapper_claims(&m.symbol), &where_));
+            // A `Result` / `Option` method declares `CResult_<Struct>_<m>` /
+            // `COption_<Struct>_<m>` next to its wrapper, whichever buffers it
+            // uses (`codegen::method_spec`, `crate::wrap`).
+            let mut claims = wrapper_claims(&m.symbol);
+            claims.extend(aggregate_claims(
+                m.return_kind,
+                &crate::codegen::method_string_owner(&s.ffi_name, &m.name),
+                &m.args,
+            ));
+            out.extend(scoped(claims, &where_));
         }
         let abis = [
             m.return_abi.as_str(),
@@ -501,6 +537,10 @@ pub fn internal_origin(claim: &Claim) -> &'static str {
         "the thread-local slot of a wrapper's panic channel, named by \
          upper-casing the wrapper's symbol — so two wrappers whose symbols \
          differ only in case meet here"
+    } else if claim.name.starts_with("CResult_") || claim.name.starts_with("COption_") {
+        "the `#[repr(C)]` type a `Result` / `Option` wrapper returns, named \
+         `CResult_<owner>` / `COption_<owner>` after the function, or after \
+         `<Struct>_<method>` for a method"
     } else if claim.name.ends_with("_RustCallOwnedString")
         || claim.name.ends_with("_RustCallBorrowedString")
     {

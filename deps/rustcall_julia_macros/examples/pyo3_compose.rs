@@ -95,5 +95,5 @@ fn main() {
     println!("{}", in_crate_caller());
     // The C entry points live next to the originals.
     assert!(rustcall_checked_halve(4).is_ok());
-    assert_eq!(rustcall_plain_add(2, 3), 5);
+    assert_eq!(unsafe { rustcall_plain_add(2, 3).assume_init() }, 5);
 }

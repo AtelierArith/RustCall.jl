@@ -178,6 +178,7 @@ where
     Box::into_raw(Box::new(obj))
 }
 """
+generic_wrapper_name = "Pair_new"
 
 [[structs.methods.args]]
 name = "left"
@@ -220,6 +221,7 @@ where
     self_obj.first()
 }
 """
+generic_wrapper_name = "Pair_first"
 
 [[structs.methods]]
 name = "inline_only"
@@ -252,6 +254,7 @@ where
     self_obj.inline_only()
 }
 """
+generic_wrapper_name = "Pair_inline_only"
 
 [[structs.generic_wrappers]]
 name = "Pair_new"

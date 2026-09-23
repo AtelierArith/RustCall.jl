@@ -107,6 +107,20 @@ impl StructModel {
     }
 
     /// Named fields `(ident, type)`; tuple and unit structs yield nothing.
+    /// The `#[cfg]` / `#[cfg_attr]` attributes of the named field `name`: a
+    /// generated accessor exists only where its field does (#462).
+    pub fn field_cfg_attrs(&self, name: &syn::Ident) -> Vec<syn::Attribute> {
+        match &self.item.fields {
+            syn::Fields::Named(named) => named
+                .named
+                .iter()
+                .find(|f| f.ident.as_ref() == Some(name))
+                .map(|f| crate::cfg::cfg_attrs(&f.attrs))
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        }
+    }
+
     pub fn named_fields(&self) -> Vec<(syn::Ident, Type)> {
         match &self.item.fields {
             syn::Fields::Named(named) => named

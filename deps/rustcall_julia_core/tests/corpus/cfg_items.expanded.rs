@@ -49,10 +49,10 @@ pub extern "C" fn rustcall_unix_only_take_panic(out: *mut u8, cap: usize) -> usi
 }
 #[cfg(unix)]
 #[no_mangle]
-pub extern "C" fn rustcall_unix_only(x: i32) -> i32 {
+pub extern "C" fn rustcall_unix_only(x: i32) -> ::std::mem::MaybeUninit<i32> {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
-        ::std::panic::AssertUnwindSafe(|| { unix_only(x) }),
+        ::std::panic::AssertUnwindSafe(|| { ::std::mem::MaybeUninit::new(unix_only(x)) }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
         ::std::result::Result::Err(rustcall_payload) => {
@@ -77,7 +77,7 @@ pub extern "C" fn rustcall_unix_only(x: i32) -> i32 {
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<i32>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
@@ -360,11 +360,13 @@ pub struct Handle {
     #[cfg(target_os = "linux")]
     pub epoll: i32,
 }
+#[cfg(unix)]
 thread_local! {
     static __RUSTCALL_DROP_PANIC_48616E646C655F66726565 : ::std::cell::RefCell <
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[cfg(unix)]
 #[no_mangle]
 pub extern "C" fn Handle_free_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_DROP_PANIC_48616E646C655F66726565
@@ -400,6 +402,7 @@ pub extern "C" fn Handle_free_take_panic(out: *mut u8, cap: usize) -> usize {
             }
         })
 }
+#[cfg(unix)]
 #[no_mangle]
 pub extern "C" fn Handle_free(ptr: *mut Handle) {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -438,11 +441,13 @@ pub extern "C" fn Handle_free(ptr: *mut Handle) {
         }
     }
 }
+#[cfg(unix)]
 thread_local! {
     static __RUSTCALL_HELPER_PANIC_48616E646C655F6765745F6664 : ::std::cell::RefCell <
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[cfg(unix)]
 #[no_mangle]
 pub extern "C" fn Handle_get_fd_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_HELPER_PANIC_48616E646C655F6765745F6664
@@ -478,11 +483,14 @@ pub extern "C" fn Handle_get_fd_take_panic(out: *mut u8, cap: usize) -> usize {
             }
         })
 }
+#[cfg(unix)]
 #[no_mangle]
-pub extern "C" fn Handle_get_fd(ptr: *const Handle) -> i32 {
+pub extern "C" fn Handle_get_fd(ptr: *const Handle) -> ::std::mem::MaybeUninit<i32> {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
-        ::std::panic::AssertUnwindSafe(|| { { unsafe { (*ptr).fd } } }),
+        ::std::panic::AssertUnwindSafe(|| {
+            ::std::mem::MaybeUninit::new({ unsafe { (*ptr).fd } })
+        }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
         ::std::result::Result::Err(rustcall_payload) => {
@@ -507,15 +515,17 @@ pub extern "C" fn Handle_get_fd(ptr: *const Handle) -> i32 {
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<i32>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
+#[cfg(unix)]
 thread_local! {
     static __RUSTCALL_HELPER_PANIC_48616E646C655F7365745F6664 : ::std::cell::RefCell <
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[cfg(unix)]
 #[no_mangle]
 pub extern "C" fn Handle_set_fd_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_HELPER_PANIC_48616E646C655F7365745F6664
@@ -551,6 +561,7 @@ pub extern "C" fn Handle_set_fd_take_panic(out: *mut u8, cap: usize) -> usize {
             }
         })
 }
+#[cfg(unix)]
 #[no_mangle]
 pub extern "C" fn Handle_set_fd(ptr: *mut Handle, value: i32) {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -589,11 +600,15 @@ pub extern "C" fn Handle_set_fd(ptr: *mut Handle, value: i32) {
         }
     }
 }
+#[cfg(unix)]
+#[cfg(target_os = "linux")]
 thread_local! {
     static __RUSTCALL_HELPER_PANIC_48616E646C655F6765745F65706F6C6C :
     ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[no_mangle]
 pub extern "C" fn Handle_get_epoll_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_HELPER_PANIC_48616E646C655F6765745F65706F6C6C
@@ -629,11 +644,15 @@ pub extern "C" fn Handle_get_epoll_take_panic(out: *mut u8, cap: usize) -> usize
             }
         })
 }
+#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[no_mangle]
-pub extern "C" fn Handle_get_epoll(ptr: *const Handle) -> i32 {
+pub extern "C" fn Handle_get_epoll(ptr: *const Handle) -> ::std::mem::MaybeUninit<i32> {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
-        ::std::panic::AssertUnwindSafe(|| { { unsafe { (*ptr).epoll } } }),
+        ::std::panic::AssertUnwindSafe(|| {
+            ::std::mem::MaybeUninit::new({ unsafe { (*ptr).epoll } })
+        }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
         ::std::result::Result::Err(rustcall_payload) => {
@@ -658,15 +677,19 @@ pub extern "C" fn Handle_get_epoll(ptr: *const Handle) -> i32 {
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<i32>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
+#[cfg(unix)]
+#[cfg(target_os = "linux")]
 thread_local! {
     static __RUSTCALL_HELPER_PANIC_48616E646C655F7365745F65706F6C6C :
     ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[no_mangle]
 pub extern "C" fn Handle_set_epoll_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_HELPER_PANIC_48616E646C655F7365745F65706F6C6C
@@ -702,6 +725,8 @@ pub extern "C" fn Handle_set_epoll_take_panic(out: *mut u8, cap: usize) -> usize
             }
         })
 }
+#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[no_mangle]
 pub extern "C" fn Handle_set_epoll(ptr: *mut Handle, value: i32) {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -740,11 +765,13 @@ pub extern "C" fn Handle_set_epoll(ptr: *mut Handle, value: i32) {
         }
     }
 }
+#[cfg(unix)]
 thread_local! {
     static __RUSTCALL_PANIC_RUSTCALL_HANDLE_FD : ::std::cell::RefCell <
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[cfg(unix)]
 #[no_mangle]
 pub extern "C" fn rustcall_Handle_fd_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_HANDLE_FD
@@ -780,13 +807,16 @@ pub extern "C" fn rustcall_Handle_fd_take_panic(out: *mut u8, cap: usize) -> usi
             }
         })
 }
+#[cfg(unix)]
 #[no_mangle]
-pub extern "C" fn rustcall_Handle_fd(ptr: *const Handle) -> i32 {
+pub extern "C" fn rustcall_Handle_fd(
+    ptr: *const Handle,
+) -> ::std::mem::MaybeUninit<i32> {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
-            self_obj.fd()
+            ::std::mem::MaybeUninit::new(self_obj.fd())
         }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
@@ -812,16 +842,18 @@ pub extern "C" fn rustcall_Handle_fd(ptr: *const Handle) -> i32 {
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<i32>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
+#[cfg(unix)]
 #[cfg(target_os = "linux")]
 thread_local! {
     static __RUSTCALL_PANIC_RUSTCALL_HANDLE_EPOLL : ::std::cell::RefCell <
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[cfg(unix)]
 #[cfg(target_os = "linux")]
 #[no_mangle]
 pub extern "C" fn rustcall_Handle_epoll_take_panic(out: *mut u8, cap: usize) -> usize {
@@ -858,14 +890,17 @@ pub extern "C" fn rustcall_Handle_epoll_take_panic(out: *mut u8, cap: usize) -> 
             }
         })
 }
+#[cfg(unix)]
 #[cfg(target_os = "linux")]
 #[no_mangle]
-pub extern "C" fn rustcall_Handle_epoll(ptr: *const Handle) -> i32 {
+pub extern "C" fn rustcall_Handle_epoll(
+    ptr: *const Handle,
+) -> ::std::mem::MaybeUninit<i32> {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
-            self_obj.epoll()
+            ::std::mem::MaybeUninit::new(self_obj.epoll())
         }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
@@ -891,7 +926,7 @@ pub extern "C" fn rustcall_Handle_epoll(ptr: *const Handle) -> i32 {
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<i32>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
@@ -953,10 +988,10 @@ mod extra {
             })
     }
     #[no_mangle]
-    pub extern "C" fn rustcall_extra__bonus() -> i32 {
+    pub extern "C" fn rustcall_extra__bonus() -> ::std::mem::MaybeUninit<i32> {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
         match ::std::panic::catch_unwind(
-            ::std::panic::AssertUnwindSafe(|| { bonus() }),
+            ::std::panic::AssertUnwindSafe(|| { ::std::mem::MaybeUninit::new(bonus()) }),
         ) {
             ::std::result::Result::Ok(rustcall_value) => rustcall_value,
             ::std::result::Result::Err(rustcall_payload) => {
@@ -981,7 +1016,7 @@ mod extra {
                             rustcall_message,
                         );
                     });
-                unsafe { ::std::mem::zeroed::<i32>() }
+                ::std::mem::MaybeUninit::zeroed()
             }
         }
     }

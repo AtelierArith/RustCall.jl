@@ -48,9 +48,11 @@ pub mod a {
             })
     }
     #[no_mangle]
-    pub extern "C" fn rustcall_a__run() -> i32 {
+    pub extern "C" fn rustcall_a__run() -> ::std::mem::MaybeUninit<i32> {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
-        match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| { run() })) {
+        match ::std::panic::catch_unwind(
+            ::std::panic::AssertUnwindSafe(|| { ::std::mem::MaybeUninit::new(run()) }),
+        ) {
             ::std::result::Result::Ok(rustcall_value) => rustcall_value,
             ::std::result::Result::Err(rustcall_payload) => {
                 let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
@@ -74,7 +76,7 @@ pub mod a {
                             rustcall_message,
                         );
                     });
-                unsafe { ::std::mem::zeroed::<i32>() }
+                ::std::mem::MaybeUninit::zeroed()
             }
         }
     }
@@ -215,10 +217,12 @@ pub mod a {
             })
     }
     #[no_mangle]
-    pub extern "C" fn a__C_get_v(ptr: *const C) -> i32 {
+    pub extern "C" fn a__C_get_v(ptr: *const C) -> ::std::mem::MaybeUninit<i32> {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
         match ::std::panic::catch_unwind(
-            ::std::panic::AssertUnwindSafe(|| { { unsafe { (*ptr).v } } }),
+            ::std::panic::AssertUnwindSafe(|| {
+                ::std::mem::MaybeUninit::new({ unsafe { (*ptr).v } })
+            }),
         ) {
             ::std::result::Result::Ok(rustcall_value) => rustcall_value,
             ::std::result::Result::Err(rustcall_payload) => {
@@ -243,7 +247,7 @@ pub mod a {
                             rustcall_message,
                         );
                     });
-                unsafe { ::std::mem::zeroed::<i32>() }
+                ::std::mem::MaybeUninit::zeroed()
             }
         }
     }
@@ -366,11 +370,13 @@ pub mod a {
             })
     }
     #[no_mangle]
-    pub extern "C" fn a__C_get_label(ptr: *const C) -> a__C_RustCallOwnedString {
+    pub extern "C" fn a__C_get_label(
+        ptr: *const C,
+    ) -> ::std::mem::MaybeUninit<a__C_RustCallOwnedString> {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| {
-                {
+                ::std::mem::MaybeUninit::new({
                     let mut rustcall_bytes = unsafe {
                         (*ptr).label.clone().into_bytes()
                     };
@@ -381,7 +387,7 @@ pub mod a {
                     };
                     std::mem::forget(rustcall_bytes);
                     rustcall_ret
-                }
+                })
             }),
         ) {
             ::std::result::Result::Ok(rustcall_value) => rustcall_value,
@@ -407,7 +413,7 @@ pub mod a {
                             rustcall_message,
                         );
                     });
-                unsafe { ::std::mem::zeroed::<a__C_RustCallOwnedString>() }
+                ::std::mem::MaybeUninit::zeroed()
             }
         }
     }
@@ -614,12 +620,12 @@ pub mod a {
             })
     }
     #[no_mangle]
-    pub extern "C" fn rustcall_a__C_get(ptr: *const C) -> i32 {
+    pub extern "C" fn rustcall_a__C_get(ptr: *const C) -> ::std::mem::MaybeUninit<i32> {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| {
                 let self_obj = unsafe { &*ptr };
-                self_obj.get()
+                ::std::mem::MaybeUninit::new(self_obj.get())
             }),
         ) {
             ::std::result::Result::Ok(rustcall_value) => rustcall_value,
@@ -645,7 +651,7 @@ pub mod a {
                             rustcall_message,
                         );
                     });
-                unsafe { ::std::mem::zeroed::<i32>() }
+                ::std::mem::MaybeUninit::zeroed()
             }
         }
     }
@@ -965,10 +971,12 @@ pub mod a {
                 })
         }
         #[no_mangle]
-        pub extern "C" fn rustcall_a__deep_0er__run() -> i32 {
+        pub extern "C" fn rustcall_a__deep_0er__run() -> ::std::mem::MaybeUninit<i32> {
             let _rustcall_boundary = crate::__RustCallBoundary::enter();
             match ::std::panic::catch_unwind(
-                ::std::panic::AssertUnwindSafe(|| { run() }),
+                ::std::panic::AssertUnwindSafe(|| {
+                    ::std::mem::MaybeUninit::new(run())
+                }),
             ) {
                 ::std::result::Result::Ok(rustcall_value) => rustcall_value,
                 ::std::result::Result::Err(rustcall_payload) => {
@@ -993,7 +1001,7 @@ pub mod a {
                                 rustcall_message,
                             );
                         });
-                    unsafe { ::std::mem::zeroed::<i32>() }
+                    ::std::mem::MaybeUninit::zeroed()
                 }
             }
         }
@@ -1044,10 +1052,14 @@ pub mod a {
                 })
         }
         #[no_mangle]
-        pub extern "C" fn rustcall_a__deep_0er__snake_0case_0fn(x_1: i32) -> i32 {
+        pub extern "C" fn rustcall_a__deep_0er__snake_0case_0fn(
+            x_1: i32,
+        ) -> ::std::mem::MaybeUninit<i32> {
             let _rustcall_boundary = crate::__RustCallBoundary::enter();
             match ::std::panic::catch_unwind(
-                ::std::panic::AssertUnwindSafe(|| { snake_case_fn(x_1) }),
+                ::std::panic::AssertUnwindSafe(|| {
+                    ::std::mem::MaybeUninit::new(snake_case_fn(x_1))
+                }),
             ) {
                 ::std::result::Result::Ok(rustcall_value) => rustcall_value,
                 ::std::result::Result::Err(rustcall_payload) => {
@@ -1072,7 +1084,7 @@ pub mod a {
                                 rustcall_message,
                             );
                         });
-                    unsafe { ::std::mem::zeroed::<i32>() }
+                    ::std::mem::MaybeUninit::zeroed()
                 }
             }
         }
@@ -1123,9 +1135,11 @@ pub mod b {
             })
     }
     #[no_mangle]
-    pub extern "C" fn rustcall_b__run() -> i32 {
+    pub extern "C" fn rustcall_b__run() -> ::std::mem::MaybeUninit<i32> {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
-        match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| { run() })) {
+        match ::std::panic::catch_unwind(
+            ::std::panic::AssertUnwindSafe(|| { ::std::mem::MaybeUninit::new(run()) }),
+        ) {
             ::std::result::Result::Ok(rustcall_value) => rustcall_value,
             ::std::result::Result::Err(rustcall_payload) => {
                 let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
@@ -1149,7 +1163,7 @@ pub mod b {
                             rustcall_message,
                         );
                     });
-                unsafe { ::std::mem::zeroed::<i32>() }
+                ::std::mem::MaybeUninit::zeroed()
             }
         }
     }
@@ -1275,10 +1289,12 @@ pub mod b {
             })
     }
     #[no_mangle]
-    pub extern "C" fn b__C_get_v(ptr: *const C) -> i32 {
+    pub extern "C" fn b__C_get_v(ptr: *const C) -> ::std::mem::MaybeUninit<i32> {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
         match ::std::panic::catch_unwind(
-            ::std::panic::AssertUnwindSafe(|| { { unsafe { (*ptr).v } } }),
+            ::std::panic::AssertUnwindSafe(|| {
+                ::std::mem::MaybeUninit::new({ unsafe { (*ptr).v } })
+            }),
         ) {
             ::std::result::Result::Ok(rustcall_value) => rustcall_value,
             ::std::result::Result::Err(rustcall_payload) => {
@@ -1303,7 +1319,7 @@ pub mod b {
                             rustcall_message,
                         );
                     });
-                unsafe { ::std::mem::zeroed::<i32>() }
+                ::std::mem::MaybeUninit::zeroed()
             }
         }
     }
@@ -1502,12 +1518,12 @@ pub mod b {
             })
     }
     #[no_mangle]
-    pub extern "C" fn rustcall_b__C_get(ptr: *const C) -> i32 {
+    pub extern "C" fn rustcall_b__C_get(ptr: *const C) -> ::std::mem::MaybeUninit<i32> {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| {
                 let self_obj = unsafe { &*ptr };
-                self_obj.get()
+                ::std::mem::MaybeUninit::new(self_obj.get())
             }),
         ) {
             ::std::result::Result::Ok(rustcall_value) => rustcall_value,
@@ -1533,7 +1549,7 @@ pub mod b {
                             rustcall_message,
                         );
                     });
-                unsafe { ::std::mem::zeroed::<i32>() }
+                ::std::mem::MaybeUninit::zeroed()
             }
         }
     }
@@ -1589,9 +1605,11 @@ pub extern "C" fn rustcall_run_take_panic(out: *mut u8, cap: usize) -> usize {
         })
 }
 #[no_mangle]
-pub extern "C" fn rustcall_run() -> i32 {
+pub extern "C" fn rustcall_run() -> ::std::mem::MaybeUninit<i32> {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
-    match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| { run() })) {
+    match ::std::panic::catch_unwind(
+        ::std::panic::AssertUnwindSafe(|| { ::std::mem::MaybeUninit::new(run()) }),
+    ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
         ::std::result::Result::Err(rustcall_payload) => {
             let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
@@ -1615,7 +1633,7 @@ pub extern "C" fn rustcall_run() -> i32 {
                         rustcall_message,
                     );
                 });
-            unsafe { ::std::mem::zeroed::<i32>() }
+            ::std::mem::MaybeUninit::zeroed()
         }
     }
 }
@@ -1664,9 +1682,11 @@ pub mod a_b {
             })
     }
     #[no_mangle]
-    pub extern "C" fn rustcall_a_0b__c() -> i32 {
+    pub extern "C" fn rustcall_a_0b__c() -> ::std::mem::MaybeUninit<i32> {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
-        match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| { c() })) {
+        match ::std::panic::catch_unwind(
+            ::std::panic::AssertUnwindSafe(|| { ::std::mem::MaybeUninit::new(c()) }),
+        ) {
             ::std::result::Result::Ok(rustcall_value) => rustcall_value,
             ::std::result::Result::Err(rustcall_payload) => {
                 let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
@@ -1690,7 +1710,7 @@ pub mod a_b {
                             rustcall_message,
                         );
                     });
-                unsafe { ::std::mem::zeroed::<i32>() }
+                ::std::mem::MaybeUninit::zeroed()
             }
         }
     }
@@ -1740,9 +1760,11 @@ pub mod a {
             })
     }
     #[no_mangle]
-    pub extern "C" fn rustcall_a__b_0c() -> i32 {
+    pub extern "C" fn rustcall_a__b_0c() -> ::std::mem::MaybeUninit<i32> {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
-        match ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| { b_c() })) {
+        match ::std::panic::catch_unwind(
+            ::std::panic::AssertUnwindSafe(|| { ::std::mem::MaybeUninit::new(b_c()) }),
+        ) {
             ::std::result::Result::Ok(rustcall_value) => rustcall_value,
             ::std::result::Result::Err(rustcall_payload) => {
                 let rustcall_message: ::std::string::String = if let ::std::option::Option::Some(
@@ -1766,7 +1788,7 @@ pub mod a {
                             rustcall_message,
                         );
                     });
-                unsafe { ::std::mem::zeroed::<i32>() }
+                ::std::mem::MaybeUninit::zeroed()
             }
         }
     }

@@ -527,9 +527,9 @@ mod tests {
         )
         .unwrap();
         assert!(out.source.contains("#[no_mangle]"));
-        assert!(out
-            .source
-            .contains("pub extern \"C\" fn rustcall_identity_i32(x: i32) -> i32"));
+        assert!(out.source.contains(
+            "pub extern \"C\" fn rustcall_identity_i32(x: i32) -> ::std::mem::MaybeUninit<i32>"
+        ));
         assert!(!out.source.contains("identity_i32<"));
         assert!(out.source.contains("let y: i32 = x;"));
         // The generic original stays next to the instantiation.
@@ -564,9 +564,13 @@ mod tests {
         )
         .unwrap();
         assert!(out.source.contains("pub struct Point<T>"));
-        assert!(out
-            .source
-            .contains("pub extern \"C\" fn rustcall_Point_new_i64(x: i64) -> *mut Point<i64>"));
+        let source = flat(&out.source);
+        assert!(
+            source.contains(
+                "pub extern \"C\" fn rustcall_Point_new_i64(x: i64) -> ::std::mem::MaybeUninit<*mut Point<i64>>"
+            ),
+            "{source}"
+        );
     }
 
     #[test]
@@ -582,9 +586,9 @@ mod tests {
         .unwrap();
         assert!(out.source.contains("mod api {"));
         // The instantiation lives in `api`, so its symbol is qualified (#300).
-        assert!(out
-            .source
-            .contains("pub extern \"C\" fn rustcall_api__f_0i32(x: i32) -> i32"));
+        assert!(out.source.contains(
+            "pub extern \"C\" fn rustcall_api__f_0i32(x: i32) -> ::std::mem::MaybeUninit<i32>"
+        ));
         assert!(out.source.contains("pub fn f<T>"));
         assert_eq!(out.manifest.functions[0].module_path, vec!["api"]);
         assert_eq!(out.manifest.functions[0].ffi_name, "api__f_0i32");
@@ -658,9 +662,9 @@ mod tests {
         let src = "pub fn f<T: Copy>(x: T) -> T { x }\nfn helper() -> i32 { f(1) }";
         let out = specialize(src, "f", &[("T".into(), "i32".into())], "f_i32").unwrap();
         assert!(out.source.contains("pub fn f<T: Copy>(x: T) -> T"));
-        assert!(out
-            .source
-            .contains("pub extern \"C\" fn rustcall_f_i32(x: i32) -> i32"));
+        assert!(out.source.contains(
+            "pub extern \"C\" fn rustcall_f_i32(x: i32) -> ::std::mem::MaybeUninit<i32>"
+        ));
         assert!(out.source.contains("fn helper() -> i32 {"));
         let f_pos = out.source.find("pub fn f<T: Copy>").unwrap();
         let s_pos = out.source.find("fn f_i32").unwrap();
@@ -672,9 +676,9 @@ mod tests {
     fn nested_items_shadowing_a_parameter_are_left_alone() {
         let src = "pub fn outer<T: Copy>(x: T) -> T { fn inner<T>(x: T) -> T { x } struct Local<T>(T); inner(x) }";
         let out = specialize(src, "outer", &[("T".into(), "i32".into())], "outer_i32").unwrap();
-        assert!(out
-            .source
-            .contains("pub extern \"C\" fn rustcall_outer_i32(x: i32) -> i32"));
+        assert!(out.source.contains(
+            "pub extern \"C\" fn rustcall_outer_i32(x: i32) -> ::std::mem::MaybeUninit<i32>"
+        ));
         assert!(out.source.contains("fn inner<T>(x: T) -> T"));
         assert!(out.source.contains("struct Local<T>(T);"));
         // A nested item that does not redeclare T still sees the substitution.
@@ -738,7 +742,7 @@ mod tests {
         let source = flat(&out.source);
         assert!(
             source.contains(
-                "pub extern \"C\" fn rustcall_count_i32(x: i32, s_ptr: *const u8, s_len: usize) -> usize"
+                "pub extern \"C\" fn rustcall_count_i32(x: i32, s_ptr: *const u8, s_len: usize) -> ::std::mem::MaybeUninit<usize>"
             ),
             "{source}"
         );

@@ -155,15 +155,21 @@ fn main() {
     let mut point = TestPoint { x: 1.0, y: 2.0 };
     let ptr = &mut point as *mut TestPoint;
 
-    assert!((TestPoint_get_x(ptr) - 1.0).abs() < 1e-10);
+    assert!((unsafe { TestPoint_get_x(ptr).assume_init() } - 1.0).abs() < 1e-10);
     TestPoint_set_x(ptr, 5.0);
-    assert!((TestPoint_get_x(ptr) - 5.0).abs() < 1e-10);
+    assert!((unsafe { TestPoint_get_x(ptr).assume_init() } - 5.0).abs() < 1e-10);
 
     // Verify Counter FFI functions exist
     let counter_ptr = rustcall_Counter_new(10);
-    assert_eq!(rustcall_Counter_get_value(counter_ptr), 10);
+    assert_eq!(
+        unsafe { rustcall_Counter_get_value(counter_ptr).assume_init() },
+        10
+    );
     rustcall_Counter_increment(counter_ptr);
-    assert_eq!(rustcall_Counter_get_value(counter_ptr), 11);
+    assert_eq!(
+        unsafe { rustcall_Counter_get_value(counter_ptr).assume_init() },
+        11
+    );
     Counter_free(counter_ptr);
 
     // Test Result<T, E> functions
@@ -220,16 +226,25 @@ fn main() {
 
     // Test constructor
     let builder_ptr = rustcall_Builder_new();
-    assert_eq!(rustcall_Builder_get_x(builder_ptr), 0);
+    assert_eq!(
+        unsafe { rustcall_Builder_get_x(builder_ptr).assume_init() },
+        0
+    );
 
     // Test builder method (NOT a constructor — should take a pointer, not return a boxed one)
-    let x_val = rustcall_Builder_set_x(builder_ptr, 10);
+    let x_val = unsafe { rustcall_Builder_set_x(builder_ptr, 10).assume_init() };
     assert_eq!(x_val, 10);
-    assert_eq!(rustcall_Builder_get_x(builder_ptr), 10);
+    assert_eq!(
+        unsafe { rustcall_Builder_get_x(builder_ptr).assume_init() },
+        10
+    );
 
     // Test static constructor (create_default returns Self)
     let builder2_ptr = rustcall_Builder_create_default();
-    assert_eq!(rustcall_Builder_get_x(builder2_ptr), 42);
+    assert_eq!(
+        unsafe { rustcall_Builder_get_x(builder2_ptr).assume_init() },
+        42
+    );
 
     Builder_free(builder_ptr);
     Builder_free(builder2_ptr);

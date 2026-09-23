@@ -38,9 +38,18 @@ Every function/method wrapper RustCall generates for a `#[julia]` item runs the
 body inside `std::panic::catch_unwind`. On a panic the wrapper:
 
 1. records the message in a **thread-local channel of its own**, and
-2. returns a sentinel of the right shape — a zeroed primitive, a null pointer,
-   an empty string buffer, the `Err`/`None` discriminant of a `CResult_*` /
-   `COption_*`.
+2. returns a sentinel of the right shape — a null pointer, an empty string
+   buffer, the `Err`/`None` discriminant of a `CResult_*` / `COption_*`, or
+   `MaybeUninit::zeroed()` for a value returned as written.
+
+A value returned as written — and a generated field getter's result — leaves the
+wrapper as `MaybeUninit<T>`, which has the size, alignment and ABI of `T`, so
+the C signature Julia calls is `T` itself (#462). Returning
+`std::mem::zeroed::<T>()` instead was undefined behaviour for any `T` that is not
+valid all-zero — `&T`, `Box<T>`, `NonZero*`, a function pointer, a `#[repr(C)]`
+struct holding one — and Rust turns that into a non-unwinding panic that
+aborted the process on the very panic the boundary was catching. A Rust caller
+of a generated wrapper (a test, say) reads the value with `assume_init()`.
 
 Julia reads that channel immediately after the call — one `ccall` into a
 thread-local read that normally returns 0 — and raises before the sentinel is

@@ -397,3 +397,61 @@ end
         @test RustCall.finalizer_failure_count() == before
     end
 end
+
+# A generic struct's wrappers are registered for monomorphization in one
+# process-wide table. They used to be named `<Struct>_<method>` whatever module
+# the struct lived in, so `geo::QualPt` and `gfx::QualPt` of two blocks both
+# registered `QualPt_new`, and the second replaced the first: constructing the
+# first block's struct ran the second block's wrapper. Every wrapper now hangs
+# off the struct's FFI name, module path folded in, and Julia takes each name
+# from the manifest (#462).
+@testset "same-named generic structs in two modules keep their own wrappers (#462)" begin
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc not found"
+        return
+    end
+    @eval module GenericQualGeo
+    using RustCall
+    rust"""
+    pub mod geo {
+        #[julia]
+        pub struct QualPt<T> { pub x: T }
+        impl<T: Copy> QualPt<T> {
+            pub fn new(x: T) -> Self { Self { x } }
+            pub fn tag(&self) -> i32 { 1 }
+        }
+    }
+    """
+    end
+    @eval module GenericQualGfx
+    using RustCall
+    rust"""
+    pub mod gfx {
+        #[julia]
+        pub struct QualPt<T> { pub pad: i64, pub x: T }
+        impl<T: Copy> QualPt<T> {
+            pub fn new(x: T) -> Self { Self { pad: 99, x } }
+            pub fn tag(&self) -> i32 { 2 }
+        }
+    }
+    """
+    end
+    for name in ("geo__QualPt_new", "geo__QualPt_tag", "geo__QualPt_get_x", "geo__QualPt_free",
+                 "gfx__QualPt_new", "gfx__QualPt_tag", "gfx__QualPt_get_pad", "gfx__QualPt_free")
+        @test haskey(RustCall.GENERIC_FUNCTION_REGISTRY, name)
+    end
+    @test !haskey(RustCall.GENERIC_FUNCTION_REGISTRY, "QualPt_new")
+
+    geo = Base.invokelatest(() -> GenericQualGeo.QualPt{Int32}(Int32(5)))
+    gfx = Base.invokelatest(() -> GenericQualGfx.QualPt{Int32}(Int32(7)))
+    @test Base.invokelatest(GenericQualGeo.tag, geo) == 1
+    @test Base.invokelatest(GenericQualGfx.tag, gfx) == 2
+    @test Base.invokelatest(getproperty, geo, :x) == 5
+    @test Base.invokelatest(getproperty, gfx, :x) == 7
+    @test Base.invokelatest(getproperty, gfx, :pad) == 99
+
+    before = RustCall.finalizer_failure_count()
+    finalize(geo)
+    finalize(gfx)
+    @test RustCall.finalizer_failure_count() == before
+end

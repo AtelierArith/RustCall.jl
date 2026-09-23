@@ -1339,6 +1339,7 @@ fn crate_struct_entry(
             // (`<Struct>_<method>_RustCallOwnedString` / `_free_rust_string`).
             return_abi: crate::codegen::return_abi(&m.func.sig).to_string(),
             generic_wrapper: String::new(),
+            generic_wrapper_name: String::new(),
         })
         .collect();
     Struct {

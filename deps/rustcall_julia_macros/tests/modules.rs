@@ -126,22 +126,25 @@ fn the_rust_items_are_untouched() {
 
 #[test]
 fn free_functions_are_qualified_by_their_module() {
-    assert_eq!(rustcall_run(), 0);
-    assert_eq!(a::rustcall_a__run(), 1);
-    assert_eq!(b::rustcall_b__run(), 2);
-    assert_eq!(a::deep_er::rustcall_a__deep_0er__run(), 3);
+    assert_eq!(unsafe { rustcall_run().assume_init() }, 0);
+    assert_eq!(unsafe { a::rustcall_a__run().assume_init() }, 1);
+    assert_eq!(unsafe { b::rustcall_b__run().assume_init() }, 2);
+    assert_eq!(
+        unsafe { a::deep_er::rustcall_a__deep_0er__run().assume_init() },
+        3
+    );
 }
 
 #[test]
 fn struct_symbols_are_qualified_by_their_module() {
     let pa = a::rustcall_a__C_new(4);
     let pb = b::rustcall_b__C_new(4);
-    assert_eq!(a::rustcall_a__C_get(pa), 4);
-    assert_eq!(b::rustcall_b__C_get(pb), 8);
-    assert_eq!(a::a__C_get_v(pa), 4);
+    assert_eq!(unsafe { a::rustcall_a__C_get(pa).assume_init() }, 4);
+    assert_eq!(unsafe { b::rustcall_b__C_get(pb).assume_init() }, 8);
+    assert_eq!(unsafe { a::a__C_get_v(pa).assume_init() }, 4);
     a::a__C_set_v(pa, 7);
-    assert_eq!(a::a__C_get_v(pa), 7);
-    assert_eq!(b::b__C_get_v(pb), 8);
+    assert_eq!(unsafe { a::a__C_get_v(pa).assume_init() }, 7);
+    assert_eq!(unsafe { b::b__C_get_v(pb).assume_init() }, 8);
 
     // The per-method string buffer hangs off the qualified owner too.
     let out = a::rustcall_a__C_describe(pa);

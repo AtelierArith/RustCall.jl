@@ -463,7 +463,7 @@ fn a_cross_module_wrapper_is_emitted_inside_the_impls_module() {
     // spells both the struct and the alias the way `ops` can see them.
     let body = module_body(&expanded.source, "ops");
     assert!(
-        body.contains("pub extern \"C\" fn rustcall_Gauge_read(ptr: *const super::Gauge) -> Count"),
+        flat(body).contains("pub extern \"C\" fn rustcall_Gauge_read(ptr: *const super::Gauge) -> ::std::mem::MaybeUninit<Count>"),
         "{body}"
     );
     assert!(
@@ -593,7 +593,7 @@ fn a_renamed_import_keeps_the_resolved_structs_symbols() {
     // The symbol is the resolved struct's; the receiver is spelled with the
     // only name in scope at the block.
     assert!(
-        body.contains("pub extern \"C\" fn rustcall_Gauge_read(ptr: *const Meter) -> i32"),
+        flat(body).contains("pub extern \"C\" fn rustcall_Gauge_read(ptr: *const Meter) -> ::std::mem::MaybeUninit<i32>"),
         "{body}"
     );
     assert!(body.contains("fn rustcall_Gauge_label("), "{body}");
@@ -688,6 +688,18 @@ fn the_crate_flavour_keeps_its_per_method_buffers() {
 
 /// The body of the inline module `name` in an expanded source: everything
 /// between `mod <name> {` and the matching closing brace.
+/// `source` with its whitespace collapsed, so an assertion about a signature
+/// does not depend on where prettyplease breaks a long line.
+fn flat(source: &str) -> String {
+    source
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace("( ", "(")
+        .replace(", )", ")")
+        .replace(" )", ")")
+}
+
 fn module_body<'a>(source: &'a str, name: &str) -> &'a str {
     let header = format!("mod {name} {{");
     let start = source

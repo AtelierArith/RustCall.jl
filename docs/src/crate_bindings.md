@@ -132,6 +132,27 @@ p.y      # => 4.0 (uses Point_get_y)
 p.x = 5.0  # (uses Point_set_x)
 ```
 
+A field's own `#[cfg]` gates its accessors too, on top of the struct's: a
+`#[cfg(target_os = "linux")]` field has no `Point_get_*` elsewhere.
+
+### Generic items are refused
+
+An `extern "C"` entry point needs concrete types, and `#[julia]` sees one item
+and cannot know which instantiations Julia will call. A `#[julia]` function,
+struct, impl block or method with a type or `const` parameter, or with
+`impl Trait` in its signature, is therefore a compile error at the item:
+
+```text
+error: #[julia] function `identity` is generic over `T`: an `extern "C"` entry point
+       needs concrete types, ...
+```
+
+Write a non-generic `#[julia]` item that calls the generic one
+(`#[julia] fn identity_i32(x: i32) -> i32 { identity(x) }`), or define the code
+in a `rust"""` block, where RustCall monomorphizes generic functions and structs
+on demand (see [Generics](generics.md)). Lifetime parameters are fine:
+`fn echo<'a>(s: &'a str) -> &'a str` is wrapped as usual.
+
 ### For Impl Blocks
 
 ```rust

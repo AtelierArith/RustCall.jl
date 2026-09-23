@@ -746,6 +746,13 @@ pub struct Method {
     /// monomorphization. Empty otherwise.
     #[serde(default)]
     pub generic_wrapper: String,
+    /// For generic structs: the name of [`Method::generic_wrapper`], the
+    /// [`GenericWrapper::name`] a consumer registers and monomorphizes it
+    /// under — `<ffi_name>_<method>`, module-qualified like every other name
+    /// of the struct (#462). Empty — and then omitted — otherwise. Additive
+    /// within schema 0.6.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub generic_wrapper_name: String,
     /// `#[cfg(...)]` predicate on the method that the scan could not decide
     /// (see [`Function::cfg`]); empty — and then omitted — when there is
     /// none. A wrapper crate generated from a leniently evaluated scan refuses

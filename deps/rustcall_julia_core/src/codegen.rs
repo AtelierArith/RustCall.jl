@@ -43,6 +43,7 @@
 //! | owned string buffer / release | `<owner>_RustCallOwnedString` / `<owner>_free_rust_string` |
 //! | borrowed string view | `<owner>_RustCallBorrowedString` |
 //! | panic channel of a wrapper | `<wrapper symbol>_take_panic` |
+//! | generic inline struct's wrappers (not exported, #462) | `<Struct>_<method>`, `<Struct>_get_x`, `<Struct>_free` |
 //!
 //! Only the first three wrap a user-written item and so must step aside from
 //! its name; `<owner>` is the free function, `<Struct>_<method>` or `<Struct>`
@@ -1012,16 +1013,24 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
             }
         }
         WrapperReturn::Plain(ty) => {
-            // A zeroed primitive / raw pointer is the sentinel: Julia raises
-            // before it is ever read. Every type that reaches `Plain` is
-            // `#[repr(C)]`-compatible and has no niche that makes all-zero
-            // invalid (`is_ffi_compatible_type`).
-            let sentinel = quote! { unsafe { ::std::mem::zeroed::<#ty>() } };
+            // The value leaves as `MaybeUninit<T>` (#462). Nothing checks that
+            // a plain return type is valid all-zero — `&T`, `Box<T>`,
+            // `NonZero*`, a fn pointer, a user `#[repr(C)]` struct holding one
+            // all reach this arm — so a `mem::zeroed::<T>()` sentinel hit
+            // rustc's non-unwinding "attempted to zero-initialize" check and
+            // aborted the process on the very panic the boundary exists to
+            // contain. `MaybeUninit::zeroed()` has no validity requirement,
+            // and `MaybeUninit<T>` is guaranteed the size, alignment and
+            // **ABI** of `T`, so the C signature Julia calls is unchanged
+            // (and `improper_ctypes_definitions` still judges `T` itself).
+            // Julia reads the panic channel and raises before it looks at the
+            // sentinel.
+            let sentinel = quote! { ::std::mem::MaybeUninit::zeroed() };
             let guarded = guarded_body(
                 &julia_name,
                 &slot,
                 &prologue,
-                quote! { #call },
+                quote! { ::std::mem::MaybeUninit::new(#call) },
                 sentinel,
                 false,
                 panic_hook,
@@ -1029,7 +1038,7 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
             quote! {
                 #(#cfg_attrs)*
                 #[no_mangle]
-                pub extern "C" fn #symbol(#(#wrapper_args),*) -> #ty {
+                pub extern "C" fn #symbol(#(#wrapper_args),*) -> ::std::mem::MaybeUninit<#ty> {
                     #guarded
                 }
             }
@@ -1548,13 +1557,25 @@ pub fn transform_function(
     module_path: &[String],
     panic_hook: PanicHook,
 ) -> TokenStream2 {
+    // Every refusal carries the item's `#[cfg]` (PR #470 review): inside a
+    // `#[julia] mod`, and for a `#[cfg]` written after `#[julia]`, the macro
+    // runs before rustc evaluates the predicate, so an ungated
+    // `compile_error!` broke builds where the item does not exist.
+    let cfgs = cfg_attrs(&func.attrs);
     if func.sig.unsafety.is_some() {
-        return quote! {
-            compile_error!("#[julia] cannot be applied to unsafe functions directly. The function will be made extern \"C\" which has its own safety semantics.");
-        };
+        return gated_error(
+            &cfgs,
+            quote! {
+                compile_error!("#[julia] cannot be applied to unsafe functions directly. The function will be made extern \"C\" which has its own safety semantics.");
+            },
+        );
     }
     if let Some(error) = non_ffi_payload_error(&func) {
-        return error;
+        return gated_error(&cfgs, error);
+    }
+    if let Some(error) = generic_signature_error(&func.sig, "function") {
+        let error = gated_error(&cfgs, error);
+        return quote! { #error #func };
     }
 
     let wrapper = free_function_wrapper(
@@ -1569,6 +1590,76 @@ pub fn transform_function(
         #func
         #wrapper
     }
+}
+
+/// Refuse a generic `#[julia]` item in the crate flavour (#462).
+///
+/// An `extern "C"` entry point needs concrete types, and the proc macro sees one
+/// item and cannot know which instantiations Julia will call, so a type or
+/// const parameter used to produce a wrapper naming an unbound `T` and rustc
+/// failed inside generated code. Crate extraction already reports such an item
+/// as not exported; this makes the build say why, at the item. Lifetime
+/// parameters are not refused: `fn f<'a>(s: &'a str) -> &'a str` lowers to a
+/// wrapper that names no lifetime at all.
+///
+/// The inline flavour never reaches this: `rust"""` emits a generic function
+/// or struct unwrapped and monomorphizes it on demand through `specialize`.
+///
+/// The caller emits the error **and** the item as written, so the one
+/// diagnostic is not followed by a cascade about a missing item.
+fn generic_item_error(generics: &syn::Generics, what: &str, name: &Ident) -> Option<TokenStream2> {
+    let params: Vec<String> = generics
+        .params
+        .iter()
+        .filter_map(|p| match p {
+            syn::GenericParam::Type(t) => Some(format!("`{}`", t.ident)),
+            syn::GenericParam::Const(c) => Some(format!("`const {}`", c.ident)),
+            syn::GenericParam::Lifetime(_) => None,
+        })
+        .collect();
+    if params.is_empty() {
+        return None;
+    }
+    let msg = format!(
+        "#[julia] {what} `{name}` is generic over {}: an `extern \"C\"` entry point needs \
+         concrete types, and #[julia] cannot know which instantiations Julia will call. \
+         Write a non-generic `#[julia]` item that uses it, or define it in a `rust\"\"\"` block, where \
+         RustCall monomorphizes generics on demand.",
+        params.join(", ")
+    );
+    Some(syn::Error::new_spanned(generics, msg).to_compile_error())
+}
+
+/// A refusal emitted in place of (or beside) an item, gated by that item's
+/// effective `#[cfg]` set so it fires only where the item exists.
+///
+/// The proc macro can run before rustc evaluates an item's predicates — for
+/// every item inside a `#[julia] mod`, and for a `#[cfg]` written after
+/// `#[julia]` — so an ungated `compile_error!` would break a build in which the
+/// item is configured away (PR #470 review). A macro-invocation item takes
+/// outer attributes like any other item, so the predicates go straight on it.
+fn gated_error(cfgs: &[Attribute], error: TokenStream2) -> TokenStream2 {
+    if cfgs.is_empty() {
+        return error;
+    }
+    quote! { #(#cfgs)* #error }
+}
+
+/// [`generic_item_error`] for a function or method signature, which may also be
+/// generic through `impl Trait` in an argument or its return type.
+fn generic_signature_error(sig: &syn::Signature, what: &str) -> Option<TokenStream2> {
+    if let Some(error) = generic_item_error(&sig.generics, what, &sig.ident) {
+        return Some(error);
+    }
+    if crate::types::has_impl_trait(sig) {
+        let msg = format!(
+            "#[julia] {what} `{}` uses `impl Trait` in its signature, which makes it generic: \
+             an `extern \"C\"` entry point needs concrete types. Name the concrete type instead.",
+            sig.ident
+        );
+        return Some(syn::Error::new_spanned(sig, msg).to_compile_error());
+    }
+    None
 }
 
 /// `Result` / `Option` payloads must survive the C ABI; refuse at compile time
@@ -1649,9 +1740,15 @@ pub fn crate_struct_needs_owned_string_helper(item_struct: &ItemStruct) -> bool 
         .any(|f| f.ident.is_some() && field_has_accessors(&f.ty) && is_string_type(&f.ty))
 }
 
-/// Apply the common boundary to generated field/clone helpers. These helpers
-/// return only unit, primitives, raw pointers, owned-string buffers or Vec.
-/// In particular, Vec must use an empty vector, not an invalid zeroed value.
+/// Apply the common boundary to generated field/clone helpers.
+///
+/// A `Vec` result (never across `extern "C"`) takes an empty vector as its
+/// sentinel. Any other value leaves as `MaybeUninit<T>`, `MaybeUninit::zeroed()`
+/// after a panic, exactly as a plain function return does in
+/// [`generate_wrapper`] (#462): the sentinel is then sound whatever `T` is,
+/// rather than only while every caller keeps to types that are valid
+/// all-zero, and the C signature is unchanged because `MaybeUninit<T>` has the
+/// ABI of `T`.
 pub(crate) fn guard_struct_helper(tokens: TokenStream2, hook: PanicHook) -> TokenStream2 {
     let mut function: ItemFn = syn::parse2(tokens).expect("generated struct helper is a function");
     let symbol = &function.sig.ident;
@@ -1663,20 +1760,32 @@ pub(crate) fn guard_struct_helper(tokens: TokenStream2, hook: PanicHook) -> Toke
     let slot = format_ident!("__RUSTCALL_HELPER_PANIC_{}", suffix);
     let reader = format_ident!("{}", panic_symbol(&symbol.to_string()));
     let channel = panic_channel(&cfg_attrs(&function.attrs), &slot, &reader);
-    let (sentinel, unit) = match &function.sig.output {
-        ReturnType::Default => (quote! {}, true),
-        ReturnType::Type(_, ty) if matches!(unparen(ty), Type::Tuple(t) if t.elems.is_empty()) => {
-            (quote! {}, true)
+    let original = function.block.clone();
+    let (sentinel, unit, body) = match function.sig.output.clone() {
+        ReturnType::Default => (quote! {}, true, quote! { #original }),
+        ReturnType::Type(_, ty) if matches!(unparen(&ty), Type::Tuple(t) if t.elems.is_empty()) => {
+            (quote! {}, true, quote! { #original })
         }
-        ReturnType::Type(_, ty) if is_vec_type(ty) => (quote! { ::std::vec::Vec::new() }, false),
-        ReturnType::Type(_, ty) => (quote! { unsafe { ::std::mem::zeroed::<#ty>() } }, false),
+        ReturnType::Type(_, ty) if is_vec_type(&ty) => (
+            quote! { ::std::vec::Vec::new() },
+            false,
+            quote! { #original },
+        ),
+        ReturnType::Type(arrow, ty) => {
+            function.sig.output =
+                ReturnType::Type(arrow, syn::parse_quote!(::std::mem::MaybeUninit<#ty>));
+            (
+                quote! { ::std::mem::MaybeUninit::zeroed() },
+                false,
+                quote! { ::std::mem::MaybeUninit::new(#original) },
+            )
+        }
     };
-    let original = &function.block;
     let body = guarded_body(
         &symbol.to_string(),
         &slot,
         &quote! {},
-        quote! { #original },
+        body,
         sentinel,
         unit,
         hook,
@@ -1711,6 +1820,12 @@ fn crate_field_accessors(
             if !field_has_accessors(field_ty) {
                 continue;
             }
+            // A field's own `#[cfg]` gates its accessors on top of the
+            // struct's (#462): a `#[cfg(target_os = "linux")]` field does not
+            // exist elsewhere, and neither may a getter that reads it.
+            let mut field_cfgs = cfgs.to_vec();
+            field_cfgs.extend(cfg_attrs(&field.attrs));
+            let cfgs = field_cfgs.as_slice();
             let getter_name = format_ident!("{}_get_{}", stem, field_name);
             if is_string_type(field_ty) {
                 // A `String` cannot cross `extern "C"` by value: it leaves as an
@@ -1831,6 +1946,10 @@ fn struct_stem(module_path: &[String], struct_name: &Ident) -> Ident {
 
 /// Transform a `#[julia]` struct (crate flavour): `#[repr(C)]`, `pub`, free + accessors.
 pub fn transform_struct_crate(mut item_struct: ItemStruct, module_path: &[String]) -> TokenStream2 {
+    if let Some(error) = generic_item_error(&item_struct.generics, "struct", &item_struct.ident) {
+        let error = gated_error(&cfg_attrs(&item_struct.attrs), error);
+        return quote! { #error #item_struct };
+    }
     let repr_c: Attribute = syn::parse_quote!(#[repr(C)]);
     item_struct.attrs.insert(0, repr_c);
     item_struct.vis = Visibility::Public(syn::token::Pub::default());
@@ -1872,9 +1991,27 @@ pub fn impl_target_module_path(module_path: &[String], self_ty: &Type) -> Vec<St
 /// symbols follow the struct the header names, [`impl_target_module_path`].
 pub fn transform_impl_crate(mut item_impl: ItemImpl, module_path: &[String]) -> TokenStream2 {
     if last_ident(&item_impl.self_ty).is_none() {
-        return quote! {
-            compile_error!("#[julia] on impl block requires a simple type path");
-        };
+        return gated_error(
+            &cfg_attrs(&item_impl.attrs),
+            quote! {
+                compile_error!("#[julia] on impl block requires a simple type path");
+            },
+        );
+    }
+    // A generic block (`impl<T> Wrapper<T>`) has no concrete receiver type to
+    // wrap: refuse it at the header, and keep the block as written (#462).
+    if crate::types::has_type_params(&item_impl.generics) {
+        let name = last_ident(&item_impl.self_ty)
+            .cloned()
+            .expect("checked above");
+        let error = generic_item_error(&item_impl.generics, "impl block for", &name)
+            .map(|error| gated_error(&cfg_attrs(&item_impl.attrs), error));
+        for item in &mut item_impl.items {
+            if let syn::ImplItem::Fn(method) = item {
+                method.attrs.retain(|attr| !attr.path().is_ident("julia"));
+            }
+        }
+        return quote! { #error #item_impl };
     }
     let struct_path = impl_target_module_path(module_path, &item_impl.self_ty);
     // The wrappers are emitted next to the block, in *its* module, so they
@@ -1895,6 +2032,14 @@ pub fn transform_impl_crate(mut item_impl: ItemImpl, module_path: &[String]) -> 
                 .any(|attr| attr.path().is_ident("julia"));
             if has_julia_attr {
                 method.attrs.retain(|attr| !attr.path().is_ident("julia"));
+                if let Some(error) = generic_signature_error(&method.sig, "method") {
+                    // Gated like the wrapper would have been: the block's
+                    // predicates and the method's own (PR #470 review).
+                    let mut cfgs = block_cfgs.clone();
+                    cfgs.extend(cfg_attrs(&method.attrs));
+                    ffi_wrappers.extend(gated_error(&cfgs, error));
+                    continue;
+                }
                 // The generator reads the method's `#[cfg]` set and puts it on
                 // every item it emits; the block's predicates join that set
                 // for the wrapper only, the method itself is left as written.
@@ -1931,13 +2076,16 @@ pub fn transform_impl_crate(mut item_impl: ItemImpl, module_path: &[String]) -> 
 /// with a `compile_error!` naming the alternative (an inline module block).
 pub fn transform_module(item_mod: ItemMod, module_path: &[String]) -> TokenStream2 {
     let Some((_, items)) = item_mod.content else {
-        return quote! {
+        return gated_error(
+            &cfg_attrs(&item_mod.attrs),
+            quote! {
             compile_error!(
                 "#[julia] on a file module (`mod name;`) is not supported: attribute macros \
                  cannot expand a non-inline module. Write the module inline \
                  (`#[julia] pub mod name { ... }`) to give its items a module-qualified symbol."
             );
-        };
+            },
+        );
     };
     let mut path = module_path.to_vec();
     path.push(item_mod.ident.to_string());
@@ -2033,9 +2181,12 @@ pub fn generate_method_wrapper_crate(
     // refuses a header the macro would read differently from the struct it
     // resolves to — a renamed import among them (#315).
     let Some(struct_name) = last_ident(self_ty) else {
-        return quote! {
-            compile_error!("#[julia] on impl block requires a simple type path");
-        };
+        return gated_error(
+            &cfg_attrs(&method.attrs),
+            quote! {
+                compile_error!("#[julia] on impl block requires a simple type path");
+            },
+        );
     };
     method_wrapper_at_impl_site(
         self_ty,
@@ -2071,9 +2222,12 @@ pub fn method_wrapper_at_impl_site(
     panic_hook: PanicHook,
 ) -> TokenStream2 {
     let Type::Path(self_path) = unparen(self_ty) else {
-        return quote! {
-            compile_error!("#[julia] on impl block requires a simple type path");
-        };
+        return gated_error(
+            &cfg_attrs(&m.func.attrs),
+            quote! {
+                compile_error!("#[julia] on impl block requires a simple type path");
+            },
+        );
     };
     let stem = struct_stem(struct_module_path, struct_name);
     let owner = format_ident!("{}", method_string_owner(&stem.to_string(), &m.name()));
@@ -2213,11 +2367,18 @@ pub fn inline_struct_wrappers(
     let stem = struct_stem(module_path, struct_name);
     let mut out = TokenStream2::new();
     let mut meta = InlineStructMeta::default();
+    // The struct's `#[cfg]` gates every item generated for it, and a field's
+    // own `#[cfg]` its accessors on top, exactly as in the crate flavour
+    // (`transform_struct_crate`, #462): without them a `#[cfg(unix)] struct`
+    // got an ungated `<Struct>_free` that names a type which does not exist
+    // off unix. The enclosing modules need nothing: the wrappers are emitted
+    // inside them.
+    let cfgs = cfg_attrs(&model.item.attrs);
 
     out.extend(struct_free_wrapper(
         &syn::parse_quote!(#struct_name),
         &stem,
-        &[],
+        &cfgs,
         PanicHook::FileOwned,
     ));
 
@@ -2252,11 +2413,11 @@ pub fn inline_struct_wrappers(
 
     if needs_owned {
         meta.has_owned_string_helper = true;
-        out.extend(owned_string_helper(&[], &owned_helper, &owned_free));
+        out.extend(owned_string_helper(&cfgs, &owned_helper, &owned_free));
     }
     if needs_borrowed {
         meta.has_borrowed_string_helper = true;
-        out.extend(borrowed_string_helper(&[], &borrowed_helper));
+        out.extend(borrowed_string_helper(&cfgs, &borrowed_helper));
     }
 
     // Field accessors (skipped when a method wrapper would take the same
@@ -2280,9 +2441,12 @@ pub fn inline_struct_wrappers(
             getter.to_string(),
             setter.to_string(),
         ));
+        let mut field_cfgs = cfgs.clone();
+        field_cfgs.extend(model.field_cfg_attrs(field_name));
         if is_string_type(field_ty) {
             out.extend(guard_struct_helper(
                 quote! {
+                    #(#field_cfgs)*
                     #[no_mangle]
                     pub extern "C" fn #getter(ptr: *const #struct_name) -> #owned_helper {
                         let mut rustcall_bytes = unsafe { (*ptr).#field_name.clone().into_bytes() };
@@ -2300,6 +2464,7 @@ pub fn inline_struct_wrappers(
         } else {
             out.extend(guard_struct_helper(
                 quote! {
+                    #(#field_cfgs)*
                     #[no_mangle]
                     pub extern "C" fn #getter(ptr: *const #struct_name) -> #field_ty {
                         unsafe { (*ptr).#field_name }
@@ -2313,7 +2478,7 @@ pub fn inline_struct_wrappers(
             field_name,
             field_ty,
             &setter,
-            &[],
+            &field_cfgs,
             PanicHook::FileOwned,
         ));
     }
@@ -2323,6 +2488,7 @@ pub fn inline_struct_wrappers(
         let clone_name = format_ident!("{}_clone", stem);
         out.extend(guard_struct_helper(
             quote! {
+                #(#cfgs)*
                 #[no_mangle]
                 pub extern "C" fn #clone_name(ptr: *const #struct_name) -> *mut #struct_name {
                     unsafe { Box::into_raw(Box::new((*ptr).clone())) }
@@ -2333,10 +2499,19 @@ pub fn inline_struct_wrappers(
     }
 
     for m in &local {
+        // A method exists only where its struct and its impl block do: the
+        // generator reads the method's own `#[cfg]` set, so those predicates
+        // join it for the wrapper only — as `transform_impl_crate` and
+        // `inline_foreign_method_wrapper` do.
+        let mut gated = (*m).clone();
+        gated
+            .func
+            .attrs
+            .splice(0..0, cfgs.iter().chain(m.enclosing_cfg.iter()).cloned());
         out.extend(inline_method_wrapper(
             struct_name,
             &stem,
-            m,
+            &gated,
             &owned_helper,
             &owned_free,
             &borrowed_helper,
@@ -2548,12 +2723,37 @@ fn fn_source(func: ItemFn) -> String {
     prettyplease::unparse(&file)
 }
 
-/// Generate the generic wrapper functions of a generic inline struct. They are
-/// not compiled into the main library; Julia registers them for on-demand
-/// monomorphization through `specialize`.
-pub fn inline_generic_wrappers(model: &StructModel) -> Vec<GenericWrapper> {
+/// The name of the generic wrapper of `Struct::method` for a generic inline
+/// struct with FFI name `struct_stem`: `<stem>_<method>`. Like every other
+/// name of the struct it hangs off [`symbol_stem`], so two same-named generic
+/// structs in different modules register different wrappers (#462); the
+/// manifest carries it as `Method.generic_wrapper_name`.
+pub fn generic_method_wrapper_name(struct_stem: &str, method: &str) -> String {
+    format!("{struct_stem}_{method}")
+}
+
+/// Generate the generic wrapper functions of a generic inline struct living
+/// under `module_path`. They are not compiled into the main library; Julia
+/// registers them for on-demand monomorphization through `specialize`.
+///
+/// Every wrapper is named off the struct's FFI name ([`symbol_stem`]):
+/// `<stem>_<method>`, `<stem>_get_<field>` / `<stem>_set_<field>` and
+/// `<stem>_free`, exactly as a concrete struct's symbols are (#300, #462).
+pub fn inline_generic_wrappers(model: &StructModel, module_path: &[String]) -> Vec<GenericWrapper> {
     let struct_name = &model.item.ident;
+    let stem = symbol_stem(module_path, &struct_name.to_string());
     let generics = &model.item.generics;
+    // The wrappers are emitted into the expanded source next to the struct, so
+    // they exist only where it does: the struct's `#[cfg]` goes on each, a
+    // method's block and own predicates on its wrapper, a field's on its
+    // accessors — as `inline_struct_wrappers` does for a concrete struct
+    // (#462, PR #470 review).
+    let cfgs = cfg_attrs(&model.item.attrs);
+    let gated = |mut func: ItemFn, extra: &[Attribute]| -> ItemFn {
+        func.attrs
+            .splice(0..0, cfgs.iter().chain(extra.iter()).cloned());
+        func
+    };
     let (_, ty_generics, _) = generics.split_for_impl();
     let decl_generics = {
         let mut g = generics.clone();
@@ -2564,7 +2764,10 @@ pub fn inline_generic_wrappers(model: &StructModel) -> Vec<GenericWrapper> {
 
     for m in &model.methods {
         let method_name = &m.func.sig.ident;
-        let wrapper_name = format_ident!("{}_{}", struct_name, method_name);
+        let wrapper_name = format_ident!(
+            "{}",
+            generic_method_wrapper_name(&stem, &method_name.to_string())
+        );
         // The wrapper must satisfy the bounds the impl block and the method
         // themselves declare (`impl<T: Copy>`, `where T: Copy`, `fn f<U>`).
         let (decl_generics, where_clause, self_ty) = wrapper_generics(model, m);
@@ -2643,9 +2846,11 @@ pub fn inline_generic_wrappers(model: &StructModel) -> Vec<GenericWrapper> {
                 }
             }
         };
+        let mut method_cfgs = m.enclosing_cfg.clone();
+        method_cfgs.extend(cfg_attrs(&m.func.attrs));
         wrappers.push(GenericWrapper {
             name: wrapper_name.to_string(),
-            source: fn_source(func),
+            source: fn_source(gated(func, &method_cfgs)),
             type_params: wrapper_param_names(&decl_generics, &self_ty),
         });
     }
@@ -2676,11 +2881,11 @@ pub fn inline_generic_wrappers(model: &StructModel) -> Vec<GenericWrapper> {
         if !generic_field_has_accessors(&field_ty, &struct_param_names) {
             continue;
         }
-        let getter = format_ident!("{}_get_{}", struct_name, field_name);
+        let getter = format_ident!("{}", field_getter_symbol(&stem, &field_name.to_string()));
         if method_symbols.contains(&getter.to_string()) {
             continue;
         }
-        let setter = format_ident!("{}_set_{}", struct_name, field_name);
+        let setter = format_ident!("{}", field_setter_symbol(&stem, &field_name.to_string()));
         let (body, getter_where) = if is_string_type(&field_ty) {
             (
                 quote! { unsafe { (*ptr).#field_name.clone() } },
@@ -2700,6 +2905,9 @@ pub fn inline_generic_wrappers(model: &StructModel) -> Vec<GenericWrapper> {
                 unsafe { (*ptr).#field_name = value; }
             }
         };
+        let field_cfgs = model.field_cfg_attrs(&field_name);
+        let g = gated(g, &field_cfgs);
+        let s = gated(s, &field_cfgs);
         wrappers.push(GenericWrapper {
             name: getter.to_string(),
             source: fn_source(g),
@@ -2712,7 +2920,7 @@ pub fn inline_generic_wrappers(model: &StructModel) -> Vec<GenericWrapper> {
         });
     }
 
-    let free_name = format_ident!("{}_free", struct_name);
+    let free_name = format_ident!("{}", struct_free_symbol(&stem));
     let f: ItemFn = syn::parse_quote! {
         pub fn #free_name #decl_generics (ptr: *mut #struct_name #ty_generics) #struct_where {
             if !ptr.is_null() {
@@ -2722,7 +2930,7 @@ pub fn inline_generic_wrappers(model: &StructModel) -> Vec<GenericWrapper> {
     };
     wrappers.push(GenericWrapper {
         name: free_name.to_string(),
-        source: fn_source(f),
+        source: fn_source(gated(f, &[])),
         type_params: struct_param_names,
     });
 

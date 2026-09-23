@@ -277,8 +277,11 @@ end
         # The wrapper sits inside `mod ops`, spelling both the struct and the
         # module-local alias the way `ops` can see them.
         @test occursin("pub mod ops {", expanded.source)
-        @test occursin("fn rustcall_Gauge_read(ptr: *const super::Gauge) -> Count",
-                       expanded.source)
+        # Whitespace collapsed: where prettyplease breaks the signature is not
+        # the point. A plain value leaves as `MaybeUninit<T>` (#462).
+        flat = replace(replace(expanded.source, r"\s+" => " "), "( " => "(", ", )" => ")")
+        @test occursin("fn rustcall_Gauge_read(ptr: *const super::Gauge) -> ::std::mem::MaybeUninit<Count>",
+                       flat)
 
         # A cross-module string method declares buffers of its own, and the
         # manifest says so rather than leaving Julia to derive `Gauge_*`.
