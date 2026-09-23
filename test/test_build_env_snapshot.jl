@@ -65,6 +65,21 @@ function _besn_definitions(file)
     return out
 end
 
+# The values bound to `const _BUILD_RECORD = ...` in a module expression.
+function _besn_records_in(ex)
+    found = Any[]
+    walk(x) = nothing
+    function walk(x::Expr)
+        if x.head === :const && x.args[1] isa Expr && x.args[1].head === :(=) &&
+           x.args[1].args[1] === :_BUILD_RECORD
+            push!(found, x.args[1].args[2])
+        end
+        foreach(walk, x.args)
+    end
+    walk(ex)
+    return found
+end
+
 # Build-path pieces handed the build's environment as a table rather than as
 # the snapshot (a record's subprocess environment is one): checked in their
 # forms that take it.
@@ -125,8 +140,8 @@ const _BESN_MUST_PASS = Dict{Symbol, Tuple{Symbol, Any}}(
     :build_pyo3_wrapper => (:kw, :snapshot),
     :_pyo3_conservative_plan => (:kw, :snapshot),
     :_pyo3_extension_artifact => (:kw, :snapshot),
-    :emit_crate_module => (:kw, :snapshot),
-    :emit_crate_module_code => (:kw, :snapshot),
+    :emit_crate_module => (:kw, (:snapshot, :build_record)),
+    :emit_crate_module_code => (:kw, (:snapshot, :build_record)),
     :build_cargo_project => (:kw, :env),
     :build_crate_directly => (:kw, :env),
     :_crate_build_cfg_text => (:kw, :env),
@@ -203,7 +218,8 @@ function _besn_violations(name::Symbol, body; entry::Bool)
                 rule = get(_BESN_MUST_PASS, f, nothing)
                 if rule !== nothing
                     kind, what = rule
-                    ok = kind === :kw ? (what in keywords) : positional >= what
+                    ok = kind === :kw ? all(w -> w in keywords, what isa Tuple ? what : (what,)) :
+                         positional >= what
                     ok || push!(problems, "$(name) calls `$(f)` without its environment")
                 end
                 if isdefined(RustCall, f) && getfield(RustCall, f) isa Function &&
@@ -411,8 +427,8 @@ end
     function with_mutation_after_snapshot(f, changes)
         saved = Dict(k => get(ENV, k, nothing) for (k, _) in changes)
         fired = Ref(false)
-        hook = () -> begin
-            fired[] && return
+        hook = stage -> begin
+            (fired[] || stage !== :snapshot) && return
             fired[] = true
             for (k, v) in changes
                 v === nothing ? delete!(ENV, k) : (ENV[k] = v)
@@ -582,6 +598,66 @@ end
                 @test again.lib_name == record.lib_name
             finally
                 RustCall.unload_library(record.lib_name; close = true)
+            end
+        end
+    end
+
+    # #485 review: an interpreter replaced in place after the build verified
+    # it, but before the module is emitted, must not reach the record — the
+    # record describes the plan the key and the library came from, so the
+    # load-time check then *refuses* the wrapper under the new interpreter.
+    @testset "the PyO3 wrapper's record is the verified plan's, not a later probe" begin
+        plan = RustCall.pyo3_link_plan(_BESN_PYO3_ONLY)
+        if Sys.iswindows()
+            @test_skip "shell-script interpreters are a Unix fixture"
+        elseif plan.mode !== :link_libpython || !_linkable_python_library(plan.rpath) ||
+               isempty(plan.interpreter)
+            @test_skip "no linkable Python here: the PyO3 wrapper crate cannot be built"
+        else
+            fingerprint(record) = Dict{String, String}(record.build_env)["<python fingerprint>"]
+            for (label, build) in (
+                    ("generate_bindings", () -> begin
+                        ex = RustCall.generate_bindings(_BESN_PYO3_ONLY; cache_enabled = false)
+                        only(filter(!isnothing, _besn_records_in(ex)))
+                    end),
+                    ("write_bindings_to_file", () -> begin
+                        out = joinpath(mktempdir(), "bindings.jl")
+                        RustCall.write_bindings_to_file(_BESN_PYO3_ONLY, out;
+                                                        output_module_name = "BesnSwap485")
+                        line = only(filter(l -> startswith(l, "const _BUILD_RECORD = "),
+                                           split(read(out, String), '\n')))
+                        m = Module(:BesnSwapRecord485)
+                        Core.eval(m, :(import RustCall))
+                        Core.eval(m, Meta.parse(chopprefix(line, "const _BUILD_RECORD = ")))
+                    end))
+                mktempdir() do dir
+                    # An interpreter the build pins by path, which the test can
+                    # replace in place: first the real one, then another Python.
+                    python = joinpath(dir, "python3")
+                    write(python, "#!/bin/sh\nexec $(repr(plan.interpreter)) \"\$@\"\n")
+                    chmod(python, 0o755)
+                    before = RustCall._python_interpreter_fingerprint(python)
+                    @test !isempty(before)
+                    swapped = Ref(false)
+                    hook = stage -> begin
+                        (stage === :verified && !swapped[]) || return
+                        swapped[] = true
+                        write(python, "#!/bin/sh\necho CPython-replaced-485\n")
+                    end
+                    record = withenv("PYO3_PYTHON" => python) do
+                        task_local_storage(build, RustCall._AFTER_BUILD_ENV_SNAPSHOT, hook)
+                    end
+                    @test (label, swapped[]) == (label, true)
+                    @test record.kind === :pyo3_wrapper && record.python
+                    # The record names the interpreter the library was built
+                    # for ...
+                    @test (label, fingerprint(record)) == (label, before)
+                    # ... so under the replaced one the check refuses it.
+                    changed = withenv("PYO3_PYTHON" => python) do
+                        RustCall._build_record_mismatch(record, RustCall.BuildEnvSnapshot())
+                    end
+                    @test (label, "<python fingerprint>" in changed) == (label, true)
+                end
             end
         end
     end

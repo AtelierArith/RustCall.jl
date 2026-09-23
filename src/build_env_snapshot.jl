@@ -44,11 +44,11 @@ end
     BuildEnvSnapshot() -> BuildEnvSnapshot
 
 The snapshot of `ENV` now. Called once, at the start of a build entry point;
-`_after_build_env_snapshot` runs right after it.
+The test seam runs right after it (`_build_env_seam(:snapshot)`).
 """
 function BuildEnvSnapshot()
     snapshot = BuildEnvSnapshot(ENV)
-    _after_build_env_snapshot()
+    _build_env_seam(:snapshot)
     return snapshot
 end
 
@@ -117,14 +117,17 @@ function snapshot_which(s::BuildEnvSnapshot, program_name::AbstractString)::Stri
 end
 
 # The test seam of #481: a function stored in the task-local storage of the
-# task that takes a snapshot, under this key, runs right after the snapshot is
-# taken — where another task changing `ENV` does the most damage — so a test
-# can mutate the environment at exactly that point, deterministically. Task
-# local, not a module-level hook: nothing another task does can install one.
+# task that builds, under this key, is called with the stage the build has
+# reached — `:snapshot` right after the snapshot is taken, `:verified` right
+# after a build's interpreter was asked again (`_verify_build_interpreter`) —
+# the two points where another task changing the environment, or an
+# interpreter replaced in place, does the most damage. A test can act at
+# exactly that point, deterministically. Task local, not a module-level hook:
+# nothing another task does can install one.
 const _AFTER_BUILD_ENV_SNAPSHOT = :rustcall_after_build_env_snapshot
 
-function _after_build_env_snapshot()
+function _build_env_seam(stage::Symbol)
     hook = get(task_local_storage(), _AFTER_BUILD_ENV_SNAPSHOT, nothing)
-    hook === nothing || hook()
+    hook === nothing || hook(stage)
     return nothing
 end

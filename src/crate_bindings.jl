@@ -730,7 +730,7 @@ function _expand_precompile_inputs(paths::Vector{String})
 end
 
 """
-    _recorded_build_env(snapshot; python = false) -> Vector{Pair{String, String}}
+    _recorded_build_env(snapshot; python = false, link_source = nothing) -> Vector{Pair{String, String}}
 
 The environment a generated module records and compares at load time: the
 `artifact_build_env` allowlist, plus RustCall's own selectors that decide the
@@ -742,11 +742,21 @@ what is recorded and what is compared cannot drift.
 Read from `snapshot` — variables, `PATH` lookups and every interpreter it runs —
 so a record and the build it describes see one environment (#481). The form
 without it takes a snapshot of `ENV` now.
+
+`link_source`, when given, is the `(libdir, interpreter, fingerprint)` a PyO3
+wrapper's plan was made with — the values its artifact key was computed from —
+and the record takes the link directory, the selection and the fingerprint
+from it rather than asking the interpreter again. A second answer is a second
+moment: an interpreter replaced in place between the two recorded a Python the
+library was not built for, and the load-time check then accepted the wrong
+wrapper (#485 review). Comparing (`_build_env_changes`) passes none, so the
+current interpreter is asked, which is the point of the check.
 """
 _recorded_build_env(; python::Bool = false) =
     _recorded_build_env(BuildEnvSnapshot(); python = python)
 
-function _recorded_build_env(snapshot::BuildEnvSnapshot; python::Bool = false)
+function _recorded_build_env(snapshot::BuildEnvSnapshot; python::Bool = false,
+                             link_source::Union{Nothing, NTuple{3, String}} = nothing)
     env = Pair{String, String}[String(k) => String(v)
                                for (k, v) in artifact_build_env(; env = snapshot_env(snapshot))]
     # The *contents* of `PYO3_CONFIG_FILE`, not only its path: the file is
@@ -775,11 +785,14 @@ function _recorded_build_env(snapshot::BuildEnvSnapshot; python::Bool = false)
             value = get(snapshot, name, nothing)
             value === nothing || push!(env, name => String(value))
         end
-        selection = _python_selection(snapshot)
-        push!(env, "<python selection>" => selection)
         # The plan itself, computed once: `(libdir, interpreter, fingerprint)`
-        # exactly as `python_link_source()` decides it for a build.
-        source = _python_link_source_or_empty(snapshot)
+        # exactly as `python_link_source()` decides it for a build — the
+        # build's own plan when the caller has one. Its interpreter *is* the
+        # selection: `_python_selection` follows `python_link_source()` step
+        # for step.
+        source = something(link_source, _python_link_source_or_empty(snapshot))
+        selection = link_source === nothing ? _python_selection(snapshot) : source[2]
+        push!(env, "<python selection>" => selection)
         # When pyo3's own configuration (`PYO3_CROSS_LIB_DIR`, the `lib_dir`
         # of a `PYO3_CONFIG_FILE`) decides, pyo3 consults no interpreter: the
         # plan's fingerprint is "" and `_pyo3_wrapper_build_env` keys nothing
@@ -1187,24 +1200,27 @@ record_build_options(r::CrateBuildRecord) =
 
 """
     crate_build_record(crate_path, lib_name; build_options, python = false,
-                       snapshot) -> CrateBuildRecord
+                       snapshot, link_source = nothing) -> CrateBuildRecord
 
 The record of a build of `crate_path` made under `snapshot`: the given build
 options, plus the build environment, Cargo configuration and toolchain as the
 snapshot has them. What both crate emitters record (one call, one value), and
 what the path form of `enable_hot_reload_for_crate` constructs for a library it
 has no module of. `snapshot` is required: a record read from `ENV` at its own
-moment described a build made under another one (#481).
+moment described a build made under another one (#481). `link_source` is a
+PyO3 wrapper plan's link source (`_recorded_build_env`); the wrapper path
+records through `pyo3_wrapper_build_record`.
 """
 function crate_build_record(crate_path::AbstractString, lib_name::AbstractString;
                             build_options::NamedTuple = crate_build_options(),
                             python::Bool = false,
-                            snapshot::BuildEnvSnapshot)
+                            snapshot::BuildEnvSnapshot,
+                            link_source::Union{Nothing, NTuple{3, String}} = nothing)
     crate_dir = abspath(String(crate_path))
     # The part of the artifact identity that is *not* a file, recorded so the
     # module can say so at load time (`_warn_if_build_env_changed`).
     build_env = try
-        _recorded_build_env(snapshot; python = python)
+        _recorded_build_env(snapshot; python = python, link_source = link_source)
     catch e
         @debug "Could not record the build environment" exception = e
         Pair{String, String}[]
@@ -1363,7 +1379,10 @@ function _verify_build_interpreter(snapshot::BuildEnvSnapshot, interpreter::Abst
                                    fingerprint::AbstractString, what::AbstractString)
     (isempty(interpreter) || isempty(fingerprint)) && return nothing
     now = _python_interpreter_fingerprint(snapshot, interpreter)
-    now == fingerprint && return nothing
+    if now == fingerprint
+        _build_env_seam(:verified)
+        return nothing
+    end
     answer = isempty(now) ? "<no answer>" : now
     throw(RustError(
         "The Python interpreter `$(interpreter)` changed while `$(what)` was being built: " *
@@ -3448,6 +3467,12 @@ function generate_bindings(crate_path::String;
         plan = pyo3_link_plan(crate_path; features = features,
                               default_features = default_features, release = build_release,
                               snapshot = snapshot)
+        # The module's record, from the snapshot and this plan — the values
+        # the wrapper's key is computed from — taken once, here, never again
+        # after the build (#485 review).
+        wrapper_record = pyo3_wrapper_build_record(crate_path, plan, snapshot;
+                                                   release = build_release, features = features,
+                                                   default_features = default_features)
         wrapper = build_pyo3_wrapper(info; features = features,
                                      default_features = default_features,
                                      release = build_release, cache_enabled = cache_enabled,
@@ -3493,10 +3518,9 @@ function generate_bindings(crate_path::String;
                                      python = links_python,
                                      pin_library = any(_python_owned_handle,
                                                        wrapper.info.julia_structs),
-                                     build_options = crate_build_options(
-                                         release = build_release, features = features,
-                                         default_features = default_features,
-                                         kind = :pyo3_wrapper),
+                                     build_options = record_build_options(wrapper_record),
+                                     build_record = _record_named(wrapper_record,
+                                                                  wrapper.lib_name),
                                      snapshot = snapshot)
         end
     end
@@ -4364,12 +4388,19 @@ function write_bindings_to_file(crate_path::String, output_path::String;
     # goes into the file come from the wrapper's own manifest.
     lib_name = nothing
     wrapper_lib_path = ""
+    # The build's record, on every path: the wrapper's or the plain build's
+    # (#485 review). The emitter is never left to take one of its own.
+    record = nothing
     preload = String[]
     links_python = false
     if crate_needs_pyo3_wrapper(info)
         plan = pyo3_link_plan(crate_path; features = features,
                               default_features = default_features, release = build_release,
                               snapshot = snapshot)
+        # As in `generate_bindings`: the record of the plan the key came from.
+        wrapper_record = pyo3_wrapper_build_record(crate_path, plan, snapshot;
+                                                   release = build_release, features = features,
+                                                   default_features = default_features)
         wrapper = build_pyo3_wrapper(info; features = features,
                                      default_features = default_features,
                                      release = build_release, plan = plan, snapshot = snapshot)
@@ -4382,13 +4413,13 @@ function write_bindings_to_file(crate_path::String, output_path::String;
             wrapper_lib_path = wrapper.lib_path
             preload = wrapper.plan.runtime_libraries
             links_python = wrapper.plan.mode === :link_libpython
+            record = wrapper_record
         end
     end
     # The plain path scans under the configuration it builds, probed with the
     # shape of that build (#307 review), as `generate_bindings` does.
     # One snapshot of the environment for the probe, the build and the file's
     # record (#474 review), as in `generate_bindings`.
-    record = nothing
     build_env = nothing
     if isempty(wrapper_lib_path)
         record = crate_build_record(crate_path, "";
@@ -4482,7 +4513,7 @@ function write_bindings_to_file(crate_path::String, output_path::String;
         build_options = crate_build_options(release = build_release, features = features,
                                             default_features = default_features,
                                             kind = build_kind),
-        build_record = record === nothing ? nothing : _record_named(record, lib_name),
+        build_record = _record_named(record, lib_name),
         snapshot = snapshot,
     )
 
