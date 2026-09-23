@@ -192,7 +192,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `generic_wrapper_name` (#470); `model::MethodModel` has a new public field
     `host: Option<ImplHost>` and `model::ImplHost` is new (#483). A struct
     literal of either no longer compiles without the field.
-  - Added to `rustcall_julia_core`: the `environment` module (#483),
+  - Added to `rustcall_julia_core`: the `environment` module (#483; its
+    items are crate-private, so it adds no callable API),
     `claims::aggregate_name`, `codegen::generic_method_wrapper_name`,
     `codegen::inline_generic_method_refusals`,
     `codegen::inline_method_is_generic` (#470, #476, #480),
@@ -201,9 +202,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `MaybeUninit<T>` in the wrapper (same C ABI; the panic sentinel is sound
     for any `T`, #470); a wrapper declares the wrapped item's lifetime
     parameters and `where` clause, with `Self` spelled as the impl type
-    (#480, #483); and `#[julia]` refuses a generic function, method or struct
-    item it used to accept, and a lowered `&str` argument whose lifetime the
-    wrapper cannot instantiate (#470, #483), with a compile error at the item.
+    (#480, #483), in expression paths and const arguments as well as types
+    (`[(); Self::N]` becomes `[(); <Buf>::N]`, #492); an elided return
+    lifetime is named on the wrapper by Rust's elision rules instead of being
+    copied as written, which failed with E0106 in generated code (#498); and
+    `#[julia]` refuses, with a spanned compile error, a generic function,
+    method or struct item it used to accept (#470), a lowered `&str` argument
+    whose lifetime the wrapper cannot instantiate (#483), a `Self` inside a
+    macro invocation (#483, #492), and an elided return that would borrow a
+    lowered `&str` argument (#498).
 
 ## [0.6.6] - 2026-09-22
 
