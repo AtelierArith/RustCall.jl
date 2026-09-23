@@ -511,7 +511,7 @@ function emit_julia_function_wrappers(signatures::Vector{RustFunctionSignature})
     exprs = Expr[]
 
     for sig in signatures
-        if sig.is_generic
+        if _generic_function_skipped!(sig)
             # Generic functions are registered for monomorphization at load time
             # and called through `@rust`; no static wrapper is emitted.
             @debug "Skipping generic function wrapper generation for $(sig.name)"
@@ -529,6 +529,22 @@ function emit_julia_function_wrappers(signatures::Vector{RustFunctionSignature})
     end
 
     return Expr(:block, exprs...)
+end
+
+"""
+    _generic_function_skipped!(sig) -> Bool
+
+Whether a function emitter skips `sig` because it is generic: a generic item
+gets no static wrapper (inline, it is monomorphized per call; in a crate, the
+proc macro refuses it). The emitter is still where a refusal the Rust codegen
+makes on its own is recorded (#491): a generic `#[julia] unsafe fn` is refused
+like a concrete one, so the report names it too.
+"""
+function _generic_function_skipped!(sig::RustFunctionSignature)
+    sig.is_generic || return false
+    _boundary_item!(_boundary_label(sig))
+    _rust_refused_item!(sig.skip_reason, sig.name)
+    return true
 end
 
 """

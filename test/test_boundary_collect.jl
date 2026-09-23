@@ -137,7 +137,7 @@ end
     end
     source = RustCall._collect_boundary() do
         for f in tree.functions
-            f.is_generic || RustCall._emit_function_code(f)
+            RustCall._generic_function_skipped!(f) || RustCall._emit_function_code(f)
         end
         colliding = RustCall._static_method_collisions(tree.functions, tree.structs)
         for s in tree.structs

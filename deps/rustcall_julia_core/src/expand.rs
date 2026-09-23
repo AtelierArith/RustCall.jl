@@ -169,6 +169,14 @@ fn expand_items(
                             );
                             out.push(Item::Fn(f));
                         } else if has_type_params(&f.sig.generics) {
+                            // A generic `unsafe fn` is refused like a concrete
+                            // one (#491): its specialized wrapper would call it
+                            // from a safe body. The manifest entry carries
+                            // `skip_reason = "unsafe_fn"`, and Julia registers
+                            // nothing for it.
+                            if let Some(error) = crate::codegen::unsafe_function_error(&f) {
+                                out.extend(items_of(error)?);
+                            }
                             f.vis = Visibility::Public(Default::default());
                             push_fn(
                                 manifest,

@@ -229,3 +229,59 @@ fn crate_unsafe_items_are_refused_and_reported() {
     assert!(!out.contains("rustcall_Cell_read"), "{out}");
     assert!(out.contains("rustcall_Cell_get"), "{out}");
 }
+
+/// A generic `#[julia] unsafe fn` is registered for specialization rather
+/// than transformed, so it used to get no refusal: the block compiled, and the
+/// first `@rust` call failed with E0133 inside the specialized wrapper. It is
+/// refused at the item like a concrete one, gated by its `#[cfg]`, and the
+/// manifest reports it (#491 review).
+#[test]
+fn a_generic_unsafe_fn_is_refused_and_reported() {
+    let src = r#"
+        #[julia]
+        pub unsafe fn g<T: Copy>(x: T) -> T { x }
+        #[julia]
+        pub fn h<T: Copy>(x: T) -> T { x }
+    "#;
+    let expanded = expand(src).unwrap();
+    let source = flat(&expanded.source);
+    assert_eq!(
+        source
+            .matches("cannot be applied to unsafe functions directly")
+            .count(),
+        1,
+        "{source}"
+    );
+    let reasons: Vec<(&str, bool, &str)> = expanded
+        .manifest
+        .functions
+        .iter()
+        .map(|f| (f.name.as_str(), f.is_generic, f.skip_reason.as_str()))
+        .collect();
+    assert_eq!(
+        reasons,
+        [("g", true, skip_reason::UNSAFE_FN), ("h", true, "")]
+    );
+    let out = rustc("generic", &expanded.source);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("cannot be applied to unsafe functions directly"),
+        "{stderr}"
+    );
+
+    let gated = expand(
+        r#"
+        #[cfg(rustcall_never)]
+        #[julia]
+        pub unsafe fn g<T: Copy>(x: T) -> T { x }
+    "#,
+    )
+    .unwrap();
+    let out = rustc("generic_cfg", &gated.source);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

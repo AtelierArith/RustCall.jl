@@ -1770,9 +1770,9 @@ function _function_wrappers_expr(functions)
     exprs = Expr[]
 
     for func in functions
-        if func.is_generic
-            continue  # Skip generics for now
-        end
+        # A generic item gets no wrapper (the proc macro refuses it); one the
+        # codegen refuses as `unsafe` is still recorded (#491).
+        _generic_function_skipped!(func) && continue
 
         wrapper = _generate_crate_function_wrapper(func)
         push!(exprs, wrapper)
@@ -2159,7 +2159,7 @@ function _submodule_code(node::ModuleNode; strict::Symbol = FFI_STRICT[])
         push!(lines, _parent_helper_imports_source())
         push!(lines, "")
         for func in child.functions
-            func.is_generic && continue
+            _generic_function_skipped!(func) && continue
             push!(lines, _emit_function_code(func; strict = strict))
             push!(lines, "")
         end
@@ -4881,9 +4881,7 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     tree = _module_tree(info)
     _check_module_names(tree)
     for func in tree.functions
-        if func.is_generic
-            continue
-        end
+        _generic_function_skipped!(func) && continue
         code = _emit_function_code(func; strict = strict)
         push!(lines, code)
         push!(lines, "")

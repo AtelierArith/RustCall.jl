@@ -410,3 +410,39 @@ end
         @test all(u -> occursin("`unsafe fn`", u.reason), report.unsupported)
     end
 end
+
+# A generic `#[julia] unsafe fn` is registered for specialization rather than
+# wrapped, so it used to escape both the codegen's refusal and the report: the
+# block compiled and the first `@rust` call failed with E0133 inside the
+# specialized wrapper (#491 review). It is refused like a concrete one, the
+# report names it, and it is never registered as a generic.
+@testset "a generic #[julia] unsafe fn is reported and refused (#491 review)" begin
+    source = raw"""
+        #[julia]
+        pub unsafe fn g491<T: Copy>(x: T) -> T { x }
+        #[julia]
+        pub fn h491<T: Copy>(x: T) -> T { x }
+        """
+    report = RustCall.inline_boundary_report(source; io = devnull)
+    @test _br_positions(report) == Set([("g491", "entry point")])
+    @test occursin("`unsafe fn`", only(report.unsupported).reason)
+
+    # Registration keeps the refused generic out of the specialization
+    # registry; the safe one is registered as before.
+    RustCall._register_manifest(RustCall.expand_inline(source), "rust_fake_lib_491")
+    @test !RustCall.is_generic_function("g491")
+    @test RustCall.is_generic_function("h491")
+
+    # The block itself fails to compile, at the refusal rather than in a
+    # specialized wrapper.
+    scope = Module()
+    Core.eval(scope, :(using RustCall))
+    message = try
+        Core.eval(scope, Expr(:macrocall, Symbol("@rust_str"), LineNumberNode(1), source))
+        ""
+    catch err
+        sprint(showerror, err)
+    end
+    @test occursin("cannot be applied to unsafe functions directly", message)
+    @test !occursin("E0133", message)
+end

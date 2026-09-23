@@ -1674,6 +1674,25 @@ fn free_fn_return(func: &ItemFn, name: &Ident, options: &FreeFnOptions) -> Wrapp
     WrapperReturn::Plain((**ty).clone())
 }
 
+/// Refuse a `#[julia]` function that is an `unsafe fn`, gated by its `#[cfg]`
+/// (#491). Its `extern "C"` entry point would let Julia call it with none of
+/// the requirements its `unsafe` states upheld. [`transform_function`] refuses
+/// a concrete one; the inline expander asks here for a generic one too, which
+/// it registers for specialization rather than transforming — a specialized
+/// wrapper would otherwise call it from a safe body and fail with E0133 at the
+/// first `@rust` call.
+pub fn unsafe_function_error(func: &ItemFn) -> Option<TokenStream2> {
+    let unsafety = func.sig.unsafety.as_ref()?;
+    let span = syn::spanned::Spanned::span(unsafety);
+    // A bare `compile_error!`, as in [`inline_generic_method_error`].
+    Some(gated_error(
+        &cfg_attrs(&func.attrs),
+        quote::quote_spanned! {span=>
+            compile_error!("#[julia] cannot be applied to unsafe functions directly. The function will be made extern \"C\" which has its own safety semantics.");
+        },
+    ))
+}
+
 /// Transform a `#[julia]` function: the annotated item is kept as written (the
 /// attribute itself is already gone) and the `extern "C"` entry point is
 /// emitted next to it under `rustcall_<fn>` (#279).
@@ -1687,13 +1706,8 @@ pub fn transform_function(
     // runs before rustc evaluates the predicate, so an ungated
     // `compile_error!` broke builds where the item does not exist.
     let cfgs = cfg_attrs(&func.attrs);
-    if func.sig.unsafety.is_some() {
-        return gated_error(
-            &cfgs,
-            quote! {
-                compile_error!("#[julia] cannot be applied to unsafe functions directly. The function will be made extern \"C\" which has its own safety semantics.");
-            },
-        );
+    if let Some(error) = unsafe_function_error(&func) {
+        return error;
     }
     if let Some(error) = non_ffi_payload_error(&func) {
         return gated_error(&cfgs, error);
