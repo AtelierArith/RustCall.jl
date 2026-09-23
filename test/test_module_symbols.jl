@@ -177,7 +177,7 @@ end
             # The source-text template agrees, symbol for symbol.
             code = RustCall.emit_crate_module_code(info, "/tmp/libtwo_modules.so")
             @test occursin("# Bindings format: $(RustCall.BINDINGS_FORMAT_VERSION)", code)
-            @test RustCall.BINDINGS_FORMAT_VERSION >= 7
+            @test RustCall.bindings_format_compatible(RustCall.BINDINGS_FORMAT_VERSION)
             @test occursin("\nmodule a\n", code)
             @test occursin("\nmodule b\n", code)
             @test occursin("\nmodule deep_er\n", code)

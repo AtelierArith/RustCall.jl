@@ -301,11 +301,20 @@ work:
   contains the image's liveness `Ref{Bool}`.
 
 `BINDINGS_FORMAT_VERSION` became 11 for this: a file emitted here names
-`RustCall.CrateTargetCache`, which an older RustCall does not have. It is 12
-since #460 (`RustCall.CallbackSlot` and the four-argument `_guard_panic`);
-13 since #474 (`RustCall.CrateBuildRecord`, `_BUILD_RECORD`, and the written
-`__init__`'s build-environment check); `docs/src/crate_bindings.md` states the current value, and
-`test/test_crate_bindings.jl` asserts the two agree.
+`RustCall.CrateTargetCache`, which an older RustCall does not have. It was 12
+since #460 and 13 since #474. **Since #489 it is not a number of its own: it is
+`RELEASE_FORMAT_IDENTIFIER`, the `MAJOR.MINOR` of `Project.toml` read at load
+time (`src/manifest.jl`, the same value as `MANIFEST_SCHEMA_VERSION`).** Both
+emitters write `# Bindings format: <MAJOR.MINOR>` and
+`const _BINDINGS_FORMAT = RustCall.check_bindings_format("<MAJOR.MINOR>")`; the
+check compares `VersionNumber`s — same `MAJOR.MINOR` loads (patch may differ),
+another minor or major is refused with "regenerate with
+`write_bindings_to_file`" — and `register_handle_mirror!(name, ::StateView)`
+repeats it from `__init__`, which is what refuses an integer-format (≤ 13) file:
+it declares no `_BINDINGS_FORMAT`. A bindings-format change therefore ships only
+in a minor or major release, and a `MAJOR.MINOR` bump updates the marker quoted
+in `docs/src/crate_bindings.md`, which `test/test_crate_bindings.jl` asserts
+equals the constant.
 
 **The panic channel is thread-local.** A generated wrapper records a panic in a `thread_local!` slot of its own library and returns a sentinel; Julia reads that slot with a second `ccall` immediately after the first. A Julia task may migrate to another OS thread at any yield point, so nothing that can yield — a lock, logging, I/O — may sit between the two `ccall`s; the channel pointer is resolved *before* the call (cached at load time). `test/test_panics.jl` stresses this with hundreds of tasks on the 4-thread CI job.
 

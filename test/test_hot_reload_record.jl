@@ -342,7 +342,7 @@ _hrr_with(r::RustCall.CrateBuildRecord; kwargs...) =
             out = joinpath(dir, "bindings.jl")
             RustCall.write_bindings_to_file(crate, out; output_module_name = "HrrWritten474")
             @test occursin("# Bindings format: $(RustCall.BINDINGS_FORMAT_VERSION)", read(out, String))
-            @test RustCall.BINDINGS_FORMAT_VERSION >= 13
+            @test RustCall.bindings_format_compatible(RustCall.BINDINGS_FORMAT_VERSION)
             host = Module(:HrrWrittenHost474)
             Core.eval(host, :(using RustCall))
             Base.include(host, out)

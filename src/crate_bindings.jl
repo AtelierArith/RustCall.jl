@@ -1512,6 +1512,11 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
         # `Libdl` among its own dependencies to precompile (#339).
         import RustCall.Libdl
 
+        # The bindings format this module was generated for, checked by the
+        # RustCall that loads it (#489). Both emitters declare it, so the
+        # check `__init__` repeats (`register_handle_mirror!`) finds it here too.
+        const _BINDINGS_FORMAT = RustCall.check_bindings_format($(BINDINGS_FORMAT_VERSION))
+
         # The *durable* library — RustCall's cache copy, or Cargo's output —
         # never the per-process generation copy, which is swept once the
         # process that made it is gone. This module may be precompiled as part
@@ -2001,8 +2006,9 @@ the symbol cache and `__init__` — which a Rust item or module may not take.
 actually defines and asserts it is reserved here or in `_CRATE_MODULE_HELPERS`,
 so a constant added to an emitter without reserving its name fails (#463).
 """
-const _CRATE_MODULE_ROOT_CONSTANTS = (:_LIB_PATH, :_BUILD_RECORD, :_PRELOAD_LIBRARIES,
-                                      :_PIN_LIBRARY, :_CRATE_INPUTS, :_SYMBOLS, :__init__)
+const _CRATE_MODULE_ROOT_CONSTANTS = (:_BINDINGS_FORMAT, :_LIB_PATH, :_BUILD_RECORD,
+                                      :_PRELOAD_LIBRARIES, :_PIN_LIBRARY, :_CRATE_INPUTS,
+                                      :_SYMBOLS, :__init__)
 
 """
     _target_cache_name(kind, symbol) -> Symbol
@@ -3745,10 +3751,25 @@ end
 """
     BINDINGS_FORMAT_VERSION
 
-Format marker carried by every file `write_bindings_to_file` emits.
+Format marker carried by every file `write_bindings_to_file` emits
+(`# Bindings format: <MAJOR.MINOR>`), and the value the file's
+`const _BINDINGS_FORMAT = RustCall.check_bindings_format("<MAJOR.MINOR>")`
+hands back to the RustCall that loads it.
 
-Bumped when a generated bindings file stops being interchangeable with one an
-older RustCall produced.
+Since v0.7 (#489) it is **the `MAJOR.MINOR` of this release**, read from
+`Project.toml` when the package is loaded — `RELEASE_FORMAT_IDENTIFIER`, the
+same value as `MANIFEST_SCHEMA_VERSION` — never a number of its own. A file is
+compatible with the RustCall that loads it when the two name the same
+`MAJOR.MINOR`: a patch release never changes the format, so a file written by
+v0.7.0 loads under v0.7.3; a different minor or major is refused, at `include`
+and again in `__init__`, with a message saying to regenerate the file with
+`RustCall.write_bindings_to_file` (`check_bindings_format`). A bindings-format
+change may therefore ship only in a minor or major release.
+
+Through v0.6.x the format was an integer bumped on every incompatible edit, and
+those files are **not** readable any more: they define no `_BINDINGS_FORMAT`, and
+`register_handle_mirror!`, which every such `__init__` calls, refuses the module
+with the same message. What each integer introduced:
 
 - `2` (#277 Phase B5): the file loads its library through
   `RustCall.load_artifact!` rather than `Libdl.dlopen`, so the handle is
@@ -3807,12 +3828,74 @@ older RustCall produced.
   what a hot reload rebuilds from, and reads `_LIB_NAME` from it. The name does
   not exist in an older RustCall. Its `__init__` also checks the recorded
   build environment before loading, as the in-memory module does.
-
-A file emitted by an older version still *works* — it only uses public API that
-still exists — but it does not get the unload, panic or lifetime guarantees.
-Regenerate after upgrading; the marker is what makes that visible.
 """
-const BINDINGS_FORMAT_VERSION = 13
+const BINDINGS_FORMAT_VERSION = RELEASE_FORMAT_IDENTIFIER
+
+"""
+    bindings_format_compatible(marker) -> Bool
+
+Whether a bindings file marked `marker` is readable by this RustCall: the marker
+parses as a `VersionNumber` whose `MAJOR.MINOR` equals `BINDINGS_FORMAT_VERSION`'s
+(a patch component, if any, may differ). An integer — the scheme of v0.6.x and
+earlier — `nothing` (no marker) or anything that is not a version is not.
+"""
+function bindings_format_compatible(marker)
+    v = _bindings_format_version(marker)
+    v === nothing && return false
+    current = VersionNumber(BINDINGS_FORMAT_VERSION)
+    return v.major == current.major && v.minor == current.minor
+end
+
+# The marker as a version, or `nothing` when it is not one of the semver form:
+# an `Integer`, or a string of digits alone, is the retired integer scheme.
+function _bindings_format_version(marker)
+    marker isa AbstractString || return nothing
+    text = strip(marker)
+    occursin(r"^\d+\.\d+(\.\d+)?$", text) || return nothing
+    return tryparse(VersionNumber, text)
+end
+
+function _bindings_format_message(marker)
+    origin = if marker === nothing
+        "carries no bindings-format marker: it was written by RustCall v0.6.x or " *
+        "earlier, whose integer format (13 and below) is no longer readable"
+    elseif marker isa Integer || (marker isa AbstractString && occursin(r"^\s*\d+\s*$", marker))
+        "is bindings format $(strip(string(marker))), the integer scheme of " *
+        "RustCall v0.6.x and earlier, which is no longer readable"
+    else
+        "is bindings format $(repr(marker))"
+    end
+    return "This bindings module $(origin). This RustCall.jl " *
+           "(v$(pkgversion(@__MODULE__))) reads bindings format " *
+           "$(BINDINGS_FORMAT_VERSION) — the MAJOR.MINOR of its release; a file is " *
+           "readable only by a RustCall of the same MAJOR.MINOR. Regenerate the file " *
+           "with `RustCall.write_bindings_to_file(crate_dir, output_path)` (its " *
+           "header names the crate)."
+end
+
+"""
+    check_bindings_format(marker) -> String
+
+Return `marker` when a bindings file carrying it is readable by this RustCall
+(`bindings_format_compatible`), and otherwise raise a `RustError` saying to
+regenerate the file with `write_bindings_to_file`. Every generated crate module
+calls it at its top level (`const _BINDINGS_FORMAT = ...`), so an incompatible
+file is refused when it is included, before anything else in it runs (#489).
+"""
+function check_bindings_format(marker)
+    bindings_format_compatible(marker) || throw(RustError(_bindings_format_message(marker)))
+    return String(strip(marker))
+end
+
+# The format a generated module declared, checked again when its `__init__`
+# registers its generation mirror — the one call every crate module since #402
+# makes, so an older file, which declares none, is refused here (#489).
+function _check_module_bindings_format(mod::Module)
+    marker = Base.invokelatest(isdefined, mod, :_BINDINGS_FORMAT) ?
+        Base.invokelatest(getglobal, mod, :_BINDINGS_FORMAT) : nothing
+    check_bindings_format(marker)
+    return nothing
+end
 
 """
     crate_library_name(info::CrateInfo; release = true) -> String
@@ -4586,11 +4669,9 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
 
     lines = String[]
 
-    # Header comment. The format marker is bumped whenever the emitted module
-    # stops being interchangeable with an older one: since #277 Phase B5 the
-    # file loads its library through `RustCall.load_artifact!` and its struct
-    # finalizers capture a destructor pointer and a liveness flag, neither of
-    # which an older RustCall provides. Regenerate after upgrading.
+    # Header comment. The format marker is the `MAJOR.MINOR` of this release
+    # (`BINDINGS_FORMAT_VERSION`, #489); the module checks it again below, so a
+    # RustCall of another `MAJOR.MINOR` refuses the file instead of loading it.
     push!(lines, "# Auto-generated bindings for $(info.name)")
     push!(lines, "# Generated by RustCall.jl - DO NOT EDIT")
     push!(lines, "# Bindings format: $(BINDINGS_FORMAT_VERSION)")
@@ -4610,6 +4691,9 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     # loaded into the user's project, which need not have `Libdl` among its
     # dependencies (#461).
     push!(lines, "import RustCall.Libdl")
+    push!(lines, "")
+    push!(lines, "# Refused by a RustCall of another MAJOR.MINOR: regenerate the file (#489).")
+    push!(lines, "const _BINDINGS_FORMAT = RustCall.check_bindings_format($(repr(BINDINGS_FORMAT_VERSION)))")
     push!(lines, "")
 
     # Library path constant

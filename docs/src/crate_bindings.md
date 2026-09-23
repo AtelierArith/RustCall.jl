@@ -852,7 +852,24 @@ library; see [Panics, Visibility and Lifetime](panics.md) for the full contract.
 ## Regenerating bindings after an upgrade
 
 Files written by `write_bindings_to_file` carry a format marker
-(`# Bindings format: 13`). Regenerate after upgrading RustCall.
+(`# Bindings format: 0.6`). Since #489 the format **is the `MAJOR.MINOR` of the
+RustCall release** that wrote the file — `RustCall.BINDINGS_FORMAT_VERSION`,
+read from `Project.toml` — and the file checks it when it is loaded
+(`const _BINDINGS_FORMAT = RustCall.check_bindings_format("0.6")`, and again in
+its `__init__`):
+
+- **Same `MAJOR.MINOR`, any patch:** the file loads. A patch release never
+  changes the bindings format, so a file written by one release of a minor
+  series loads under every later patch release of it.
+- **Different minor or major:** the file is refused with an error telling you to
+  regenerate it with `RustCall.write_bindings_to_file(crate_dir, output_path)`.
+  The header of every generated file names the crate it was written from.
+- **Integer markers (`13` and below):** files written by RustCall v0.6.6 and
+  earlier used an integer format of their own. They are no longer readable and
+  are refused with the same message; regenerate them.
+
+The integer formats, and what each one introduced, are listed below for
+reference.
 
 Format `13` (#474) records every input of the file's build — the crate
 directory, the registry name, the profile and features, the kind of build, the

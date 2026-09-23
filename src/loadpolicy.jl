@@ -1186,6 +1186,10 @@ end
 function register_handle_mirror!(lib_name::AbstractString, view::StateView)
     view.owner !== nothing && view.name === :crate_generation ||
         throw(ArgumentError("A crate generation mirror requires a module-owned generation view"))
+    # Every generated crate module registers through here from its `__init__`;
+    # one written by another MAJOR.MINOR — or by the integer format of v0.6.x
+    # and earlier, which declares no `_BINDINGS_FORMAT` — is refused (#489).
+    _check_module_bindings_format(view.owner)
     gen_ref = _state_read(view, identity)
     return register_handle_mirror!(lib_name, gen_ref)
 end

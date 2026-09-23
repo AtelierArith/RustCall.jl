@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **The bindings format follows the release's semver**
+  ([#489](https://github.com/AtelierArith/RustCall.jl/issues/489)).
+  `RustCall.BINDINGS_FORMAT_VERSION` is no longer an integer bumped on its own
+  (it went 12 → 13 while the package went 0.6.3 → 0.6.6): it is the
+  `MAJOR.MINOR` of `Project.toml`, read when the package is loaded — the same
+  identifier as the manifest schema. A file written by `write_bindings_to_file`
+  carries `# Bindings format: <MAJOR.MINOR>` and checks it when included
+  (`RustCall.check_bindings_format`) and again in its `__init__`: a RustCall of
+  the same `MAJOR.MINOR` loads it whatever the patch, a different minor or
+  major refuses it with a message to regenerate the file. A bindings-format
+  change therefore ships only in a minor or major release. **Files of the old
+  integer format (13 and below, written by RustCall v0.6.6 and earlier) are no
+  longer readable** and are refused with the same message: regenerate them with
+  `RustCall.write_bindings_to_file`.
 - **The boundary report is derived from the wrapper generators**
   ([#454](https://github.com/AtelierArith/RustCall.jl/issues/454)).
   `RustCall.boundary_report` and `inline_boundary_report` (#441) no longer
