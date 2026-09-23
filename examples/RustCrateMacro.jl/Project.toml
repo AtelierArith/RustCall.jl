@@ -7,7 +7,7 @@ authors = ["Satoshi Terasaki <terasakisatoshi.math@gmail.com>"]
 RustCall = "7ac5b1a4-9e37-4f0e-9aa3-3305a66bfb1c"
 
 [compat]
-RustCall = "0.6"
+RustCall = "0.7"
 julia = "1.12"
 
 [extras]

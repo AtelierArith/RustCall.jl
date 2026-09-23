@@ -70,7 +70,7 @@ every push.
 
 The extractor's manifest carries a `schema_version`, and RustCall refuses a
 manifest whose identifier is not its own. Since **v0.4.0** that identifier is
-the **`MAJOR.MINOR` of the release** — `"0.6"` for every v0.6.x — derived on
+the **`MAJOR.MINOR` of the release** — `"0.7"` for every v0.7.x — derived on
 the Julia side from `Project.toml`, and on the Rust side a **literal**,
 `rustcall_julia_core::manifest::SCHEMA_VERSION`, kept equal to it by hand and
 checked by `test/test_schema_version.jl` through the extractor's
