@@ -847,10 +847,19 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                         end
                         return value
                     end
+                    # Convert to the field's slot type first, exactly as the
+                    # `@rust_crate` setter does (`_crate_field_write`):
+                    # `call_rust_function` derives the `ccall` signature from
+                    # the argument's runtime type, so `obj.x = 1` on an `f64`
+                    # field would put an `Int64` in an integer register while
+                    # Rust reads a float one (#460). The type is the one the
+                    # getter reads the field back as.
+                    converted = field_info[field][2] === :plain ?
+                        convert(field_info[field][4], value) : value
                     target = RustCall.resolve_call_target(lib, setter_name)
                     RustCall.guard_rust_panic_ptr(
                         GC.@preserve(self,
-                            call_rust_function(target.func_ptr, Cvoid, self.ptr, value)),
+                            call_rust_function(target.func_ptr, Cvoid, self.ptr, converted)),
                         target.channel, setter_name)
                     return value
                 else
@@ -932,7 +941,7 @@ function _inline_method_payload_wrapper(info::RustStructInfo, m::RustMethod, fna
             $tgt.func_ptr, $aggregate, $(leading_args...), $(call_args...)))))
         # The `panicked()` sentinel carries an uninitialized payload, so the
         # channel is read before anything is decoded (#244).
-        RustCall.check_rust_panic_ptr($tgt.channel, $label)
+        RustCall.check_rust_panic_ptr($tgt.channel, $label, $c, $tgt.free_ptr)
         $(decode(c, tgt))
     end
     if self === nothing
@@ -1269,8 +1278,10 @@ function _call_rust_owned_string(lib_name::String, func_name::String, free_func_
     # A panic returns the empty buffer sentinel, which would decode to `""`.
     # Read the channel before the buffer, so a panicked call raises instead of
     # quietly producing an empty string. Nothing needs freeing on that path:
-    # the sentinel owns no allocation.
-    check_rust_panic_ptr(channel, func_name)
+    # the sentinel owns no allocation. A callback's exception re-raised here
+    # is different — Rust ran to completion and returned a real buffer — so
+    # the guard releases it before raising (#460).
+    check_rust_panic_ptr(channel, func_name, raw, target.free_ptr)
 
     return _take_owned_string(raw, target.free_ptr)
 end

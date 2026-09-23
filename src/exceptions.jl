@@ -190,6 +190,21 @@ end
 Display a CompilationError in a user-friendly format with formatted rustc output.
 Enhanced with more context and debugging information.
 """
+# `s` cut to at most `n` characters, the last three being `...` when it was
+# cut. `first` counts characters; a byte range such as `s[1:97]` throws
+# `StringIndexError` when byte 97 is inside a multi-byte character (#460).
+_truncate_chars(s::AbstractString, n::Int) =
+    length(s) > n ? first(s, n - 3) * "..." : String(s)
+
+# The marker for `count` consecutive source lines left out of a
+# `CompilationError` display.
+function _print_omitted_source_lines(io::IO, count::Int, max_digits::Int)
+    count > 0 || return nothing
+    noun = count == 1 ? "line" : "lines"
+    println(io, "    " * " " ^ max_digits * " | ... ($(count) $(noun) omitted) ...")
+    return nothing
+end
+
 function Base.showerror(io::IO, e::CompilationError)
     println(io, "CompilationError: Failed to compile Rust code")
     println(io, "")
@@ -230,26 +245,31 @@ function Base.showerror(io::IO, e::CompilationError)
         max_line_num = length(source_lines)
         max_digits = length(string(max_line_num))
 
+        # The first 50 lines, the last 10 and every error line are shown;
+        # each run of lines in between is one marker that counts exactly the
+        # lines it stands for. The check comes *before* printing — printing
+        # first showed every line and reported a count nothing matched (#460).
+        omitted = 0
         for (line_num, line) in enumerate(source_lines)
+            shown = line_num <= 50 || line_num > max_line_num - 10 || line_num in error_lines
+            if !shown
+                omitted += 1
+                continue
+            end
+            _print_omitted_source_lines(io, omitted, max_digits)
+            omitted = 0
             line_prefix = lpad(string(line_num), max_digits) * " | "
             if line_num in error_lines
                 println(io, ">>> " * line_prefix * line)  # Highlight error lines
             else
                 println(io, "    " * line_prefix * line)
             end
-
-            # Limit output to reasonable size
-            if line_num > 50 && line_num < max_line_num - 10
-                if line_num == 51
-                    println(io, "    " * " " ^ max_digits * " | ... ($(max_line_num - 60) lines omitted) ...")
-                end
-                continue
-            end
         end
+        _print_omitted_source_lines(io, omitted, max_digits)
     else
-        # Fallback: show first 500 chars
-        source_preview = length(e.source_code) > 500 ? e.source_code[1:500] * "..." : e.source_code
-        println(io, source_preview)
+        # Fallback: the first 500 characters — characters, not bytes, so a
+        # non-ASCII source cannot land mid-character (#460).
+        println(io, _truncate_chars(e.source_code, 503))
     end
 
     println(io, "─" ^ 80)
@@ -375,9 +395,7 @@ function Base.showerror(io::IO, e::RuntimeError)
                 "<unprintable>"
             end
             # Truncate long arguments
-            if length(arg_str) > 100
-                arg_str = arg_str[1:97] * "..."
-            end
+            arg_str = _truncate_chars(arg_str, 100)
             println(io, "  arg[$i]: $arg_str ($(typeof(arg)))")
         end
         println(io, "─" ^ 40)
@@ -414,9 +432,7 @@ function Base.showerror(io::IO, e::RuntimeError)
                 "<unprintable>"
             end
             # Truncate long values
-            if length(value_str) > 200
-                value_str = value_str[1:197] * "..."
-            end
+            value_str = _truncate_chars(value_str, 200)
             println(io, "  $key: $value_str")
         end
         println(io, "─" ^ 80)

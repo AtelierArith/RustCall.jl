@@ -74,7 +74,7 @@ bash scripts/lint_state_container.sh src      # mutable registries are StateView
 - `src/typetranslation.jl` — bidirectional Rust ↔ Julia type mapping
 - `src/memory.jl` — ownership operations backed by the Rust helpers library (`deps/rustcall_helpers/`)
 - `src/exceptions.jl` — `RustError`, `CompilationError`, `RuntimeError`
-- **Callbacks (#296)** — a `#[julia]` argument of type `extern "C" fn(A...) -> R` is reported by the extractor as `Arg.abi = "callback"` with `callback_args` / `callback_return`; `ffi_callback_plan` (`src/ffi_contract.jl`) decides at wrapper generation which pointer signatures are buildable (one-slot by-value / raw-pointer types with slot = surface), and `_string_arg_plan` passes Rust a constant `Base.@cfunction` pointer to the plain slot function `_callback_slot_k` (no closure `@cfunction`: aarch64 has none) while the user's function travels in a `CallbackFrame` pushed onto a task-local stack for the call and popped by the `try … finally` every wrapper generator wraps its `ccall` in (`_in_callback_frame` / `_emit_in_callback_frame`). The trampoline never lets a Julia exception unwind through Rust: it stores the exception in task-local storage (fast path: the `_CALLBACK_ERRORS_PENDING` atomic) and `guard_rust_panic_ptr` — the one choke point every generated call passes after the `ccall` — re-raises it, draining a panic Rust raised on the sentinel. Argument position only; synchronous borrow; same thread.
+- **Callbacks (#296)** — a `#[julia]` argument of type `extern "C" fn(A...) -> R` is reported by the extractor as `Arg.abi = "callback"` with `callback_args` / `callback_return`; `ffi_callback_plan` (`src/ffi_contract.jl`) decides at wrapper generation which pointer signatures are buildable (one-slot by-value / raw-pointer types with slot = surface), and `_string_arg_plan` passes Rust a constant `Base.@cfunction` pointer to the singleton slot `CallbackSlot{k, R}()` (no closure `@cfunction`: aarch64 has none; `R` is a parameter so a slot invoked with no frame records a `RustError` and returns a zero of `R` instead of raising through Rust, #460; `_callback_slot_k` remains only for bindings files of format <= 11) while the user's function travels in a `CallbackFrame` pushed onto a task-local stack for the call and popped by the `try … finally` every wrapper generator wraps its `ccall` in (`_in_callback_frame` / `_emit_in_callback_frame`). The trampoline never lets a Julia exception unwind through Rust: it stores the exception in task-local storage (fast path: the `_CALLBACK_ERRORS_PENDING` atomic) and `guard_rust_panic_ptr` — the one choke point every generated call passes after the `ccall` — re-raises it, draining a panic Rust raised on the sentinel. Argument position only; synchronous borrow; same thread.
 
 ### External crate integration
 
@@ -296,8 +296,11 @@ work:
   constructor's populated cache would be flagged, because the snapshot it keeps
   contains the image's liveness `Ref{Bool}`.
 
-`BINDINGS_FORMAT_VERSION` is 11 for this: a file emitted here names
-`RustCall.CrateTargetCache`, which an older RustCall does not have.
+`BINDINGS_FORMAT_VERSION` became 11 for this: a file emitted here names
+`RustCall.CrateTargetCache`, which an older RustCall does not have. It is 12
+since #460 (`RustCall.CallbackSlot` and the four-argument `_guard_panic`);
+`docs/src/crate_bindings.md` states the current value, and
+`test/test_crate_bindings.jl` asserts the two agree.
 
 **The panic channel is thread-local.** A generated wrapper records a panic in a `thread_local!` slot of its own library and returns a sentinel; Julia reads that slot with a second `ccall` immediately after the first. A Julia task may migrate to another OS thread at any yield point, so nothing that can yield — a lock, logging, I/O — may sit between the two `ccall`s; the channel pointer is resolved *before* the call (cached at load time). `test/test_panics.jl` stresses this with hundreds of tasks on the 4-thread CI job.
 

@@ -1352,6 +1352,10 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
         # call and the read, and `_panic_channel` can allocate (#244).
         _guard_panic(value, channel::Ptr{Cvoid}, name::String) =
             RustCall.guard_rust_panic_ptr(value, channel, name)
+        # For a call that returned an owned buffer still to be decoded: if the
+        # guard raises, the buffer is released through `free_ptr` (#460).
+        _guard_panic(value, channel::Ptr{Cvoid}, name::String, free_ptr::Ptr{Cvoid}) =
+            RustCall.guard_rust_panic_ptr(value, channel, name, free_ptr)
 
         $func_defs
         $struct_defs
@@ -1920,7 +1924,7 @@ function _generate_result_function_wrapper(func::RustFunctionSignature, arg_syms
             # A panic returns `CResult::panicked()` — the Err discriminant with
             # an uninitialized payload — so the channel is read before the
             # payload is decoded, and resolved before the call (#244).
-            _guard_panic(nothing, $channel_sym, $func_name_str)
+            _guard_panic($c_sym, $channel_sym, $func_name_str, $free_expr)
             # Convert to RustResult; an owned-string payload is copied out and
             # released here, and only on the branch that owns it (#268).
             if $c_sym.is_ok == 1
@@ -2010,7 +2014,7 @@ function _generate_py_result_function_wrapper(func::RustFunctionSignature, arg_s
             $c_sym = $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) call_rust_function($ptr_sym, $c_result_struct_name, $(converted_args...)))))
             # A panic returns the Err discriminant with an uninitialized
             # payload, so the channel is read before anything is decoded (#244).
-            _guard_panic(nothing, $channel_sym, $func_name_str)
+            _guard_panic($c_sym, $channel_sym, $func_name_str, $free_expr)
             if $c_sym.is_ok == 1
                 RustResult{$ok_julia_type, String}(true, $ok_value)
             else
@@ -2070,7 +2074,7 @@ function _generate_option_function_wrapper(func::RustFunctionSignature, arg_syms
             $(bindings...)
             $target
             $c_sym = $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) call_rust_function($ptr_sym, $c_option_struct_name, $(converted_args...)))))
-            _guard_panic(nothing, $channel_sym, $func_name_str)
+            _guard_panic($c_sym, $channel_sym, $func_name_str, $free_expr)
             # Convert to RustOption
             if $c_sym.is_some == 1
                 RustOption{$inner_julia_type}(true, _result_payload($inner_julia_type, $c_sym.value, $free_expr))
@@ -2221,7 +2225,7 @@ function _crate_field_read(info::RustStructInfo, field_name::AbstractString,
         # a reload between them freed the buffer through the wrong image (#277).
         return quote
             let (fp, channel, freep) = _call_target($cache, $name, $(c.free_symbol))
-                raw = _guard_panic(call_rust_function(fp, RustCall.CRustString, $self_ptr_expr), channel, $name)
+                raw = _guard_panic(call_rust_function(fp, RustCall.CRustString, $self_ptr_expr), channel, $name, freep)
                 RustCall._take_owned_string(raw, freep)
             end
         end
@@ -2352,7 +2356,7 @@ function _crate_field_read_source(info::RustStructInfo, field_name::AbstractStri
     if ffi_owned_string_return(c)
         # Getter and release function from one snapshot (#277).
         return "let (fp, channel, freep) = _call_target($cache, \"$getter_symbol\", \"$(c.free_symbol)\"); " *
-               "raw = _guard_panic(call_rust_function(fp, RustCall.CRustString, $self_ptr), channel, \"$getter_symbol\"); " *
+               "raw = _guard_panic(call_rust_function(fp, RustCall.CRustString, $self_ptr), channel, \"$getter_symbol\", freep); " *
                "RustCall._take_owned_string(raw, freep); end"
     elseif ffi_owned_vec_return(c)
         element_type = string(c.surface_type.parameters[1])
@@ -2544,7 +2548,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
             # A panic returns the `panicked()` sentinel — the Err / None
             # discriminant with an uninitialized payload — so the channel is
             # read *before* anything is decoded (#244).
-            _guard_panic(nothing, $channel_sym, $("$(struct_name_str)::$(method.name)"))
+            _guard_panic($c_sym, $channel_sym, $("$(struct_name_str)::$(method.name)"), $free_expr)
             $(_payload_decode_expr(plan, c_sym, free_expr))
         end
     end
@@ -2786,7 +2790,7 @@ function _generate_py_result_method_wrapper(info::RustStructInfo, method::RustMe
         $c_sym = $(_in_callback_frame(frame, _quote_preserved(preserved,
                                     :(call_rust_function($ptr_sym, $c_result_struct_name,
                                                          $(all_args...))))))
-        _guard_panic(nothing, $channel_sym, $method_label)
+        _guard_panic($c_sym, $channel_sym, $method_label, $free_expr)
         if $c_sym.is_ok == 1
             RustResult{$ok_julia_type, String}(true, $ok_value)
         else
@@ -3343,12 +3347,20 @@ older RustCall produced.
   target helpers take that cache as their first argument. The name does not
   exist in an older RustCall, so a file emitted here does not load against one
   — the direction the marker is really for.
+- `12` (#460): a callback argument's pointer is
+  `@cfunction(RustCall.CallbackSlot{k, R}(), ...)`, a slot that knows its
+  return type and so hands Rust a zero of it — never raises through Rust —
+  when invoked with no call in progress. The name does not exist in an older
+  RustCall. Owned-buffer returns are guarded with the four-argument
+  `_guard_panic(value, channel, name, free_ptr)`, which calls a
+  `RustCall.guard_rust_panic_ptr` method an older RustCall does not have, so a
+  buffer returned by a call whose callback threw is released instead of leaked.
 
 A file emitted by an older version still *works* — it only uses public API that
 still exists — but it does not get the unload, panic or lifetime guarantees.
 Regenerate after upgrading; the marker is what makes that visible.
 """
-const BINDINGS_FORMAT_VERSION = 11
+const BINDINGS_FORMAT_VERSION = 12
 
 """
     crate_library_name(info::CrateInfo; release = true) -> String
@@ -4233,6 +4245,9 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     # thread-local in the image, so nothing may yield between the two (#244).
     push!(lines, "_guard_panic(value, channel::Ptr{Cvoid}, name::String) =")
     push!(lines, "    RustCall.guard_rust_panic_ptr(value, channel, name)")
+    # For a call that returned an owned buffer still to be decoded (#460).
+    push!(lines, "_guard_panic(value, channel::Ptr{Cvoid}, name::String, free_ptr::Ptr{Cvoid}) =")
+    push!(lines, "    RustCall.guard_rust_panic_ptr(value, channel, name, free_ptr)")
     push!(lines, "")
 
     # Generate function wrappers of the crate root; items inside modules go
@@ -4397,7 +4412,7 @@ end
 function $func_name($arg_syms)
 $(prologue)    $target
     $c_var = $(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "call_rust_function($ptr_var, $c_result_struct_name, $converted_args_str)")))
-    _guard_panic(nothing, $channel_var, "$func_name")
+    _guard_panic($c_var, $channel_var, "$func_name", $free_expr)
     if $c_var.is_ok == 1
         RustResult{$ok_type_str, $err_type_str}(true, _result_payload($ok_type_str, $c_var.ok_value, $free_expr))
     else
@@ -4447,7 +4462,7 @@ end
 function $func_name($arg_syms)
 $(prologue)    $target
     $c_var = $(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "call_rust_function($ptr_var, $c_result_struct_name, $converted_args_str)")))
-    _guard_panic(nothing, $channel_var, "$func_name")
+    _guard_panic($c_var, $channel_var, "$func_name", $free_expr)
     if $c_var.is_ok == 1
         RustResult{$ok_type_str, String}(true, $ok_value)
     else
@@ -4489,7 +4504,7 @@ end
 function $func_name($arg_syms)
 $(prologue)    $target
     $c_var = $(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "call_rust_function($ptr_var, $c_option_struct_name, $converted_args_str)")))
-    _guard_panic(nothing, $channel_var, "$func_name")
+    _guard_panic($c_var, $channel_var, "$func_name", $free_expr)
     if $c_var.is_some == 1
         RustOption{$inner_type_str}(true, _result_payload($inner_type_str, $c_var.value, $free_expr))
     else
@@ -4712,7 +4727,7 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
         payload_body = """
 $(prologue)    $payload_target
     $c_var = $(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "call_rust_function($ptr_var, $(plan.struct_name), $args_str)")))
-    _guard_panic(nothing, $channel_var, "$method_label")
+    _guard_panic($c_var, $channel_var, "$method_label", $free_expr)
 $(_emit_payload_decode(plan, c_var, free_expr))"""
         return _emit_method_definition(struct_name, method, arg_syms, payload_body;
                                        predef = _target_cache_source(:m, wrapper_name) *
@@ -4860,7 +4875,7 @@ function _emit_py_result_method_code(info::RustStructInfo, method::RustMethod,
     body = """
 $(prologue)    $target
     $c_var = $(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "call_rust_function($ptr_var, $c_result_struct_name, $args_str)")))
-    _guard_panic(nothing, $channel_var, "$method_label")
+    _guard_panic($c_var, $channel_var, "$method_label", $free_expr)
     if $c_var.is_ok == 1
         RustResult{$ok_type_str, String}(true, $ok_value)
     else

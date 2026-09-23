@@ -378,9 +378,17 @@ function (t::CallbackTrampoline{R})(args...) where {R}
         return R === Cvoid ? nothing : convert(R, v)::R
     catch e
         _store_callback_error!(e, catch_backtrace())
-        return R === Cvoid ? nothing : zero(R)
+        return _callback_zero(R)
     end
 end
+
+# The value a callback slot returns to Rust when the Julia side failed: the
+# exception is stored and re-raised after the call, and Rust gets a harmless
+# zero of the slot type. `zero(Ptr{T})` has no method, so a raw-pointer slot
+# gets `C_NULL` — raising here would unwind through the Rust frames (#460).
+_callback_zero(::Type{Cvoid}) = nothing
+_callback_zero(::Type{R}) where {R <: Ptr} = R(C_NULL)
+_callback_zero(::Type{R}) where {R} = zero(R)
 
 """
     CallbackFrame
@@ -432,18 +440,76 @@ function _pop_callback_frame!(frame::CallbackFrame)
     return nothing
 end
 
-# The trampoline Rust is calling: slot `k` of the innermost call in progress.
-@inline function _callback_trampoline(k::Int)
+# The trampoline Rust is calling: slot `k` of the innermost call in progress,
+# or `nothing` when there is none — no frame at all (the call that passed the
+# pointer has returned, or the pointer was called from another task), or a top
+# frame with fewer than `k` callbacks. Never raises: it runs inside a
+# `@cfunction`, and an exception there would unwind through Rust (#460).
+function _callback_trampoline(k::Int)
     stack = _callback_frames()
-    isempty(stack) && error("RustCall: a callback was invoked after the call that passed it returned (#296)")
-    return @inbounds stack[end].trampolines[k]
+    isempty(stack) && return nothing
+    trampolines = stack[end].trampolines
+    return checkbounds(Bool, trampolines, k) ? trampolines[k] : nothing
 end
 
-# One plain function per slot, each `@cfunction`-able without a closure. The
-# trampoline it calls converts the result and catches every exception.
+"""
+    CallbackSlot{K, R}
+
+The function Rust calls for callback argument `K` whose C return type is `R`:
+a singleton, so `@cfunction(CallbackSlot{K, R}(), R, (...))` is a constant
+pointer with no closure (#296). It looks up the `K`-th trampoline of the
+innermost call in progress and calls it; the trampoline converts the result
+and catches every exception.
+
+Nothing may raise out of it, because it runs on a Rust stack. When no
+trampoline is there to call (see `_callback_trampoline`), or the trampoline's
+result is not an `R` (a frame from another call on top), the failure is
+recorded exactly like an exception a callback threw — re-raised by the guard
+after the next Rust call on this task — and Rust gets `_callback_zero(R)`
+(#460). The return type is a parameter rather than a lookup for exactly this
+reason: the fallback value has to have the slot's type.
+"""
+struct CallbackSlot{K, R} end
+
+function (::CallbackSlot{K, R})(args...) where {K, R}
+    try
+        t = _callback_trampoline(K)
+        if t === nothing
+            _store_callback_error!(RustError(
+                "a callback (slot $(K)) was invoked with no call in progress that passed it — " *
+                "after the Rust call returned, or from another task or thread (#296, #460)"),
+                backtrace())
+            return _callback_zero(R)
+        end
+        v = t(args...)
+        v isa R && return v
+        R === Cvoid && return nothing
+        _store_callback_error!(RustError(
+            "a callback (slot $(K)) returned a `$(typeof(v))` where its C signature " *
+            "returns `$(R)` (#460)"), backtrace())
+        return _callback_zero(R)
+    catch e
+        _store_callback_error!(e, catch_backtrace())
+        return _callback_zero(R)
+    end
+end
+
+# The slot functions bindings files of format <= 11 name
+# (`RustCall._callback_slot_k`). They do not know their return type, so they
+# can only return `nothing` when there is no trampoline to call — correct for
+# a `Cvoid` callback; regenerate such a file to get `CallbackSlot` (#460).
 for k in 1:CALLBACK_SLOTS
     name = Symbol("_callback_slot_", k)
-    @eval $name(args...) = _callback_trampoline($k)(args...)
+    @eval function $name(args...)
+        t = _callback_trampoline($k)
+        if t === nothing
+            _store_callback_error!(RustError(
+                "a callback (slot $($k)) was invoked with no call in progress that passed it (#296)"),
+                backtrace())
+            return nothing
+        end
+        return t(args...)
+    end
 end
 
 # How many tasks currently hold a stored callback exception. The guard on
@@ -475,14 +541,59 @@ end
 # returned, after draining a panic the Rust side may have raised on the
 # sentinel the callback returned — the exception is the root cause, and a
 # message left in the thread-local channel would be charged to the next call.
-function _rethrow_callback_error!(channel::Ptr{Cvoid})
+#
+# `value` is what the call returned. When Rust did *not* panic it returned a
+# real value — it ran on the callback's sentinel to completion — and an owned
+# buffer in it (a `String`, or the active `String` payload of a
+# `Result` / `Option` aggregate) is released through `free_ptr` before the
+# exception is raised; otherwise it would leak (#460). When Rust panicked the
+# value is the panic sentinel: an empty buffer, or an aggregate whose payload
+# is uninitialized, which must not be touched.
+function _rethrow_callback_error!(channel::Ptr{Cvoid}, value = nothing,
+                                  free_ptr::Ptr{Cvoid} = C_NULL)
     stored = _take_callback_error()
     stored === nothing && return nothing
+    panicked = false
     if channel != C_NULL
         len = ccall(channel, Csize_t, (Ptr{UInt8}, Csize_t), C_NULL, 0)
-        len == 0 || _fetch_rust_panic(channel, Int(len))
+        if len != 0
+            panicked = true
+            _fetch_rust_panic(channel, Int(len))
+        end
     end
+    panicked || _release_owned_return(value, free_ptr)
     throw(first(stored))
+end
+
+"""
+    _release_owned_return(value, free_ptr)
+
+Release the owned buffer a call returned and nobody will decode, because the
+guard is about to raise (#460). A `CRustString` is freed through `free_ptr`;
+a `Result` / `Option` aggregate (`is_ok` / `ok_value` / `err_value`, or
+`is_some` / `value`) releases its **active** payload only — the inactive one is
+zeroed on the Rust side and freeing it would be a double free. Anything else
+owns nothing here.
+"""
+function _release_owned_return(raw::CRustString, free_ptr::Ptr{Cvoid})
+    if raw.ptr != C_NULL && free_ptr != C_NULL
+        ccall(free_ptr, Cvoid, (Ptr{UInt8}, UInt, UInt), raw.ptr, raw.len, raw.cap)
+    end
+    return nothing
+end
+
+# `CResultType` / `COptionType` and the `CResult_<fn>` / `COption_<fn>`
+# mirrors a crate module declares have the same field names; `hasfield` on the
+# concrete type folds at compile time.
+function _release_owned_return(c, free_ptr::Ptr{Cvoid})
+    free_ptr == C_NULL && return nothing
+    T = typeof(c)
+    if hasfield(T, :is_ok) && hasfield(T, :ok_value) && hasfield(T, :err_value)
+        _release_owned_return(c.is_ok == 1 ? c.ok_value : c.err_value, free_ptr)
+    elseif hasfield(T, :is_some) && hasfield(T, :value)
+        c.is_some == 1 && _release_owned_return(c.value, free_ptr)
+    end
+    return nothing
 end
 
 """
@@ -516,10 +627,12 @@ site uses is
 `C_NULL` means the artifact has no channel (built before #244, or a raw
 `#[no_mangle]` function the user wrote), and the guard is then a no-op.
 """
-function guard_rust_panic_ptr(value, channel::Ptr{Cvoid}, func_name::AbstractString)
+function guard_rust_panic_ptr(value, channel::Ptr{Cvoid}, func_name::AbstractString,
+                              free_ptr::Ptr{Cvoid} = C_NULL)
     # One atomic load on the common path; the task-local lookup only when a
-    # callback somewhere has failed (#296).
-    _CALLBACK_ERRORS_PENDING[] == 0 || _rethrow_callback_error!(channel)
+    # callback somewhere has failed (#296). `free_ptr` releases an owned
+    # buffer in `value` if that exception is raised instead (#460).
+    _CALLBACK_ERRORS_PENDING[] == 0 || _rethrow_callback_error!(channel, value, free_ptr)
     channel == C_NULL && return value
     len = ccall(channel, Csize_t, (Ptr{UInt8}, Csize_t), C_NULL, 0)
     len == 0 && return value
@@ -536,6 +649,14 @@ this.
 """
 check_rust_panic_ptr(channel::Ptr{Cvoid}, func_name::AbstractString) =
     (guard_rust_panic_ptr(nothing, channel, func_name); nothing)
+
+# The form for a call that returned an owned buffer (a `CRustString`, or a
+# `Result` / `Option` aggregate with a `String` payload) still to be decoded:
+# if the guard raises a callback's exception instead, the buffer is released
+# through `free_ptr` first rather than leaked (#460).
+check_rust_panic_ptr(channel::Ptr{Cvoid}, func_name::AbstractString, value,
+                     free_ptr::Ptr{Cvoid}) =
+    (guard_rust_panic_ptr(value, channel, func_name, free_ptr); nothing)
 
 struct PreparedLibraryMetadata
     symbols::Vector{Pair{String, String}}

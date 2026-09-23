@@ -844,3 +844,39 @@ end
         end
     end
 end
+
+@testset "#460: a specialization record is published through a unique temp file" begin
+    mktempdir() do dir
+        withenv("RUSTCALL_CACHE_DIR" => dir) do
+            RustCall._reset_cache_dir_memo!()
+            try
+                key = "4"^64
+                spec = RustCall.SpecializedFunction("", "f_i32", "rustcall_f_i32",
+                                                    ["i32"], "i32", [""], false, false, "f_i32")
+                record = RustCall.SpecializationRecord(key,
+                    Pair{String, RustCall.SpecializedFunction}["f" => spec])
+                path = RustCall._specialization_record_path(key)
+                mkpath(dirname(path))
+                # Another session's half-written file under the old fixed name
+                # is neither truncated nor renamed away by this one.
+                foreign = path * ".tmp"
+                write(foreign, "another session's bytes")
+                @test RustCall.save_specialization_record(key, record) == path
+                @test read(foreign, String) == "another session's bytes"
+                @test RustCall.load_specialization_record(key) !== nothing
+                # Concurrent publishers of one key each use their own name,
+                # leave nothing behind, and the record stays readable.
+                @test RustCall._publish_temp_path(path) != RustCall._publish_temp_path(path)
+                @sync for _ in 1:8
+                    Threads.@spawn RustCall.save_specialization_record(key, record)
+                end
+                @test RustCall.load_specialization_record(key) !== nothing
+                leftovers = filter(f -> endswith(f, ".tmp") && f != basename(foreign),
+                                   readdir(dirname(path)))
+                @test isempty(leftovers)
+            finally
+                RustCall._reset_cache_dir_memo!()
+            end
+        end
+    end
+end

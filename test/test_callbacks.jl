@@ -66,7 +66,7 @@ const _CB_REPO = normpath(joinpath(@__DIR__, ".."))
                                               arg_abis = ["callback", ""], callback_args = [["i64"], String[]],
                                               callback_returns = ["i64", ""])
         src = RustCall._emit_function_code(good)
-        @test occursin("Base.@cfunction RustCall._callback_slot_1 Int64 (Int64,)", src)
+        @test occursin("Base.@cfunction RustCall.CallbackSlot{1, Int64}() Int64 (Int64,)", src)
         @test occursin("CallbackTrampoline{Int64}", src)
         @test occursin("RustCall._push_callback_frame!", src) && occursin("RustCall._pop_callback_frame!", src)
         @test occursin("try", src) && occursin("finally", src)
@@ -83,9 +83,9 @@ const _CB_REPO = normpath(joinpath(@__DIR__, ".."))
         # No closure cfunction anywhere: each slot is a plain function with a
         # constant pointer, and the frame on top of the task's stack says
         # which Julia function it stands for.
-        p1 = @cfunction(RustCall._callback_slot_1, Int64, (Int64,))
+        p1 = @cfunction(RustCall.CallbackSlot{1, Int64}(), Int64, (Int64,))
         @test p1 isa Ptr{Cvoid} && p1 != C_NULL
-        @test p1 != @cfunction(RustCall._callback_slot_2, Int64, (Int64,))
+        @test p1 != @cfunction(RustCall.CallbackSlot{2, Int64}(), Int64, (Int64,))
         f1 = RustCall._push_callback_frame!(RustCall.CallbackTrampoline{Int64}(x -> x + 1))
         @test ccall(p1, Int64, (Int64,), 41) == 42
         # A nested frame shadows the outer one for the duration, and popping
@@ -100,12 +100,58 @@ const _CB_REPO = normpath(joinpath(@__DIR__, ".."))
         @test ccall(p1, Int64, (Int64,), 5) == -5
         RustCall._pop_callback_frame!(f3)
         @test isempty(RustCall._callback_frames())
-        # Slot with no frame: an error inside the trampoline lookup, which the
-        # slot function turns into a stored exception rather than an unwind
-        # through the C frame? No — there is no trampoline to store into, so
-        # this is the one misuse (a callback invoked after its call returned)
-        # the docs call undefined; the lookup at least names it.
-        @test_throws ErrorException RustCall._callback_trampoline(1)
+        # The lookup never raises: it runs inside a `@cfunction` (#460).
+        @test RustCall._callback_trampoline(1) === nothing
+    end
+
+    @testset "a slot with no trampoline never raises through Rust (#460)" begin
+        @test isempty(RustCall._callback_frames())
+        @test RustCall._take_callback_error() === nothing
+        # No frame at all: a callback invoked after its call returned. The
+        # slot returns a zero of its own return type through the real C
+        # entry point, and records a RustError for the next guard.
+        p = @cfunction(RustCall.CallbackSlot{1, Int64}(), Int64, (Int64,))
+        @test ccall(p, Int64, (Int64,), 41) === Int64(0)
+        stored = RustCall._take_callback_error()
+        @test stored !== nothing && first(stored) isa RustCall.RustError
+        @test occursin("no call in progress", first(stored).message)
+        # Every slot type the contract allows has a zero, a pointer included
+        # (`zero(Ptr{T})` has no method).
+        pf = @cfunction(RustCall.CallbackSlot{1, Float64}(), Float64, (Float64,))
+        @test ccall(pf, Float64, (Float64,), 1.5) === 0.0
+        pp = @cfunction(RustCall.CallbackSlot{1, Ptr{UInt8}}(), Ptr{UInt8}, (Int64,))
+        @test ccall(pp, Ptr{UInt8}, (Int64,), 1) == C_NULL
+        pv = @cfunction(RustCall.CallbackSlot{1, Cvoid}(), Cvoid, (Int64,))
+        @test ccall(pv, Cvoid, (Int64,), 1) === nothing
+        # Only the first failure of the window is kept.
+        stored = RustCall._take_callback_error()
+        @test stored !== nothing && first(stored) isa RustCall.RustError
+        @test RustCall._take_callback_error() === nothing
+        # The stored error surfaces at the next guarded call on this task.
+        ccall(p, Int64, (Int64,), 0)
+        @test_throws RustCall.RustError RustCall.guard_rust_panic_ptr(7, C_NULL, "g")
+
+        # A top frame with fewer callbacks than the slot index: bounds are
+        # checked, not `@inbounds`.
+        f = RustCall._push_callback_frame!(RustCall.CallbackTrampoline{Int64}(x -> x + 1))
+        try
+            p2 = @cfunction(RustCall.CallbackSlot{2, Int64}(), Int64, (Int64,))
+            @test ccall(p2, Int64, (Int64,), 5) === Int64(0)
+            @test RustCall._take_callback_error() !== nothing
+            # A trampoline whose return type is not the slot's is a recorded
+            # failure too, never a TypeError inside the cfunction.
+            pf2 = @cfunction(RustCall.CallbackSlot{1, Float64}(), Float64, (Int64,))
+            @test ccall(pf2, Float64, (Int64,), 5) === 0.0
+            stored = RustCall._take_callback_error()
+            @test stored !== nothing && occursin("returned a `Int64`", first(stored).message)
+        finally
+            RustCall._pop_callback_frame!(f)
+        end
+        # A pointer-returning trampoline whose callback throws returns C_NULL.
+        tp = RustCall.CallbackTrampoline{Ptr{UInt8}}(x -> error("boom"))
+        @test tp(1) == C_NULL
+        @test RustCall._take_callback_error() !== nothing
+        @test isempty(RustCall._callback_frames())
     end
 
     @testset "the trampoline never lets an exception out" begin
@@ -253,6 +299,91 @@ const _CB_REPO = normpath(joinpath(@__DIR__, ".."))
         end
         junk = Ref{Any}(nothing)
         @test cb_each(50, (i, v) -> (junk[] = [zeros(1000) for _ in 1:20]; GC.gc(false))) == 50
+    end
+
+    @testset "an owned String is released when the callback's exception is raised (#460)" begin
+        # Rust runs on the callback's sentinel to completion and returns a
+        # real buffer; the guard then raises the callback's exception. The
+        # buffer must be released first, not leaked. A counting global
+        # allocator in the block makes the leak observable.
+        rust"""
+        use std::alloc::{GlobalAlloc, Layout, System};
+        use std::sync::atomic::{AtomicI64, Ordering};
+
+        struct Leak460Counting;
+        static LEAK460_LIVE: AtomicI64 = AtomicI64::new(0);
+
+        unsafe impl GlobalAlloc for Leak460Counting {
+            unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+                let p = unsafe { System.alloc(layout) };
+                if !p.is_null() {
+                    LEAK460_LIVE.fetch_add(1, Ordering::SeqCst);
+                }
+                p
+            }
+            unsafe fn dealloc(&self, p: *mut u8, layout: Layout) {
+                LEAK460_LIVE.fetch_sub(1, Ordering::SeqCst);
+                unsafe { System.dealloc(p, layout) }
+            }
+        }
+
+        #[global_allocator]
+        static LEAK460_GLOBAL: Leak460Counting = Leak460Counting;
+
+        #[julia]
+        pub fn leak460_live() -> i64 { LEAK460_LIVE.load(Ordering::SeqCst) }
+
+        #[julia]
+        pub fn leak460_string(f: extern "C" fn(i64) -> i64) -> String { format!("v={}", f(1)) }
+
+        #[julia]
+        pub fn leak460_result(f: extern "C" fn(i64) -> i64) -> Result<String, String> {
+            Ok(format!("v={}", f(1)))
+        }
+
+        #[julia]
+        pub fn leak460_option(f: extern "C" fn(i64) -> i64) -> Option<String> {
+            Some(format!("v={}", f(1)))
+        }
+
+        #[julia]
+        pub struct Leak460 { pub n: i64 }
+
+        #[julia]
+        impl Leak460 {
+            pub fn new(n: i64) -> Self { Leak460 { n } }
+            pub fn label(&self, f: extern "C" fn(i64) -> i64) -> String { format!("v={}", f(self.n)) }
+            pub fn try_label(&self, f: extern "C" fn(i64) -> i64) -> Result<String, String> {
+                Ok(format!("v={}", f(self.n)))
+            }
+        }
+        """
+        boom = ErrorException("leak460")
+        obj = Leak460(3)
+        calls = (
+            f -> leak460_string(f),
+            f -> leak460_result(f),
+            f -> leak460_option(f),
+            f -> obj.label(f),
+            f -> obj.try_label(f),
+        )
+        for call in calls
+            # Warm up: the successful path decodes and releases the buffer.
+            call(x -> x)
+            before = leak460_live()
+            for _ in 1:5
+                err = try
+                    call(x -> throw(boom))
+                    nothing
+                catch e
+                    e
+                end
+                @test err === boom
+            end
+            @test leak460_live() == before
+        end
+        @test leak460_string(x -> x + 1) == "v=2"
+        @test RustCall._CALLBACK_ERRORS_PENDING[] == 0
     end
 
     @testset "exceptions are per task" begin

@@ -1291,3 +1291,13 @@ end
     @test c.value == Int32(101)
     @test B.get(c) == Int32(101)
 end
+
+@testset "the documented bindings format is the current one (#460 review)" begin
+    # The user guide names the marker a freshly written file carries; a bump
+    # of the constant must update it, and the guide must explain that version.
+    guide = read(joinpath(@__DIR__, "..", "docs", "src", "crate_bindings.md"), String)
+    v = RustCall.BINDINGS_FORMAT_VERSION
+    @test occursin("(`# Bindings format: $(v)`)", guide)
+    @test occursin("Format `$(v)` (#", guide)
+    @test length(collect(eachmatch(r"`# Bindings format: \d+`", guide))) == 1
+end

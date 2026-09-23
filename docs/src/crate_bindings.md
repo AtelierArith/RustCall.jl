@@ -768,7 +768,16 @@ library; see [Panics, Visibility and Lifetime](panics.md) for the full contract.
 ## Regenerating bindings after an upgrade
 
 Files written by `write_bindings_to_file` carry a format marker
-(`# Bindings format: 11`). Regenerate after upgrading RustCall.
+(`# Bindings format: 12`). Regenerate after upgrading RustCall.
+
+Format `12` (#460) hands Rust each callback argument as
+`@cfunction(RustCall.CallbackSlot{k, R}(), ...)`, a slot that knows its return
+type: invoked with no call in progress it records an error and returns a zero
+of `R` instead of raising through Rust. Owned-buffer returns are guarded with a
+four-argument `_guard_panic(value, channel, name, free_ptr)`, so a `String` a
+call returned is released, not leaked, when a callback's exception is raised.
+Both names are new, so a file emitted at this version does not load against an
+older RustCall.
 
 Format `11` (#253) gives every call site in the file a
 `RustCall.CrateTargetCache` of its own, declared as a `const` beside the wrapper

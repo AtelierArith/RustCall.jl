@@ -1578,9 +1578,9 @@ function _generic_group_typechecks(source::String, compiler::RustCompiler, conte
         input = joinpath(dir, "generic_group.rs")
         output = joinpath(dir, "generic_group.rmeta")
         write(input, wrap_rust_code(source))
-        command = Cmd([string(rustc().exec[1]), "--crate-type=cdylib",
-                       "--emit=metadata", "-C", "panic=unwind",
-                       _cfg_rustc_flags(compiler)..., "-o", output, input])
+        command = rustc_command(["--crate-type=cdylib",
+                                 "--emit=metadata", "-C", "panic=unwind",
+                                 _cfg_rustc_flags(compiler)..., "-o", output, input])
         process = run(pipeline(command; stdout = devnull, stderr = devnull); wait = false)
         wait(process)
         success(process)
