@@ -305,50 +305,6 @@ _scan_crate_signatures(crate_path::AbstractString;
                        build_options::NamedTuple = crate_build_options()) =
     _scan_crate_signatures(_bare_build_record(crate_path, build_options))
 
-"""
-    _record_build_subprocess_env(record::CrateBuildRecord) -> Dict{String, String}
-
-The environment a reload's Cargo subprocesses — the cfg probe and the build —
-run under, taken once from `record` over one snapshot of `ENV`: every variable
-`artifact_build_env_captured` accepts is removed from the snapshot and the
-record's own values are put back, so `RUSTFLAGS`, `CARGO_PROFILE_*`,
-`RUSTUP_TOOLCHAIN`, `PYO3_*` and the rest are the recorded ones even if another
-task changes `ENV` while the reload runs (#474 review). Entries of
-`record.build_env` spelled `<...>` are digests, not variables, and are skipped.
-
-The rest of the snapshot (`PATH`, `CARGO_HOME`, ...) is what the build needs to
-run; the Cargo configuration `CARGO_HOME` selects is checked against the
-record's digest *on this environment*, so a `CARGO_HOME` changed after the
-check is refused rather than built under.
-"""
-function _record_build_subprocess_env(record::CrateBuildRecord)
-    snapshot = Dict{String, String}(ENV)
-    env = Dict{String, String}(k => v for (k, v) in snapshot
-                               if !artifact_build_env_captured(k))
-    for (k, v) in record.build_env
-        startswith(k, "<") && continue
-        # Allowlisted values are recorded in `_artifact_env_value`'s encoding
-        # (`present:<value>`, or `ARTIFACT_ENV_ABSENT`); the others as is.
-        if v == ARTIFACT_ENV_ABSENT
-            delete!(env, k)
-        else
-            env[k] = startswith(v, "present:") && artifact_build_env_captured(k) ?
-                     chopprefix(v, "present:") : v
-        end
-    end
-    if !isempty(record.cargo_config)
-        now_config = try
-            _cargo_config_digest(env; dir = record.crate_dir)
-        catch e
-            @debug "Could not read the Cargo configuration" exception = e
-            record.cargo_config
-        end
-        now_config == record.cargo_config || throw(ArgumentError(
-            _build_env_mismatch_message(record.lib_name, ["<effective Cargo configuration>"])))
-    end
-    return env
-end
-
 # A record of `build_options` for `crate_path` with no registry name and no
 # environment: what the path methods of `rebuild_crate` and
 # `_scan_crate_signatures` build from. Neither compares the environment — the

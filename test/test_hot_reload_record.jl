@@ -446,6 +446,47 @@ _hrr_with(r::RustCall.CrateBuildRecord; kwargs...) =
         end
     end
 
+    # #474 review: `@rust_crate` and `write_bindings_to_file` take ONE snapshot
+    # before building, build under it, and record that same snapshot; derived
+    # inputs (the interpreter `PATH` selected) are pinned, not re-derived.
+    @testset "one snapshot decides the build, its key and the record" begin
+        crate = _HRR_SAMPLE_CRATE
+        record = RustCall.crate_build_record(crate, "")
+        # The key material read from the record is what the live read gives.
+        @test RustCall._plain_crate_build_env(record) == RustCall._plain_crate_build_env()
+        # The interpreter `PATH` selected is pinned for the subprocesses.
+        pyrec = _hrr_with(record; build_env = ("<PYO3_CONFIG_FILE digest>" => "",
+                                               "<pyo3 build interpreter>" => "/recorded/python3",
+                                               "<pyo3 build fingerprint>" => "fp"))
+        withenv("PYO3_PYTHON" => nothing, "PATH" => mktempdir()) do
+            env = RustCall._record_build_subprocess_env(pyrec)
+            @test env["PYO3_PYTHON"] == "/recorded/python3"
+        end
+        # A recorded `PYO3_PYTHON` is kept as recorded.
+        pinned = _hrr_with(record; build_env = ("PYO3_PYTHON" => "present:/pinned/python",
+                                                "<pyo3 build interpreter>" => "/pinned/python"))
+        withenv("PYO3_PYTHON" => "/other/python") do
+            @test RustCall._record_build_subprocess_env(pinned)["PYO3_PYTHON"] == "/pinned/python"
+        end
+        # An emitter given a record emits that record, and only one named for
+        # the module's library.
+        info = RustCall.scan_crate(crate)
+        named = RustCall._record_named(record, "rust_crate_snap_474")
+        ex = RustCall.emit_crate_module(info, "/tmp/libsnap474.dylib";
+                                        lib_name = "rust_crate_snap_474", build_record = named)
+        @test only(_hrr_record_in(ex)) == named
+        code = RustCall.emit_crate_module_code(info, "/tmp/libsnap474.dylib";
+                                               lib_name = "rust_crate_snap_474", build_record = named)
+        @test occursin("const _BUILD_RECORD = " * repr(named), code)
+        @test _hrr_error(() -> RustCall.emit_crate_module(info, "/tmp/x.dylib";
+                             lib_name = "other", build_record = named)) isa ArgumentError
+        # Both entry points build under the snapshot they record.
+        src = read(joinpath(pkgdir(RustCall), "src", "crate_bindings.jl"), String)
+        @test count("build_env = _record_build_subprocess_env(snapshot)", src) == 2
+        @test count("env = build_env)", src) >= 4
+        @test occursin("build_record = _record_named(snapshot, lib_name)", src)
+    end
+
     # #473: extraction refuses a `#[julia]` item in an unmarked inline module,
     # which Cargo compiles — so the rescan fails while the build would succeed.
     @testset "a failed rescan fails the reload and keeps the previous image (#473)" begin
