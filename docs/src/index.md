@@ -387,7 +387,7 @@ Generate Julia bindings for external Rust crates using `@rust_crate`:
 
 **Rust side (external crate):**
 ```rust
-// Cargo.toml needs: rustcall_julia_macros = "0.1"
+// Cargo.toml needs: rustcall_julia_macros = "0.2"
 use rustcall_julia_macros::julia;
 
 #[julia]
