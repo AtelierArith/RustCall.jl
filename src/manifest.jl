@@ -783,7 +783,7 @@ function _crate_build_cfg_text(crate_path::AbstractString; profile::AbstractStri
                 # build's directory under RustCall's cache, never the crate's
                 # own `target/` (#445) — so the two share that work and a build
                 # script sees one OUT_DIR.
-                cmd = setenv(`$(cargo()) rustc -q $flag $features --lib -- --print cfg`; dir = path)
+                cmd = setenv(`$(cargo()) rustc -q $flag $(_cargo_network_args()) $features --lib -- --print cfg`; dir = path)
                 cmd = addenv(cmd, "CARGO_TARGET_DIR" => target)
                 out = read(cmd, String)
                 join(filter(l -> occursin(r"^[A-Za-z_][A-Za-z0-9_]*(=\".*\")?$", l), split(out, '\n')), "\n") * "\n"

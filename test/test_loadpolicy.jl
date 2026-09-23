@@ -460,7 +460,7 @@ end
         @test occursin("cargo_profile_panic_line(crate_wrapper_policy())",
                        _src("crate_bindings.jl"))
         @test occursin("_cargo_panic_env", _src("cargobuild.jl"))
-        @test occursin("cmd = setenv(`\$cargo_cmd \$build_args`, build_env)",
+        @test occursin("cmd = setenv(`\$cargo_cmd \$build_args`, build_env; dir = project.path)",
                        _src("cargobuild.jl"))
         env = RustCall._cargo_panic_env(cargo_policy, Dict("A" => "b"), true)
         @test env["CARGO_PROFILE_RELEASE_PANIC"] == "unwind"
@@ -1413,8 +1413,8 @@ end
         @test !occursin("outside REGISTRY_LOCK", src)  # the old unload-first comment
         # The rescan happens before the build, so the manifest describes the
         # sources that were compiled.
-        scan_at = findfirst("_scan_crate_signatures(state.crate_path)", src)
-        build_at = findfirst("rebuild_crate(state.crate_path)", src)
+        scan_at = findfirst("_scan_crate_signatures(state.crate_path", src)
+        build_at = findfirst("rebuild_crate(state.crate_path", src)
         @test scan_at !== nothing && build_at !== nothing
         @test first(scan_at) < first(build_at)
     end

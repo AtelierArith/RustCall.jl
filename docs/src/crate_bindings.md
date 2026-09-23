@@ -668,6 +668,52 @@ RustCall.write_bindings_to_file(
 
 4. **The generated file uses `@__DIR__`** for library paths, ensuring it works when the package is installed elsewhere.
 
+Like the in-memory module, the written file needs only `RustCall` among the
+package's dependencies: it reaches `Libdl` through RustCall (`import
+RustCall.Libdl`). Without `relative_lib_path`, the file names a copy of the
+library in RustCall's Cargo cache directory (removed by `RustCall.clear_cache()`),
+never a file inside the temporary wrapper project a crate without a `cdylib`
+target is built in.
+
+### Hot reload of a `@rust_crate` module
+
+`RustCall.enable_hot_reload_for_crate` rebuilds a crate with its own `cdylib`
+target when its sources change, and swaps the new library in under the registry
+name the module loaded it as. Pass the value `@rust_crate` returned: the module
+records both that name (`_LIB_NAME`) and the build it was made from
+(`_BUILD_OPTIONS`: profile, `features`, `default_features`), and every reload
+rebuilds that same build, so the rebuilt library has the `#[cfg]`s the module's
+wrappers were generated for:
+
+```julia
+B = @rust_crate "deps/my_rust_crate" release=false features=["simd"]
+RustCall.enable_hot_reload_for_crate(B)  # rebuilds debug, with "simd"
+```
+
+The crate is the one the module was generated from, which the module records
+too, so the path may be omitted. When it is given it must name that same
+directory (a relative or symlinked spelling is fine); another checkout is
+refused rather than published under the module's registry name.
+
+The module also records the build environment it was made under (`RUSTFLAGS`
+and the rest of the allowlisted variables, the effective Cargo configuration,
+the toolchain). The module form compares it with the current environment when
+hot reload is enabled — an `ArgumentError` on a mismatch — and again before every
+rebuild, where a mismatch fails the reload and keeps the previous library loaded
+(reported like any failed rebuild, through the callback). Restore the
+environment, or load the crate again under the new one.
+
+The path-only form, `enable_hot_reload_for_crate(crate_path; release, features,
+default_features)`, takes the build as keywords (defaulting to `@rust_crate`'s
+defaults) and does not guess it; it has no record of the environment, so it
+rebuilds under the current one. Only a crate that is its own `cdylib` can be
+reloaded; a module bound through a generated wrapper crate is refused.
+
+The rebuild is the build `@rust_crate` itself runs: RustToolChain's `cargo`,
+output under RustCall's own target directory for the crate (not the crate's
+`target/`), the library found under its `[lib] name`, and `--offline` under
+`RUSTCALL_OFFLINE=1`.
+
 ### API Reference
 
 #### `write_bindings_to_file`

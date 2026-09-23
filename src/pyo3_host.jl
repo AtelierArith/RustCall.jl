@@ -195,10 +195,7 @@ function _pyo3_extension_artifact(cache_dir::AbstractString, info::CrateInfo,
     # wrapper keys them.
     key = compute_crate_hash(info; release = release, kind = "pyo3-host",
                              features = features, default_features = default_features,
-                             build_env = Pair{String, String}[
-                                 "PYO3_PYTHON" => String(python),
-                                 "interpreter-fingerprint" => String(fingerprint),
-                                 "module" => String(module_name)])
+                             build_env = _pyo3_host_build_env(python, fingerprint, module_name))
     # Its own tree, not the Cargo cache: an extension module is not a cached
     # cdylib, and `test_cargo` asserts the Cargo cache holds exactly one entry
     # (#287). Both `clear_cache()` and this directory's owner are one place.
@@ -206,6 +203,33 @@ function _pyo3_extension_artifact(cache_dir::AbstractString, info::CrateInfo,
     lib_path = joinpath(dir, String(module_name) * String(ext_suffix))
     return PyO3Extension(String(module_name), lib_path, dir, String(ext_suffix),
                          String(python), String(fingerprint), key)
+end
+
+"""
+    _pyo3_host_build_env(python, fingerprint, module_name) -> Vector{Pair{String, String}}
+
+The build environment the host-path extension is keyed by: `artifact_build_env()`
+— `RUSTFLAGS`, a build script's `CC` and the rest of the #282 allowlist, which
+decide what `cargo rustc` produces exactly as they do for the plain crate path
+and the PyO3 wrapper — plus the contents of `PYO3_CONFIG_FILE` when it is set,
+then the interpreter the build is configured for and the module name. Without the
+allowlist a changed `RUSTFLAGS` found the previous extension in the cache (#461).
+
+The ambient `PYO3_PYTHON` is left out of the allowlist half: the build sets it
+to `python` itself, which the key records under the same name. Reading only the
+environment and a file, this starts no process, so the precompile workload can
+compute it (#449).
+"""
+function _pyo3_host_build_env(python::AbstractString, fingerprint::AbstractString,
+                              module_name::AbstractString)
+    build_env = filter(p -> first(p) != "PYO3_PYTHON", artifact_build_env())
+    digest = _pyo3_config_file_digest()
+    isempty(digest) || push!(build_env, "pyo3-config-file-digest" => digest)
+    append!(build_env, Pair{String, String}[
+        "PYO3_PYTHON" => String(python),
+        "interpreter-fingerprint" => String(fingerprint),
+        "module" => String(module_name)])
+    return build_env
 end
 
 # The `#[pymodule]` initializer's Python name: `name = "..."` when given,
@@ -321,15 +345,18 @@ function _build_pyo3_extension_library(crate_path::AbstractString, cargo_toml::A
     env["PYO3_PYTHON"] = String(python)
     env["CARGO_TARGET_DIR"] = target_dir
 
+    # `--offline` under `RUSTCALL_OFFLINE`, as every other build (#461).
+    append!(args, _cargo_network_args())
     cmd = isempty(link_args) ? `$(cargo()) $args` : `$(cargo()) $args -- $link_args`
     stderr_io = IOBuffer()
     stdout_io = IOBuffer()
-    ok = cd(crate_path) do
-        proc = run(pipeline(setenv(cmd, env), stdout = stdout_io, stderr = stderr_io),
-                   wait = false)
-        wait(proc)
-        success(proc)
-    end
+    # In the crate's directory through the command's `dir`, never a
+    # process-wide `cd`, which would move every other task's relative paths
+    # for the length of the build (#461).
+    proc = run(pipeline(setenv(cmd, env; dir = String(crate_path)),
+                        stdout = stdout_io, stderr = stderr_io), wait = false)
+    wait(proc)
+    ok = success(proc)
     if !ok
         stderr_str = String(take!(stderr_io))
         close(stderr_io); close(stdout_io)
