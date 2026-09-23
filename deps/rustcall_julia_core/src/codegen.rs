@@ -1839,6 +1839,55 @@ fn inline_generic_method_error(
     Some(quote::quote_spanned! {span=> compile_error!(#msg); })
 }
 
+/// Whether a method is an `unsafe fn` (#491). Its wrapper would call it from
+/// an `extern "C"` body that upholds none of the requirements its `unsafe`
+/// states, so it is refused at the method ([`unsafe_method_error`]) and
+/// reported with [`crate::manifest::skip_reason::UNSAFE_FN`].
+pub fn method_is_unsafe(m: &MethodModel) -> bool {
+    m.func.sig.unsafety.is_some()
+}
+
+/// Whether an inline method gets an `extern "C"` wrapper: one generic in its
+/// own right ([`inline_method_is_generic`]) or `unsafe` ([`method_is_unsafe`])
+/// is refused at the method instead.
+pub fn inline_method_is_wrapped(m: &MethodModel) -> bool {
+    !inline_method_is_generic(m) && !method_is_unsafe(m)
+}
+
+/// The manifest `skip_reason` of a method the codegen of either flavour
+/// wraps: [`crate::manifest::skip_reason::UNSAFE_FN`] for one it refuses as
+/// `unsafe` ([`unsafe_method_error`]), empty otherwise (#491).
+pub fn method_skip_reason(m: &MethodModel) -> String {
+    if method_is_unsafe(m) {
+        crate::manifest::skip_reason::UNSAFE_FN.to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// Refuse an `unsafe fn` method of a `#[julia]` struct (#491), in either
+/// flavour. The wrapper would call it from a safe `extern "C"` body — which
+/// used to fail inside generated code with rustc's E0133 — and, were that call
+/// put in an `unsafe` block, would let Julia call it with none of the
+/// requirements its `unsafe` states upheld. A `#[julia] unsafe fn` is refused
+/// the same way ([`transform_function`]).
+///
+/// The caller gates the error by the method's effective `#[cfg]`.
+fn unsafe_method_error(struct_name: &Ident, m: &MethodModel) -> Option<TokenStream2> {
+    if !method_is_unsafe(m) {
+        return None;
+    }
+    let method = &m.func.sig.ident;
+    let msg = format!(
+        "`{struct_name}::{method}` is an `unsafe fn`: its `extern \"C\"` entry point would let \
+         Julia call it with none of the requirements its `unsafe` states upheld. Expose a safe \
+         method that upholds them and calls this one, and let Julia call that instead (#491)."
+    );
+    let span = syn::spanned::Spanned::span(&m.func.sig.unsafety);
+    // A bare `compile_error!`, as in [`inline_generic_method_error`].
+    Some(quote::quote_spanned! {span=> compile_error!(#msg); })
+}
+
 /// A refusal emitted in place of (or beside) an item, gated by that item's
 /// effective `#[cfg]` set so it fires only where the item exists.
 ///
@@ -2456,6 +2505,12 @@ pub fn method_wrapper_at_impl_site(
             },
         );
     };
+    // Both flavours reach Rust through here for a block's method: the
+    // proc-macro's `#[julia] impl`, and an inline block beside another
+    // module's struct (#491).
+    if let Some(error) = unsafe_method_error(struct_name, m) {
+        return gated_error(&cfg_attrs(&m.func.attrs), error);
+    }
     let stem = struct_stem(struct_module_path, struct_name);
     let owner = format_ident!("{}", method_string_owner(&stem.to_string(), &m.name()));
     let owned_helper = format_ident!("{}_RustCallOwnedString", owner);
@@ -2629,9 +2684,9 @@ pub fn inline_struct_wrappers(
         .filter(|m| m.is_local_to(module_path))
         .collect();
 
-    // A refused generic method (#471) gets no wrapper, so it makes no buffer
-    // exist either.
-    let wrapped = || local.iter().filter(|m| !inline_method_is_generic(m));
+    // A refused generic (#471) or `unsafe` (#491) method gets no wrapper, so
+    // it makes no buffer exist either.
+    let wrapped = || local.iter().filter(|m| inline_method_is_wrapped(m));
     let needs_owned = accessible.iter().any(|(_, ty)| is_string_type(ty))
         || wrapped()
             .any(|m| method_needs_owned_string(m) && !inline_method_is_ctor(struct_name, m));
@@ -2730,7 +2785,9 @@ pub fn inline_struct_wrappers(
             .func
             .attrs
             .splice(0..0, cfgs.iter().chain(m.enclosing_cfg.iter()).cloned());
-        if let Some(error) = inline_generic_method_error(struct_name, false, m) {
+        if let Some(error) = inline_generic_method_error(struct_name, false, m)
+            .or_else(|| unsafe_method_error(struct_name, m))
+        {
             out.extend(gated_error(&cfg_attrs(&gated.func.attrs), error));
             continue;
         }
@@ -2985,7 +3042,9 @@ pub fn inline_generic_method_refusals(model: &StructModel) -> TokenStream2 {
     let struct_name = &model.item.ident;
     let mut out = TokenStream2::new();
     for m in &model.methods {
-        let Some(error) = inline_generic_method_error(struct_name, true, m) else {
+        let Some(error) = inline_generic_method_error(struct_name, true, m)
+            .or_else(|| unsafe_method_error(struct_name, m))
+        else {
             continue;
         };
         let mut cfgs = cfg_attrs(&model.item.attrs);
@@ -3027,13 +3086,10 @@ pub fn inline_generic_wrappers(model: &StructModel, module_path: &[String]) -> V
     let mut wrappers = Vec::new();
 
     // A method generic in its own right gets no wrapper: instantiating the
-    // struct binds only the struct's parameters (#477). The expander emits
-    // [`inline_generic_method_refusals`] for it instead.
-    for m in model
-        .methods
-        .iter()
-        .filter(|m| !inline_method_is_generic(m))
-    {
+    // struct binds only the struct's parameters (#477). Nor does an `unsafe`
+    // one (#491). The expander emits [`inline_generic_method_refusals`] for
+    // them instead.
+    for m in model.methods.iter().filter(|m| inline_method_is_wrapped(m)) {
         let method_name = &m.func.sig.ident;
         let wrapper_name = format_ident!(
             "{}",

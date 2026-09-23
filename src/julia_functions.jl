@@ -557,6 +557,8 @@ function _generate_single_wrapper(sig::RustFunctionSignature)
     # The item every position below is filed under (#454), named before the
     # argument plan, which records first.
     _boundary_item!(_boundary_label(sig))
+    # An item the Rust codegen refuses gets no wrapper (#491).
+    _rust_refused_item!(sig.skip_reason, sig.name) && return nothing
     # The Julia wrapper keeps the Rust *name* (`add(1, 2)`); the call goes to
     # the exported *symbol*, which since #279 is `rustcall_add`.
     func_name = esc(Symbol(sig.name))

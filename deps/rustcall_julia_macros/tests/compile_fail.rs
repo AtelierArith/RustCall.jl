@@ -13,4 +13,6 @@ fn ui_tests() {
     // #484: an elided return lifetime that would borrow a lowered string is
     // refused at that argument, not with E0106 inside the wrapper.
     t.compile_fail("tests/ui/elided_return.rs");
+    // #491: an `unsafe fn` method is refused at the method.
+    t.compile_fail("tests/ui/unsafe_method.rs");
 }

@@ -328,3 +328,85 @@ end
     crate = RustCall.boundary_report(BR_SAMPLE_CRATE; io = devnull)
     @test !any(n -> n.position == "entry point", crate.notes)
 end
+
+# A `#[julia]` item that is an `unsafe fn` is refused by the Rust codegen with
+# a `compile_error!`; the manifest says so (`skip_reason = "unsafe_fn"`) and
+# the generators record the refusal, so the report names it before anything
+# is built (#491).
+@testset "boundary report lists a refused unsafe fn and unsafe method (#491)" begin
+    source = raw"""
+        #[julia]
+        pub unsafe fn danger(p: *const i32) -> i32 { *p }
+
+        #[julia]
+        pub fn safe(x: i32) -> i32 { x }
+
+        #[julia]
+        pub struct Cell { pub v: i32 }
+
+        impl Cell {
+            pub fn new() -> Self { Cell { v: 1 } }
+            pub unsafe fn read(&self, p: *const i32) -> i32 { *p + self.v }
+        }
+        """
+    report = RustCall.inline_boundary_report(source; io = devnull)
+    @test _br_positions(report) == Set([("danger", "entry point"),
+                                        ("Cell::read", "entry point")])
+    for u in report.unsupported
+        @test occursin("`unsafe fn`", u.reason)
+        @test occursin("#491", u.reason)
+    end
+    danger = only(u for u in report.unsupported if u.item == "danger")
+    @test danger.rust_type == "unsafe fn danger"
+    # No wrapper exists for a refused item, so none of its argument or return
+    # positions is examined: `safe`'s two and the `v` getter.
+    @test report.checked == 2 + 1 + 2
+    text = sprint(io -> RustCall.inline_boundary_report(source; io))
+    @test occursin("2 unsupported position(s)", text)
+    @test occursin("danger, entry point: unsafe fn danger", text)
+
+    # The crate flavour: a `#[julia] unsafe fn` and an unsafe `#[julia]`
+    # method, the latter behind a feature the lenient scan does not decide —
+    # reported, not decided, like every other feature-gated item.
+    mktempdir() do root
+        crate = joinpath(root, "br_unsafe")
+        mkpath(joinpath(crate, "src"))
+        write(joinpath(crate, "Cargo.toml"), """
+            [package]
+            name = "br_unsafe"
+            version = "0.1.0"
+            edition = "2021"
+
+            [lib]
+            crate-type = ["cdylib"]
+
+            [features]
+            peek = []
+
+            [dependencies]
+            rustcall_julia_macros = { path = $(repr(RustCall.rustcall_runtime_crate_path())) }
+            """)
+        write(joinpath(crate, "src", "lib.rs"), """
+            use rustcall_julia_macros::julia;
+
+            #[julia]
+            pub unsafe fn danger(p: *const i32) -> i32 { *p }
+
+            #[julia]
+            pub struct Cell { pub v: i32 }
+
+            #[julia]
+            impl Cell {
+                #[julia]
+                pub fn get(&self) -> i32 { self.v }
+                #[cfg(feature = "peek")]
+                #[julia]
+                pub unsafe fn read(&self, p: *const i32) -> i32 { *p + self.v }
+            }
+            """)
+        report = RustCall.boundary_report(crate; io = devnull)
+        @test _br_positions(report) == Set([("danger", "entry point"),
+                                            ("Cell::read", "entry point")])
+        @test all(u -> occursin("`unsafe fn`", u.reason), report.unsupported)
+    end
+end

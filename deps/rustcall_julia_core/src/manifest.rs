@@ -149,6 +149,11 @@ use serde::{Deserialize, Serialize};
 ///   [`Arg::callback_args`] / [`Arg::callback_return`] carrying the function
 ///   pointer's signature. A consumer that does not know the column sees an
 ///   argument it cannot describe and fails closed, as before.
+/// * **0.6.x** (additive, #491): the [`skip_reason`] vocabulary gains
+///   [`skip_reason::UNSAFE_FN`], set on a `#[julia]` function or method that
+///   is an `unsafe fn`. Codegen refused such an item before the value
+///   existed and still does; a consumer that ignores the reason emits a
+///   binding for an item whose build fails, as before.
 pub const SCHEMA_VERSION: &str = "0.6";
 
 #[cfg(test)]
@@ -232,6 +237,13 @@ pub mod skip_reason {
     /// later definition would silently replace the earlier. The earlier
     /// item's qualified name follows the colon (#307 review).
     pub const JULIA_NAME_COLLISION: &str = "julia_name_collision";
+    /// A `#[julia]` item that is an `unsafe fn` — a free function, or a method
+    /// of a `#[julia]` struct (#491). Its `extern "C"` entry point would let
+    /// Julia call it with none of the requirements its `unsafe` states
+    /// upheld, so codegen refuses it with a `compile_error!` at the item;
+    /// the reason lets the Julia generators name that refusal before anything
+    /// is built.
+    pub const UNSAFE_FN: &str = "unsafe_fn";
 
     /// `"<kind>:<detail>"`, e.g. `"pyo3_type:Python<'_>"`.
     pub fn detailed(kind: &str, detail: &str) -> String {

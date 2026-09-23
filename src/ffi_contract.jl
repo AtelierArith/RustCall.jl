@@ -1241,6 +1241,29 @@ function _boundary_refuse(position::AbstractString, rust_type::AbstractString,
 end
 
 """
+    _rust_refused_item!(skip_reason, name) -> Bool
+
+Whether the Rust codegen refuses the current item outright, as the manifest's
+`skip_reason` says — today a `#[julia]` function or method that is an
+`unsafe fn` (`"unsafe_fn"`, #491). A wrapper generator asks at its entry
+point, after `_boundary_item!`, and emits no wrapper for such an item.
+
+In collecting mode the refusal is a finding, recorded through
+`_boundary_refuse` at the item's `"entry point"`; the item's argument and
+return positions are not examined, since no wrapper exists to have them.
+Outside it the refusal is the codegen's own — a `compile_error!` at the item,
+gated by the item's `#[cfg]` — so nothing is raised here: a crate is scanned
+leniently, and raising would refuse a build that configures the item away.
+"""
+function _rust_refused_item!(skip_reason::AbstractString, name::AbstractString)
+    partition_skip_reason(skip_reason)[1] == "unsafe_fn" || return false
+    _boundary_collecting() &&
+        _boundary_refuse("entry point", "unsafe fn $(name)", "",
+                         pyo3_skip_explanation(skip_reason))
+    return true
+end
+
+"""
     ffi_return_symbol_or_throw(rust_type, abi, ctx; strict = FFI_STRICT[], position = "return") -> Union{Symbol, Expr}
 
 How the return position of `ctx` is spelled in generated code, as a Julia AST

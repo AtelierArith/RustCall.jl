@@ -649,6 +649,8 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
         # The item every position below is filed under (#454), named before
         # the argument plan, which records first.
         _boundary_item!(_boundary_label(info, m.name))
+        # A method the Rust codegen refuses gets no wrapper (#491).
+        _rust_refused_item!(m.skip_reason, m.name) && continue
 
         is_ctor = m.is_constructor
 
