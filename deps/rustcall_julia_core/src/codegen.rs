@@ -352,6 +352,38 @@ fn lifetime_names(tokens: TokenStream2, out: &mut std::collections::BTreeSet<Str
     }
 }
 
+/// A method's lifetime generics ([`lifetime_generics`]) with every `Self` type
+/// in its `where` clause spelled as the receiver type `self_path`, the way the
+/// wrapper names the struct (PR #480 review). A predicate using `Self` can be
+/// the only proof a call is valid (`for<'b> &'b Self: Rel<&'a Buf>` with a
+/// `'static`-only impl), and the wrapper is a free function where `Self` does
+/// not exist (E0411), so the predicate is carried over as
+/// `for<'b> &'b Buf: Rel<&'a Buf>`. Only a type that is exactly `Self` is
+/// replaced, which covers `<Self as Trait>::Assoc` too; a bare `Self::Assoc`
+/// does not name its trait and cannot be rewritten without resolving it, so it
+/// is left as is and [`declared_lifetimes`] keeps that predicate on the method.
+fn with_self_as(mut generics: syn::Generics, self_path: &syn::Path) -> syn::Generics {
+    struct SelfAs<'p>(&'p syn::Path);
+    impl syn::visit_mut::VisitMut for SelfAs<'_> {
+        fn visit_type_mut(&mut self, ty: &mut Type) {
+            if let Type::Path(tp) = ty {
+                if tp.qself.is_none() && tp.path.is_ident("Self") {
+                    *ty = Type::Path(syn::TypePath {
+                        qself: None,
+                        path: self.0.clone(),
+                    });
+                    return;
+                }
+            }
+            syn::visit_mut::visit_type_mut(self, ty);
+        }
+    }
+    if let Some(w) = generics.where_clause.as_mut() {
+        syn::visit_mut::VisitMut::visit_where_clause_mut(&mut SelfAs(self_path), w);
+    }
+    generics
+}
+
 /// Whether `tokens` spell `Self` anywhere (`Self: Trait`, `Self::Assoc`,
 /// `<Self as Trait>::Assoc`).
 fn names_self(tokens: TokenStream2) -> bool {
@@ -366,8 +398,8 @@ fn names_self(tokens: TokenStream2) -> bool {
 /// `signature` declares: the lifetimes that signature names, their bounds
 /// among themselves, and the other `where` predicates that relate those
 /// lifetimes, name none of the item's other lifetime parameters (a `for<'b>`
-/// binder's name or `'static` never counts) and do not name `Self` (PR #480
-/// review). Every other predicate stays on the item only, as all of them did
+/// binder's name or `'static` never counts) and no longer name `Self` once
+/// [`with_self_as`] has spelled it as the receiver type (PR #480 review). Every other predicate stays on the item only, as all of them did
 /// before a wrapper declared anything. A
 /// relation to a lifetime the signature does not name is left to inference at
 /// the call, where it is satisfied or not exactly as it was before (#477).
@@ -412,10 +444,11 @@ fn declared_lifetimes(lifetimes: &syn::Generics, signature: TokenStream2) -> syn
             // Only the item's own lifetime parameters can be missing from the
             // wrapper: a name bound by a `for<'b>` binder inside the predicate
             // (Rust forbids it to shadow one of them) or `'static` is always
-            // in scope, so it never drops the predicate. A predicate naming
-            // `Self` (`Self: Trait`, `<Self as Trait>::Assoc`) stays on the
-            // method, since the wrapper is a free function where `Self` does
-            // not exist (E0411; PR #480 review).
+            // in scope, so it never drops the predicate. A method's `Self` is
+            // already spelled as its receiver type ([`with_self_as`]); one
+            // still naming `Self` (a bare `Self::Assoc`) stays on the method,
+            // since the wrapper is a free function where `Self` does not exist
+            // (E0411; PR #480 review).
             other => {
                 let tokens = quote! { #other };
                 let mut names = std::collections::BTreeSet::new();
@@ -2831,7 +2864,7 @@ fn method_spec(
         symbol,
         cfg_attrs: cfg_attrs(&m.func.attrs),
         receiver,
-        lifetimes: lifetime_generics(&m.func.sig.generics),
+        lifetimes: with_self_as(lifetime_generics(&m.func.sig.generics), self_path),
         args: arg_pairs(&m.func.sig),
         ret,
         target,

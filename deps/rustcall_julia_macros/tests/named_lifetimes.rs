@@ -105,3 +105,55 @@ fn a_self_predicate_stays_on_the_method() {
     assert_eq!(unsafe { rustcall_Probe_run(p).assume_init() }, 6);
     Probe_free(p);
 }
+
+pub trait Rel<T> {
+    fn rel(&self, other: T) -> i32;
+}
+
+pub struct Only {
+    pub n: i32,
+}
+
+impl<'x> Rel<&'static Only> for &'x Only {
+    fn rel(&self, other: &'static Only) -> i32 {
+        self.n - other.n
+    }
+}
+
+// The `Self` predicate is the only proof the call is valid: the wrapper
+// carries it with `Self` spelled `Only`, or `other` escapes as `'static`
+// (E0521, PR #480 review).
+#[julia]
+impl Only {
+    #[julia]
+    pub fn new(n: i32) -> Self {
+        Self { n }
+    }
+
+    #[julia]
+    pub fn related<'a>(&self, other: &'a Only) -> i32
+    where
+        for<'b> &'b Self: Rel<&'a Only>,
+    {
+        self.rel(other)
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn Only_free(ptr: *mut Only) {
+    if !ptr.is_null() {
+        unsafe { drop(Box::from_raw(ptr)) }
+    }
+}
+
+static ONLY_OTHER: Only = Only { n: 1 };
+
+#[test]
+fn a_self_proof_predicate_is_carried_with_the_receiver_type() {
+    let p = rustcall_Only_new(5);
+    assert_eq!(
+        unsafe { rustcall_Only_related(p, &ONLY_OTHER).assume_init() },
+        4
+    );
+    Only_free(p);
+}
