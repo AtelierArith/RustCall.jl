@@ -1035,6 +1035,19 @@ const BoundaryPosition = NamedTuple{(:item, :position, :rust_type, :abi, :reason
                                     Tuple{String, String, String, String, Union{Nothing, String}}}
 
 """
+    BoundaryNote
+
+Something a generator decided that the FFI contract *does* describe but that
+leaves a responsibility with the author (#490): the item, the position or
+`"entry point"` it concerns, the Rust spelling, and what to check. A note is
+not a refusal and is not counted among the positions; `boundary_report` lists
+notes after the findings. Recorded by `_boundary_note!`, from the generator
+that made the decision — the rules are `_boundary_raw_pointer_return!` and
+`_boundary_unguarded_export!` below.
+"""
+const BoundaryNote = NamedTuple{(:item, :position, :rust_type, :note), NTuple{4, String}}
+
+"""
     BoundaryCollector
 
 What `boundary_report` is computed from (#454): every argument and return
@@ -1065,9 +1078,11 @@ mutable struct BoundaryCollector
     item::String
     positions::Vector{BoundaryPosition}
     index::Dict{Tuple{String, String}, Int}
+    notes::Vector{BoundaryNote}
 end
 
-BoundaryCollector() = BoundaryCollector("", BoundaryPosition[], Dict{Tuple{String, String}, Int}())
+BoundaryCollector() = BoundaryCollector("", BoundaryPosition[], Dict{Tuple{String, String}, Int}(),
+                                        BoundaryNote[])
 
 const _BOUNDARY_COLLECTOR_KEY = :rustcall_boundary_collector
 
@@ -1148,6 +1163,65 @@ function _boundary_examined!(position::AbstractString, rust_type::AbstractString
     end
     return nothing
 end
+
+"""
+    _boundary_note!(position, rust_type, note)
+
+Record a note (`BoundaryNote`) against the current item: a decision the
+contract accepts that still leaves something to the author. The same
+`(item, position, note)` recorded twice — by the surface and the slot helper,
+say — is one note. A no-op outside collecting mode.
+"""
+function _boundary_note!(position::AbstractString, rust_type::AbstractString,
+                         note::AbstractString)
+    c = _boundary_collector()
+    c === nothing && return nothing
+    isempty(c.item) && throw(ArgumentError(
+        "a wrapper generator noted $(position) (`$(rust_type)`) with no item named; " *
+        "the emitter's entry point must call `_boundary_item!` first (#454)"))
+    entry = BoundaryNote((c.item, String(position), String(rust_type), String(note)))
+    any(n -> n.item == entry.item && n.position == entry.position && n.note == entry.note,
+        c.notes) || push!(c.notes, entry)
+    return nothing
+end
+
+const _RAW_POINTER_RETURN_NOTE =
+    "returns a raw pointer, and RustCall derives no release function for one; if it " *
+    "transfers ownership, export a matching release function from the Rust side " *
+    "(e.g. `#[no_mangle] pub extern \"C\" fn <name>_free(p)`) and call it from Julia"
+
+"""
+    _boundary_raw_pointer_return!(position, rust_type, c::FFIContract)
+
+Note a position that hands a raw pointer (`*const T` / `*mut T`) back to Julia
+(#490). Every owned value RustCall generates carries its release symbol
+(`free_symbol`, derived in one place); a raw pointer carries none, and whether
+it transfers ownership is not in the signature — so this is a note, not a
+refusal. Called by the generators that decide a return or payload position
+(`_ffi_item_return`, `ffi_payload_symbols`, `_manifest_return_type`); a field
+getter's pointer is borrowed from its struct and is not noted.
+"""
+function _boundary_raw_pointer_return!(position::AbstractString, rust_type::AbstractString,
+                                       c::FFIContract)
+    (c.known && c.abi === :pointer) || return nothing
+    _boundary_note!(position, rust_type, _RAW_POINTER_RETURN_NOTE)
+    return nothing
+end
+
+const _UNGUARDED_EXPORT_NOTE =
+    "a hand-written `#[no_mangle] extern \"C\"` function: RustCall generates no panic " *
+    "boundary for it, so a panic aborts the process instead of raising `RustPanicError`; " *
+    "put the entry point behind `#[julia]`, or catch the panic in its body"
+
+"""
+    _boundary_unguarded_export!(rust_type)
+
+Note a hand-written `#[no_mangle] extern "C"` export that `@rust` can call with
+no generated panic boundary (#490). Called by `_manifest_registry_entries`, the
+generator that registers such an export's name and return type for `@rust`.
+"""
+_boundary_unguarded_export!(rust_type::AbstractString) =
+    _boundary_note!("entry point", rust_type, _UNGUARDED_EXPORT_NOTE)
 
 """
     _boundary_refuse(position, rust_type, abi, message)
@@ -1276,6 +1350,8 @@ function ffi_payload_symbols(rust_type::AbstractString, abi::AbstractString,
         _boundary_examined!(position, rust_type, abi, nothing)
         return (:String, :(RustCall.CRustString))
     end
+    # A raw pointer payload carries no release function (#490).
+    _boundary_raw_pointer_return!(position, rust_type, ffi_return_contract(rust_type; abi = abi))
     return (ffi_return_symbol_or_throw(rust_type, abi, ctx; strict = strict, position = position),
             ffi_return_slot_symbol_or_throw(rust_type, abi, ctx; strict = strict,
                                             position = position))

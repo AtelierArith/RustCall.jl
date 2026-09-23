@@ -25,9 +25,14 @@ through Julia's Artifacts system. The warning means neither could be run, so
 
 1. Reproduce the resolution and read the underlying error:
    ```julia
-   using RustToolChain
-   run(`$(RustToolChain.rustc()) --version`)
+   RustCall.check_toolchain()   # raises nothing; lists every problem it finds
    ```
+   It names the `rustc` and `cargo` RustToolChain resolves, compares the
+   `rustc` release with the oldest supported one
+   (`RustCall.minimum_supported_rustc()`, the `rust-version` of
+   `deps/rustcall_extract/Cargo.toml`), and checks that the extractor is built
+   and speaks this release's manifest. To see RustToolChain's own error, run
+   the resolution yourself: ``using RustToolChain; run(`$(RustToolChain.rustc()) --version`)``.
 
 2. If you want a system Rust, install it from [rustup.rs](https://rustup.rs/)
    (or a package manager) and make sure `rustc --version` works in the shell

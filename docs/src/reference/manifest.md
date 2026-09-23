@@ -21,3 +21,14 @@ The predicate of every reported item is recorded in its `cfg` field.
 Modules = [RustCall]
 Pages = [joinpath("src", "manifest.jl")]
 ```
+
+## Toolchain check (`src/toolchain_check.jl`)
+
+`RustCall.check_toolchain()` reports the `rustc` / `cargo` RustToolChain
+resolves, the minimum supported `rustc`, and the extractor's status, without
+building anything (#490).
+
+```@autodocs
+Modules = [RustCall]
+Pages = [joinpath("src", "toolchain_check.jl")]
+```

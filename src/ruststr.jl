@@ -1036,7 +1036,7 @@ function _register_manifest(expanded, lib_name::String; compiler = nothing,
                             require_loaded::Bool = false,
                             set_current::Bool = true)
     manifest = expanded.manifest
-    signatures = manifest_function_signatures(manifest; only_attributed = false)
+    signatures = _registry_signatures(manifest)
     symbols, return_types = _manifest_registry_entries(signatures)
 
     registered = if load_path !== nothing
@@ -1080,6 +1080,12 @@ function _register_manifest(expanded, lib_name::String; compiler = nothing,
     return true
 end
 
+# Every function of an inline manifest `_register_manifest` registers — the
+# `#[julia]` ones and the hand-written `#[no_mangle] extern "C"` exports `@rust`
+# can call by name. `inline_boundary_report` runs `_manifest_registry_entries`
+# over the same list (#490).
+_registry_signatures(manifest) = manifest_function_signatures(manifest; only_attributed = false)
+
 """
     _manifest_registry_entries(signatures) -> (symbols, return_types)
 
@@ -1116,6 +1122,13 @@ function _manifest_registry_entries(signatures)
     symbols = Pair{String, String}[]
     return_types = Pair{String, Type}[]
     for sig in exported
+        # A hand-written export is callable through `@rust` with no generated
+        # panic boundary; the boundary report notes it (#490). A `#[julia]`
+        # export is its generated wrapper, and has one.
+        if sig.attribute === :none
+            _boundary_item!(_boundary_label(sig))
+            _boundary_unguarded_export!(string("extern \"C\" fn ", sig.name))
+        end
         isempty(sig.symbol) || push!(symbols, String(sig.name) => String(sig.symbol))
         if occurrences[sig.symbol] > 1
             @debug "Ambiguous manifest entry: not registering a return type" symbol = sig.symbol
@@ -1142,6 +1155,14 @@ may omit `::ReturnType`, or `nothing` when the return type has no single-slot
 Julia counterpart and the call must be explicit.
 """
 function _manifest_return_type(sig)
+    if sig.attribute === :none && sig.return_kind == :plain
+        # A raw pointer returned by a hand-written export has no release
+        # function RustCall knows of (#490). Noted before the registry checks
+        # below: whether the position hands back a pointer does not depend on
+        # them. (`_manifest_registry_entries` named the item.)
+        _boundary_raw_pointer_return!("return", sig.return_type,
+                                      ffi_return_contract(sig.return_type; abi = sig.return_abi))
+    end
     if haskey(FUNCTION_REGISTRY, sig.symbol) || is_generic_function(sig.symbol)
         return nothing
     end

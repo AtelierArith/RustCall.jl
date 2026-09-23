@@ -427,6 +427,7 @@ function _ffi_item_return(rust_type::AbstractString, abi::AbstractString, owner:
     return_kind in (:result, :option, :py_result) && return c
     _boundary_examined!("return", rust_type, abi,
                         c.known ? nothing : ffi_describe(rust_type; direction = :return, abi = abi))
+    _boundary_raw_pointer_return!("return", rust_type, c)
     return c
 end
 
