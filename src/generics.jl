@@ -611,11 +611,12 @@ Monomorphize a generic function with specific type parameters.
 # Example
 ```julia
 # Register generic function
-register_generic_function("identity", "pub fn identity<T>(x: T) -> T { x }", [:T])
+RustCall.register_generic_function("identity", "pub fn identity<T>(x: T) -> T { x }", [:T])
 
 # Monomorphize with Int32
-info = monomorphize_function("identity", Dict{Symbol, Type}(:T => Int32))
-# Returns FunctionInfo for identity_i32
+info = RustCall.monomorphize_function("identity", Dict{Symbol, Type}(:T => Int32))
+info.name         # "rustcall_identity_i32_<id>"
+info.return_type  # Int32
 ```
 """
 function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Type})

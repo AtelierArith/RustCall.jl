@@ -530,6 +530,59 @@ const _DOCS_SAMPLE_CRATE_AVAILABLE = isdir(DOCS_SAMPLE_CRATE_PATH)
             @test_skip "test/fixtures/sample_crate not available"
         end
     end
+
+    # The generics guide's runnable blocks, executed exactly as written (#465):
+    # every `@setup generics` / `@example generics` block of docs/src/generics.md,
+    # in page order, in one fresh module — what Documenter does when it builds
+    # the page. Copying the snippets here instead would let the page drift.
+    @testset "generics.md - runnable examples (automatic and manual)" begin
+        page = read(joinpath(@__DIR__, "..", "docs", "src", "generics.md"), String)
+        blocks = String[]
+        open_block = nothing
+        for line in split(page, '\n')
+            if open_block === nothing
+                startswith(line, "```@setup generics") ||
+                    startswith(line, "```@example generics") || continue
+                open_block = IOBuffer()
+            elseif startswith(line, "```")
+                push!(blocks, String(take!(open_block)))
+                open_block = nothing
+            else
+                println(open_block, line)
+            end
+        end
+        @test open_block === nothing
+        @test length(blocks) >= 5
+        joined = join(blocks, '\n')
+        @test occursin("RustCall.monomorphize_function(", joined)
+        @test occursin("RustCall.register_generic_function(", joined)
+        @test occursin("rust\"\"\"", joined)
+
+        sandbox = Module(:GenericsGuideSandbox)
+        redirect_stdout(devnull) do
+            for block in blocks
+                include_string(sandbox, block, "docs/src/generics.md")
+            end
+        end
+        value(name) = Base.invokelatest(getfield, sandbox, name)
+
+        # Automatic monomorphization through rust"""...""".
+        @test value(:result1) == Int32(42)
+        @test value(:result2) == 3.14
+        @test value(:result) == 30  # Example 3, the last block assigning `result`
+        # Manual registration, inferred type parameters.
+        @test value(:sum_i32) === Int32(30)
+        @test value(:sum_f64) === 3.75
+        # Manual registration, explicit monomorphize_function.
+        info = value(:info)
+        @test startswith(info.name, "rustcall_scale_i64_")
+        @test info.arg_types == [Int64, Int64]
+        @test info.return_type == Int64
+        @test info.func_ptr != C_NULL
+        @test value(:scaled) === Int64(42)
+        @test RustCall.monomorphize_function("scale", Dict{Symbol, Type}(:T => Int64)).func_ptr ==
+              info.func_ptr
+    end
 end
 
 println("=" ^ 60)

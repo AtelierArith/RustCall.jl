@@ -55,22 +55,25 @@ result = @rust identity(Float64(3.14))::Float64  # => 3.14
 
 ### Manual Registration
 
-You can also manually register generic functions:
+You can also register a generic function by hand, from source text that is not
+loaded through `rust"""`. The source is ordinary Rust: the bound
+`T: std::ops::Add<Output = T>` is what lets `a + b` compile, and no
+`#[no_mangle]` / `extern "C"` is needed, because the extractor emits the
+exported wrapper for each instantiation:
 
-```julia
-using RustCall
-
+```@example generics
 code = """
-#[no_mangle]
-pub extern "C" fn add<T>(a: T, b: T) -> T {
+pub fn generic_add<T: std::ops::Add<Output = T>>(a: T, b: T) -> T {
     a + b
 }
 """
 
-RustCall.register_generic_function("add", code, [:T])
+RustCall.register_generic_function("generic_add", code, [:T])
 
-# Call with different types
-result = RustCall.call_generic_function("add", Int32(10), Int32(20))  # => 30
+# Call with different types; each new type is monomorphized on first use
+sum_i32 = RustCall.call_generic_function("generic_add", Int32(10), Int32(20))  # => 30
+sum_f64 = RustCall.call_generic_function("generic_add", 1.5, 2.25)             # => 3.75
+(sum_i32, sum_f64)
 ```
 
 
@@ -117,29 +120,35 @@ result = @rust first(Int32(10), Float64(3.14))::Int32  # => 10
 
 ### Explicit Type Parameters
 
-You can also explicitly specify type parameters:
+`call_generic_function` infers the type parameters from its arguments.
+[`RustCall.monomorphize_function`](@ref) takes them explicitly instead — as a
+`Dict{Symbol, Type}` from parameter to Julia type — and builds (or fetches from
+the cache) that one instantiation without calling it. Use it to compile an
+instantiation ahead of the first call, or to inspect what was built:
 
-```julia
-# Define the code
+```@example generics
 code = """
-#[no_mangle]
-pub extern "C" fn identity<T>(x: T) -> T {
-    x
+pub fn scale<T: std::ops::Mul<Output = T>>(x: T, factor: T) -> T {
+    x * factor
 }
 """
 
-# Register generic function
-RustCall.register_generic_function("identity", code, [:T])
+RustCall.register_generic_function("scale", code, [:T])
 
-# Explicitly monomorphize
-type_params = Dict(:T => Int32)
-info = RustCall.monomorphize_function("identity", type_params)
+# Explicitly monomorphize scale::<i64>; nothing is called yet
+info = RustCall.monomorphize_function("scale", Dict{Symbol, Type}(:T => Int64))
 
+# A call at the same types reuses that instantiation instead of compiling again
+scaled = RustCall.call_generic_function("scale", Int64(7), Int64(6))  # => 42
 
-# Call using @rust macro (recommended way)
-# Note: After monomorphization, you can call it directly
-result = @rust identity(Int32(42))::Int32  # => 42
+# symbol: rustcall_scale_i64_<id>, argument types [Int64, Int64], returns Int64
+(symbol = info.name, arg_types = info.arg_types, return_type = info.return_type, scaled)
 ```
+
+Calling `monomorphize_function` again with the same `Dict` returns the cached
+instantiation; [`RustCall.precompile_generics`](@ref) builds several
+instantiations at once (see [Compiling several instantiations at
+once](@ref)).
 
 ## Trait Bounds Support
 
@@ -225,10 +234,10 @@ More complex inference (e.g., inferring from return type) is not yet supported.
 ### Functions
 
 #### Generic Function Management
-- `register_generic_function(func_name, code, type_params, constraints=Dict())` - Register a generic function
+- [`register_generic_function`](@ref RustCall.register_generic_function)`(func_name, code, type_params, constraints=Dict())` - Register a generic function
 - `is_generic_function(func_name)` - Check if a function is generic
-- `call_generic_function(func_name, args...)` - Call a generic function (auto-monomorphizes)
-- `monomorphize_function(func_name, type_params)` - Explicitly monomorphize a function
+- [`call_generic_function`](@ref RustCall.call_generic_function)`(func_name, args...)` - Call a generic function (auto-monomorphizes)
+- [`monomorphize_function`](@ref RustCall.monomorphize_function)`(func_name, type_params)` - Explicitly monomorphize a function
 - `specialize_generic(source, fn_name, bindings, new_name)` - Instantiate a generic function through the `rustcall-extract` CLI
 - `infer_type_parameters(func_name, arg_types)` - Infer type parameters from argument types
 - `julia_type_to_rust_string(T)` - Rust spelling of a Julia type used as a generic argument
