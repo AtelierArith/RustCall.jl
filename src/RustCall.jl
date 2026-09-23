@@ -266,9 +266,11 @@ include("extractor_identity.jl")
 
 include("cache.jl")
 
-# Explicit load/compile policy object (#277, Phase A). Additive: not yet used
-# by any call site. Functions here reference RUST_LIBRARIES / CURRENT_LIB from
-# ruststr.jl, which is resolved at call time, so it can sit right after cache.jl.
+# The one load/unload path and the policy every front door names (#277):
+# `load_artifact!` / `adopt_artifact!` / `unload_artifact!` and the per-door
+# `LoadPolicy` constructors. Functions here reference RUST_LIBRARIES /
+# CURRENT_LIB from ruststr.jl, which is resolved at call time, so it can sit
+# right after cache.jl.
 include("loadpolicy.jl")
 
 # Artifact identity (#278, Phase A). Also right after cache.jl: it is the
@@ -304,7 +306,9 @@ include("manifest.jl")
 # Phase 6: External crate bindings (Maturin-like feature)
 include("crate_bindings.jl")
 
-# The FFI surface report of #441: reads the manifest, builds nothing.
+# The FFI surface report of #441: runs the wrapper generators of ruststr.jl
+# and crate_bindings.jl in collecting mode (#454) and builds nothing, so it
+# comes after both.
 include("boundary_report.jl")
 
 # PyO3 crates without a RustCall attribute: scan reporting and the link plan

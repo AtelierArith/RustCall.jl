@@ -240,10 +240,10 @@ function native_target_dir(kind::Symbol; depot = nothing, create::Bool = false)
     return _native_target_dir(NATIVE_PRODUCTS[kind].crate; depot, create)
 end
 
-# `native_target_dir` for a crate *name*, so the legacy helper name can ask the
-# same question (`native_product_candidates`) without a product entry of its
-# own. Nothing builds under the legacy name, so `create` is only ever passed
-# for a current product.
+# `native_target_dir` for a crate *name*: `_native_build_dirs` (and through it
+# `native_product_candidates`) asks by the crate a product is built from. It
+# once also answered for the pre-v0.4 helper name (`rust_helpers`), which has
+# not been searched since v0.5 (#417); only current products reach it now.
 function _native_target_dir(crate::AbstractString; depot = nothing, create::Bool = false)
     slug = native_installed_slug()
     slug === nothing && return joinpath(native_package_root(), "deps", crate, "target")

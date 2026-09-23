@@ -1,6 +1,17 @@
+# What RustCall's own package image carries beyond what its methods reach
+# statically (#449). Two workloads run, and only while generating output
+# (`jl_generating_output`; at `using` time this file defines functions and does
+# nothing): the `__init__` helper-load path below, and the interpreter-free half
+# of the PyO3 host path (the crate scan / hash / cache lookup section further
+# down), which starts no `rustc`, `cargo` or Python.
+
+# ----------------------------------------------------------------------------
+# The `__init__` helper-load path
+# ----------------------------------------------------------------------------
+#
 # `__init__` eagerly loads the ownership helper library, and that load path is
-# the only thing that exercises a broad family of `_state_read`/`_state_mutate`
-# specializations: the do-block closures in `src/RustCall.jl` and
+# the only part of `__init__` that exercises a broad family of
+# `_state_read`/`_state_mutate` specializations: the do-block closures in `src/RustCall.jl` and
 # `_state_mutate_storage!` (`src/state_filter.jl`) are keyed by the concrete
 # state-container type, and `load_artifact!` touches `Dict{Ptr{Cvoid}, Int}`,
 # `Dict{Ptr{Cvoid}, RetiredImage}`, `Dict{String, Ref{Bool}}`, several `Ref`s and
@@ -15,8 +26,7 @@
 # The workload below replays those state operations against throwaway
 # containers so the native code lands in the image. The dummy views are removed
 # before returning, so no serializable state — let alone a pointer — survives
-# into the `.ji`. It runs only while generating output; at `using` time this file
-# does nothing.
+# into the `.ji`.
 function _precompile_init_load_path()
     added = Symbol[]
     add(name, value) = begin
@@ -51,7 +61,7 @@ function _precompile_init_load_path()
                           Ref{Union{Nothing, Ptr{Cvoid}}}(nothing)),
                       :setindex!, ptr)
 
-        # DROP_WARNING_SHOWN[] = flag, and the per-image liveness flags
+        # DROP_WARNING_SHOWN[] = flag
         _state_mutate(add(:__precompile_drop_warning_shown, Ref{Bool}(false)),
                       :setindex!, true)
 

@@ -753,7 +753,7 @@ Create a RustVec from a Julia Vector by copying the data to Rust memory.
 # Example
 ```julia
 julia_vec = [1, 2, 3, 4, 5]
-rust_vec = RustVec(julia_vec)  # Creates a RustVec{Int32}
+rust_vec = RustVec(julia_vec)  # Creates a RustVec{Int64}
 ```
 
 # Note

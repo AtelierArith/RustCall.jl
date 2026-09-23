@@ -203,13 +203,12 @@ end
     # call through this cache must still do it, and a load is a state write, so
     # it bumps the epoch and is resolved again on the next call.
     #
-    # A cold call site therefore resolves twice before it settles: `dlsym`ing a
-    # symbol for the first time publishes its pointer into the image's own
-    # cache, which is a state write like any other, so the entry this call is
-    # about to publish is stale before it is read. The next call finds the
-    # pointer already there, writes nothing, and sticks. Two resolutions once,
-    # rather than a special case in the invalidation rule that would have to
-    # know which writes "do not count".
+    # A cold `dlsym` inside `resolve_call_target` does not move the epoch: it
+    # stores the pointer into the captured image's own symbol cache in place
+    # (`row.cache[symbol] = ptr`), which does not pass through
+    # `_state_mutate_storage!`. That write needs no invalidation — it only
+    # memoizes a lookup on the same handle, so every snapshot already kept
+    # stays exactly as valid as it was.
     target = resolve_call_target(module_symbol_library(mod, func_name), func_name)
     return publish_call_target!(cache, epoch, target)
 end
@@ -1350,7 +1349,7 @@ function myfunc(x)
 end
 
 # Using explicit arguments (legacy, still supported)
-function myfunc(x)
+function myfunc_legacy(x)
     @irust("arg1 * 2", x)
 end
 
