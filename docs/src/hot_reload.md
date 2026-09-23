@@ -206,7 +206,7 @@ The steps of one reload, in order:
 3. It is **rebuilt** the way `@rust_crate` built it: RustToolChain's `cargo`,
    the module's profile and features, output under RustCall's own target
    directory for the crate (not the crate's `target/`), `--offline` under
-   `RUSTCALL_OFFLINE=1`.
+   `RUSTCALL_OFFLINE=1`. See [Where the rebuild writes](#Where-the-rebuild-writes).
 4. The new library is **copied** to a fresh generation path and **loaded**.
 5. It is **swapped in** under the same name in one transaction.
 
@@ -299,6 +299,31 @@ the watcher, and returns whether the new library was loaded.
 
 Calling `enable_hot_reload_for_crate` again after `disable_hot_reload` starts a
 new watcher.
+
+## Where the rebuild writes
+
+A reload writes nothing into the crate. The rescan's cfg probe and the rebuild
+both use `RustCall.crate_target_directory(crate)` — the directory the direct
+`@rust_crate` build of the same crate uses, under RustCall's cache — so a
+reload shares that build's compiled dependencies and its build script's
+`OUT_DIR`, and a crate you edit keeps no RustCall output in its `target/`
+(#486). Output in the crate's `target/` bought nothing here: RustCall copies
+every build into a fresh generation path before loading it (below), so the
+location of Cargo's own output is not something a reload or an editor reads.
+
+The same rule holds for every `@rust_crate` flavour; the integration guide's
+[Where `@rust_crate` builds](integration_guide.md#Where-@rust_crate-builds)
+has the table. Two consequences for a reload:
+
+- A crate in a **read-only** tree can be hot reloaded, as long as it ships a
+  current `Cargo.lock`. RustCall never passes `--locked`, so Cargo rewrites a
+  missing or stale lockfile beside the manifest — which in a read-only tree is
+  a permission error, and the reload fails like any other failed rebuild.
+  Adding a dependency while hot reloading changes the lockfile, so that edit
+  needs a writable `Cargo.lock`.
+- A `cargo build` you run yourself in the crate keeps using the crate's own
+  `target/`. It does not share work with RustCall's build, and neither
+  invalidates the other.
 
 ## Windows and generation paths
 

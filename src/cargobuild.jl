@@ -448,6 +448,11 @@ Build a Cargo project and return the path to the compiled library.
 
 # Keyword Arguments
 - `release::Bool`: Build in release mode (default: true for better performance)
+- `target_directory`: the `CARGO_TARGET_DIR` (default: the project's own
+  `target/`); a `@rust_crate` build passes `crate_target_directory`.
+- `working_directory`: where Cargo runs (default: the project). Another
+  directory is passed with `--manifest-path`, so Cargo's configuration is the
+  one that directory reaches.
 
 # Returns
 - `String`: Path to the compiled shared library
@@ -461,7 +466,8 @@ function build_cargo_project(project::CargoProject; release::Bool = true,
                              features::Vector{String} = String[],
                              default_features::Bool = true,
                              locked::Bool = false,
-                             target_directory::AbstractString = joinpath(project.path, "target"))
+                             target_directory::AbstractString = joinpath(project.path, "target"),
+                             working_directory::AbstractString = project.path)
     cargo_cmd = cargo()
 
     # The panic strategy is pinned twice: in the generated manifest and here,
@@ -477,8 +483,8 @@ function build_cargo_project(project::CargoProject; release::Bool = true,
     # The output goes where `get_built_library_path` looks, whatever the
     # process inherited: an ambient `CARGO_TARGET_DIR`, or a `[build]
     # target-dir` in a `.cargo/config.toml` Cargo discovers above the project
-    # (a wrapper built under a target crate's `target/` sees that crate's
-    # config), would otherwise send a successful build somewhere this function
+    # (a PyO3 wrapper runs from its target crate's directory and sees that
+    # crate's config), would otherwise send a successful build somewhere this function
     # never checks and report "Library not found after build" (#307 review).
     # The environment variable outranks the config key, and the target
     # directory is not part of the artifact (`_is_cargo_env_key`).
@@ -488,6 +494,14 @@ function build_cargo_project(project::CargoProject; release::Bool = true,
     # read at another moment (#481).
     build_args = _cargo_build_args(release, features, default_features; locked = locked,
                                    env = build_env)
+    # A project run from another directory is named by its manifest: Cargo
+    # finds `.cargo/config.toml` (and a `rust-toolchain.toml`) by walking up
+    # from its working directory, and `--manifest-path` does not move that
+    # root. A PyO3 wrapper project lives under RustCall's cache but runs from
+    # the target crate, so the crate's configuration applies to it (#486).
+    if abspath(working_directory) != abspath(project.path)
+        append!(build_args, ["--manifest-path", joinpath(abspath(project.path), "Cargo.toml")])
+    end
 
     # Run cargo build — in the project directory through the command's own
     # `dir`, never a process-wide `cd`: the working directory is shared by every
@@ -502,7 +516,7 @@ function build_cargo_project(project::CargoProject; release::Bool = true,
             # the inherited one so profile overrides and RUSTFLAGS match; the
             # pinned panic strategy and target directory are applied on top of
             # either.
-            cmd = setenv(`$cargo_cmd $build_args`, build_env; dir = project.path)
+            cmd = setenv(`$cargo_cmd $build_args`, build_env; dir = String(working_directory))
             proc = run(pipeline(cmd, stdout=stdout_io, stderr=stderr_io), wait=false)
             wait(proc)
 
@@ -728,27 +742,120 @@ function get_cargo_cache_dir()
 end
 
 """
-    crate_target_directory(crate_path) -> String
+    crate_target_directory(crate_path, flavour = :direct) -> String
 
-The `CARGO_TARGET_DIR` for a crate RustCall runs Cargo on in place: the direct
-build of a `cdylib` crate (`build_crate_directly`) and its build-cfg probe
-(`_crate_build_cfg_text`) share it, under RustCall's cache (#445).
+The `CARGO_TARGET_DIR` of every Cargo command RustCall runs for a
+`@rust_crate` crate, whichever flavour binds it (#445, #486). It is the one
+place that decides where a crate's build output goes; no `@rust_crate` path
+names a directory of its own.
 
+| `flavour`       | who builds there                                                        | directory              |
+|:----------------|:------------------------------------------------------------------------|:-----------------------|
+| `:direct`       | a `cdylib` crate built as its own root (`build_crate_directly`), its cfg probe (`_crate_build_cfg_text`), and a hot reload's rebuild and rescan (`rebuild_crate`) | `<base>`               |
+| `:pyo3_host`    | the extension module of `pyo3_host = true` (`build_pyo3_extension`)     | `<base>/pyo3-host`     |
+| `:pyo3_wrapper` | a PyO3 crate's generated wrapper and the cfg / feature probes that describe it (`_build_pyo3_wrapper_project`, `_wrapper_probe_context`); their generated projects live under it too (`_wrapper_shaped_project`) | `<base>/pyo3-wrapper`  |
+
+`<base>` is `<Cargo cache>/targets/<artifact_short_id(crate_target_id(crate_path))>`.
 Never the crate's own `target/`: a package installed under a depot is
-read-only, and a CI cache that carries RustCall's cache then carries this
-build as well. One directory per crate rather than one shared by all, because
-Cargo writes the final library as `target/<profile>/lib<name>.*`, so two
-crates with the same package name would overwrite each other's output.
+read-only, and a CI cache that carries RustCall's cache then carries these
+builds as well. A hot reload rebuilds the direct build, so it shares that
+directory and its compiled dependencies; so does the direct build's cfg probe,
+so a build script sees one `OUT_DIR`. The PyO3 flavours get subdirectories of
+their own because they build the crate under another root or another link
+line, and two builds that write the same `target/<profile>/lib<name>.*` would
+race between Cargo exiting and RustCall copying the file out. The generated
+wrapper crate of a non-`cdylib`, non-PyO3 crate is a temporary project of its
+own and builds in its own `target/`, not here.
 
-The name is the full `artifact_key` of `crate_target_id`. It isolates one
-crate's build from another's, so it is a lookup key and is never truncated:
-two same-named crates sharing a directory could have Cargo report the second
-as fresh and leave the first one's library in place (#447 review).
+One `<base>` per crate rather than one shared by all, because Cargo writes the
+final library as `target/<profile>/lib<name>.*`, so two crates with the same
+package name would overwrite each other's output. Every flavour lives under the
+same `<base>`, so `cleanup_old_cache` ages and removes a crate's builds
+together, by the stamp `_crate_target!` refreshes.
+
+**The name is short, and verified.** Windows limits a path to 260 characters
+(`MAX_PATH`; `link.exe` enforces it, whatever the system's long-path setting),
+the cache root there is already about 100 of them, and Cargo nests
+`<profile>/build/<package>-<hash>/build_script_build-<hash>.exe` below the
+target directory. The full 64-hex `artifact_key` left no room: a `pyo3_host`
+build of a crate depending on `target-lexicon` failed with `LNK1104` at 262
+characters (#486). The directory is therefore named by the key's
+`artifact_short_id`, and the full key is written inside it
+(`CRATE_TARGET_KEY_FILE`) by the first `_crate_target!` and compared by every
+later one. Isolation is still decided by the full key: two crates whose short
+ids collide are refused with an error rather than sharing a directory, which
+could have Cargo report the second as fresh and leave the first one's library
+in place (#447 review).
 """
-function crate_target_directory(crate_path::AbstractString)
+function crate_target_directory(crate_path::AbstractString, flavour::Symbol = :direct)
     # Inside the Cargo cache, so `clear_cargo_cache` / `get_cargo_cache_size`
     # cover it and `cleanup_old_cache` ages it (#447 review).
-    return joinpath(get_cargo_cache_dir(), "targets", artifact_key(crate_target_id(crate_path)))
+    # Short, for Windows' path limit; `_crate_target!` verifies the full key.
+    base = joinpath(get_cargo_cache_dir(), "targets", artifact_short_id(crate_target_id(crate_path)))
+    flavour === :direct && return base
+    flavour === :pyo3_host && return joinpath(base, "pyo3-host")
+    flavour === :pyo3_wrapper && return joinpath(base, "pyo3-wrapper")
+    throw(ArgumentError("unknown crate target flavour `$(flavour)`; expected :direct, " *
+                        ":pyo3_host or :pyo3_wrapper"))
+end
+
+"""
+    _crate_target!(crate_path, flavour = :direct) -> String
+
+`crate_target_directory(crate_path, flavour)`, created, with the crate's
+last-used stamp refreshed — what every build and probe calls before it runs
+Cargo there. The stamp is the crate's `<base>` one whatever the flavour, since
+`cleanup_old_cache` ages the whole `<base>`.
+"""
+function _crate_target!(crate_path::AbstractString, flavour::Symbol = :direct)
+    base = crate_target_directory(crate_path)
+    _claim_crate_target!(base, artifact_key(crate_target_id(crate_path)), crate_path)
+    _mark_target_used!(base)
+    dir = crate_target_directory(crate_path, flavour)
+    mkpath(dir)
+    return dir
+end
+
+"""
+    CRATE_TARGET_KEY_FILE
+
+The file in a crate's `<base>` target directory holding the full `artifact_key`
+of the crate it belongs to; see `crate_target_directory`.
+"""
+const CRATE_TARGET_KEY_FILE = ".rustcall-crate-key"
+
+# Record `key` as the owner of `base`, or confirm it already is; a directory
+# that another key owns is refused, never shared.
+#
+# The record is created with the exclusive-create claim `_publish_lockfile!`
+# uses (`_claim_lockfile!`, `O_CREAT | O_EXCL`), so of two claimants — two
+# processes building two crates whose short ids collide — exactly one creates
+# it; the other reads it and compares the full key. A check-then-rename was not
+# that: both could pass the check, and the second rename replaced the first
+# record, leaving two crates in one directory (#495 review). The winner writes
+# the key after creating the file, so a loser that finds it empty or partial
+# waits `wait` seconds for the whole key before deciding.
+function _claim_crate_target!(base::AbstractString, key::AbstractString,
+                              crate_path::AbstractString; wait::Real = 10.0)
+    mkpath(base)
+    record = joinpath(base, CRATE_TARGET_KEY_FILE)
+    if _claim_lockfile!(record)
+        write(record, key)
+        return nothing
+    end
+    deadline = time() + Float64(wait)
+    owner = strip(read(record, String))
+    while length(owner) < length(key) && time() < deadline
+        sleep(0.05)
+        owner = strip(read(record, String))
+    end
+    owner == key && return nothing
+    reason = length(owner) < length(key) ?
+        "holds an incomplete owner record (a process died while claiming it)" :
+        "already belongs to another crate (its short id collides with that of `$(crate_path)`)"
+    throw(RustError(
+        "RustCall's Cargo target directory `$(base)` $(reason). Remove the directory, or " *
+        "clear it with `RustCall.clear_cargo_cache()`, and build again."))
 end
 
 """

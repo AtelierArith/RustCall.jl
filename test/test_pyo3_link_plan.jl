@@ -821,8 +821,10 @@ end
         end
         @test pinned["PYO3_PYTHON"] == python
         @test pinned["CARGO_PROFILE_RELEASE_PANIC"] == "unwind"
+        # The wrapper's own target directory under RustCall's cache, never
+        # the crate's `target/` (#486).
         @test pinned["CARGO_TARGET_DIR"] ==
-              joinpath(@__DIR__, "target", "rustcall-pyo3-probe", "target")
+              RustCall.crate_target_directory(@__DIR__, :pyo3_wrapper)
         # No interpreter to pin (a `:python_free` build, or none found): the
         # environment is left as it is, so pyo3's own lookup still applies.
         unpinned = withenv("PYO3_PYTHON" => nothing) do
@@ -1276,8 +1278,8 @@ end
         # than the dispatcher needs, or one from a registry the alias cannot
         # name. Those are expected outcomes, and the project directory
         # `_wrapper_shaped_project` has already created must go with them
-        # rather than accumulating under the crate's `target/` for the life of
-        # the process.
+        # rather than accumulating under the crate's target directory for the
+        # life of the process.
         root = mktempdir()
         try
             mkpath(joinpath(root, "src"))
@@ -1297,13 +1299,15 @@ end
             # wrapper needs the dispatcher and Cargo names no direct pyo3.
             source = RustCall.WrapperCrateSource("refused_probe", "", Dict{String, Any}(),
                                                  String[], true)
-            parent = joinpath(root, "target", "rustcall-pyo3-wrapper")
+            parent = joinpath(RustCall.crate_target_directory(root, :pyo3_wrapper),
+                              "rustcall-pyo3-wrapper")
             @test_throws RustCall.RustError RustCall._build_pyo3_wrapper_project(
-                info, plan, source, String[], true, "deadbeef", false)
+                info, plan, source, String[], true, "deadbeef"^8, false)
             # The parent may exist; what must not survive is a project tree.
             leftovers = isdir(parent) ?
                 filter(startswith("project_"), readdir(parent)) : String[]
             @test isempty(leftovers)
+            @test !isdir(joinpath(root, "target"))
         finally
             rm(root; force = true, recursive = true)
         end
@@ -1384,7 +1388,8 @@ end
                     if readable
                         @test_skip "this user ignores file permissions"
                     else
-                        parent = joinpath(root, "target", "rustcall-pyo3-test")
+                        parent = joinpath(RustCall.crate_target_directory(root, :pyo3_wrapper),
+                                          "rustcall-pyo3-test")
                         @test_throws Exception RustCall._wrapper_shaped_project(
                             root, "rustcall-pyo3-test")
                         entries = isdir(parent) ? readdir(parent) : String[]
@@ -1919,5 +1924,66 @@ end
                 @test aliased.mode === :unlinkable
             end
         end
+    end
+end
+
+# Two PyO3 wrapper builds whose full keys share the short id name one Cargo
+# package and write one `<profile>/librustcall_wrapper_<short>.*`. Cargo's lock
+# ends when Cargo exits, before RustCall copies the file out, so without a lock
+# of its own one build's output could be cached under the other's key (#495
+# review). The build, the check and the copy hold `_with_wrapper_output_lock`
+# together; here a stub build writes its key into the shared output, yields,
+# and the copy reads it back — each copy must be its own key's.
+@testset "concurrent wrapper builds of one short id copy their own output (#495 review)" begin
+    k1 = "0123456789abcdef" * "1"^48
+    k2 = "0123456789abcdef" * "2"^48
+    @test RustCall.artifact_short_id(k1) == RustCall.artifact_short_id(k2)
+    # The real build names its lock by the wrapper name, i.e. by the short id.
+    src = read(joinpath(pkgdir(RustCall), "src", "pyo3.jl"), String)
+    @test occursin("wrapper_name = \"rustcall_wrapper_\$(artifact_short_id(key))\"", src)
+    @test occursin("_with_wrapper_output_lock(joinpath(target, wrapper_name * \".lock\"))", src)
+
+    mktempdir() do dir
+        out = joinpath(dir, "librustcall_wrapper_0123456789abcdef.so")
+        lock_path = joinpath(dir, "rustcall_wrapper_0123456789abcdef.lock")
+        copies = Dict{String, String}()
+        build_and_copy(key) = RustCall._with_wrapper_output_lock(lock_path; poll = 0.01) do
+            write(out, key)                   # Cargo writes the shared output
+            sleep(0.2)                        # ...and exits; the other build may start
+            copies[key] = read(out, String)   # the copy-out
+        end
+        tasks = [Threads.@spawn(build_and_copy(k)) for k in (k1, k2, k1, k2)]
+        foreach(wait, tasks)
+        @test copies[k1] == k1
+        @test copies[k2] == k2
+
+        # Across processes: a child holds the lock over its build and copy;
+        # the parent's build waits for it rather than interleaving.
+        ready = joinpath(dir, "ready")
+        child_copy = joinpath(dir, "child_copy")
+        script = """
+            using RustCall
+            RustCall._with_wrapper_output_lock($(repr(lock_path))) do
+                write($(repr(out)), $(repr(k1)))
+                touch($(repr(ready)))
+                sleep(3)
+                write($(repr(child_copy)), read($(repr(out)), String))
+            end
+            """
+        child = run(`$(Base.julia_cmd()) --startup-file=no --project=$(pkgdir(RustCall)) -e $script`;
+                    wait = false)
+        deadline = time() + 120
+        while !isfile(ready) && time() < deadline && process_running(child)
+            sleep(0.05)
+        end
+        @test isfile(ready)
+        parent_copy = RustCall._with_wrapper_output_lock(lock_path; poll = 0.01) do
+            write(out, k2)
+            read(out, String)
+        end
+        wait(child)
+        @test success(child)
+        @test read(child_copy, String) == k1
+        @test parent_copy == k2
     end
 end
