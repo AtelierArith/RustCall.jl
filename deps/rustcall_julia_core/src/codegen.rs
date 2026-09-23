@@ -81,7 +81,7 @@ use syn::{
 
 use crate::cfg::cfg_attrs;
 use crate::manifest::GenericWrapper;
-use crate::model::{MethodModel, StructModel};
+use crate::model::{ImplHost, MethodModel, StructModel};
 use crate::types::{
     extract_option_type, extract_result_type, field_has_accessors, generic_field_has_accessors,
     is_non_ffi_type, is_self_type, is_str_ref_type, is_string_type, is_vec_type, last_ident,
@@ -296,184 +296,6 @@ fn arg_pairs(sig: &syn::Signature) -> Vec<(Ident, Type)> {
         .collect()
 }
 
-/// The part of an item's generics its `extern "C"` wrapper declares again
-/// (#477): the lifetime parameters, with their bounds, and the `where` clause.
-///
-/// The wrapper passes a struct-reference argument through as written, so
-/// `fn f<'a>(&self, other: &'a Buf)` gives it `other: &'a Buf`, which names
-/// `'a`; without the declaration the expanded block did not compile. Declaring
-/// rather than erasing keeps the method's own relations (`'b: 'a`) — an erased
-/// pair of independent lifetimes could not satisfy them. Lifetimes are
-/// late-bound on the wrapper exactly as on the method, so the entry point is
-/// still one non-generic `#[no_mangle]` symbol. [`generate_wrapper`] declares
-/// only the ones its own signature names ([`declared_lifetimes`]): a lifetime
-/// only a string-lowered argument or return named (`s: &'a str` becomes a
-/// pointer and a length) is left to inference, as before.
-///
-/// An item with a type or const parameter never gets a wrapper of its own — it
-/// is refused, or monomorphized first — so none is kept here, and neither is
-/// the `where` clause, whose predicates could name one.
-fn lifetime_generics(generics: &syn::Generics) -> syn::Generics {
-    let params: syn::punctuated::Punctuated<syn::GenericParam, syn::Token![,]> = generics
-        .params
-        .iter()
-        .filter(|p| matches!(p, syn::GenericParam::Lifetime(_)))
-        .cloned()
-        .collect();
-    let only_lifetimes = params.len() == generics.params.len();
-    syn::Generics {
-        lt_token: (!params.is_empty()).then(Default::default),
-        gt_token: (!params.is_empty()).then(Default::default),
-        params,
-        where_clause: if only_lifetimes {
-            generics.where_clause.clone()
-        } else {
-            None
-        },
-    }
-}
-
-/// The lifetime names (`a` for `'a`) spelled anywhere in `tokens`.
-fn lifetime_names(tokens: TokenStream2, out: &mut std::collections::BTreeSet<String>) {
-    let mut after_quote = false;
-    for tree in tokens {
-        match tree {
-            proc_macro2::TokenTree::Punct(p) => {
-                after_quote = p.as_char() == '\'' && p.spacing() == proc_macro2::Spacing::Joint;
-                continue;
-            }
-            proc_macro2::TokenTree::Ident(i) if after_quote => {
-                out.insert(i.to_string());
-            }
-            proc_macro2::TokenTree::Group(g) => lifetime_names(g.stream(), out),
-            _ => {}
-        }
-        after_quote = false;
-    }
-}
-
-/// A method's lifetime generics ([`lifetime_generics`]) with every `Self` type
-/// in its `where` clause spelled as the receiver type `self_path`, the way the
-/// wrapper names the struct (PR #480 review). A predicate using `Self` can be
-/// the only proof a call is valid (`for<'b> &'b Self: Rel<&'a Buf>` with a
-/// `'static`-only impl), and the wrapper is a free function where `Self` does
-/// not exist (E0411), so the predicate is carried over as
-/// `for<'b> &'b Buf: Rel<&'a Buf>`. Only a type that is exactly `Self` is
-/// replaced, which covers `<Self as Trait>::Assoc` too; a bare `Self::Assoc`
-/// does not name its trait and cannot be rewritten without resolving it, so it
-/// is left as is and [`declared_lifetimes`] keeps that predicate on the method.
-fn with_self_as(mut generics: syn::Generics, self_path: &syn::Path) -> syn::Generics {
-    struct SelfAs<'p>(&'p syn::Path);
-    impl syn::visit_mut::VisitMut for SelfAs<'_> {
-        fn visit_type_mut(&mut self, ty: &mut Type) {
-            if let Type::Path(tp) = ty {
-                if tp.qself.is_none() && tp.path.is_ident("Self") {
-                    *ty = Type::Path(syn::TypePath {
-                        qself: None,
-                        path: self.0.clone(),
-                    });
-                    return;
-                }
-            }
-            syn::visit_mut::visit_type_mut(self, ty);
-        }
-    }
-    if let Some(w) = generics.where_clause.as_mut() {
-        syn::visit_mut::VisitMut::visit_where_clause_mut(&mut SelfAs(self_path), w);
-    }
-    generics
-}
-
-/// Whether `tokens` spell `Self` anywhere (`Self: Trait`, `Self::Assoc`,
-/// `<Self as Trait>::Assoc`).
-fn names_self(tokens: TokenStream2) -> bool {
-    tokens.into_iter().any(|tree| match tree {
-        proc_macro2::TokenTree::Ident(i) => i == "Self",
-        proc_macro2::TokenTree::Group(g) => names_self(g.stream()),
-        _ => false,
-    })
-}
-
-/// The part of `lifetimes` ([`lifetime_generics`]) a wrapper whose signature is
-/// `signature` declares: the lifetimes that signature names, their bounds
-/// among themselves, and the other `where` predicates that relate those
-/// lifetimes, name none of the item's other lifetime parameters (a `for<'b>`
-/// binder's name or `'static` never counts) and no longer name `Self` once
-/// [`with_self_as`] has spelled it as the receiver type (PR #480 review). Every other predicate stays on the item only, as all of them did
-/// before a wrapper declared anything. A
-/// relation to a lifetime the signature does not name is left to inference at
-/// the call, where it is satisfied or not exactly as it was before (#477).
-fn declared_lifetimes(lifetimes: &syn::Generics, signature: TokenStream2) -> syn::Generics {
-    let mut used = std::collections::BTreeSet::new();
-    lifetime_names(signature, &mut used);
-    let named = |l: &syn::Lifetime| l.ident == "static" || used.contains(&l.ident.to_string());
-    let declared: std::collections::BTreeSet<String> = lifetimes
-        .lifetimes()
-        .map(|lp| lp.lifetime.ident.to_string())
-        .collect();
-    let params: syn::punctuated::Punctuated<syn::GenericParam, syn::Token![,]> = lifetimes
-        .params
-        .iter()
-        .filter_map(|p| match p {
-            syn::GenericParam::Lifetime(lp) if named(&lp.lifetime) => {
-                let mut lp = lp.clone();
-                lp.bounds = lp.bounds.into_iter().filter(|b| named(b)).collect();
-                if lp.bounds.is_empty() {
-                    lp.colon_token = None;
-                }
-                Some(syn::GenericParam::Lifetime(lp))
-            }
-            _ => None,
-        })
-        .collect();
-    let predicates: syn::punctuated::Punctuated<syn::WherePredicate, syn::Token![,]> = lifetimes
-        .where_clause
-        .iter()
-        .flat_map(|w| w.predicates.iter())
-        .filter_map(|p| match p {
-            syn::WherePredicate::Lifetime(pl) if named(&pl.lifetime) => {
-                let mut pl = pl.clone();
-                pl.bounds = pl.bounds.into_iter().filter(|b| named(b)).collect();
-                (!pl.bounds.is_empty()).then_some(syn::WherePredicate::Lifetime(pl))
-            }
-            syn::WherePredicate::Lifetime(_) => None,
-            // Any other predicate is carried over only when it relates the
-            // lifetimes the wrapper declares — the one thing the wrapper adds
-            // (#477). One that names none of them is not needed there: the
-            // call proves it, as it did before a wrapper declared anything.
-            // Only the item's own lifetime parameters can be missing from the
-            // wrapper: a name bound by a `for<'b>` binder inside the predicate
-            // (Rust forbids it to shadow one of them) or `'static` is always
-            // in scope, so it never drops the predicate. A method's `Self` is
-            // already spelled as its receiver type ([`with_self_as`]); one
-            // still naming `Self` (a bare `Self::Assoc`) stays on the method,
-            // since the wrapper is a free function where `Self` does not exist
-            // (E0411; PR #480 review).
-            other => {
-                let tokens = quote! { #other };
-                let mut names = std::collections::BTreeSet::new();
-                lifetime_names(tokens.clone(), &mut names);
-                let relates = names
-                    .iter()
-                    .any(|n| declared.contains(n) && used.contains(n));
-                let complete = names
-                    .iter()
-                    .all(|n| !declared.contains(n) || used.contains(n));
-                (relates && complete && !names_self(tokens)).then(|| other.clone())
-            }
-        })
-        .collect();
-    syn::Generics {
-        lt_token: (!params.is_empty()).then(Default::default),
-        gt_token: (!params.is_empty()).then(Default::default),
-        params,
-        where_clause: (!predicates.is_empty()).then(|| syn::WhereClause {
-            where_token: Default::default(),
-            predicates,
-        }),
-    }
-}
-
 /// Wrapper-side view of one argument: `String` / `&str` become a
 /// `(ptr, len)` byte pair (`conversion` rebuilds the Rust value under the
 /// argument's own name, lossily for invalid UTF-8, never through
@@ -615,6 +437,50 @@ pub(crate) enum WrapperPayload {
     },
 }
 
+impl WrapperReturn {
+    /// The item's types the wrapper hands back as written: a plain return, a
+    /// boxed constructor's type, a `Result` / `Option` payload stored as is.
+    /// A string is copied or viewed and is not one of them.
+    fn passed_types(&self) -> Vec<TokenStream2> {
+        let payload = |p: &WrapperPayload| match p {
+            WrapperPayload::Plain(ty) => Some(quote! { #ty }),
+            WrapperPayload::Boxed(path) => Some(quote! { #path }),
+            WrapperPayload::OwnedString { .. } => None,
+        };
+        match self {
+            WrapperReturn::Plain(ty) => vec![quote! { #ty }],
+            WrapperReturn::Boxed(path) => vec![quote! { #path }],
+            WrapperReturn::CResult { ok, err, .. } => {
+                [ok, err].into_iter().filter_map(payload).collect()
+            }
+            WrapperReturn::COption { inner, .. } => payload(inner).into_iter().collect(),
+            WrapperReturn::Unit
+            | WrapperReturn::OwnedString { .. }
+            | WrapperReturn::BorrowedStr { .. } => Vec::new(),
+        }
+    }
+
+    /// The types of [`WrapperReturn::passed_types`] spelled from the item's
+    /// signature, for `Self` to be spelled as the impl's type (#482). A boxed
+    /// constructor's path is the caller's spelling of the struct already.
+    fn types_mut(&mut self) -> Vec<&mut Type> {
+        fn payload(p: &mut WrapperPayload) -> Option<&mut Type> {
+            match p {
+                WrapperPayload::Plain(ty) => Some(ty),
+                _ => None,
+            }
+        }
+        match self {
+            WrapperReturn::Plain(ty) => vec![ty],
+            WrapperReturn::CResult { ok, err, .. } => {
+                [ok, err].into_iter().filter_map(payload).collect()
+            }
+            WrapperReturn::COption { inner, .. } => payload(inner).into_iter().collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
 impl WrapperPayload {
     /// Whether the payload is stored exactly as the Rust signature wrote it.
     fn is_plain(&self) -> bool {
@@ -674,13 +540,19 @@ pub(crate) struct WrapperSpec {
     pub cfg_attrs: Vec<Attribute>,
     pub receiver: Option<WrapperReceiver>,
     pub args: Vec<(Ident, Type)>,
-    /// The named lifetimes the wrapped item declares (`fn f<'a>`), with their
-    /// bounds and lifetime `where` predicates, declared again on the wrapper
-    /// (#477): an argument passed through as written (`other: &'a Buf`) names
-    /// them. Type and const parameters never reach a wrapper — a generic item
-    /// is refused or monomorphized first — so [`lifetime_generics`] keeps only
-    /// lifetimes. Empty where the arguments are spelled from a manifest.
-    pub lifetimes: syn::Generics,
+    /// The wrapped item's generics as written (`fn f<'a>(..) where ..`). The
+    /// wrapper declares its lifetime parameters and `where` clause after those
+    /// of `host` ([`crate::environment`], #477, #482): an argument passed
+    /// through as written (`other: &'a Buf`) names them, and a predicate can
+    /// be the only proof the call is valid. Type and const parameters never
+    /// reach a wrapper — a generic item is refused or monomorphized first.
+    /// Empty where the arguments are spelled from a manifest.
+    pub generics: syn::Generics,
+    /// The impl block a method was written in: its generics join the
+    /// wrapper's, and `Self` in the method's signature is spelled as its
+    /// header's type (#482). `None` for a free function and for a wrapper
+    /// whose types are spelled from a manifest.
+    pub host: Option<ImplHost>,
     pub ret: WrapperReturn,
     pub target: CallTarget,
     /// Whether this wrapper may take a boundary guard from the file-level
@@ -1108,13 +980,62 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
         symbol,
         cfg_attrs,
         receiver,
-        args,
-        lifetimes,
-        ret,
+        mut args,
+        generics,
+        host,
+        mut ret,
         target,
         call_suffix,
         panic_hook,
     } = spec;
+
+    // The Julia-facing name this wrapper stands for, used in the panic
+    // message. Derived from the call target rather than from the symbol, so
+    // the message reads `Point::area panicked: ...` and not
+    // `rustcall_Point_area panicked: ...`.
+    let julia_name = match &target {
+        CallTarget::Free(name) => path_tail(name),
+        CallTarget::Assoc { ty, method } => format!("{}::{}", path_tail(ty), method),
+        CallTarget::Instance(method) => match &receiver {
+            Some(r) => format!("{}::{}", path_tail(&r.ty), method),
+            None => method.to_string(),
+        },
+    };
+
+    // The wrapper's environment is the item's, verbatim, with `Self` spelled
+    // as the impl header's type (#482, `crate::environment`).
+    let mut environment = crate::environment::wrapper_environment(host.as_ref(), &generics);
+    if let Some(host) = &host {
+        crate::environment::expand_self(host, &mut environment);
+        for (_, ty) in args.iter_mut() {
+            crate::environment::expand_self_in_type(host, ty);
+        }
+        for ty in ret.types_mut() {
+            crate::environment::expand_self_in_type(host, ty);
+        }
+    }
+    let spelled_types = {
+        let arg_types = args.iter().map(|(_, ty)| ty);
+        let returned = ret.passed_types();
+        // `Generics` prints its parameters only; the `where` clause is apart.
+        let predicates = &environment.where_clause;
+        quote! { #environment #predicates #(#arg_types)* #(#returned)* }
+    };
+    if let Some(span) = crate::environment::leftover_self(spelled_types) {
+        return gated_error(
+            &cfg_attrs,
+            crate::environment::leftover_self_error(span, &julia_name),
+        );
+    }
+    if let Some(error) = crate::environment::lowered_lifetime_error(
+        &environment,
+        &args,
+        &ret.passed_types(),
+        &julia_name,
+    ) {
+        return gated_error(&cfg_attrs, error);
+    }
+
     let taken: Vec<String> = args.iter().map(|(n, _)| n.to_string()).collect();
     let ptr = fresh_ident("ptr", &taken);
     let self_obj = fresh_ident("self_obj", &taken);
@@ -1137,15 +1058,14 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
         conversions.extend(conversion);
         call_args.push(quote! { #name });
     }
-    // The lifetimes the wrapper's own signature names — a struct reference
-    // passed through as written, a plain return — are declared on it (#477).
-    let signature = match &ret {
-        WrapperReturn::Plain(ty) => quote! { #(#wrapper_args)* #ty },
-        WrapperReturn::Boxed(path) => quote! { #(#wrapper_args)* #path },
-        _ => quote! { #(#wrapper_args)* },
+    // A lifetime the wrapper's signature and predicates name nowhere — one
+    // only a lowered string named, say — is left out (#482).
+    let signature = {
+        let returned = ret.passed_types();
+        quote! { #(#wrapper_args)* #(#returned)* }
     };
-    let lifetimes = declared_lifetimes(&lifetimes, signature);
-    let (lifetimes, _, lifetime_where) = lifetimes.split_for_impl();
+    let environment = crate::environment::prune_unused_lifetimes(environment, signature);
+    let (lifetimes, _, lifetime_where) = environment.split_for_impl();
 
     let self_binding = match &receiver {
         None => quote! {},
@@ -1160,18 +1080,6 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
     let call = quote! { #call #call_suffix };
     let prologue = quote! { #(#conversions)* #self_binding };
 
-    // The Julia-facing name this wrapper stands for, used in the panic
-    // message. Derived from the call target rather than from the symbol, so
-    // the message reads `Point::area panicked: ...` and not
-    // `rustcall_Point_area panicked: ...`.
-    let julia_name = match &target {
-        CallTarget::Free(name) => path_tail(name),
-        CallTarget::Assoc { ty, method } => format!("{}::{}", path_tail(ty), method),
-        CallTarget::Instance(method) => match &receiver {
-            Some(r) => format!("{}::{}", path_tail(&r.ty), method),
-            None => method.to_string(),
-        },
-    };
     let slot = format_ident!("__RUSTCALL_PANIC_{}", symbol.to_string().to_uppercase());
     let reader = format_ident!("{}", panic_symbol(&symbol.to_string()));
 
@@ -1635,7 +1543,8 @@ fn free_function_wrapper(
         symbol,
         cfg_attrs: cfgs,
         receiver: None,
-        lifetimes: lifetime_generics(&func.sig.generics),
+        generics: func.sig.generics.clone(),
+        host: None,
         args: arg_pairs(&func.sig),
         ret,
         target: CallTarget::Free(name.into()),
@@ -2286,8 +2195,10 @@ pub fn transform_impl_crate(mut item_impl: ItemImpl, module_path: &[String]) -> 
     let struct_path = impl_target_module_path(module_path, &item_impl.self_ty);
     // The wrappers are emitted next to the block, in *its* module, so they
     // name the struct the way the header does (`super::Gauge`): a bare
-    // `Gauge` need not be in scope there.
-    let self_ty = (*item_impl.self_ty).clone();
+    // `Gauge` need not be in scope there. The block's generics and `where`
+    // clause join every wrapper's, and `Self` in a method's signature is
+    // spelled as the header (#482).
+    let host = ImplHost::of(&item_impl);
 
     // The block's own `#[cfg]` gates every wrapper it produces: inside a
     // `#[julia] mod` the module macro expands a gated impl before rustc
@@ -2315,11 +2226,7 @@ pub fn transform_impl_crate(mut item_impl: ItemImpl, module_path: &[String]) -> 
                 // for the wrapper only, the method itself is left as written.
                 let mut gated = method.clone();
                 gated.attrs.splice(0..0, block_cfgs.iter().cloned());
-                ffi_wrappers.extend(generate_method_wrapper_crate(
-                    &self_ty,
-                    &struct_path,
-                    &gated,
-                ));
+                ffi_wrappers.extend(method_wrapper_in_block(&host, &struct_path, &gated));
             }
         }
     }
@@ -2443,9 +2350,29 @@ pub fn generate_method_wrapper_crate(
     module_path: &[String],
     method: &syn::ImplItemFn,
 ) -> TokenStream2 {
+    method_wrapper_in_block(
+        &ImplHost {
+            generics: syn::Generics::default(),
+            self_ty: self_ty.clone(),
+            trait_: None,
+        },
+        module_path,
+        method,
+    )
+}
+
+/// [`generate_method_wrapper_crate`] for a method of the block `host`, whose
+/// generics join the wrapper's and whose type `Self` stands for (#482).
+fn method_wrapper_in_block(
+    host: &ImplHost,
+    module_path: &[String],
+    method: &syn::ImplItemFn,
+) -> TokenStream2 {
+    let self_ty = &host.self_ty;
     // The origin is a manifest column; the wrapper's shape does not depend
     // on it.
-    let model = MethodModel::from_fn(method, crate::manifest::Attribute::Julia);
+    let mut model = MethodModel::from_fn(method, crate::manifest::Attribute::Julia);
+    model.host = Some(host.clone());
     // The proc-macro sees one block and cannot resolve a name: the header's
     // last segment *is* the struct as far as it knows. Crate extraction
     // refuses a header the macro would read differently from the struct it
@@ -2864,7 +2791,17 @@ fn method_spec(
         symbol,
         cfg_attrs: cfg_attrs(&m.func.attrs),
         receiver,
-        lifetimes: with_self_as(lifetime_generics(&m.func.sig.generics), self_path),
+        generics: m.func.sig.generics.clone(),
+        // A lone method has no block: `Self` is the struct as the wrapper
+        // spells it, and no block generics join the method's.
+        host: Some(m.host.clone().unwrap_or_else(|| ImplHost {
+            generics: syn::Generics::default(),
+            self_ty: Type::Path(syn::TypePath {
+                qself: None,
+                path: self_path.clone(),
+            }),
+            trait_: None,
+        })),
         args: arg_pairs(&m.func.sig),
         ret,
         target,
@@ -3144,6 +3081,17 @@ pub fn inline_generic_wrappers(model: &StructModel, module_path: &[String]) -> V
                 }
             }
         };
+        // `Self` in the method's signature and predicates is the block's
+        // type, which the wrapper, a free function, has to spell (#482).
+        let mut func = func;
+        crate::environment::expand_self_in_signature(
+            &ImplHost {
+                generics: decl_generics.clone(),
+                self_ty: self_ty.clone(),
+                trait_: None,
+            },
+            &mut func.sig,
+        );
         let mut method_cfgs = m.enclosing_cfg.clone();
         method_cfgs.extend(cfg_attrs(&m.func.attrs));
         wrappers.push(GenericWrapper {

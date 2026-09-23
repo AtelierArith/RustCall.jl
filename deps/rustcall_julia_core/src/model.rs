@@ -23,6 +23,30 @@ pub struct ImplSite {
     pub self_ty: Type,
 }
 
+/// The header of the impl block a method was written in: what its signature's
+/// `Self` and the block's own generics mean (#482). A generated wrapper
+/// declares the block's generics and `where` clause, then the method's, and
+/// spells `Self` as `self_ty` (`crate::environment`).
+#[derive(Debug, Clone)]
+pub struct ImplHost {
+    /// The block's generics, `where` clause included (`impl<'x> Buf where ..`).
+    pub generics: syn::Generics,
+    /// The header's type as written (`Buf`, `super::Buf`).
+    pub self_ty: Type,
+    /// The trait of a trait impl, through which a bare `Self::Assoc` resolves.
+    pub trait_: Option<syn::Path>,
+}
+
+impl ImplHost {
+    pub fn of(imp: &ItemImpl) -> Self {
+        ImplHost {
+            generics: imp.generics.clone(),
+            self_ty: (*imp.self_ty).clone(),
+            trait_: imp.trait_.as_ref().map(|(_, path, _)| path.clone()),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct MethodModel {
     pub func: ImplItemFn,
@@ -41,6 +65,10 @@ pub struct MethodModel {
     /// for a block attached without a module (`attach_impl` with `None`),
     /// which is then its struct's neighbour.
     pub site: Option<ImplSite>,
+    /// The header of the block the method was collected from (#482). `None`
+    /// for a lone method ([`MethodModel::from_fn`]); its wrapper then takes
+    /// the struct as `Self` and no generics of a block.
+    pub host: Option<ImplHost>,
 }
 
 impl MethodModel {
@@ -56,6 +84,7 @@ impl MethodModel {
             attribute,
             enclosing_cfg: Vec::new(),
             site: None,
+            host: None,
         }
     }
 
@@ -226,6 +255,7 @@ pub fn wrapped_methods(
         .map(|func| {
             let mut m = MethodModel::from_fn(func, impl_attribute);
             m.enclosing_cfg = block_cfg.clone();
+            m.host = Some(ImplHost::of(imp));
             m
         })
         .collect()

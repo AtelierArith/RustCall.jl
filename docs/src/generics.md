@@ -239,6 +239,12 @@ A method of a generic struct with parameters of its own
 (`impl<T> Wrap<T> { pub fn pair<U>(..) }`) is refused the same way (#477):
 instantiating the struct binds only `T`.
 
+A generic struct's method wrappers declare the impl block's generics and
+`where` clause and the method's own, with `Self` spelled as the block's type
+(`where Self: Sized` becomes `where Wrap<T>: Sized`, #482), exactly as a
+concrete struct's wrappers do; see
+[Struct Mapping](struct_mapping.md#Where-predicates).
+
 ## API Reference
 
 ### Types

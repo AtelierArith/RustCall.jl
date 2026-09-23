@@ -1,0 +1,41 @@
+error: `Buf::forever`: argument `s` arrives from Julia as a pointer and a length and is rebuilt into a string that lives only for the call, so it cannot be borrowed for `'static`. Take `String` (#482).
+  --> tests/ui/lowered_lifetime.rs:23:31
+   |
+23 |     pub fn forever(&self, s: &'static str) -> i32 {
+   |                               ^^^^^^^
+
+error: `Buf::returned`: argument `s` arrives from Julia as a pointer and a length and is rebuilt into a string that lives only for the call, so `'a` cannot be required to outlive the call; but the wrapper returns `&'a i32`, which names it. Take `String`, or relate `'a` to nothing that outlives the call (#482).
+  --> tests/ui/lowered_lifetime.rs:28:39
+   |
+28 |     pub fn returned<'a>(&'a self, s: &'a str) -> &'a i32 {
+   |                                       ^^
+
+error: `Buf::invariant`: argument `s` arrives from Julia as a pointer and a length and is rebuilt into a string that lives only for the call, so `'a` cannot be required to outlive the call; but argument `o: &'a mut &'a Buf` names it inside its type. Take `String`, or relate `'a` to nothing that outlives the call (#482).
+  --> tests/ui/lowered_lifetime.rs:34:57
+   |
+34 |     pub fn invariant<'a>(&self, o: &'a mut &'a Buf, s: &'a str) -> i32 {
+   |                                                         ^^
+
+error: `Buf::through_a_bound`: argument `s` arrives from Julia as a pointer and a length and is rebuilt into a string that lives only for the call, so `'c` cannot be required to outlive the call; but it must outlive `'a` (`'c: 'a`), and argument `o: &'a mut &'a Buf` names it inside its type. Take `String`, or relate `'c` to nothing that outlives the call (#482).
+  --> tests/ui/lowered_lifetime.rs:39:71
+   |
+39 |     pub fn through_a_bound<'a, 'c: 'a>(&self, o: &'a mut &'a Buf, s: &'c str) -> i32 {
+   |                                                                       ^^
+
+error: `Buf::predicated`: argument `s` arrives from Julia as a pointer and a length and is rebuilt into a string that lives only for the call, so `'c` cannot be required to outlive the call; but the `where` predicate `&'c str: Any2<i32>` names it. Take `String`, or relate `'c` to nothing that outlives the call (#482).
+  --> tests/ui/lowered_lifetime.rs:44:38
+   |
+44 |     pub fn predicated<'c>(&self, s: &'c str) -> i32
+   |                                      ^^
+
+error: `Buf::in_macro`: this `Self` is inside a macro invocation, so RustCall cannot spell it as the impl's type on the `extern "C"` wrapper, which is a free function. Write the type instead of `Self` here (#482).
+  --> tests/ui/lowered_lifetime.rs:55:15
+   |
+55 |         same!(Self): Sized,
+   |               ^^^^
+
+error: `free_forever`: argument `s` arrives from Julia as a pointer and a length and is rebuilt into a string that lives only for the call, so it cannot be borrowed for `'static`. Take `String` (#482).
+  --> tests/ui/lowered_lifetime.rs:71:25
+   |
+71 | pub fn free_forever(s: &'static str) -> usize {
+   |                         ^^^^^^^

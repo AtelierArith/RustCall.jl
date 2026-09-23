@@ -7,4 +7,7 @@ fn ui_tests() {
     // each, not with an unbound `T` inside generated code.
     t.compile_fail("tests/ui/generic_fn.rs");
     t.compile_fail("tests/ui/generic_items.rs");
+    // #482: a lowered string whose lifetime must outlive the call, and a
+    // `Self` the wrapper cannot spell, are refused at the method.
+    t.compile_fail("tests/ui/lowered_lifetime.rs");
 }
