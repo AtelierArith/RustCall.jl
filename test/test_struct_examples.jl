@@ -51,6 +51,55 @@ using Test
         @test height ≈ 178.0
     end
 
+    # Restored from the deleted test/test_phase4.jl (#488): the Person and
+    # JuliaCounter testsets cover the same shape, but not these assertions —
+    # a fresh #[julia] object's type and non-null handle, an immutable method
+    # read before any mutation, a `&mut self` method that rewrites two f64
+    # fields, and collection of the object without a finalizer failure.
+    @testset "Rect Struct (from test_phase4.jl)" begin
+        rust"""
+        #[julia]
+        pub struct Rect {
+            w: f64,
+            h: f64,
+        }
+
+        impl Rect {
+            pub fn new(w: f64, h: f64) -> Self {
+                Self { w, h }
+            }
+
+            pub fn area(&self) -> f64 {
+                self.w * self.h
+            }
+
+            pub fn scale(&mut self, factor: f64) {
+                self.w *= factor;
+                self.h *= factor;
+            }
+        }
+        """
+
+        r = Rect(10.0, 5.0)
+        @test r isa Rect
+        @test getfield(r, :ptr) != C_NULL
+
+        @test area(r) == 50.0
+
+        scale(r, 2.0)
+        @test area(r) ≈ 200.0
+
+        # Collect an object that is no longer reachable. It is created inside
+        # a function so no frame of the testset keeps it rooted.
+        failures_before = RustCall.finalizer_failure_count()
+        (() -> (area(Rect(1.0, 2.0)); nothing))()
+        r = nothing
+        for _ in 1:3
+            GC.gc(true)
+        end
+        @test RustCall.finalizer_failure_count() == failures_before
+    end
+
     @testset "derive(JuliaStruct) String fields" begin
         rust"""
         #[derive(JuliaStruct)]
