@@ -71,6 +71,9 @@ const TRAITS: &str = r#"
     pub trait Any2<T> {}
     impl<A: ?Sized, B> Any2<B> for A {}
     macro_rules! same { ($t:ty) => { $t }; }
+    pub trait Counted { const M: usize; }
+    impl Counted for Buf { const M: usize = 3; }
+    pub struct Holder<const K: usize>;
 "#;
 
 /// Every shape the issue lists that must compile, each in the impl block
@@ -108,6 +111,14 @@ const CALLABLE: &str = r#"
             (&*self).rel(o)
         }
         pub fn self_arg<'a>(&self, o: &'a Self) -> i32 where Self: Tagged { o.n * self.n }
+
+        // `Self` in expression position (PR #483 review): an associated const
+        // in an array length, qualified through a trait, and as a const
+        // generic argument.
+        pub const N: usize = 2;
+        pub fn self_const(&self) -> i32 where [(); Self::N]: Sized { self.n + Self::N as i32 }
+        pub fn self_trait_const(&self) -> i32 where [(); <Self as Counted>::M]: Sized { self.n + <Self as Counted>::M as i32 }
+        pub fn self_const_arg(&self) -> i32 where Holder<{ Self::N }>: Sized { self.n * Self::N as i32 }
 
         // No lifetimes at all.
         pub fn no_lifetimes(&self) -> i32 where Buf: Tagged, i32: Copy { self.n }
@@ -179,6 +190,9 @@ const CALLS: &str = r#"
         assert_eq!(rustcall_Buf_self_proof(p, &OTHER).assume_init(), 4);
         assert_eq!(rustcall_Buf_self_proof_qualified(p, &OTHER).assume_init(), 4);
         assert_eq!(rustcall_Buf_self_arg(p, &o).assume_init(), 10);
+        assert_eq!(rustcall_Buf_self_const(p).assume_init(), 7);
+        assert_eq!(rustcall_Buf_self_trait_const(p).assume_init(), 8);
+        assert_eq!(rustcall_Buf_self_const_arg(p).assume_init(), 10);
         assert_eq!(rustcall_Buf_no_lifetimes(p).assume_init(), 5);
         assert_eq!(rustcall_Buf_mixed(p, &o).assume_init(), 2);
         assert_eq!(rustcall_Buf_mixed_string(p, &o, s.as_ptr(), s.len()).assume_init(), 6);
@@ -209,6 +223,9 @@ const METHODS: &[&str] = &[
     "self_proof",
     "self_proof_qualified",
     "self_arg",
+    "self_const",
+    "self_trait_const",
+    "self_const_arg",
     "no_lifetimes",
     "mixed",
     "mixed_string",
@@ -299,6 +316,10 @@ fn the_wrapper_declares_the_items_environment_verbatim() {
         // The block's generics join the method's.
         "fn rustcall_Buf_block_lifetime<'x>(ptr: *const Buf, o: &'x Buf)",
         "fn rustcall_Buf_block_where(ptr: *const Buf) -> ::std::mem::MaybeUninit<i32> where Buf: Tagged, {",
+        // `Self` in expression position: an associated const (PR #483 review).
+        "where [(); <Buf>::N]: Sized, {",
+        "where [(); <Buf as Counted>::M]: Sized, {",
+        "where Holder<{ <Buf>::N }>: Sized, {",
         // In another module, `Self` is the header as written.
         "where super::Buf: Tagged, for<'b> &'b super::Buf: Rel<&'a super::Buf>, {",
         "fn rustcall_Buf_foreign_block_lifetime<'x>(ptr: *const super::Buf, o: &'x super::Buf)",
@@ -392,7 +413,7 @@ fn a_self_inside_a_macro_is_refused() {
     assert!(!out.status.success(), "{}", expanded.source);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("`Buf::a`: this `Self` is inside a macro invocation"),
+        stderr.contains("`Buf::a`: this `Self` is inside an invocation of `same!`"),
         "{stderr}"
     );
     assert!(!stderr.contains("error["), "{stderr}");

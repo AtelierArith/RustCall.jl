@@ -46,6 +46,16 @@ impl<'x> Rel<&'static Buf> for &'x Buf {
 pub trait Any2<T> {}
 impl<A: ?Sized, B> Any2<B> for A {}
 
+pub trait Counted {
+    const M: usize;
+}
+
+impl Counted for Buf {
+    const M: usize = 3;
+}
+
+pub struct Holder<const K: usize>;
+
 #[julia]
 pub struct Buf {
     pub n: i32,
@@ -142,6 +152,35 @@ impl Buf {
         o.n * self.n
     }
 
+    // `Self` in expression position: an associated const in an array length,
+    // qualified through a trait, and as a const generic argument (PR #483
+    // review).
+    pub const N: usize = 2;
+
+    #[julia]
+    pub fn self_const(&self) -> i32
+    where
+        [(); Self::N]: Sized,
+    {
+        self.n + Self::N as i32
+    }
+
+    #[julia]
+    pub fn self_trait_const(&self) -> i32
+    where
+        [(); <Self as Counted>::M]: Sized,
+    {
+        self.n + <Self as Counted>::M as i32
+    }
+
+    #[julia]
+    pub fn self_const_arg(&self) -> i32
+    where
+        Holder<{ Self::N }>: Sized,
+    {
+        self.n * Self::N as i32
+    }
+
     // No lifetimes.
     #[julia]
     pub fn no_lifetimes(&self) -> i32
@@ -223,6 +262,33 @@ impl Scaled for Buf {
     }
 }
 
+// A trait impl whose trait is in scope by its bare name: an unqualified
+// `Self::N` in expression position resolves as rustc resolves it in the impl,
+// inherent constant first (`Buf::N == 2`, not the trait's 5), then the traits
+// in scope (`K`, which only the trait has). PR #492 review.
+pub trait Limits {
+    const N: usize;
+    const K: usize;
+    fn limit(&self, a: &[u8; 2]) -> i32;
+    fn only(&self, a: &[u8; 7]) -> i32;
+}
+
+#[julia]
+impl Limits for Buf {
+    const N: usize = 5;
+    const K: usize = 7;
+
+    #[julia]
+    fn limit(&self, a: &[u8; Self::N]) -> i32 {
+        a.len() as i32 + self.n
+    }
+
+    #[julia]
+    fn only(&self, a: &[u8; Self::K]) -> i32 {
+        a.len() as i32 + self.n
+    }
+}
+
 // A block in another module, spelling the struct `super::Buf`.
 pub mod ops {
     use super::{Rel, Tagged};
@@ -286,6 +352,9 @@ fn every_predicate_shape_is_called_through_its_wrapper() {
         assert_eq!(rustcall_Buf_self_assoc(p, &o).assume_init(), 7);
         assert_eq!(rustcall_Buf_self_proof(p, &OTHER).assume_init(), 4);
         assert_eq!(rustcall_Buf_self_arg(p, &o).assume_init(), 10);
+        assert_eq!(rustcall_Buf_self_const(p).assume_init(), 7);
+        assert_eq!(rustcall_Buf_self_trait_const(p).assume_init(), 8);
+        assert_eq!(rustcall_Buf_self_const_arg(p).assume_init(), 10);
         assert_eq!(rustcall_Buf_no_lifetimes(p).assume_init(), 5);
         assert_eq!(rustcall_Buf_mixed(p, &o).assume_init(), 2);
         assert_eq!(
@@ -295,6 +364,9 @@ fn every_predicate_shape_is_called_through_its_wrapper() {
         assert_eq!(rustcall_Buf_block_lifetime(p, &o).assume_init(), 102);
         assert_eq!(rustcall_Buf_block_where(p).assume_init(), 205);
         assert_eq!(rustcall_Buf_scaled(p, 3).assume_init(), 15);
+        // The inherent `N` (2), as in the impl.
+        assert_eq!(rustcall_Buf_limit(p, &[0u8; 2]).assume_init(), 7);
+        assert_eq!(rustcall_Buf_only(p, &[0u8; 7]).assume_init(), 12);
         assert_eq!(ops::rustcall_Buf_foreign(p, &OTHER).assume_init(), 7);
         assert_eq!(
             ops::rustcall_Buf_foreign_block_lifetime(p, &o).assume_init(),

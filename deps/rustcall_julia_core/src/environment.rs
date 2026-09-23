@@ -13,8 +13,9 @@
 //! * `Self`, the one name of that environment that a free function does not
 //!   have, is spelled as what it is an alias for: the impl header's type
 //!   ([`expand_self`]; `Self::Assoc` becomes `<Buf>::Assoc`, or
-//!   `<Buf as Trait>::Assoc` in a trait impl). A `Self` this cannot reach — inside a
-//!   macro invocation — is refused at that token ([`leftover_self`]);
+//!   `<Buf as Trait>::Assoc` in a trait impl), in type and in expression
+//!   position (`[(); Self::N]`). A `Self` this cannot reach — inside a macro
+//!   invocation — is refused at that token ([`leftover_self`]);
 //! * a lifetime parameter the resulting signature and predicates name nowhere
 //!   is left out ([`prune_unused_lifetimes`]): an unconstrained, unused
 //!   parameter means nothing, and keeping it would only rename the wrappers of
@@ -114,80 +115,253 @@ pub(crate) fn wrapper_environment(host: Option<&ImplHost>, item: &syn::Generics)
 }
 
 /// Spells every `Self` of an impl's signature as the header's type, which is
-/// what `Self` is an alias for inside the block.
-struct SelfAlias<'h>(&'h ImplHost);
+/// what `Self` is an alias for inside the block: in type position
+/// (`Self: Tr`, `&'a Self`, `<Self as Tr>::Assoc`, `Self::Assoc`) and in
+/// expression position — an associated const in an array length or a const
+/// generic argument (`[(); Self::N]`, `Holder<{ Self::N }>`, PR #483 review).
+///
+/// An unqualified `Self::X` keeps the lookup rustc gives it inside the block:
+///
+/// * as a **type** it is `<Buf>::X` in an inherent impl and `<Buf as Trait>::X`
+///   in a trait impl — an associated type of a concrete type resolves only
+///   through the trait (`<Buf>::X` is E0223 outside an impl);
+/// * as an **expression** (an associated const) it is `<Buf>::X` in both:
+///   rustc resolves `Self::X` inherent first, then through the traits in
+///   scope, and `<Buf>::X` is that same lookup, where `<Buf as Trait>::X`
+///   would bypass an inherent `X` (PR #492 review). The implemented trait is
+///   in scope at the wrapper — emitted in the block's module — only when the
+///   header names it by a bare name; otherwise the path is left alone and
+///   reported in `out_of_scope`.
+struct SelfAlias<'h> {
+    host: &'h ImplHost,
+    /// The first unqualified `Self::X` expression of a trait impl whose trait
+    /// the header names by a path (`impl tr::Limits for Buf`): the wrapper
+    /// cannot be sure `<Buf>::X` finds it.
+    out_of_scope: Option<Span>,
+}
+
+/// Whether a path without a `<..>` qualifier starts with a bare `Self`.
+fn starts_with_self(qself: &Option<syn::QSelf>, path: &syn::Path) -> bool {
+    qself.is_none()
+        && path.leading_colon.is_none()
+        && path
+            .segments
+            .first()
+            .is_some_and(|s| s.ident == "Self" && s.arguments.is_none())
+}
+
+impl<'h> SelfAlias<'h> {
+    fn new(host: &'h ImplHost) -> Self {
+        SelfAlias {
+            host,
+            out_of_scope: None,
+        }
+    }
+
+    /// `Self::rest` as a qualified path (see the type docs for which);
+    /// `None` for a bare `Self` (no `rest`), and for an expression whose trait
+    /// may be out of scope (recorded in `out_of_scope`).
+    fn qualified(&mut self, path: &syn::Path, expression: bool) -> Option<syn::TypePath> {
+        let mut rest: syn::punctuated::Punctuated<syn::PathSegment, syn::Token![::]> =
+            path.segments.iter().skip(1).cloned().collect();
+        if rest.is_empty() {
+            return None;
+        }
+        for segment in rest.iter_mut() {
+            self.visit_path_segment_mut(segment);
+        }
+        let self_ty = &self.host.self_ty;
+        match &self.host.trait_ {
+            Some(trait_path) if !expression => {
+                Some(syn::parse_quote!(<#self_ty as #trait_path>::#rest))
+            }
+            Some(trait_path)
+                if trait_path.leading_colon.is_some() || trait_path.segments.len() > 1 =>
+            {
+                if self.out_of_scope.is_none() {
+                    self.out_of_scope = path.segments.first().map(|s| s.ident.span());
+                }
+                None
+            }
+            _ => Some(syn::parse_quote!(<#self_ty>::#rest)),
+        }
+    }
+
+    /// A bare `Self` in expression position (a unit or tuple struct's
+    /// constructor) as a path: the header's, when the header is a plain path.
+    fn header_path(&self) -> Option<syn::Path> {
+        match &self.host.self_ty {
+            Type::Path(tp) if tp.qself.is_none() => Some(tp.path.clone()),
+            _ => None,
+        }
+    }
+
+    /// Rewrite an expression's `(qself, path)` pair in place; `false` when it
+    /// is left as is.
+    fn alias_path(&mut self, qself: &mut Option<syn::QSelf>, path: &mut syn::Path) -> bool {
+        if !starts_with_self(qself, path) {
+            return false;
+        }
+        if path.segments.len() > 1 {
+            return match self.qualified(path, true) {
+                Some(qualified) => {
+                    *qself = qualified.qself;
+                    *path = qualified.path;
+                    true
+                }
+                None => false,
+            };
+        }
+        match self.header_path() {
+            Some(header) => {
+                *path = header;
+                true
+            }
+            None => false,
+        }
+    }
+}
 
 impl VisitMut for SelfAlias<'_> {
     fn visit_type_mut(&mut self, ty: &mut Type) {
         if let Type::Path(tp) = ty {
-            let starts_with_self = tp.qself.is_none()
-                && tp.path.leading_colon.is_none()
-                && tp
-                    .path
-                    .segments
-                    .first()
-                    .is_some_and(|s| s.ident == "Self" && s.arguments.is_none());
-            if starts_with_self {
-                let mut rest: syn::punctuated::Punctuated<syn::PathSegment, syn::Token![::]> =
-                    tp.path.segments.iter().skip(1).cloned().collect();
-                for segment in rest.iter_mut() {
-                    self.visit_path_segment_mut(segment);
-                }
-                let self_ty = &self.0.self_ty;
-                *ty = if rest.is_empty() {
-                    self_ty.clone()
-                } else {
-                    match &self.0.trait_ {
-                        // `Self::Assoc` in a trait impl names the trait's item.
-                        Some(trait_path) => syn::parse_quote!(<#self_ty as #trait_path>::#rest),
-                        None => syn::parse_quote!(<#self_ty>::#rest),
-                    }
+            if starts_with_self(&tp.qself, &tp.path) {
+                *ty = match self.qualified(&tp.path, false) {
+                    Some(qualified) => Type::Path(qualified),
+                    None => self.host.self_ty.clone(),
                 };
                 return;
             }
         }
         syn::visit_mut::visit_type_mut(self, ty);
     }
+
+    fn visit_expr_path_mut(&mut self, expr: &mut syn::ExprPath) {
+        if !self.alias_path(&mut expr.qself, &mut expr.path) {
+            syn::visit_mut::visit_expr_path_mut(self, expr);
+        }
+    }
+
+    fn visit_expr_struct_mut(&mut self, expr: &mut syn::ExprStruct) {
+        if self.alias_path(&mut expr.qself, &mut expr.path) {
+            for field in expr.fields.iter_mut() {
+                self.visit_field_value_mut(field);
+            }
+            if let Some(rest) = expr.rest.as_mut() {
+                self.visit_expr_mut(rest);
+            }
+        } else {
+            syn::visit_mut::visit_expr_struct_mut(self, expr);
+        }
+    }
 }
 
-/// [`SelfAlias`] over a type.
-pub(crate) fn expand_self_in_type(host: &ImplHost, ty: &mut Type) {
-    SelfAlias(host).visit_type_mut(ty);
+/// [`SelfAlias`] over a type. Returns the span of an unqualified `Self::X`
+/// expression it left alone because the trait may be out of scope.
+pub(crate) fn expand_self_in_type(host: &ImplHost, ty: &mut Type) -> Option<Span> {
+    let mut alias = SelfAlias::new(host);
+    alias.visit_type_mut(ty);
+    alias.out_of_scope
 }
 
 /// [`SelfAlias`] over a whole signature: a generic struct's method wrapper
 /// is a generic free function that declares the block's generics and the
 /// method's (`wrapper_generics` in `codegen`) and spells its argument and
-/// return types as the method does.
+/// return types as the method does. Its block is inherent, so nothing is
+/// ever out of scope.
 pub(crate) fn expand_self_in_signature(host: &ImplHost, sig: &mut syn::Signature) {
-    SelfAlias(host).visit_signature_mut(sig);
+    SelfAlias::new(host).visit_signature_mut(sig);
 }
 
 /// [`SelfAlias`] over a set of generics: parameter bounds and `where` clause.
-pub(crate) fn expand_self(host: &ImplHost, generics: &mut syn::Generics) {
-    SelfAlias(host).visit_generics_mut(generics);
+/// Returns what [`expand_self_in_type`] does.
+pub(crate) fn expand_self(host: &ImplHost, generics: &mut syn::Generics) -> Option<Span> {
+    let mut alias = SelfAlias::new(host);
+    alias.visit_generics_mut(generics);
+    alias.out_of_scope
 }
 
-/// The first `Self` token left in `tokens` after [`expand_self`]: one inside a
-/// macro invocation (`m!(Self)`), whose tokens are not a type until the macro
-/// has run.
-pub(crate) fn leftover_self(tokens: TokenStream2) -> Option<Span> {
-    tokens.into_iter().find_map(|tree| match tree {
-        TokenTree::Ident(i) if i == "Self" => Some(i.span()),
-        TokenTree::Group(g) => leftover_self(g.stream()),
-        _ => None,
-    })
-}
-
-/// The refusal of a `Self` [`expand_self`] could not spell. A bare
-/// `compile_error!`, which resolves in the edition-2015 crate a `rust"""`
-/// block is compiled as.
-pub(crate) fn leftover_self_error(span: Span, julia_name: &str) -> TokenStream2 {
+/// The refusal of an unqualified `Self::X` expression in a trait impl whose
+/// trait the header names by a path: `<Buf>::X` — the lookup `Self::X` has in
+/// the block, inherent first — finds the trait's `X` only where the trait is in
+/// scope, which the wrapper cannot see (PR #492 review).
+pub(crate) fn out_of_scope_error(span: Span, host: &ImplHost, julia_name: &str) -> TokenStream2 {
+    let trait_path = host.trait_.as_ref().map(readable_path).unwrap_or_default();
+    let self_ty = &host.self_ty;
+    let self_ty = readable(quote! { #self_ty });
     let msg = format!(
-        "`{julia_name}`: this `Self` is inside a macro invocation, so RustCall cannot spell it \
-         as the impl's type on the `extern \"C\"` wrapper, which is a free function. Write the \
-         type instead of `Self` here (#482)."
+        "`{julia_name}`: an unqualified `Self::…` constant here resolves as \
+         `<{self_ty}>::…` — inherent first, then through the traits in scope — and \
+         the `extern \"C\"` wrapper cannot tell whether `{trait_path}` is in scope where it \
+         is emitted. Write `<Self as {trait_path}>::…` for the trait's constant, or \
+         `{self_ty}::…` for an inherent one, or import the trait and name it by its bare \
+         name in the impl header (#482)."
     );
+    quote_spanned! {span=> compile_error!(#msg); }
+}
+
+fn readable_path(path: &syn::Path) -> String {
+    readable(quote! { #path })
+}
+
+/// A `Self` left in `tokens` after [`expand_self`], with the name of the
+/// macro whose invocation holds it, if one does. Inside a macro (`m!(Self)`)
+/// the tokens are not a type or an expression until the macro has run, so
+/// they cannot be rewritten; anything else is a position [`SelfAlias`] does
+/// not reach.
+pub(crate) fn leftover_self(tokens: TokenStream2) -> Option<(Span, Option<String>)> {
+    fn find(tokens: TokenStream2, in_macro: &Option<String>) -> Option<(Span, Option<String>)> {
+        let trees: Vec<TokenTree> = tokens.into_iter().collect();
+        for (i, tree) in trees.iter().enumerate() {
+            match tree {
+                TokenTree::Ident(id) if id == "Self" => {
+                    return Some((id.span(), in_macro.clone()));
+                }
+                TokenTree::Group(g) => {
+                    // `name ! ( .. )`: the group is a macro's input.
+                    let before = |back: usize| i.checked_sub(back).map(|j| &trees[j]);
+                    let called = match (before(2), before(1)) {
+                        (Some(TokenTree::Ident(name)), Some(TokenTree::Punct(bang)))
+                            if bang.as_char() == '!' =>
+                        {
+                            Some(format!("{name}!"))
+                        }
+                        _ => None,
+                    };
+                    let scope = in_macro.clone().or(called);
+                    if let Some(found) = find(g.stream(), &scope) {
+                        return Some(found);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+    find(tokens, &None)
+}
+
+/// The refusal of a `Self` [`expand_self`] could not spell, saying which case
+/// it is. A bare `compile_error!`, which resolves in the edition-2015 crate a
+/// `rust"""` block is compiled as.
+pub(crate) fn leftover_self_error(
+    span: Span,
+    in_macro: Option<&str>,
+    julia_name: &str,
+) -> TokenStream2 {
+    let msg = match in_macro {
+        Some(name) => format!(
+            "`{julia_name}`: this `Self` is inside an invocation of `{name}`, whose tokens are \
+             not a type until the macro has run, so RustCall cannot spell it as the impl's type \
+             on the `extern \"C\"` wrapper, which is a free function. Write the type instead of \
+             `Self` here (#482)."
+        ),
+        None => format!(
+            "`{julia_name}`: RustCall does not spell a `Self` in this position as the impl's \
+             type, and the `extern \"C\"` wrapper, a free function, has no `Self`. Write the \
+             type instead of `Self` here (#482)."
+        ),
+    };
     quote_spanned! {span=> compile_error!(#msg); }
 }
 

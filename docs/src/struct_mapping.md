@@ -334,7 +334,8 @@ then the method's own, as written. `Self`, which the wrapper — a free
 function — does not have, is spelled as the impl header's type:
 `where Self: Tagged` becomes `where Buf: Tagged`, `<Self as Tagged>::Tag`
 becomes `<Buf as Tagged>::Tag`, and an argument `other: &'a Self` becomes
-`other: &'a Buf`. No predicate is selected or dropped, so higher-ranked bounds
+`other: &'a Buf`; in expression position too, so `where [(); Self::N]: Sized`
+becomes `where [(); <Buf>::N]: Sized`. No predicate is selected or dropped, so higher-ranked bounds
 (`for<'b> &'b Self: Rel<&'a Buf>`), fn-pointer and trait-object types, and a
 predicate that is the only proof a call is valid all hold on the wrapper as
 they do on the method. A `Self` inside a macro invocation (`same!(Self): Sized`)

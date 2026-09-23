@@ -67,6 +67,27 @@ impl Buf {
     }
 }
 
+// PR #492 review: in a trait impl, an unqualified `Self::K` constant resolves
+// inherent first, then through the traits in scope. A trait the header names
+// by a path may not be in scope where the wrapper is emitted, so the wrapper
+// cannot spell it `<Buf>::K`; `<Self as tr::Far>::K` would be spelled as is.
+mod tr {
+    pub trait Far {
+        const K: usize;
+        fn far(&self, a: &[u8; 3]) -> i32;
+    }
+}
+
+#[julia]
+impl tr::Far for Buf {
+    const K: usize = 3;
+
+    #[julia]
+    fn far(&self, a: &[u8; Self::K]) -> i32 {
+        a.len() as i32 + self.n
+    }
+}
+
 #[julia]
 pub fn free_forever(s: &'static str) -> usize {
     s.len()

@@ -1006,12 +1006,18 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
     // as the impl header's type (#482, `crate::environment`).
     let mut environment = crate::environment::wrapper_environment(host.as_ref(), &generics);
     if let Some(host) = &host {
-        crate::environment::expand_self(host, &mut environment);
+        let mut out_of_scope = crate::environment::expand_self(host, &mut environment);
         for (_, ty) in args.iter_mut() {
-            crate::environment::expand_self_in_type(host, ty);
+            out_of_scope = out_of_scope.or(crate::environment::expand_self_in_type(host, ty));
         }
         for ty in ret.types_mut() {
-            crate::environment::expand_self_in_type(host, ty);
+            out_of_scope = out_of_scope.or(crate::environment::expand_self_in_type(host, ty));
+        }
+        if let Some(span) = out_of_scope {
+            return gated_error(
+                &cfg_attrs,
+                crate::environment::out_of_scope_error(span, host, &julia_name),
+            );
         }
     }
     let spelled_types = {
@@ -1021,10 +1027,10 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
         let predicates = &environment.where_clause;
         quote! { #environment #predicates #(#arg_types)* #(#returned)* }
     };
-    if let Some(span) = crate::environment::leftover_self(spelled_types) {
+    if let Some((span, in_macro)) = crate::environment::leftover_self(spelled_types) {
         return gated_error(
             &cfg_attrs,
-            crate::environment::leftover_self_error(span, &julia_name),
+            crate::environment::leftover_self_error(span, in_macro.as_deref(), &julia_name),
         );
     }
     if let Some(error) = crate::environment::lowered_lifetime_error(

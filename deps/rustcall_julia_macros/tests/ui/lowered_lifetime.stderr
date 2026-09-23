@@ -28,14 +28,20 @@ error: `Buf::predicated`: argument `s` arrives from Julia as a pointer and a len
 44 |     pub fn predicated<'c>(&self, s: &'c str) -> i32
    |                                      ^^
 
-error: `Buf::in_macro`: this `Self` is inside a macro invocation, so RustCall cannot spell it as the impl's type on the `extern "C"` wrapper, which is a free function. Write the type instead of `Self` here (#482).
+error: `Buf::in_macro`: this `Self` is inside an invocation of `same!`, whose tokens are not a type until the macro has run, so RustCall cannot spell it as the impl's type on the `extern "C"` wrapper, which is a free function. Write the type instead of `Self` here (#482).
   --> tests/ui/lowered_lifetime.rs:55:15
    |
 55 |         same!(Self): Sized,
    |               ^^^^
 
-error: `free_forever`: argument `s` arrives from Julia as a pointer and a length and is rebuilt into a string that lives only for the call, so it cannot be borrowed for `'static`. Take `String` (#482).
-  --> tests/ui/lowered_lifetime.rs:71:25
+error: `Buf::far`: an unqualified `Self::…` constant here resolves as `<Buf>::…` — inherent first, then through the traits in scope — and the `extern "C"` wrapper cannot tell whether `tr::Far` is in scope where it is emitted. Write `<Self as tr::Far>::…` for the trait's constant, or `Buf::…` for an inherent one, or import the trait and name it by its bare name in the impl header (#482).
+  --> tests/ui/lowered_lifetime.rs:86:28
    |
-71 | pub fn free_forever(s: &'static str) -> usize {
+86 |     fn far(&self, a: &[u8; Self::K]) -> i32 {
+   |                            ^^^^
+
+error: `free_forever`: argument `s` arrives from Julia as a pointer and a length and is rebuilt into a string that lives only for the call, so it cannot be borrowed for `'static`. Take `String` (#482).
+  --> tests/ui/lowered_lifetime.rs:92:25
+   |
+92 | pub fn free_forever(s: &'static str) -> usize {
    |                         ^^^^^^^
