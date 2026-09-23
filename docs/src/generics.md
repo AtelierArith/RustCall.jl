@@ -223,6 +223,19 @@ Type parameter inference is currently simplified:
 
 More complex inference (e.g., inferring from return type) is not yet supported.
 
+### Generic methods of a non-generic struct
+
+What is monomorphized on demand is a generic free function (above) and a
+generic `#[julia]` struct, whose wrappers are instantiated per struct type
+(`Pair{Int32}`). A generic `pub fn` of a **non-generic** struct —
+`impl Acc { pub fn echo<T>(&self, x: T) -> T }`, or one taking `impl Trait` — is
+neither: its struct's methods are bound through fixed `extern "C"` symbols, and
+no struct type parameter binds the method's own. `rust"""` refuses such a
+method with a `compile_error!` that names it (#471). Make it a generic free
+function, write a non-generic method per type Julia calls that delegates to it,
+or drop its `pub`; see
+[Struct Mapping](struct_mapping.md#Generic-methods-of-a-non-generic-struct).
+
 ## API Reference
 
 ### Types

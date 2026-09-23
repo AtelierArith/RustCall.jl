@@ -352,6 +352,10 @@ fn methods_of(
     model
         .methods
         .iter()
+        // A generic method of a concrete struct is refused at the method and
+        // gets no wrapper (#471), so there is nothing for Julia to bind. A
+        // generic struct's methods are all instantiated through `specialize`.
+        .filter(|m| !symbols || !crate::codegen::inline_method_is_generic(m))
         .map(|m| {
             let shape = crate::extract::method_return_shape(struct_name, &m.func, symbols);
             let returns_self = matches!(
