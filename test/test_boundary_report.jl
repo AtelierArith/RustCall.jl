@@ -508,3 +508,37 @@ end
         @test _br_positions(report) == Set([("_symbol", "entry point"), ("shared", "entry point")])
     end
 end
+
+# A non-generic `unsafe fn` method of a generic inline struct is refused next
+# to the struct and gets no generic wrapper; the manifest keeps it with its
+# `skip_reason`, so the report names it like any other refused method, and the
+# generic-struct emitter binds nothing for it (#491 review).
+@testset "an unsafe method of a generic struct is reported (#491 review)" begin
+    source = raw"""
+        #[julia]
+        pub struct W491<T> { pub x: T }
+        impl<T: Copy> W491<T> {
+            pub fn get(&self) -> T { self.x }
+            pub unsafe fn peek(&self, p: *const T) -> T { *p }
+        }
+        """
+    report = RustCall.inline_boundary_report(source; io = devnull)
+    @test _br_positions(report) == Set([("W491::peek", "entry point")])
+    @test occursin("`unsafe fn`", only(report.unsupported).reason)
+    info = only(RustCall.manifest_struct_infos(RustCall.extract_manifest(source; mode = "inline")))
+    defs = string(RustCall.emit_julia_definitions(info))
+    @test occursin("get", defs)
+    @test !occursin(":peek", defs)
+
+    # The block fails at the refusal, not in a specialized wrapper.
+    scope = Module()
+    Core.eval(scope, :(using RustCall))
+    message = try
+        Core.eval(scope, Expr(:macrocall, Symbol("@rust_str"), LineNumberNode(1), source))
+        ""
+    catch err
+        sprint(showerror, err)
+    end
+    @test occursin("`W491::peek` is an `unsafe fn`", message)
+    @test !occursin("E0133", message)
+end

@@ -367,12 +367,11 @@ fn methods_of(
         // instantiation binds only the struct's parameters), so there is
         // nothing for Julia to bind.
         .filter(|m| !crate::codegen::inline_method_is_generic(m))
-        // An `unsafe` method is refused at the method too (#491). A concrete
-        // struct reports it with its `skip_reason`, so the Julia generators
-        // name the refusal; a generic struct's methods are instantiated later
-        // under types not known yet, and one that gets no generic wrapper has
-        // nothing for Julia to register, like a generic method.
-        .filter(|m| symbols || !crate::codegen::method_is_unsafe(m))
+        // An `unsafe` method is refused at the method too (#491), and kept
+        // here with its `skip_reason` — a concrete struct's and a generic
+        // struct's alike — so the Julia generators name the refusal. It gets
+        // no wrapper (nor, on a generic struct, a generic wrapper), and Julia
+        // binds nothing for it.
         .map(|m| {
             let shape = crate::extract::method_return_shape(struct_name, &m.func, symbols);
             let returns_self = matches!(

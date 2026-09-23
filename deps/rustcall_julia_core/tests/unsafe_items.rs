@@ -142,8 +142,9 @@ fn an_unsafe_method_in_a_foreign_block_is_refused() {
 }
 
 /// A generic struct's methods are instantiated per struct type; an `unsafe`
-/// one gets no generic wrapper and is refused next to the struct, and — like
-/// a generic method (#477) — is not in the manifest.
+/// one gets no generic wrapper and is refused next to the struct. It stays in
+/// the manifest with its `skip_reason`, so the Julia generators can report it
+/// (#491 review).
 #[test]
 fn an_unsafe_method_of_a_generic_struct_is_refused() {
     let src = r#"
@@ -158,12 +159,32 @@ fn an_unsafe_method_of_a_generic_struct_is_refused() {
     let source = flat(&expanded.source);
     assert!(source.contains("`W::peek` is an `unsafe fn`"), "{source}");
     let w = &expanded.manifest.structs[0];
-    let names: Vec<&str> = w.methods.iter().map(|m| m.name.as_str()).collect();
-    assert_eq!(names, ["get"]);
+    let methods: Vec<(&str, &str, &str)> = w
+        .methods
+        .iter()
+        .map(|m| {
+            (
+                m.name.as_str(),
+                m.skip_reason.as_str(),
+                m.generic_wrapper_name.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(methods.len(), 2);
+    assert_eq!(methods[0].0, "get");
+    assert_eq!(methods[0].1, "");
+    assert!(!methods[0].2.is_empty());
+    assert_eq!(methods[1], ("peek", skip_reason::UNSAFE_FN, ""));
     assert!(w
         .generic_wrappers
         .iter()
         .all(|g| !g.name.ends_with("_peek")));
+    // The block stops at the refusal.
+    let out = rustc("generic_struct", &expanded.source);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("`W::peek` is an `unsafe fn`"), "{stderr}");
+    assert!(!stderr.contains("E0133"), "{stderr}");
 }
 
 /// The refusal exists only where the method does.
