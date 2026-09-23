@@ -87,6 +87,17 @@ const MANIFEST_SCHEMA_VERSION = let
 end
 
 """
+    RELEASE_FORMAT_IDENTIFIER
+
+The `MAJOR.MINOR` of this release, read from `Project.toml` when the package is
+loaded — the one identifier every versioned format RustCall emits is named by:
+the manifest schema (`MANIFEST_SCHEMA_VERSION`) and the bindings-file format
+(`BINDINGS_FORMAT_VERSION`, #489). Both are this value, so a format cannot move
+without the release moving with it.
+"""
+const RELEASE_FORMAT_IDENTIFIER = MANIFEST_SCHEMA_VERSION
+
+"""
     _schema_mismatch_message(what, produced) -> String
 
 The refusal for a manifest whose `schema_version` is not this release's. An

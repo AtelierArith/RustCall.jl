@@ -1019,9 +1019,60 @@ end
             @test occursin(Regex("\\.rustcall\\.[0-9a-f]{12}\\.$(getpid())\\.[0-9a-f]{8}\\.\\d+\\.[A-Za-z]+\$"),
                            basename(loaded))
             @test Base.invokelatest(Base.invokelatest(getfield, mod, :add), 2, 3) == 5
+            # The file names the format of the RustCall that wrote it — the
+            # release's MAJOR.MINOR — and hands it back when included (#489).
+            fmt = RustCall.BINDINGS_FORMAT_VERSION
+            @test occursin("# Bindings format: $(fmt)\n", content)
+            @test occursin("const _BINDINGS_FORMAT = RustCall.check_bindings_format($(repr(fmt)))", content)
+            @test Base.invokelatest(getfield, mod, :_BINDINGS_FORMAT) == fmt
             try
                 RustCall.unload_library(Base.invokelatest(getfield, mod, :_LIB_NAME); close = true)
             catch
+            end
+
+            # The same file as another release would have written it is refused
+            # when included, with the instruction to regenerate it (#489).
+            current = VersionNumber(fmt)
+            declared = "RustCall.check_bindings_format($(repr(fmt)))"
+            function refusal(text, tag)
+                path = joinpath(output_dir, "Refused_$(tag).jl")
+                write(path, text)
+                err = try
+                    Base.include(Module(Symbol("RefusedSandbox_", tag)), path)
+                    nothing
+                catch e
+                    # `include` wraps it in a `LoadError`, `__init__` in an
+                    # `InitError`: the refusal itself is underneath.
+                    while e isa LoadError || e isa InitError
+                        e = e.error
+                    end
+                    e
+                end
+                return err
+            end
+            for (tag, other) in (("minor", "$(current.major).$(current.minor + 1)"),
+                                 ("major", "$(current.major + 1).$(current.minor)"))
+                text = replace(content, "# Bindings format: $(fmt)" => "# Bindings format: $(other)",
+                               declared => "RustCall.check_bindings_format($(repr(other)))")
+                err = refusal(text, tag)
+                @test err isa RustCall.RustError
+                err === nothing || @test occursin("write_bindings_to_file", sprint(showerror, err))
+            end
+            # Another patch of the same minor is the same format.
+            patch = "$(current.major).$(current.minor).$(current.patch + 7)"
+            @test RustCall.check_bindings_format(patch) == patch
+            # A file of the retired integer format declares no
+            # `_BINDINGS_FORMAT`; its `__init__` is refused when it registers
+            # its generation mirror, before any library is loaded.
+            legacy = replace(content, "# Bindings format: $(fmt)" => "# Bindings format: 13",
+                             "const _BINDINGS_FORMAT = $(declared)\n" => "")
+            @test !occursin("_BINDINGS_FORMAT", legacy)
+            err = refusal(legacy, "integer")
+            @test err isa RustCall.RustError
+            if err !== nothing
+                msg = sprint(showerror, err)
+                @test occursin("integer format", msg)
+                @test occursin("write_bindings_to_file", msg)
             end
         finally
             rm(output_dir, recursive=true, force=true)
@@ -1300,11 +1351,103 @@ end
 end
 
 @testset "the documented bindings format is the current one (#460 review)" begin
-    # The user guide names the marker a freshly written file carries; a bump
-    # of the constant must update it, and the guide must explain that version.
+    # The user guide names the marker a freshly written file carries; a
+    # MAJOR.MINOR release bump moves the constant and must update it (#489).
     guide = read(joinpath(@__DIR__, "..", "docs", "src", "crate_bindings.md"), String)
     v = RustCall.BINDINGS_FORMAT_VERSION
     @test occursin("(`# Bindings format: $(v)`)", guide)
-    @test occursin("Format `$(v)` (#", guide)
-    @test length(collect(eachmatch(r"`# Bindings format: \d+`", guide))) == 1
+    @test occursin("RustCall.check_bindings_format(\"$(v)\")", guide)
+    @test length(collect(eachmatch(r"`# Bindings format: [\d.]+`", guide))) == 1
+    # ...and explains the policy, including that integer files are refused.
+    @test occursin("MAJOR.MINOR", guide)
+    @test occursin("no longer readable", guide)
+end
+
+@testset "the bindings format is the release's MAJOR.MINOR (#489)" begin
+    project = RustCall.TOML.parsefile(joinpath(@__DIR__, "..", "Project.toml"))
+    release = VersionNumber(project["version"])
+    fmt = RustCall.BINDINGS_FORMAT_VERSION
+    @test fmt isa String
+    @test fmt == "$(release.major).$(release.minor)"
+    # One identifier, shared with the manifest schema — not a second copy.
+    @test fmt === RustCall.RELEASE_FORMAT_IDENTIFIER === RustCall.MANIFEST_SCHEMA_VERSION
+    current = VersionNumber(fmt)
+    compatible = RustCall.bindings_format_compatible
+    # Same MAJOR.MINOR: accepted, whatever the patch.
+    @test compatible(fmt)
+    @test compatible("$(current.major).$(current.minor).0")
+    @test compatible("$(current.major).$(current.minor).$(release.patch + 3)")
+    @test RustCall.check_bindings_format(fmt) == fmt
+    # Another minor or major: refused, in both directions.
+    for other in ("$(current.major).$(current.minor + 1)",
+                  "$(current.major).$(current.minor + 1).0",
+                  "$(current.major + 1).$(current.minor)",
+                  "$(current.major + 1).0.0")
+        @test !compatible(other)
+        err = try RustCall.check_bindings_format(other); nothing catch e; e end
+        @test err isa RustCall.RustError
+        msg = sprint(showerror, err)
+        @test occursin(repr(other), msg)
+        @test occursin("write_bindings_to_file", msg)
+        @test occursin(fmt, msg)
+    end
+    if current.minor > 0
+        @test !compatible("$(current.major).$(current.minor - 1)")
+    end
+    # The retired integer scheme, as a string or a number, and no marker at all.
+    for old in ("13", "12", "1", 13, 7)
+        @test !compatible(old)
+        err = try RustCall.check_bindings_format(old); nothing catch e; e end
+        @test err isa RustCall.RustError
+        msg = sprint(showerror, err)
+        @test occursin("integer scheme", msg)
+        @test occursin("no longer readable", msg)
+        @test occursin("write_bindings_to_file", msg)
+    end
+    err = try RustCall.check_bindings_format(nothing); nothing catch e; e end
+    @test err isa RustCall.RustError
+    @test occursin("no bindings-format marker", sprint(showerror, err))
+    @test occursin("write_bindings_to_file", sprint(showerror, err))
+    # Not a version at all.
+    for junk in ("", "0.6.x", "v0.6", "0.6.0-DEV", "zero")
+        @test !compatible(junk)
+    end
+    # A module without the declaration — what every integer-format file is —
+    # is refused where its `__init__` registers the generation mirror.
+    m = Module(:BindingsFormatLegacy489)
+    Core.eval(m, :(import RustCall))
+    Core.eval(m, :(const _LIB_GEN = RustCall.StateView(:crate_generation, @__MODULE__)))
+    err = try
+        Core.eval(m, :(RustCall.register_handle_mirror!("bindings_format_legacy_489", _LIB_GEN)))
+        nothing
+    catch e
+        e
+    end
+    @test err isa RustCall.RustError
+    @test occursin("write_bindings_to_file", sprint(showerror, err))
+    # With a current declaration the same registration is accepted.
+    ok = Module(:BindingsFormatCurrent489)
+    Core.eval(ok, :(import RustCall))
+    Core.eval(ok, :(const _BINDINGS_FORMAT = RustCall.check_bindings_format($(fmt))))
+    Core.eval(ok, :(const _LIB_GEN = RustCall.StateView(:crate_generation, @__MODULE__)))
+    @test Core.eval(ok, :(RustCall.register_handle_mirror!("bindings_format_current_489", _LIB_GEN))) === nothing
+    # A file older than the `StateView` mirror (format 7 and the like) keeps its
+    # generation in a `Ref{CrateGeneration}` and registers that from `__init__`:
+    # it gets the same regeneration refusal, not only the #402 diagnostic
+    # (#489 review).
+    pre = Module(:BindingsFormatPreStateView489)
+    Core.eval(pre, :(import RustCall))
+    Core.eval(pre, :(const _LIB_NAME = "bindings_format_pre_stateview_489"))
+    Core.eval(pre, :(const _LIB_GEN = Ref(RustCall.CrateGeneration())))
+    err = try
+        Core.eval(pre, :(RustCall.register_handle_mirror!(_LIB_NAME, _LIB_GEN)))
+        nothing
+    catch e
+        e
+    end
+    @test err isa RustCall.RustError
+    msg = sprint(showerror, err)
+    @test occursin("write_bindings_to_file", msg)
+    @test occursin("no longer readable", msg)
+    @test occursin("regenerate it", msg)
 end

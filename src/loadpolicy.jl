@@ -1167,18 +1167,29 @@ end
 # refusing it: publications would go to the cell and the caller's `Ref` would
 # silently stop tracking the library.
 #
-# Nothing generated needs this. A `@rust_crate` module registers its
-# `StateView`, and the cell behind that view is created by RustCall
-# (`src/module_state.jl`), so even a file emitted before this change keeps
-# working unchanged.
+# Nothing RustCall generates today calls this: a `@rust_crate` module registers
+# its `StateView`, whose cell RustCall creates (`src/module_state.jl`). What does
+# call it is a bindings file written before the `StateView` (`const _LIB_GEN =
+# Ref(RustCall.CrateGeneration())`), whose `__init__` passes that `Ref` — an
+# integer-format file, which must get the regeneration refusal every other
+# pre-#489 file gets (#489 review). The call cannot tell such a file from a
+# hand-written caller, so the refusal leads with the regeneration and then
+# gives the reason a hand-written mirror must be a cell. It says not to edit a
+# generated file into passing a cell: that would skip the format check, which
+# only the `StateView` registration performs.
 function register_handle_mirror!(lib_name::AbstractString,
                                  ::Base.RefValue{CrateGeneration})
-    throw(ArgumentError(
-        "A generation mirror must be a `RustCall.CrateGenerationCell`, not a " *
-        "`Ref{CrateGeneration}`: a `Ref` stores the record inline, so publishing " *
-        "into it is not one store and a reader can observe one generation's " *
-        "handle with another's liveness flag (#402). Construct the mirror with " *
-        "`RustCall.CrateGenerationCell()`; it reads and writes as a `Ref`."))
+    throw(RustError(
+        _bindings_format_message(nothing) *
+        "\n\nA module that registers a `Ref{CrateGeneration}` as its generation " *
+        "mirror is such a file: RustCall has not generated one since the mirror " *
+        "became a `RustCall.StateView`. Do not edit a generated file to pass a " *
+        "cell instead; regenerate it. If this call is hand-written, the mirror " *
+        "must be a `RustCall.CrateGenerationCell`, not a `Ref{CrateGeneration}`: a " *
+        "`Ref` stores the record inline, so publishing into it is not one store " *
+        "and a reader can observe one generation's handle with another's " *
+        "liveness flag (#402). Construct it with `RustCall.CrateGenerationCell()`; " *
+        "it reads and writes as a `Ref`."))
 end
 
 # Generated modules expose only an immutable owner-qualified view. The cell
@@ -1186,6 +1197,10 @@ end
 function register_handle_mirror!(lib_name::AbstractString, view::StateView)
     view.owner !== nothing && view.name === :crate_generation ||
         throw(ArgumentError("A crate generation mirror requires a module-owned generation view"))
+    # Every generated crate module registers through here from its `__init__`;
+    # one written by another MAJOR.MINOR — or by the integer format of v0.6.x
+    # and earlier, which declares no `_BINDINGS_FORMAT` — is refused (#489).
+    _check_module_bindings_format(view.owner)
     gen_ref = _state_read(view, identity)
     return register_handle_mirror!(lib_name, gen_ref)
 end

@@ -243,9 +243,12 @@ end
             catch err
                 err
             end
-            @test refused isa ArgumentError
+            # A `RustError`: the caller that actually reaches this is a
+            # pre-`StateView` bindings file, refused for regeneration (#489).
+            @test refused isa RustCall.RustError
             @test occursin("CrateGenerationCell", sprint(showerror, refused))
             @test occursin("#402", sprint(showerror, refused))
+            @test occursin("write_bindings_to_file", sprint(showerror, refused))
         end
 
         @testset "a reader never sees a mixture" begin
@@ -891,12 +894,16 @@ end
         @testset "a save during the rebuild is picked up (#255)" begin
             mktempdir() do dir
                 crate = _hrt_make_crate(joinpath(dir, "chase"), "hrt_chase", 1)
-                # A build script that takes its time, so "write while the
-                # build is running" is a fact rather than a hope. Cargo reruns
-                # it whenever a file in the package changes, which is every
-                # pass here.
+                # A build script that announces it has started, then takes its
+                # time, so "write while the build is running" is a fact rather
+                # than a hope. Cargo reruns it whenever a file in the package
+                # changes, which is every pass here. The marker lives outside
+                # the package, so writing it changes neither the sources the
+                # reload fingerprints nor Cargo's view of the package.
+                started = joinpath(dir, "build_started")
                 write(joinpath(crate, "build.rs"), """
                     fn main() {
+                        std::fs::write(r#"$(started)"#, b"started").unwrap();
                         std::thread::sleep(std::time::Duration::from_millis(1500));
                     }
                     """)
@@ -912,10 +919,25 @@ end
                     # the build for 2 is still running. The build that commits
                     # last must be the one for 3: without the chase, the
                     # library would serve 2 until some later event.
+                    #
+                    # The second save waits for the build script to start, not
+                    # for a wall-clock delay: the reload fingerprints the
+                    # sources before it builds, after checking the recorded
+                    # build environment (which may spawn probes), and on a slow
+                    # runner that took longer than a fixed 0.6 s — the save
+                    # then landed before the fingerprint, one build served it
+                    # and nothing was left to chase (Windows CI, #499). The
+                    # build script runs strictly after that fingerprint, so a
+                    # save made once it has started is always a mid-build save.
+                    rm(started; force = true)
                     _hrt_write_source(crate, 2)
                     generations = RustCall.artifact_generation(lib_name)
                     racer = Threads.@spawn begin
-                        sleep(0.6)       # inside the build script's sleep
+                        deadline = time() + 120
+                        while !isfile(started) && time() < deadline
+                            sleep(0.01)
+                        end
+                        isfile(started) || error("the build script never started")
                         _hrt_write_source(crate, 3)
                     end
                     @test RustCall.reload_library(state)

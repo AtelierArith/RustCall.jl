@@ -236,7 +236,8 @@ generated crate module is also written out as Julia source by
 Each declares a `RustCall.CrateTargetCache` beside its wrapper instead. Nothing
 about this is visible in the bindings you call — but it is visible in a file you
 regenerate: the `Bindings format:` marker at the top of a generated file became
-`11` with this change (it is `12` since #460).
+`11` with this change (it was `13` by v0.6.6; since #489 it is the release's
+`MAJOR.MINOR`).
 
 ### Annotate the return type, or use `#[julia]`
 
