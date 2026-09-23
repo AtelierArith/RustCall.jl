@@ -1535,6 +1535,33 @@ end
 
 
 """
+    pyo3_wrapper_build_record(crate_path, plan, snapshot; release, features,
+                              default_features) -> CrateBuildRecord
+
+The `CrateBuildRecord` of a PyO3 wrapper build made under `snapshot` from
+`plan`, unnamed (`_record_named` names it once the key is known). A
+`:link_libpython` plan's interpreter, fingerprint and link directory are
+recorded as the plan has them — the values `_pyo3_wrapper_build_env` puts in
+the artifact key — not asked of the interpreter again: an interpreter replaced
+in place after the build was verified would otherwise be recorded, and the
+load-time check would accept a wrapper built for the Python it replaced (#485
+review). Both crate emitters are handed this record on the wrapper path.
+"""
+function pyo3_wrapper_build_record(crate_path::AbstractString, plan::PyO3LinkPlan,
+                                   snapshot::BuildEnvSnapshot; release::Bool = true,
+                                   features::Vector{String} = String[],
+                                   default_features::Bool = true)
+    links_python = plan.mode === :link_libpython
+    return crate_build_record(crate_path, "";
+        build_options = crate_build_options(release = release, features = features,
+                                            default_features = default_features,
+                                            kind = :pyo3_wrapper),
+        python = links_python, snapshot = snapshot,
+        link_source = links_python ? (plan.rpath, plan.interpreter, plan.interpreter_config) :
+                      nothing)
+end
+
+"""
     _pyo3_wrapper_build_env(plan, rustflags) -> Vector{Pair{String, String}}
 
 The build-environment half of a wrapper's `ArtifactId`. The environment the
