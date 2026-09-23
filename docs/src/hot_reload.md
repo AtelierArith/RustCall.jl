@@ -164,6 +164,11 @@ The build environment is compared at two points:
   stays loaded, `trigger_reload` returns `false`, and the callback receives
   `(lib_name, false, err)` with an `ArgumentError`.
 
+After that check, the rescan and the build take the recorded variables from
+the record, not from the live `ENV`. A task that changes `RUSTFLAGS` (for
+example with `withenv`) while a reload is running therefore cannot change what
+gets built.
+
 To reload again, restore the environment, or load the crate again with
 `@rust_crate` under the new one and enable hot reload on that module. See also
 [External Crate Bindings](crate_bindings.md).

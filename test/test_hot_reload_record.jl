@@ -340,6 +340,56 @@ _hrr_with(r::RustCall.CrateBuildRecord; kwargs...) =
         end
     end
 
+    # #474 review: the reload checks `ENV` once; if another task changes it
+    # while Cargo runs, the probe and the build must still run under the
+    # record's environment, never the live one.
+    @testset "the probe and the build run under the record's environment, not ENV" begin
+        mktempdir() do dir
+            crate = _hrr_crate(joinpath(dir, "crate"); package = "hrr_race_474", body = """
+                #[cfg(hrr_race474)]
+                #[julia]
+                pub fn hrr_gated474() -> i32 { 1 }
+
+                #[julia]
+                pub fn hrr_plain474() -> i32 { 2 }
+                """)
+            cargo_home = mkpath(joinpath(dir, "cargo-home"))
+            write(joinpath(cargo_home, "config.toml"), "[term]\nverbose = false\n")
+            record = withenv(() -> RustCall.crate_build_record(crate, "hrr_race_lib_474"),
+                             "RUSTFLAGS" => "--cfg hrr_race474")
+            # The reload builds and probes with the one environment it derives
+            # from the record; nothing else reaches the two subprocesses.
+            src = read(joinpath(pkgdir(RustCall), "src", "hot_reload.jl"), String)
+            @test occursin("env = _record_build_subprocess_env(record)", src)
+            @test occursin("_scan_crate_signatures(record; env = env)", src)
+            @test occursin("rebuild_crate(record; env = env)", src)
+            # `ENV` changed after the check.
+            withenv("RUSTFLAGS" => nothing, "CARGO_PROFILE_RELEASE_OPT_LEVEL" => "1") do
+                env = RustCall._record_build_subprocess_env(record)
+                @test env["RUSTFLAGS"] == "--cfg hrr_race474"
+                @test !haskey(env, "CARGO_PROFILE_RELEASE_OPT_LEVEL")
+                signatures = RustCall._scan_crate_signatures(record; env = env)
+                @test any(s -> s.name == "hrr_gated474", signatures)
+                built = RustCall.rebuild_crate(record; env = env)
+                image = RustCall.loadable_library_copy(built)
+                handle = RustCall.Libdl.dlopen(image)
+                try
+                    @test RustCall.Libdl.dlsym(handle, "rustcall_hrr_gated474"; throw_error = false) !== nothing
+                finally
+                    RustCall.Libdl.dlclose(handle)
+                end
+                # Under the live `ENV` the same pieces would have dropped it.
+                @test !any(s -> s.name == "hrr_gated474", RustCall._scan_crate_signatures(record))
+            end
+            # A `CARGO_HOME` that selects another configuration after the check
+            # is refused, not built under.
+            err = withenv(() -> _hrr_error(() -> RustCall._record_build_subprocess_env(record)),
+                          "CARGO_HOME" => cargo_home)
+            @test err isa ArgumentError
+            @test err !== nothing && occursin("Cargo configuration", sprint(showerror, err))
+        end
+    end
+
     # #473: extraction refuses a `#[julia]` item in an unmarked inline module,
     # which Cargo compiles — so the rescan fails while the build would succeed.
     @testset "a failed rescan fails the reload and keeps the previous image (#473)" begin

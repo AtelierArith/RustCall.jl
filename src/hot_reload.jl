@@ -278,7 +278,8 @@ success.
 The path method is a thin constructor of a record with no environment, for
 callers that only want the scan.
 """
-function _scan_crate_signatures(record::CrateBuildRecord)
+function _scan_crate_signatures(record::CrateBuildRecord;
+                                env::Union{Nothing, AbstractDict} = nothing)
     crate_path = record.crate_dir
     # A reload re-probes rather than trusting the memo: a `build.rs` can
     # change its `cargo::rustc-cfg` output without any input RustCall is
@@ -291,7 +292,8 @@ function _scan_crate_signatures(record::CrateBuildRecord)
     cfg_text = _crate_build_cfg_text(crate_path; memo = false,
         profile = record.release ? "release" : "debug",
         features = _cargo_feature_args(collect(String, record.features),
-                                       record.default_features))
+                                       record.default_features),
+        env = env)
     if isempty(cfg_text)
         @debug "Hot reload: no build cfg for $(crate_path); scanning leniently"
         return scan_crate(crate_path).julia_functions
@@ -302,6 +304,50 @@ end
 _scan_crate_signatures(crate_path::AbstractString;
                        build_options::NamedTuple = crate_build_options()) =
     _scan_crate_signatures(_bare_build_record(crate_path, build_options))
+
+"""
+    _record_build_subprocess_env(record::CrateBuildRecord) -> Dict{String, String}
+
+The environment a reload's Cargo subprocesses — the cfg probe and the build —
+run under, taken once from `record` over one snapshot of `ENV`: every variable
+`artifact_build_env_captured` accepts is removed from the snapshot and the
+record's own values are put back, so `RUSTFLAGS`, `CARGO_PROFILE_*`,
+`RUSTUP_TOOLCHAIN`, `PYO3_*` and the rest are the recorded ones even if another
+task changes `ENV` while the reload runs (#474 review). Entries of
+`record.build_env` spelled `<...>` are digests, not variables, and are skipped.
+
+The rest of the snapshot (`PATH`, `CARGO_HOME`, ...) is what the build needs to
+run; the Cargo configuration `CARGO_HOME` selects is checked against the
+record's digest *on this environment*, so a `CARGO_HOME` changed after the
+check is refused rather than built under.
+"""
+function _record_build_subprocess_env(record::CrateBuildRecord)
+    snapshot = Dict{String, String}(ENV)
+    env = Dict{String, String}(k => v for (k, v) in snapshot
+                               if !artifact_build_env_captured(k))
+    for (k, v) in record.build_env
+        startswith(k, "<") && continue
+        # Allowlisted values are recorded in `_artifact_env_value`'s encoding
+        # (`present:<value>`, or `ARTIFACT_ENV_ABSENT`); the others as is.
+        if v == ARTIFACT_ENV_ABSENT
+            delete!(env, k)
+        else
+            env[k] = startswith(v, "present:") && artifact_build_env_captured(k) ?
+                     chopprefix(v, "present:") : v
+        end
+    end
+    if !isempty(record.cargo_config)
+        now_config = try
+            _cargo_config_digest(env; dir = record.crate_dir)
+        catch e
+            @debug "Could not read the Cargo configuration" exception = e
+            record.cargo_config
+        end
+        now_config == record.cargo_config || throw(ArgumentError(
+            _build_env_mismatch_message(record.lib_name, ["<effective Cargo configuration>"])))
+    end
+    return env
+end
 
 # A record of `build_options` for `crate_path` with no registry name and no
 # environment: what the path methods of `rebuild_crate` and
@@ -412,17 +458,22 @@ function _reload_library_once(state::HotReloadState)
         changed = _build_record_mismatch(record)
         isempty(changed) ||
             throw(ArgumentError(_build_env_mismatch_message(record.lib_name, changed)))
+        # ONE subprocess environment, from the record, for the probe and the
+        # build alike: the check above reads `ENV` once, and another task may
+        # change `ENV` while Cargo runs; neither subprocess reads it (#474
+        # review).
+        env = _record_build_subprocess_env(record)
 
         # Fingerprint the sources by content, then scan them. Scanning runs
         # the extractor and must not hold REGISTRY_LOCK. A failed scan throws
         # and fails the reload, like a failed build (#473).
         before = _source_fingerprint(record.crate_dir)
-        signatures = _scan_crate_signatures(record)
+        signatures = _scan_crate_signatures(record; env = env)
 
         # Rebuild. No registry lock is held here — this takes significant
         # time and must not block other library operations — and the old
         # library stays loaded and usable throughout.
-        built = rebuild_crate(record)
+        built = rebuild_crate(record; env = env)
 
         # Open a *copy* under a fresh name, never the file Cargo just wrote
         # (`loadable_library_copy`).
@@ -528,7 +579,7 @@ else's (#474): a reload rebuilds the build the replaced library was, never a
 default one, and only a `:direct` build — the crate as its own `cdylib` — can
 be rebuilt here. The path method is a thin constructor of such a record.
 """
-function rebuild_crate(record::CrateBuildRecord)
+function rebuild_crate(record::CrateBuildRecord; env::Union{Nothing, AbstractDict} = nothing)
     record.kind === :direct || throw(ArgumentError(
         "Hot reload rebuilds a crate as its own `cdylib`; this library was built " *
         "as `$(record.kind)`, which a reload cannot reproduce."))
@@ -551,7 +602,7 @@ function rebuild_crate(record::CrateBuildRecord)
     # The user's manifest is the Cargo root, so the policy pins nothing and
     # their profile decides, exactly as for `@rust_crate` (`crate_direct_policy`).
     project = CargoProject(crate_name, "0.0.0", DependencySpec[], "2021", crate_path)
-    return build_cargo_project(project; release = record.release,
+    return build_cargo_project(project; release = record.release, env = env,
                                policy = crate_direct_policy(),
                                features = collect(String, record.features),
                                default_features = record.default_features,

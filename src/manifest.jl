@@ -766,7 +766,8 @@ hot reload, in the crate's own `target/` — passes that directory instead.
 """
 function _crate_build_cfg_text(crate_path::AbstractString; profile::AbstractString = "release",
                                memo::Bool = true, features::Vector{String} = String[],
-                               target_directory::Union{Nothing, AbstractString} = nothing)
+                               target_directory::Union{Nothing, AbstractString} = nothing,
+                               env::Union{Nothing, AbstractDict} = nothing)
     path = abspath(String(crate_path))
     target = target_directory === nothing ? _mark_target_used!(crate_target_directory(path)) :
              abspath(String(target_directory))
@@ -778,7 +779,13 @@ function _crate_build_cfg_text(crate_path::AbstractString; profile::AbstractStri
                 # build's directory under RustCall's cache, never the crate's
                 # own `target/` (#445) — so the two share that work and a build
                 # script sees one OUT_DIR.
-                cmd = setenv(`$(cargo()) rustc -q $flag $(_cargo_network_args()) $features --lib -- --print cfg`; dir = path)
+                # `env`, when given, is the whole environment of the probe —
+                # a hot reload passes the one its record prescribes, so the
+                # cfg set is decided by the recorded build, not by whatever
+                # `ENV` holds at this moment (#474 review).
+                probe_cmd = `$(cargo()) rustc -q $flag $(_cargo_network_args()) $features --lib -- --print cfg`
+                cmd = env === nothing ? setenv(probe_cmd; dir = path) :
+                      setenv(probe_cmd, Dict{String, String}(env); dir = path)
                 cmd = addenv(cmd, "CARGO_TARGET_DIR" => target)
                 out = read(cmd, String)
                 join(filter(l -> occursin(r"^[A-Za-z_][A-Za-z0-9_]*(=\".*\")?$", l), split(out, '\n')), "\n") * "\n"
