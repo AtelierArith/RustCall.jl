@@ -111,7 +111,7 @@ julia> RustCall.check_toolchain();
 RustCall toolchain check: ok
   rustc: rustc 1.98.1 (48a229cea 2026-09-01) (minimum supported: 1.85.0)
   cargo: cargo 1.98.1 (797e8a9bc 2026-08-05)
-  extractor: .../rustcall-extract (schema 0.6)
+  extractor: .../rustcall-extract (schema 0.7)
 ```
 """
 check_toolchain(; io::IO = stdout) = _check_toolchain(io, rustc, cargo)

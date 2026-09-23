@@ -14,8 +14,8 @@ using SHA: sha256
     MANIFEST_SCHEMA_VERSION
 
 The manifest compatibility identifier this RustCall.jl accepts: the
-**`MAJOR.MINOR` of its own release**, read from `Project.toml` — `"0.6"` for
-every v0.6.x. `rustcall_julia_core::manifest::SCHEMA_VERSION` is the same string, kept
+**`MAJOR.MINOR` of its own release**, read from `Project.toml` — `"0.7"` for
+every v0.7.x. `rustcall_julia_core::manifest::SCHEMA_VERSION` is the same string, kept
 as a literal in Rust because the crates' crates.io versions move independently
 of the release, and `test/test_schema_version.jl` keeps the two from drifting by
 comparing the extractor's `schema-version` output with it (#372).

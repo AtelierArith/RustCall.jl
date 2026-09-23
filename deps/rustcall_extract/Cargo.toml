@@ -1,6 +1,6 @@
 [package]
 name = "rustcall_extract"
-version = "0.6.6"
+version = "0.7.0"
 edition = "2021"
 # The oldest rustc that builds this crate from its committed Cargo.lock
 # (`deps/build.jl` passes `--locked`): the highest `rust-version` in that

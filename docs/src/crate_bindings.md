@@ -853,10 +853,10 @@ library; see [Panics, Visibility and Lifetime](panics.md) for the full contract.
 ## Regenerating bindings after an upgrade
 
 Files written by `write_bindings_to_file` carry a format marker
-(`# Bindings format: 0.6`). Since #489 the format **is the `MAJOR.MINOR` of the
+(`# Bindings format: 0.7`). Since #489 the format **is the `MAJOR.MINOR` of the
 RustCall release** that wrote the file — `RustCall.BINDINGS_FORMAT_VERSION`,
 read from `Project.toml` — and the file checks it when it is loaded
-(`const _BINDINGS_FORMAT = RustCall.check_bindings_format("0.6")`, and again in
+(`const _BINDINGS_FORMAT = RustCall.check_bindings_format("0.7")`, and again in
 its `__init__`):
 
 - **Same `MAJOR.MINOR`, any patch:** the file loads. A patch release never

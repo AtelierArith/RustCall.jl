@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-24
+
+### Added
+- **`RustCall.check_toolchain()` and boundary-report notes**
+  ([#490](https://github.com/AtelierArith/RustCall.jl/issues/490), [#496](https://github.com/AtelierArith/RustCall.jl/pull/496)). `check_toolchain()` (not exported)
+  reports the `rustc` / `cargo` RustToolChain resolves, compares `rustc`
+  with the supported floor (`rust-version = "1.85"`, now declared in
+  `deps/rustcall_extract/Cargo.toml`, so Cargo refuses an older compiler
+  before building), and checks the extractor's path, schema and identity. It
+  builds nothing and raises nothing. `boundary_report` /
+  `inline_boundary_report` now also return `notes`: a raw-pointer return or
+  payload, and a hand-written `#[no_mangle]` export that `@rust` calls with no
+  generated panic boundary. A note is not a finding.
+- **A hot reload guide** ([#465](https://github.com/AtelierArith/RustCall.jl/issues/465), [#472](https://github.com/AtelierArith/RustCall.jl/pull/472)):
+  `docs/src/hot_reload.md` names the supported doors, which library and which
+  build a reload uses, and what is refused, with runnable examples. The
+  generics guide's manual monomorphization examples now run as doctests
+  ([#467](https://github.com/AtelierArith/RustCall.jl/pull/467)).
+
 ### Changed
 - **The bindings format follows the release's semver**
   ([#489](https://github.com/AtelierArith/RustCall.jl/issues/489)).
@@ -32,6 +51,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is a finding instead of an error, so a rule added to generation is in the
   report by construction. The output is unchanged for every case the tests of
   #450 cover.
+- **The manifest schema identifier is `0.7`**. As for every minor release,
+  `rustcall_julia_core::manifest::SCHEMA_VERSION` follows `Project.toml`'s
+  `MAJOR.MINOR`, so the extractor's source digest moves once and every cached
+  artifact is rebuilt on first use; an installed extractor from v0.6.x is
+  refused until `Pkg.build("RustCall")` rebuilds it. Bindings files written by
+  v0.6.x must be regenerated (#489 above).
+- **A hot reload rebuilds only from the module's build record**
+  ([#474](https://github.com/AtelierArith/RustCall.jl/issues/474), [#473](https://github.com/AtelierArith/RustCall.jl/issues/473), [#478](https://github.com/AtelierArith/RustCall.jl/pull/478)). A generated crate module
+  carries one `RustCall.CrateBuildRecord` (crate, library name, profile,
+  features, kind, build environment, Cargo configuration, toolchain, Python)
+  in place of the loose `_BUILD_OPTIONS` / `_CRATE_DIR` / ... constants, and
+  checks it in `__init__` in both the in-memory and the written form. The
+  module form of `enable_hot_reload_for_crate` reads its inputs only from the
+  record and refuses a disagreeing keyword with an `ArgumentError`; the path
+  form requires a `cdylib`. A reload whose rescan fails now fails like a
+  failed build — `trigger_reload` returns `false`, the callback gets the
+  error, and the previous image stays current.
+- **Each crate build takes one environment snapshot**
+  ([#481](https://github.com/AtelierArith/RustCall.jl/issues/481), [#485](https://github.com/AtelierArith/RustCall.jl/pull/485), [#494](https://github.com/AtelierArith/RustCall.jl/pull/494)). `@rust_crate`,
+  `write_bindings_to_file`, the PyO3 host path and hot reload read `ENV`,
+  `PATH` and the Python interpreter once, at the start of the build; the
+  probe, the build, the record and the cache key all come from that snapshot,
+  so a concurrent change to `ENV` cannot pair one environment's library with
+  another's record. An interpreter replaced in place during a build is
+  refused, and the PyO3 wrapper's record is taken from its verified plan.
+- **A generic method of an inline `#[julia]` struct is refused at compile
+  time** ([#471](https://github.com/AtelierArith/RustCall.jl/issues/471), [#476](https://github.com/AtelierArith/RustCall.jl/pull/476), [#477](https://github.com/AtelierArith/RustCall.jl/issues/477), [#480](https://github.com/AtelierArith/RustCall.jl/pull/480)). A
+  `pub fn f<T>` on a concrete struct, or a method with type parameters of its
+  own on a generic struct, used to load and fail when called (or not compile
+  at all); the block now stops with one spanned diagnostic naming the method
+  and the alternatives. Lifetime-only methods are still wrapped. The
+  `#[julia]` proc macro likewise refuses generic items ([#470](https://github.com/AtelierArith/RustCall.jl/pull/470)).
+- **Generated wrappers return `MaybeUninit<T>`** ([#462](https://github.com/AtelierArith/RustCall.jl/issues/462),
+  [#470](https://github.com/AtelierArith/RustCall.jl/pull/470)): the panic sentinel is `MaybeUninit::zeroed()` instead of
+  `mem::zeroed::<T>()`, so a panic under a `&T`, `Box<T>`, `NonZero*` or
+  function-pointer return no longer aborts the process. The C signature Julia
+  calls is unchanged; Rust code calling a generated wrapper directly now calls
+  `.assume_init()`. Wrappers of generic inline structs are module-qualified
+  through `symbol_stem` (`geo__QualPt_new`), recorded in the manifest as
+  `Method.generic_wrapper_name`.
+- **Every `@rust_crate` flavour builds outside the crate tree**
+  ([#486](https://github.com/AtelierArith/RustCall.jl/issues/486), [#495](https://github.com/AtelierArith/RustCall.jl/pull/495)). The direct `cdylib` build and its cfg
+  probe, the PyO3 host extension (which wrote `<crate>/target`) and the PyO3
+  wrapper crate with its probes (under `<crate>/target/rustcall-pyo3-*`) all
+  build in one per-crate directory of RustCall's cache,
+  `RustCall.crate_target_directory(crate, flavour)`, so a crate in a
+  read-only tree (an installed package) binds with every flavour. The PyO3
+  wrapper and probes still run in the crate's Cargo context
+  (`.cargo/config.toml` is discovered), and the crate's lockfile is copied by
+  contents. No flavour passes `--locked`: a read-only crate must ship a
+  current `Cargo.lock`. The rule per flavour is in the integration and hot
+  reload guides. The directory is named by the key's short id, with the full
+  key recorded inside and claimed by an exclusive create, so Cargo's nested
+  paths stay within Windows' `MAX_PATH`; a colliding crate is refused, never
+  shared.
+
+### Removed
+- **Dead code** ([#463](https://github.com/AtelierArith/RustCall.jl/issues/463), [#475](https://github.com/AtelierArith/RustCall.jl/pull/475), [#479](https://github.com/AtelierArith/RustCall.jl/pull/479)), among it
+  the untyped `rust_box_drop` export of `rustcall_helpers` (unused since
+  #468) and the unused `pub` items `paths::imports_in`,
+  `types::is_bare_ident` and `CfgSet::is_lenient` of `rustcall_julia_core`.
+  Stale docs were corrected and the oversized reference pages split.
 
 ### Fixed
 - **An inline `#[julia]` struct's instance method returning `Self` no longer
@@ -43,6 +124,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the report of #450 skipped it as a handle. The handle is bound to the
   generation that allocated it, as a constructor's is, and `Self` is not
   looked up.
+- **Seven FFI boundary defects** ([#460](https://github.com/AtelierArith/RustCall.jl/issues/460), [#468](https://github.com/AtelierArith/RustCall.jl/pull/468)): an
+  inline struct setter converts to the field's type (`obj.x = 1` on an `f64`
+  field stores `1.0`); a callback slot with no frame or a mistyped return
+  records an error instead of raising through Rust; an owned `String` result
+  is released when a callback's exception is re-raised; `CompilationError`
+  display no longer throws on non-ASCII text; every `rustc` invocation keeps
+  RustToolChain's whole command; `RustBox` of an unsupported `T` never drops
+  through an untyped helper; specialization records are published through a
+  unique temporary file.
+- **`@rust_crate` and build paths** ([#461](https://github.com/AtelierArith/RustCall.jl/issues/461), [#469](https://github.com/AtelierArith/RustCall.jl/pull/469)):
+  `write_bindings_to_file` on a crate without a `cdylib` keeps its library;
+  the wrapper crate names the crate by its `[lib] name`;
+  `enable_hot_reload_for_crate` registers under the name `@rust_crate` uses
+  and rebuilds like it (RustToolChain's `cargo`, `crate_target_directory`);
+  builds no longer `cd` the process; the PyO3 host key includes the build
+  environment; `RUSTCALL_OFFLINE` reaches every Cargo call; written bindings
+  import `Libdl` through RustCall.
+- **Codegen soundness** ([#462](https://github.com/AtelierArith/RustCall.jl/issues/462), [#470](https://github.com/AtelierArith/RustCall.jl/pull/470)): a struct's `#[cfg]`
+  and a field's own `#[cfg]` now gate every helper generated for them, and
+  `CResult_*` / `COption_*` names are claimed against user items.
+- **A wrapper declares the item's whole environment**
+  ([#482](https://github.com/AtelierArith/RustCall.jl/issues/482), [#483](https://github.com/AtelierArith/RustCall.jl/pull/483), [#492](https://github.com/AtelierArith/RustCall.jl/pull/492), [#480](https://github.com/AtelierArith/RustCall.jl/pull/480)). Named
+  lifetimes on struct-reference arguments, `impl<'x>` blocks, `where`
+  predicates naming `Self` (in types and in expression paths such as
+  `[(); Self::N]`), and `-> Self::Assoc` in a trait impl used to fail with
+  E0261 / E0411 inside generated code; `Self` is now spelled as the impl
+  type. A lowered `&str` whose lifetime must outlive the call, and a `Self`
+  inside a macro invocation, are refused with a spanned diagnostic.
+- **An elided return lifetime is named on the wrapper**
+  ([#484](https://github.com/AtelierArith/RustCall.jl/issues/484), [#498](https://github.com/AtelierArith/RustCall.jl/pull/498)). `fn get(&self) -> &i32` and the like
+  failed with E0106 in the wrapper; the wrapper now spells out the lifetime
+  elision picks on the item. A return that would borrow a lowered `&str`
+  argument is refused at the argument. Under the default `FFI_STRICT` a `&T`
+  return is still refused by the FFI contract, as a named one always was.
+- **A `#[julia]` `unsafe fn` or `unsafe` method is refused at the item and
+  listed by the boundary report** ([#491](https://github.com/AtelierArith/RustCall.jl/issues/491), [#501](https://github.com/AtelierArith/RustCall.jl/pull/501)). An
+  `unsafe` method of a `#[julia]` struct used to get a wrapper that failed
+  with E0133 inside generated code; it is now refused with a spanned,
+  `#[cfg]`-gated `compile_error!`, as an `unsafe fn` already was. The manifest
+  marks both with `skip_reason = "unsafe_fn"`, every Julia emitter binds no
+  wrapper for them, and `boundary_report` / `inline_boundary_report` list
+  them as a finding at the item's `"entry point"` with the reason.
 
 ## [0.6.6] - 2026-09-22
 
@@ -2306,7 +2429,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration tests for Rust helpers library
 - Documentation examples tests
 
-[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.6...HEAD
+[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.6...v0.7.0
 [0.6.6]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.5...v0.6.6
 [0.6.5]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.4...v0.6.5
 [0.6.4]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.3...v0.6.4
