@@ -337,25 +337,41 @@ stores the result.
 
 ### Where `@rust_crate` builds
 
-Every `@rust_crate` flavour runs Cargo on your crate **in place** — in its
-directory, so its `.cargo/config.toml`, `rust-toolchain.toml`, `[patch]` and
-`Cargo.lock` apply — and writes the output under RustCall's cache, **never into
-the crate**. One function decides the directory for every flavour,
-`RustCall.crate_target_directory(crate, flavour)` (#486):
+No `@rust_crate` flavour writes into your crate. The direct build, hot reload,
+`pyo3_host` and the PyO3 wrapper run Cargo **in your crate's context**: from its
+directory, so its `.cargo/config.toml` and `rust-toolchain.toml` are found. The
+direct, hot-reload and `pyo3_host` builds have your crate as the Cargo root, so
+its `[patch]` and `Cargo.lock` apply as well. The PyO3 wrapper and its probes
+carry a copy of the crate's `Cargo.lock` and its root `[patch]` / `[replace]`
+tables. Their output goes under RustCall's cache, and one function decides the
+directory, `RustCall.crate_target_directory(crate, flavour)` (#486).
 
-| Flavour | What runs Cargo | Output under RustCall's cache | `--locked` | Read-only crate tree |
+The **generated wrapper** of any other crate (not a `cdylib`, no PyO3 markers)
+is the exception. RustCall writes a wrapper project in a temporary directory
+that depends on your crate by path, and builds it **from that directory**.
+Cargo finds configuration upwards from there, so your crate's
+`.cargo/config.toml` and `rust-toolchain.toml` do not apply; only
+`$CARGO_HOME/config.toml` and the environment do. The wrapper is its own Cargo
+root, so your `[patch]` and `Cargo.lock` do not apply either: it resolves its
+dependency graph afresh, and its profile is RustCall's own. Only the cfg probe
+that decides which items to scan runs in your crate's context, the way the PyO3
+probe does. Declare `crate-type = ["cdylib"]` in the crate when its
+configuration or pins must govern the build.
+
+| Flavour | What runs Cargo | Cargo output | `--locked` | Read-only crate tree |
 | --- | --- | --- | --- | --- |
 | direct `cdylib` (`crate-type = ["cdylib"]`) | the build and its cfg probe | `crate_target_directory(crate)` | no | supported |
 | hot reload (`enable_hot_reload_for_crate`) | the rescan's cfg probe and the rebuild | the same directory as the direct build it replaces | no | supported |
 | `pyo3_host = true` | the extension-module build | `crate_target_directory(crate, :pyo3_host)` | no | supported |
 | PyO3 wrapper (a crate with `#[pyfunction]` / `#[pyclass]`) | the cfg and feature probes and the generated wrapper crate, run from the crate with `--manifest-path` | `crate_target_directory(crate, :pyo3_wrapper)` | no | supported |
-| generated wrapper (any other crate) | a temporary wrapper project that depends on the crate by path | the temporary project | no | supported |
+| generated wrapper (any other crate) | a temporary wrapper project that depends on the crate by path, built from its own directory (see above) | the temporary project's own `target/`, outside the crate (its cfg probe: `crate_target_directory(crate, :pyo3_wrapper)`) | no | supported |
 
 The `--locked` rule is the same for every flavour: RustCall never passes it to
 a build of your crate. Your crate's `Cargo.lock` is authoritative the way Cargo
 always treats it — used as it is when it is current, and rewritten beside the
 manifest when it is missing or stale. The PyO3 wrapper and its probes start
-from a *copy* of that file, so they never write it.
+from a *copy* of that file, so they never write it, and the generated wrapper
+does not read it.
 
 A crate in a **read-only** tree — an installed package under a depot, a
 read-only mount — therefore builds with every flavour, provided it **ships a
