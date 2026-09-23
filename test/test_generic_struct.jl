@@ -150,7 +150,10 @@ end
     pub struct MethodLocalParam<T> { value: T }
     impl<T> MethodLocalParam<T> {
         pub fn new(value: T) -> Self { Self { value } }
-        pub fn map<U>(&self, value: U) -> U { value }
+        // Not `pub`: a `pub` method with a parameter of its own is refused at
+        // the method (#477), since instantiating the struct binds only `T`.
+        // The impl still carries it into every instantiation's context.
+        fn map<U>(&self, value: U) -> U { value }
         pub fn local_value(&self) -> T where T: Copy { self.value }
     }
     """
