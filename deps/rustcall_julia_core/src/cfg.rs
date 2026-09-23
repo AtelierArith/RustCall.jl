@@ -138,10 +138,6 @@ impl CfgSet {
         self
     }
 
-    pub fn is_lenient(&self) -> bool {
-        self.lenient
-    }
-
     fn decided(&self, name: &str) -> bool {
         !self.lenient || target_decided(name)
     }

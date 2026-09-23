@@ -10,7 +10,7 @@
 //! `super::C`, `self::C`, `a::C`, a bare `C`), the `use` declarations of the
 //! impl's module, and finally the one struct of that name anywhere.
 
-use syn::{Ident, Item, ItemType, ItemUse, Type};
+use syn::{Ident, ItemType, ItemUse, Type};
 
 use crate::types::unparen;
 
@@ -590,16 +590,4 @@ fn locate_with_fallback<T: Located>(
                 .collect(),
         )),
     }
-}
-
-/// The `use` declarations among one level of items, for [`locate`].
-pub fn imports_in(items: &[Item], module_path: &[String]) -> Vec<ScannedImport> {
-    items
-        .iter()
-        .filter_map(|item| match item {
-            Item::Use(u) => Some(imports_of_use(u, module_path)),
-            _ => None,
-        })
-        .flatten()
-        .collect()
 }
