@@ -323,14 +323,12 @@ fn a_higher_ranked_bound_is_kept_on_the_wrapper() {
 
 /// A method `where` predicate naming `Self` is valid in the impl but not
 /// verbatim on the wrapper, a free function where `Self` does not exist
-/// (E0411). A predicate that names none of the lifetimes the wrapper declares
-/// is not carried over at all — the wrapper compiled without it before #477 —
-/// and one that does is carried with `Self` spelled `Buf`, qualified paths
-/// included (PR #480 review). (A bare `Self::Tag` is E0223 in an inherent
-/// impl of a concrete type, so it never reaches the expander in a block that
-/// compiles.)
+/// (E0411). Every predicate is carried over, with `Self` spelled as the
+/// impl's type `Buf`, qualified paths included (PR #480 review, #482). (A bare
+/// `Self::Tag` is E0223 in an inherent impl of a concrete type, so it never
+/// reaches the expander in a block that compiles.)
 #[test]
-fn a_self_predicate_is_carried_only_when_it_relates_declared_lifetimes() {
+fn a_self_predicate_is_carried_with_self_spelled_as_the_impl_type() {
     let expanded = expand(
         r#"
         pub trait Tagged { type Tag; fn tag() -> i32; }
@@ -354,10 +352,10 @@ fn a_self_predicate_is_carried_only_when_it_relates_declared_lifetimes() {
     .unwrap();
     let source = flat(&expanded.source);
     for sig in [
-        "pub extern \"C\" fn rustcall_Buf_run(ptr: *const Buf) -> ::std::mem::MaybeUninit<i32> {",
-        "pub extern \"C\" fn rustcall_Buf_assoc(ptr: *const Buf) -> ::std::mem::MaybeUninit<i32> {",
-        "pub extern \"C\" fn rustcall_Buf_plain(ptr: *const Buf) -> ::std::mem::MaybeUninit<i32> {",
-        "pub extern \"C\" fn rustcall_Buf_both<'a>(ptr: *const Buf, other: &'a Buf) -> ::std::mem::MaybeUninit<i32> where <Buf as Tagged>::Tag: Copy + 'a",
+        "pub extern \"C\" fn rustcall_Buf_run(ptr: *const Buf) -> ::std::mem::MaybeUninit<i32> where Buf: Tagged, {",
+        "pub extern \"C\" fn rustcall_Buf_assoc(ptr: *const Buf) -> ::std::mem::MaybeUninit<i32> where Buf: Tagged, <Buf as Tagged>::Tag: Copy, {",
+        "pub extern \"C\" fn rustcall_Buf_plain(ptr: *const Buf) -> ::std::mem::MaybeUninit<i32> where Buf: Tagged, {",
+        "pub extern \"C\" fn rustcall_Buf_both<'a>(ptr: *const Buf, other: &'a Buf) -> ::std::mem::MaybeUninit<i32> where Buf: Tagged, <Buf as Tagged>::Tag: Copy + 'a, {",
     ] {
         assert!(source.contains(sig), "missing `{sig}`:\n{source}");
     }
@@ -368,8 +366,7 @@ fn a_self_predicate_is_carried_only_when_it_relates_declared_lifetimes() {
 /// `Rel<&'static Buf>` as the only impl, `related<'a>` needs
 /// `for<'b> &'b Self: Rel<&'a Buf>` on its wrapper, or `other` escapes as
 /// `'static` (E0521). The wrapper carries it with `Self` spelled as the
-/// receiver type, `<Self as Trait>::Assoc` included; a bare `Self::Assoc`,
-/// whose trait is not written, stays on the method (PR #480 review).
+/// impl's type, `<Self as Trait>::Assoc` included (PR #480 review, #482).
 #[test]
 fn a_self_predicate_is_carried_with_the_receiver_type() {
     let expanded = expand(

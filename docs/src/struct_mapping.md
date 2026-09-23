@@ -325,6 +325,31 @@ method compiles (#477); from Julia the reference is passed as the other
 object's pointer, `sum(a, b.ptr)`. The `#[julia]` proc macro in a crate
 refuses a generic method the same way (#462).
 
+### Where predicates
+
+A method's generated wrapper is valid under exactly the assumptions the method
+is (#482): it declares the lifetime parameters and `where` clause of the impl
+block the method is written in (`impl<'x> Buf`, `impl Buf where Buf: Tagged`),
+then the method's own, as written. `Self`, which the wrapper — a free
+function — does not have, is spelled as the impl header's type:
+`where Self: Tagged` becomes `where Buf: Tagged`, `<Self as Tagged>::Tag`
+becomes `<Buf as Tagged>::Tag`, and an argument `other: &'a Self` becomes
+`other: &'a Buf`. No predicate is selected or dropped, so higher-ranked bounds
+(`for<'b> &'b Self: Rel<&'a Buf>`), fn-pointer and trait-object types, and a
+predicate that is the only proof a call is valid all hold on the wrapper as
+they do on the method. A `Self` inside a macro invocation (`same!(Self): Sized`)
+cannot be spelled that way and is refused at that token; write the type there.
+
+A `&str` argument is the one place the wrapper's signature differs: it arrives
+from Julia as a pointer and a length and is rebuilt into a string that lives
+only for the call. Its lifetime may be related to others as long as it can
+shrink to the call (`s: &'c str` with `where 'c: 'a` and `other: &'a Buf` is
+fine). A method that needs it to outlive the call — `s: &'static str`, a
+return type that names it (`-> &'a i32`), an argument that names it other
+than as its outermost reference (`&'a mut &'a Buf`), or a type predicate over
+it (`where &'c str: Tr`) — is refused at that lifetime with a message naming
+the method; take `String` instead.
+
 ## Static Methods
 
 Static methods (methods without `self`) are supported on `#[derive(JuliaStruct)]`
