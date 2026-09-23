@@ -203,13 +203,12 @@ end
     # call through this cache must still do it, and a load is a state write, so
     # it bumps the epoch and is resolved again on the next call.
     #
-    # A cold call site therefore resolves twice before it settles: `dlsym`ing a
-    # symbol for the first time publishes its pointer into the image's own
-    # cache, which is a state write like any other, so the entry this call is
-    # about to publish is stale before it is read. The next call finds the
-    # pointer already there, writes nothing, and sticks. Two resolutions once,
-    # rather than a special case in the invalidation rule that would have to
-    # know which writes "do not count".
+    # A cold `dlsym` inside `resolve_call_target` does not move the epoch: it
+    # stores the pointer into the captured image's own symbol cache in place
+    # (`row.cache[symbol] = ptr`), which does not pass through
+    # `_state_mutate_storage!`. That write needs no invalidation — it only
+    # memoizes a lookup on the same handle, so every snapshot already kept
+    # stays exactly as valid as it was.
     target = resolve_call_target(module_symbol_library(mod, func_name), func_name)
     return publish_call_target!(cache, epoch, target)
 end
@@ -617,7 +616,6 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
     # `set_default_compiler` ran in between.
     compiler = _snapshot_compiler(compiler_target, compiler_level)
     expanded = expand_inline(code; cfg = :strict, cfg_text = cfg_text)
-    manifest = expanded.manifest
 
     # Wrap the code if needed
     wrapped_code = wrap_rust_code(expanded.source)
@@ -723,11 +721,6 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
 
     if isempty(dependencies)
         @warn "has_dependencies returned true but no dependencies were parsed. Falling back to regular compilation."
-        # Clean the code anyway and compile normally
-        clean_code = remove_dependency_comments(code)
-        wrapped_code = wrap_rust_code(clean_code)
-        # Fall back to the regular path by calling the base implementation logic
-        # But since we already checked has_dependencies, let's just continue here
     end
 
     # Validate dependencies
@@ -745,7 +738,6 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
     # RustCall generates this Cargo project (release profile), so target and
     # profile predicates are pruned; features and build-script cfgs are kept.
     expanded = expand_inline(code; cfg = :cargo, cfg_text = cfg_text)
-    manifest = expanded.manifest
     augmented_code = expanded.source
 
     # The library identity covers the code to be compiled, the dependency set
@@ -1357,7 +1349,7 @@ function myfunc(x)
 end
 
 # Using explicit arguments (legacy, still supported)
-function myfunc(x)
+function myfunc_legacy(x)
     @irust("arg1 * 2", x)
 end
 
@@ -1866,15 +1858,6 @@ The Rust spellings `IRUST_SCALAR_TYPES` covers, for checking a *result*. `()`
 is accepted separately: a snippet whose value is unit returns `nothing`.
 """
 const IRUST_SCALAR_RUST_TYPES = Tuple(values(IRUST_SCALAR_TYPES))
-
-"""
-    _rust_to_julia_type(rust_type::String) -> Type
-
-Convert Rust type string to Julia type.
-"""
-function _rust_to_julia_type(rust_type::String)
-    return rusttype_to_julia(rust_type)
-end
 
 """
     _generate_irust_function(func_name::String, code::String, arg_types::Vector{String}, ret_type::String) -> String

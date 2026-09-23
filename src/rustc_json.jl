@@ -16,8 +16,8 @@
 """
     JSONParseError
 
-Raised when a line of rustc's `--error-format=json` output is not valid JSON.
-Callers treat it as "this line carried no diagnostic", never as a build
+Raised when `parse_json` is handed text that is not valid JSON. The diagnostic
+readers treat it as "this line carried no diagnostic", never as a build
 failure: rustc may prefix its stderr with output of its own.
 """
 struct JSONParseError <: Exception
@@ -34,7 +34,9 @@ Base.showerror(io::IO, e::JSONParseError) =
 Parse one JSON document into `Dict{String, Any}` / `Vector{Any}` / `String` /
 `Float64` / `Int` / `Bool` / `nothing`.
 
-Only used for rustc's `--error-format=json` output (see `rustc_diagnostics`).
+Used for rustc's `--error-format=json` output (see `rustc_diagnostics`) and for
+Cargo's machine-readable output: `cargo metadata` and the build-script messages
+of `--message-format=json` (`pyo3.jl`).
 """
 function parse_json(text::AbstractString)
     s = String(text)

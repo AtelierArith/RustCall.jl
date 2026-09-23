@@ -720,9 +720,9 @@ fn class_wrappers(krate: &Ident, s: &mut Struct, cfg_resolved: bool) -> TokenStr
         } else {
             if !f.getter.is_empty() {
                 let getter = format_ident!("{}", f.getter);
-                // Only `Copy` FFI types reach here: `String` has its own
-                // branch above and the scan gives a `Vec<T>` no accessor
-                // (no ABI for it on the Julia side yet, #303).
+                // Only `Copy` FFI types reach here: `String` and a
+                // `Vec<T>` of a primitive element each have their own
+                // branch above.
                 out.extend(crate::codegen::guard_struct_helper(
                     quote! {
                         #[no_mangle]

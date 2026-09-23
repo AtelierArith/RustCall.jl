@@ -85,18 +85,6 @@ pub fn last_ident(ty: &Type) -> Option<&Ident> {
     }
 }
 
-/// Whether the type is a bare single-segment path with no generic arguments
-/// whose identifier equals `name` (used for type-parameter detection).
-pub fn is_bare_ident(ty: &Type, name: &str) -> bool {
-    match unparen(ty) {
-        Type::Path(tp) if tp.qself.is_none() && tp.path.segments.len() == 1 => {
-            let seg = &tp.path.segments[0];
-            seg.ident == name && matches!(seg.arguments, PathArguments::None)
-        }
-        _ => false,
-    }
-}
-
 /// Check if a type is FFI-compatible (primitive types that can be passed through C ABI).
 pub fn is_ffi_compatible_type(ty: &Type) -> bool {
     let ty = unparen(ty);

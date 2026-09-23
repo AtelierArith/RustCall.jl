@@ -10,7 +10,7 @@
 //! `super::C`, `self::C`, `a::C`, a bare `C`), the `use` declarations of the
 //! impl's module, and finally the one struct of that name anywhere.
 
-use syn::{Ident, Item, ItemType, ItemUse, Type};
+use syn::{Ident, ItemType, ItemUse, Type};
 
 use crate::types::unparen;
 
@@ -315,7 +315,9 @@ pub fn import_of_type_alias(
 /// `use crate::a::{C, D as E};` yields `("C", ["crate", "a", "C"])` and
 /// `("E", ["crate", "a", "D"])`; the caller splits the anchor off with
 /// [`path_qualifier`], so `use crate::a::C;` and `use a::C;` stay distinct.
-/// A glob (`use a::*;`) binds no name it can be matched on and is skipped.
+/// A glob (`use a::*;`) binds no name it can be matched on; it is recorded as
+/// `("*", prefix, true)` so the caller can still scope an `impl` of an
+/// unqualified name through it.
 /// `super::` is kept: [`path_qualifier`] resolves it against the module the
 /// `use` was written in, like any other anchor (#307 review).
 fn flatten_use_tree(
@@ -352,7 +354,7 @@ fn flatten_use_tree(
                 flatten_use_tree(item, prefix, out);
             }
         }
-        // A glob binds no name this matcher can key on.
+        // A glob binds no name this matcher can key on; record its prefix.
         syn::UseTree::Glob(_) => out.push(("*".to_string(), prefix.clone(), true)),
     }
 }
@@ -590,16 +592,4 @@ fn locate_with_fallback<T: Located>(
                 .collect(),
         )),
     }
-}
-
-/// The `use` declarations among one level of items, for [`locate`].
-pub fn imports_in(items: &[Item], module_path: &[String]) -> Vec<ScannedImport> {
-    items
-        .iter()
-        .filter_map(|item| match item {
-            Item::Use(u) => Some(imports_of_use(u, module_path)),
-            _ => None,
-        })
-        .flatten()
-        .collect()
 }

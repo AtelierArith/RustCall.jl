@@ -89,9 +89,10 @@ What differs is **when**, and therefore who holds the pointer:
 * `:owned_by_rust` — the value does not outlive the call. The wrapper copies it
   into Julia memory and calls `free_symbol` before returning, as
   `_call_rust_owned_string` already does in a `finally`
-  (`src/structs.jl:511-523`). Julia never stores the raw pointer.
+  (`src/structs.jl`). Julia never stores the raw pointer.
 * `:transferred_to_julia` — the value outlives the call. Julia keeps the handle
-  (a `Box::into_raw` pointer inside a struct wrapper, `codegen.rs:386-392`) and
+  (a `Box::into_raw` pointer inside a struct wrapper, from a generated
+  constructor wrapper in `rustcall_julia_core::codegen`) and
   is responsible for calling `free_symbol` later, from a finalizer.
 
 Both are in [`FFI_OWNERSHIP_NEEDS_FREE`], so both always name that symbol. A
@@ -160,7 +161,7 @@ for the manifest `abi` column.
   value *is*, when this position passes an aggregate. Set for `:ptr_len` /
   `:ptr_len_cap` in return position (`CRustStr` / `CRustString`, matching
   `<fn>_RustCallBorrowedString` / `<fn>_RustCallOwnedString` emitted by
-  `deps/rustcall_julia_core/src/codegen.rs:837-863`), `nothing` otherwise — arguments
+  `rustcall_julia_core::codegen`), `nothing` otherwise — arguments
   are expanded into separate slots, not passed as an aggregate.
 - `layout::Vector{Type}` — the C field layout of the value, in order, for the
   multi-word ABIs (`[Ptr{UInt8}, Csize_t]` / `[Ptr{UInt8}, Csize_t, Csize_t]`).
@@ -170,7 +171,7 @@ for the manifest `abi` column.
 - `ownership::Symbol` — one of [`FFI_OWNERSHIP_KINDS`].
 - `free_symbol::Union{Nothing,String}` — for `:owned_by_rust`, the name of the
   symbol that releases the value. The name is per-owner
-  (`<fn|Struct>_free_rust_string`, `deps/rustcall_julia_core/src/codegen.rs:633`), so
+  (`<fn|Struct>_free_rust_string`, emitted by `rustcall_julia_core::codegen`), so
   it is filled in only when the caller passes `owner`; `nothing` otherwise.
 - `known::Bool` — `false` when the Rust spelling is not in the contract. A
   caller that must fail closed checks this instead of inspecting the fallback.
@@ -216,7 +217,7 @@ function _ffi_register!(entry::FFIType)
 end
 
 # -- Rust primitives ---------------------------------------------------------
-# The `PRIMITIVES` list of `deps/rustcall_julia_core/src/types.rs:12` in full. The
+# The `PRIMITIVES` list of `deps/rustcall_julia_core/src/types.rs` in full. The
 # Julia-side tables stop at 13 of them; `i128`, `u128` and `char` are accepted
 # by the Rust side and map to `:Any` on the Julia side today (#245 item 2).
 # `i128` / `u128` do not round-trip on `x86_64-pc-windows-msvc`: MSVC has no
@@ -278,22 +279,13 @@ end
 # -- Strings -----------------------------------------------------------------
 # **The spelling does not determine the ABI. Only the manifest does.**
 #
-# On `main`, string lowering is not uniform across wrapper flavours:
-#
-#   * `transform_simple_function` (`deps/rustcall_julia_core/src/codegen.rs:53-58`)
-#     only marks a free `#[julia] fn ... -> String` signature `extern "C"` — the
-#     Rust types are forwarded as written, with no `(ptr, len)` pair and no
-#     `CRustString`;
-#   * `generate_method_wrapper_crate` (`:378`, `:414`, `:443`) likewise forwards
-#     the original argument and return types;
-#   * only `inline_method_wrapper` (`:774-863`) actually lowers strings, into
-#     `(ptr, len)` arguments and a `<fn>_RustCallOwnedString` /
-#     `<fn>_RustCallBorrowedString` return.
-#
-# PR #274 makes the lowering uniform *and* records it in the manifest as
-# `Arg.abi` / `Method.return_abi`. So the rule that is correct both before and
-# after #274 is: **the manifest `abi` column is the only authority on whether
-# lowering happened.** These rows therefore carry `:unknown` — a bare `String`
+# Before #274 string lowering differed between wrapper flavours (only the
+# inline method wrapper lowered strings into `(ptr, len)` arguments and a
+# `<fn>_RustCallOwnedString` / `<fn>_RustCallBorrowedString` return). #274 made
+# the lowering uniform *and* recorded it in the manifest as `Arg.abi` /
+# `Method.return_abi`, and the rule stays: **the manifest `abi` column is the
+# only authority on whether lowering happened.** These rows therefore carry
+# `:unknown` — a bare `String`
 # spelling with `abi == ""` fails closed rather than describing a lowering the
 # wrapper may not have performed. `abi = "string"` / `"str"` selects the lowered
 # form, and only then does the contract name the slots, the aggregate and the
@@ -333,7 +325,7 @@ const _FFI_PTR_MUT_PREFIX = "*mut "
 
 # The only path prefixes under which a trailing primitive segment is guaranteed
 # to *be* that primitive. `rustcall_julia_core::types::is_ffi_compatible_type`
-# (`deps/rustcall_julia_core/src/types.rs:85`) is laxer: it matches on `last_ident`
+# (`deps/rustcall_julia_core/src/types.rs`) is laxer: it matches on `last_ident`
 # alone, so it also accepts `mycrate::i32`, where `i32` may be a user type
 # alias with a completely different layout. The contract deliberately does not
 # follow it that far — an unqualified last segment is not evidence — so
@@ -385,7 +377,8 @@ to `Ptr{J}` where `J` is the pointee's Julia type. The pointee is resolved
 only a pointee the contract genuinely cannot map (an opaque handle, or a
 multi-word type like `String` that has no single-word C form) degrades to
 `Ptr{Cvoid}`. This mirrors `rustcall_julia_core`'s `Type::Ptr => true`
-(`deps/rustcall_julia_core/src/types.rs:91`), which accepts every pointer wholesale.
+(`is_ffi_compatible_type` in `deps/rustcall_julia_core/src/types.rs`), which
+accepts every pointer wholesale.
 
 `nothing` is the fail-closed answer. Callers must not substitute a default for
 it; that is the guess this file exists to remove (#245 item 1).
@@ -416,11 +409,11 @@ function _ffi_pointer_row(key::AbstractString, pointee::AbstractString)
     end
     note = inner === nothing ? "Opaque pointee: the contract does not know $(pointee)." : ""
     # Ownership of a raw pointer is NOT derivable from the spelling. A generated
-    # constructor returns `Box::into_raw` (`deps/rustcall_julia_core/src/codegen.rs:386-392`),
+    # constructor returns `Box::into_raw` (`rustcall_julia_core::codegen`),
     # which Julia owns and must free, while another `*mut T` may be a pointer
     # into memory Rust keeps. `:borrowed` — valid only for the duration of the
     # call — is reserved for `&T` / `&mut T` references, which `rustcall_julia_core`
-    # rejects as non-FFI anyway (`types.rs:104`). So the default is `:unknown`,
+    # rejects as non-FFI anyway (`is_ffi_compatible_type`). So the default is `:unknown`,
     # and a consumer that has the metadata states it: see
     # [`ffi_return_contract`](@ref)'s `ownership` / `free_symbol` keywords.
     return FFIType(String(key), T, T, ffi_type_expr(T), :pointer, :unknown, note)
@@ -619,8 +612,8 @@ kind.
 
 These mirror the `<fn>_RustCallBorrowedString { ptr, len }` and
 `<fn>_RustCallOwnedString { ptr, len, cap }` helpers the wrapper generator emits
-(`deps/rustcall_julia_core/src/codegen.rs:837-863`) and that `_call_rust_owned_string`
-/ `_call_rust_borrowed_string` already receive (`src/structs.jl:511-528`).
+(`rustcall_julia_core::codegen`) and that `_call_rust_owned_string`
+/ `_call_rust_borrowed_string` already receive (`src/structs.jl`).
 """
 function ffi_aggregate_type(abi::Symbol)
     abi === :ptr_len && return CRustStr
@@ -632,8 +625,8 @@ end
     ffi_free_symbol(owner::AbstractString) -> String
 
 The name of the symbol that releases an `:owned_by_rust` string produced by
-`owner` (a function or struct name): `<owner>_free_rust_string`, matching
-`deps/rustcall_julia_core/src/codegen.rs:633`.
+`owner` (a function or struct name): `<owner>_free_rust_string`, matching the
+helper `rustcall_julia_core::codegen` emits.
 """
 ffi_free_symbol(owner::AbstractString) = string(owner, "_free_rust_string")
 
@@ -737,7 +730,7 @@ here: `ccall_types` holds the single `#[repr(C)]` aggregate the wrapper returns
 
 A raw-pointer return defaults to `:unknown` ownership, because the spelling does
 not say: a generated constructor returns `Box::into_raw`
-(`deps/rustcall_julia_core/src/codegen.rs:386-392`), which Julia owns and must free,
+(`rustcall_julia_core::codegen`), which Julia owns and must free,
 while another `*mut T` may point into memory Rust keeps. A consumer that *has*
 the metadata states it with `ownership` (and, where a release is required, the
 `free_symbol` that performs it):
@@ -764,7 +757,7 @@ free it is the shape of #246 and #249 and is never recorded. Concretely:
 
 `owner` is the function or struct name the wrapper belongs to. It supplies only
 the **string** release convention (`<owner>_free_rust_string`,
-`deps/rustcall_julia_core/src/codegen.rs:633`), so it stands in for `free_symbol` only
+emitted by `rustcall_julia_core::codegen`), so it stands in for `free_symbol` only
 on a lowered owned-string return (`:ptr_len_cap`). For a pointer return — where
 the releasing symbol is whatever the crate exports, e.g. `Point_free` — it does
 not apply and `free_symbol` must be given.
@@ -883,7 +876,7 @@ function _ffi_positional(key, direction, kind, surface, ownership, owner,
     final_ownership = stated_ownership === nothing ? ownership : stated_ownership
 
     # `owner` only names the *string* release convention
-    # (`<owner>_free_rust_string`, deps/rustcall_julia_core/src/codegen.rs:633), so it
+    # (`<owner>_free_rust_string`, emitted by `rustcall_julia_core::codegen`), so it
     # may stand in for `free_symbol` only where that convention applies: the
     # lowered owned-string return. Every other owned value must name its own
     # symbol explicitly.
@@ -1725,6 +1718,11 @@ function _validate_ffi_by_value(@nospecialize(T::Type); repr_c::Bool = true,
     return T
 end
 
+# The state-owned gate that serializes `ffi_by_value_layout` method-table edits
+# (`register_ffi_struct`, `@register_ffi_struct`, `unregister_ffi_struct`). It
+# is never taken while STATE is held: fetch it, release STATE, then lock it.
+const FFI_METHOD_LOCK = _state_view(:ffi_method_lock, ReentrantLock())
+
 """
     _ffi_by_value_needs_method(T) -> Bool
 
@@ -1738,8 +1736,6 @@ calling module, and a `lock(...) do ... end` body would make it a local.
 Serializing the check alone is enough there — a macro used at a module's top
 level expands while that module is being loaded, on one task.
 """
-const FFI_METHOD_LOCK = _state_view(:ffi_method_lock, ReentrantLock())
-
 _ffi_by_value_needs_method(@nospecialize(T::Type)) =
     lock(() -> _ffi_layout_method(T) === nothing, FFI_METHOD_LOCK[])
 
@@ -1837,7 +1833,6 @@ and says nothing about `Point{Int32}`.
 See also `@register_ffi_struct`, `unregister_ffi_struct`,
 `ffi_by_value_registered`, `ffi_by_value_layout`.
 """
-
 function register_ffi_struct(@nospecialize(T::Type); repr_c::Bool = true)
     _validate_ffi_by_value(T; repr_c = repr_c)
     # Method-table edits are serialized separately from STATE. Capture the
@@ -1952,13 +1947,12 @@ Take back the `register_ffi_struct` assertion for `T`. Returns whether there was
 one to take back.
 
 It deletes the `ffi_by_value_layout` method that was defined for **exactly**
-`T` — the narrow one for a concrete type, the `::Type{<:T}` one for a
-`UnionAll` — and nothing else. So withdrawing `Point` after registering it
-leaves any separate `Point{Float64}` assertion standing, and withdrawing
-`Point{Float64}` does not disturb a `Point` assertion that covers its siblings.
-An assertion made in a *previous* session (restored from a precompile cache) is
-withdrawn just as well: the method is found by reconstructing its signature,
-not by remembering it.
+`T` — `register_ffi_struct` accepts only concrete types, so that is the one
+`Type{T}` method — and nothing else: withdrawing `Point{Float64}` leaves a
+separate `Point{Int32}` assertion standing, and a covering method RustCall
+defines for its own mirrors is never matched. An assertion made in a *previous*
+session (restored from a precompile cache) is withdrawn just as well: the method
+is found by reconstructing its signature, not by remembering it.
 
 Deleting a method invalidates code that dispatched through it, so this is not
 something to do in a loop; it is a correction, made by a test or by a user who
