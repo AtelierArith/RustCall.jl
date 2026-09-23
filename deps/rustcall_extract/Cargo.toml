@@ -2,6 +2,11 @@
 name = "rustcall_extract"
 version = "0.6.6"
 edition = "2021"
+# The oldest rustc that builds this crate from its committed Cargo.lock
+# (`deps/build.jl` passes `--locked`): the highest `rust-version` in that
+# dependency graph. `RustCall.check_toolchain()` reports against this number
+# and `test/test_toolchain_check.jl` checks it against the graph (#490).
+rust-version = "1.85"
 description = "Extractor CLI for RustCall.jl: FFI manifests, inline expansion and generic specialization"
 license = "MIT"
 repository = "https://github.com/atelierarith/RustCall.jl"

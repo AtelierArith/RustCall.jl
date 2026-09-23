@@ -189,6 +189,28 @@ devnull).unsupported)`) to keep the surface small as the facade grows. Unknown t
 make `RustCall.FFI_STRICT[] = :warn` a production solution for an API whose layout has
 not been designed.
 
+After the findings the report lists **notes** (`report.notes`, #490): positions
+the contract describes but that leave a responsibility with you. The same
+generators record them, and there are two:
+
+- a return or `Result` / `Option` payload that is a **raw pointer**
+  (`*const T` / `*mut T`). Every owned value RustCall generates carries its
+  release function; a raw pointer carries none, and whether it transfers
+  ownership is not in the signature. If it does, export a matching release
+  function (`#[no_mangle] pub extern "C" fn <name>_free(p)`) and call it from
+  the Julia wrapper, or return an opaque `#[julia]` struct instead;
+- a hand-written **`#[no_mangle] extern "C"` function** in a `rust"""` block,
+  which `@rust` can call with no generated panic boundary: a panic in it
+  aborts the process. Put the entry point behind `#[julia]`.
+
+A crate's hand-written exports are not bound by `@rust_crate`, so nothing is
+generated, and nothing is noted, for them. What no signature shows is out of
+the report's reach and stays a caller contract: concurrent `&mut self` calls on
+one object, use after `unload_library(...; close = true)`, a callback stored
+or called from another thread, and panics on threads Rust spawns (see the
+limitation matrix below). A `#[julia] unsafe fn` is refused when the block
+compiles.
+
 For callbacks, document the thread and lifetime assumptions explicitly. The
 current callback path is for synchronous calls, argument-position callbacks,
 and same-thread execution; it is not a general asynchronous callback system.
@@ -319,7 +341,15 @@ stores the result.
 
 ### Toolchain and platform requirements
 
-- Julia 1.12 or later. Rust stable; CI tests stable and beta.
+- Julia 1.12 or later. Rust stable; CI tests stable and beta. The oldest
+  supported `rustc` is the `rust-version` of `deps/rustcall_extract/Cargo.toml`
+  (1.85): the extractor's committed `Cargo.lock` needs it, and Cargo refuses an
+  older compiler with that number before building anything.
+- `RustCall.check_toolchain()` reports the `rustc` / `cargo` RustToolChain
+  resolves, their versions against that floor, and whether the extractor is
+  built and speaks this release's manifest — without building anything and
+  without raising; `check_toolchain(; io = devnull).ok` is a one-line CI
+  preflight.
 - RustToolChain uses a `rustc`/`cargo` on `PATH` when there is one and
   downloads an artifact toolchain otherwise, so a machine needs no system Rust.
   The compiler's identity is part of every cache key: a toolchain upgrade
@@ -332,14 +362,12 @@ stores the result.
 
 When an integration fails, identify the layer before changing the API:
 
-1. **Toolchain/build:** inspect the same executables RustCall resolves, then
+1. **Toolchain/build:** check the same executables RustCall resolves, then
    rebuild the helpers:
 
    ```julia
-   using Pkg
-   using RustToolChain
-   run(`$(RustToolChain.rustc()) --version`)
-   run(`$(RustToolChain.cargo()) --version`)
+   using Pkg, RustCall
+   RustCall.check_toolchain()   # rustc/cargo versions, the supported floor, the extractor
    Pkg.build("RustCall")
    ```
 
@@ -366,13 +394,16 @@ exception channel.
 
 | Symptom | Check |
 | --- | --- |
-| `no working rustc`, or a build that cannot find `cargo` | the `RustToolChain.rustc()` / `cargo()` versions above; on Windows, the MSVC build tools |
+| `no working rustc`, or a build that cannot find `cargo` | `RustCall.check_toolchain()` lists the resolved `rustc` / `cargo` and what is wrong with them; on Windows, the MSVC build tools |
+| "requires rustc 1.85 or newer", or a build failing deep inside Cargo | `RustCall.check_toolchain()`: `rustc_supported` compares the resolved `rustc` with the supported floor |
+| "schema version mismatch" from the extractor | `RustCall.check_toolchain().extractor`; rebuild with `Pkg.build("RustCall")` |
 | a Rust compile error in code you did not write | the generated wrapper, not your facade: `RustCall.expand_inline(source).source` shows what an inline block compiles |
 | `CargoBuildError` | Cargo's own message in the error; with `RUSTCALL_OFFLINE=1`, a crate missing from the registry cache |
 | an unsupported-type error at wrapper generation, or "cannot pass `X` to Rust by value" at a call | `RustCall.boundary_report(crate)` names the Rust item and position; move the type behind the facade |
 | wrong values, but no error | the `extern "C"` signature against the Julia call: argument order, integer width (`Clong`), `bool` |
 | `RustPanicError` | the Rust message it carries; reproduce in `cargo test` |
-| a crash instead of `RustPanicError` | an entry point without a `#[julia]` boundary, or a panic on a thread Rust spawned |
+| a crash instead of `RustPanicError` | an entry point without a `#[julia]` boundary (`inline_boundary_report(source).notes` lists each hand-written export), or a panic on a thread Rust spawned |
+| memory grows with every call returning a pointer | a raw-pointer return with no release call; the report's `notes` list each one |
 | "attempted to use a freed ... object" | a call after `close`/`finalize`; have the wrapper check (as `SafeLedger` does) |
 | "... is not loaded" / "unloaded ... object" | a library was unloaded while objects or call sites still used it |
 | `RustCall.finalizer_failure_count()` grows | a `Drop` implementation that panics |

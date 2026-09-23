@@ -21,7 +21,10 @@ _bc_keys(positions) = [(p.item, p.position) for p in positions]
     for name in ("ffi_argument_contract", "ffi_return_contract", "ffi_callback_plan",
                  "field_is_accessible", "_ffi_field_return", "CALLBACK_SLOTS",
                  "returns_boxed_struct", "is_generic", "return_kind", "ok_type",
-                 "inner_type", "\"attribute\"", "\"vis\"", "\"args\"", "\"methods\"")
+                 "inner_type", "\"attribute\"", "\"vis\"", "\"args\"", "\"methods\"",
+                 # The notes of #490 are decided by the generators too.
+                 ":pointer", "_boundary_raw_pointer_return!", "_boundary_unguarded_export!",
+                 "_boundary_note!", ":none")
         @test !occursin(name, source)
     end
     @test occursin("_collect_boundary", source)
@@ -75,6 +78,47 @@ end
     end
     @test length(collector.positions) == 1
     @test collector.positions[1].reason == "first"
+
+    # Notes (#490) follow the same rules: filed under the named item, one per
+    # `(item, position, note)`, an error with no item named, a no-op outside
+    # collecting mode.
+    @test RustCall._boundary_note!("return", "*mut u8", "n") === nothing
+    collector = RustCall._collect_boundary() do
+        RustCall._boundary_item!("f")
+        RustCall._boundary_note!("return", "*mut u8", "n")
+        RustCall._boundary_note!("return", "*mut u8", "n")
+    end
+    @test collector.notes == [(; item = "f", position = "return", rust_type = "*mut u8", note = "n")]
+    @test isempty(collector.positions)
+    @test_throws ArgumentError RustCall._collect_boundary() do
+        RustCall._boundary_note!("return", "*mut u8", "n")
+    end
+    @test !RustCall._boundary_collecting()
+end
+
+# The notes of #490 come from the generators that make the decisions: the
+# `@rust` registry of a loaded block (`_manifest_registry_entries`) notes a
+# hand-written export and its raw-pointer return, and the `#[julia]` return
+# helper notes a raw pointer — while, outside the report, the registry rows
+# are what they always were.
+@testset "the generators record the notes of #490" begin
+    manifest = RustCall.extract_manifest(raw"""
+        #[no_mangle]
+        pub extern "C" fn make_buf(n: usize) -> *mut u8 { std::ptr::null_mut() }
+        #[julia]
+        pub fn jptr(n: i32) -> *const u8 { std::ptr::null() }
+        """; mode = "inline")
+    signatures = RustCall._registry_signatures(manifest)
+    outside = RustCall._manifest_registry_entries(signatures)
+    registry = RustCall._collect_boundary() do
+        @test RustCall._manifest_registry_entries(signatures) == outside
+    end
+    @test Set((n.item, n.position) for n in registry.notes) ==
+          Set([("make_buf", "entry point"), ("make_buf", "return")])
+    wrappers = RustCall._collect_boundary() do
+        RustCall.emit_julia_function_wrappers(RustCall.manifest_function_signatures(manifest))
+    end
+    @test [(n.item, n.position) for n in wrappers.notes] == [("jptr", "return")]
 end
 
 # `@rust_crate` binds a crate through the expression emitters and

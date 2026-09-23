@@ -307,6 +307,11 @@ include("julia_functions.jl")
 # FFI manifest consumption (rustcall-extract CLI); depends on the types above
 include("manifest.jl")
 
+# The toolchain preflight of #490: the resolved rustc/cargo, the supported
+# floor, and the extractor's status. Uses the compiler identity of
+# artifact_id.jl and the extractor lookup of manifest.jl.
+include("toolchain_check.jl")
+
 # Phase 6: External crate bindings (Maturin-like feature)
 include("crate_bindings.jl")
 

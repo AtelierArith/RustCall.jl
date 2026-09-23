@@ -33,18 +33,32 @@ mode wraps (every `pub` method inline, the `#[julia]` methods of a crate),
 `Result` / `Option` payloads, and the getter of every readable field — and
 every refusal generation would make is a finding. What generation does not
 decide is not reported: a generic item is monomorphized later under types not
-known yet, a plain `#[no_mangle] extern "C"` function is exported as written,
-and a constructor, or any method returning the struct itself, returns a
-handle.
+known yet, a constructor, or any method returning the struct itself, returns a
+handle, and a hand-written `#[no_mangle] extern "C"` function gets no wrapper
+(and, in a crate, is not bound by `@rust_crate` at all).
 
-Prints a summary to `io` and returns `(; unsupported, checked)`:
+Some decisions the contract accepts still leave a responsibility with the
+author; the generators that make them record a **note** (#490), listed after
+the findings:
+
+* a return or `Result` / `Option` payload that is a raw pointer (`*const T` /
+  `*mut T`) — RustCall derives no release function for one, so if it transfers
+  ownership the facade must export one;
+* a hand-written `#[no_mangle] extern "C"` function in an inline block, which
+  loading registers for `@rust` with no generated panic boundary — a panic in
+  it aborts the process.
+
+Prints a summary to `io` and returns `(; unsupported, checked, notes)`:
 
 * `unsupported` — one `(; item, position, rust_type, abi, reason)` per position,
   where `item` is `"f"`, `"Struct::method"` or `"Struct::field"` (module-qualified
   below the crate root, `"a::f"`) and `position`
   is ``"argument `x`"``, `"return"`, `"Ok payload"`, `"Err payload"`,
   `"Some payload"` or `"field getter"`;
-* `checked` — how many positions were examined.
+* `checked` — how many positions were examined;
+* `notes` — one `(; item, position, rust_type, note)` per note; `position` is
+  `"return"`, a payload, or `"entry point"` for an unguarded export. A note is
+  not counted in `checked` and does not make a surface unsupported.
 
 ```julia
 RustCall.boundary_report("deps/my_facade")
@@ -86,6 +100,10 @@ function _boundary_report(manifest::AbstractDict, label::AbstractString, io::IO)
     collector = _collect_boundary() do
         if get(manifest, "mode", "") == "inline"
             _inline_wrapper_exprs(functions, structs)
+            # What loading the block registers for `@rust`: the name and
+            # return type of every export, the hand-written ones included —
+            # the generator that decides what `@rust f(...)` may call (#490).
+            _manifest_registry_entries(_registry_signatures(manifest))
         else
             _crate_wrapper_exprs(_module_tree(functions, structs))
         end
@@ -94,22 +112,28 @@ function _boundary_report(manifest::AbstractDict, label::AbstractString, io::IO)
         _BoundaryFinding((p.item, p.position, p.rust_type, p.abi, p.reason))
         for p in collector.positions if p.reason !== nothing]
     checked = length(collector.positions)
-    _print_boundary_report(io, label, unsupported, checked)
-    return (; unsupported, checked)
+    notes = copy(collector.notes)
+    _print_boundary_report(io, label, unsupported, checked, notes)
+    return (; unsupported, checked, notes)
 end
 
-function _print_boundary_report(io::IO, label, unsupported, checked::Int)
+function _print_boundary_report(io::IO, label, unsupported, checked::Int, notes)
     if isempty(unsupported)
         println(io, "RustCall boundary report for $(label): no unsupported positions ",
                 "($(checked) checked).")
-        return nothing
+    else
+        println(io, "RustCall boundary report for $(label): $(length(unsupported)) unsupported ",
+                "position(s) of $(checked) checked:")
+        for u in unsupported
+            println(io, "  ", u.item, ", ", u.position, ": ", u.rust_type, " — ", u.reason)
+        end
+        println(io, "Keep these types inside the Rust facade and expose supported types or an ",
+                "opaque #[julia] struct instead; see the integration guide's limitation matrix.")
     end
-    println(io, "RustCall boundary report for $(label): $(length(unsupported)) unsupported ",
-            "position(s) of $(checked) checked:")
-    for u in unsupported
-        println(io, "  ", u.item, ", ", u.position, ": ", u.rust_type, " — ", u.reason)
+    isempty(notes) && return nothing
+    println(io, length(notes), " note(s) — supported, but the author's responsibility:")
+    for n in notes
+        println(io, "  ", n.item, ", ", n.position, ": ", n.rust_type, " — ", n.note)
     end
-    println(io, "Keep these types inside the Rust facade and expose supported types or an ",
-            "opaque #[julia] struct instead; see the integration guide's limitation matrix.")
     return nothing
 end

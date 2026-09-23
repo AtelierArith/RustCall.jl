@@ -254,3 +254,77 @@ end
     @test isempty(RustCall.inline_boundary_report("#[julia]\npub fn most($(ok)) -> i64 { 0 }";
                                                   io = devnull).unsupported)
 end
+
+# The notes of #490: positions the contract describes but that leave something
+# to the author. Recorded by the generators that decide them — the item-return
+# and payload helpers for a raw pointer, the `@rust` registry for a
+# hand-written export — never by the report.
+@testset "boundary report notes raw-pointer returns and unguarded exports (#490)" begin
+    source = raw"""
+        #[no_mangle]
+        pub extern "C" fn make_buf(n: usize) -> *mut u8 { std::ptr::null_mut() }
+
+        #[no_mangle]
+        pub extern "C" fn plain_add(a: i32, b: i32) -> i32 { a + b }
+
+        #[no_mangle]
+        pub extern "C" fn release_buf(p: *mut u8) {}
+
+        #[julia]
+        pub fn borrowed_bytes(n: i32) -> *const u8 { std::ptr::null() }
+
+        #[julia]
+        pub fn maybe_ptr(n: i32) -> Option<*mut i32> { None }
+
+        #[julia]
+        pub fn scalar(n: i32) -> i32 { n }
+
+        #[julia]
+        pub struct Holder { pub n: i32 }
+
+        impl Holder {
+            pub fn new() -> Self { Holder { n: 0 } }
+            pub fn raw(&self) -> *const i32 { &self.n }
+        }
+        """
+    report = RustCall.inline_boundary_report(source; io = devnull)
+    # Notes are not findings: the surface is supported.
+    @test isempty(report.unsupported)
+    notes = Set((n.item, n.position) for n in report.notes)
+    @test notes == Set([
+        # A raw pointer handed back, by a `#[julia]` function, a method, a
+        # payload and a hand-written export alike ...
+        ("borrowed_bytes", "return"),
+        ("Holder::raw", "return"),
+        ("maybe_ptr", "Some payload"),
+        ("make_buf", "return"),
+        # ... and every hand-written export `@rust` can call, with no
+        # generated panic boundary. `scalar` and the `n` getter are neither.
+        ("make_buf", "entry point"),
+        ("plain_add", "entry point"),
+        ("release_buf", "entry point"),
+    ])
+    ptr = only(n for n in report.notes if n.item == "make_buf" && n.position == "return")
+    @test ptr.rust_type == "*mut u8"
+    @test occursin("release function", ptr.note)
+    guard = only(n for n in report.notes if n.item == "plain_add")
+    @test occursin("panic", guard.note)
+    # Notes are not positions: `checked` counts the generated wrappers' only.
+    clean = RustCall.inline_boundary_report(raw"""
+        #[julia]
+        pub fn scalar(n: i32) -> i32 { n }
+        """; io = devnull)
+    @test clean.checked == 2
+    @test isempty(clean.notes)
+
+    text = sprint(io -> RustCall.inline_boundary_report(source; io))
+    @test occursin("no unsupported positions", text)
+    @test occursin("7 note(s)", text)
+    @test occursin("make_buf, return: *mut u8", text)
+
+    # A crate's hand-written exports are not bound by `@rust_crate`, so
+    # generation decides nothing about them and the report notes nothing for
+    # them; the fixture's `#[julia]` surface returns no raw pointer.
+    crate = RustCall.boundary_report(BR_SAMPLE_CRATE; io = devnull)
+    @test !any(n -> n.position == "entry point", crate.notes)
+end
