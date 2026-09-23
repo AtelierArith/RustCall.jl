@@ -1,8 +1,8 @@
-# Errors and load policy
+# Load policy
 
-The exception types RustCall raises, and the one path through which every
-compiled artifact is opened, registered, retired and unloaded
-(`src/loadpolicy.jl`, #277).
+The one path through which every compiled artifact is opened, registered,
+retired and unloaded (`src/loadpolicy.jl`, #277). The exception types are on
+[Errors](errors.md).
 
 ## Loading and lifetime
 
@@ -17,18 +17,12 @@ The user-facing halves of the load path:
   that have left the registry and are still mapped.
 - `RustCall.list_loaded_libraries()` — the registered library names, which now
   include `@rust_crate` libraries.
-- `RustCall.RustPanicError` — a Rust `panic!` caught at the FFI boundary.
+- `RustCall.RustPanicError` — a Rust `panic!` caught at the FFI boundary
+  ([Errors](errors.md)).
 - `RustCall.finalizer_failure_count()` — how many Rust destructors raised while
   being called from a finalizer (non-zero means objects leaked).
 
 See [Panics, Visibility and Lifetime](../panics.md) for the semantics these guarantee.
-
-## Errors (`src/exceptions.jl`)
-
-```@autodocs
-Modules = [RustCall]
-Pages = [joinpath("src", "exceptions.jl")]
-```
 
 ## Load policy (`src/loadpolicy.jl`)
 
