@@ -276,3 +276,47 @@ fn a_lifetime_only_a_string_names_is_not_declared() {
     );
     assert_compiles("strings", &expanded.source);
 }
+
+/// A `for<'b>` binder inside a `where` predicate names a lifetime that is not
+/// the item's: it must not drop the predicate from the wrapper, or the call
+/// inside it loses the bound it needs (E0277, PR #480 review).
+#[test]
+fn a_higher_ranked_bound_is_kept_on_the_wrapper() {
+    let expanded = expand(
+        r#"
+        pub trait Rel<T> { fn rel(&self, other: T) -> i32; }
+        // Only for a `'static` argument, so the bound is not provable for an
+        // arbitrary `'a`: a wrapper without it does not compile.
+        impl<'x> Rel<&'static Buf> for &'x Buf {
+            fn rel(&self, other: &'static Buf) -> i32 { self.n - other.n }
+        }
+
+        #[julia]
+        pub struct Buf { pub n: i32 }
+        impl Buf {
+            pub fn new(n: i32) -> Self { Buf { n } }
+            pub fn related<'a>(&self, other: &'a Buf) -> i32
+            where
+                for<'b> &'b Buf: Rel<&'a Buf>,
+            {
+                (&*self).rel(other)
+            }
+        }
+    "#,
+    )
+    .unwrap();
+    let source = flat(&expanded.source);
+    assert!(
+        source.contains(
+            "pub extern \"C\" fn rustcall_Buf_related<'a>(ptr: *const Buf, other: &'a Buf)"
+        ),
+        "{source}"
+    );
+    assert!(
+        source.contains(
+            "other: &'a Buf) -> ::std::mem::MaybeUninit<i32> where for<'b> &'b Buf: Rel<&'a Buf>"
+        ),
+        "{source}"
+    );
+    assert_compiles("higher_ranked", &expanded.source);
+}

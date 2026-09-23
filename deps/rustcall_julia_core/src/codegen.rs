@@ -354,13 +354,19 @@ fn lifetime_names(tokens: TokenStream2, out: &mut std::collections::BTreeSet<Str
 
 /// The part of `lifetimes` ([`lifetime_generics`]) a wrapper whose signature is
 /// `signature` declares: the lifetimes that signature names, their bounds
-/// among themselves, and the `where` predicates that name nothing else. A
+/// among themselves, and the `where` predicates that name none of the item's
+/// other lifetime parameters — a name a `for<'b>` binder introduces, or
+/// `'static`, never removes one (PR #480 review). A
 /// relation to a lifetime the signature does not name is left to inference at
 /// the call, where it is satisfied or not exactly as it was before (#477).
 fn declared_lifetimes(lifetimes: &syn::Generics, signature: TokenStream2) -> syn::Generics {
     let mut used = std::collections::BTreeSet::new();
     lifetime_names(signature, &mut used);
     let named = |l: &syn::Lifetime| l.ident == "static" || used.contains(&l.ident.to_string());
+    let declared: std::collections::BTreeSet<String> = lifetimes
+        .lifetimes()
+        .map(|lp| lp.lifetime.ident.to_string())
+        .collect();
     let params: syn::punctuated::Punctuated<syn::GenericParam, syn::Token![,]> = lifetimes
         .params
         .iter()
@@ -387,12 +393,16 @@ fn declared_lifetimes(lifetimes: &syn::Generics, signature: TokenStream2) -> syn
                 (!pl.bounds.is_empty()).then_some(syn::WherePredicate::Lifetime(pl))
             }
             syn::WherePredicate::Lifetime(_) => None,
+            // Only the item's own lifetime parameters can be missing from the
+            // wrapper: a name bound by a `for<'b>` binder inside the predicate
+            // (Rust forbids it to shadow one of them) or `'static` is always
+            // in scope, so it never drops the predicate (PR #480 review).
             other => {
                 let mut names = std::collections::BTreeSet::new();
                 lifetime_names(quote! { #other }, &mut names);
                 names
                     .iter()
-                    .all(|n| n == "static" || used.contains(n))
+                    .all(|n| !declared.contains(n) || used.contains(n))
                     .then(|| other.clone())
             }
         })
