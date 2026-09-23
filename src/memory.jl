@@ -69,9 +69,6 @@ function safe_dlsym(lib::Ptr{Cvoid}, sym::Symbol)
     return ptr
 end
 
-# Flag to track if we've already warned about missing library
-const DROP_WARNING_SHOWN = _state_view(:drop_warning_shown, Ref{Bool}(false))
-
 # Deferred pointer tracking for cleanup when library becomes available
 struct DeferredDrop
     ptr::Ptr{Cvoid}
@@ -400,7 +397,6 @@ function try_load_rust_helpers()
         end
 
         RUST_HELPERS_LIB[] = lib_handle
-        DROP_WARNING_SHOWN[] = false  # Reset warning flag when library is loaded
         # Flush any deferred drops now that the library is available
         flush_deferred_drops()
         return true
@@ -427,9 +423,10 @@ _rust_box_drop_symbol(::Type{Int64}) = :rust_box_drop_i64
 _rust_box_drop_symbol(::Type{Float32}) = :rust_box_drop_f32
 _rust_box_drop_symbol(::Type{Float64}) = :rust_box_drop_f64
 _rust_box_drop_symbol(::Type{Bool}) = :rust_box_drop_bool
-# No typed helper, no drop. The untyped `rust_box_drop` frees a
-# `Box<c_void>` — a 1-byte layout with no destructor — so handing it a
-# `Box<T>` of any real `T` is undefined behaviour (#460). Like `RustRc` /
+# No typed helper, no drop. The helpers library used to export an untyped
+# `rust_box_drop`, which freed a `Box<c_void>` — a 1-byte layout with no
+# destructor — so handing it a `Box<T>` of any real `T` was undefined
+# behaviour (#460); it is gone since #463. Like `RustRc` /
 # `RustArc`, an unsupported `T` has no drop target and is never freed from
 # Julia; `RustBox{T}(value)` refuses such a `T` up front
 # (`_rust_box_new_symbol`).
