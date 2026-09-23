@@ -627,15 +627,6 @@ end
                                 target.channel, func_name)
 end
 
-"""
-    _rust_call_from_lib(lib_name::String, func_name::String, args...)
-
-Call a Rust function from a specific library.
-"""
-function _rust_call_from_lib(lib_name::String, func_name::String, args...)
-    return _rust_call_dynamic(lib_name, func_name, args...)
-end
-
 # Helper to check if an expression is of a specific form
 isexpr(x, head) = isa(x, Expr) && x.head == head
 
