@@ -352,3 +352,54 @@ fn a_generic_structs_wrappers_name_the_receivers_lifetime() {
         );
     }
 }
+
+/// A generic struct's method may declare a lifetime spelled like the fresh
+/// one (PR #498 review): the wrapper takes the next free name, by the same
+/// rule as a concrete struct's wrapper, instead of declaring `'rustcall`
+/// twice (E0403 once specialized).
+#[test]
+fn a_generic_structs_fresh_lifetime_avoids_the_methods_own() {
+    let expanded = expand(
+        r#"
+        #[julia]
+        pub struct Wrap<T> { pub v: T }
+        impl<T: Copy> Wrap<T> {
+            pub fn new(v: T) -> Self { Wrap { v } }
+            pub fn get<'rustcall>(&self, x: &'rustcall i32) -> &T { let _ = x; &self.v }
+            pub fn both<'rustcall, 'rustcall1>(&self, x: &'rustcall i32, y: &'rustcall1 i32) -> &T {
+                let _ = (x, y);
+                &self.v
+            }
+        }
+    "#,
+    )
+    .unwrap();
+    let wrap = &expanded.manifest.structs[0];
+    for (method, spelled) in [("get", "-> &'rustcall1 T"), ("both", "-> &'rustcall2 T")] {
+        let name = format!("Wrap_{method}");
+        let wrapper = wrap
+            .generic_wrappers
+            .iter()
+            .find(|w| w.name == name)
+            .unwrap_or_else(|| panic!("no {name}"));
+        assert!(
+            flat(&wrapper.source).contains(spelled),
+            "{method}: {}",
+            wrapper.source
+        );
+        let instance = specialize(
+            &format!("{}\n{}", wrap.context_source, wrapper.source),
+            &name,
+            &[("T".into(), "i32".into())],
+            &format!("{name}_i32"),
+        )
+        .unwrap();
+        let out = rustc(&format!("generic_taken_{method}"), &instance.source, None);
+        assert!(
+            out.status.success(),
+            "{method}: {}\n{}",
+            String::from_utf8_lossy(&out.stderr),
+            instance.source
+        );
+    }
+}

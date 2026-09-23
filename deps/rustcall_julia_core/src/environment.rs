@@ -708,8 +708,14 @@ impl SelfBorrow {
     }
 }
 
-/// A lifetime named nowhere in `taken`: `'rustcall`, or `'rustcall<n>`.
-fn fresh_lifetime(taken: &BTreeSet<String>) -> syn::Lifetime {
+/// The lifetime a wrapper declares for an output lifetime elision picks
+/// (#484): `'rustcall`, or the first `'rustcall<n>` that `spelled` — the
+/// wrapper's generics, `where` clause and types — names nowhere. The one rule
+/// for a concrete wrapper ([`name_elided_return`]) and a generic struct's
+/// (`inline_generic_wrappers`), so a user lifetime spelled `'rustcall` is
+/// never declared twice (PR #498 review).
+pub(crate) fn fresh_lifetime(spelled: TokenStream2) -> syn::Lifetime {
+    let taken = names_of(spelled);
     let name = std::iter::once("rustcall".to_string())
         .chain((1..).map(|n| format!("rustcall{n}")))
         .find(|n| !taken.contains(n))
@@ -763,18 +769,12 @@ pub(crate) fn name_elided_return(
     if !returned.iter().any(|ty| has_elided_lifetime(ty)) {
         return ElidedReturn::Named;
     }
-    let mut taken: BTreeSet<String> = BTreeSet::new();
-    {
+    let fresh = {
         let predicates = &environment.where_clause;
-        lifetime_names(quote! { #environment #predicates }, &mut taken);
-    }
-    for (_, ty) in args.iter() {
-        lifetime_names(quote! { #ty }, &mut taken);
-    }
-    for ty in &returned {
-        lifetime_names(quote! { #ty }, &mut taken);
-    }
-    let fresh = fresh_lifetime(&taken);
+        let arg_types = args.iter().map(|(_, ty)| ty);
+        let returned = &returned;
+        fresh_lifetime(quote! { #environment #predicates #(#arg_types)* #(#returned)* })
+    };
     let declare = |environment: &mut syn::Generics, lifetime: &syn::Lifetime| {
         environment
             .params

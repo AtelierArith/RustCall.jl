@@ -3086,15 +3086,26 @@ pub fn inline_generic_wrappers(model: &StructModel, module_path: &[String]) -> V
                 let lifetime: syn::Lifetime = match named {
                     Some(named) => named.clone(),
                     None => {
-                        // `&'rustcall Self<T>` requires every type parameter
-                        // to outlive it.
+                        // A name the method's own lifetimes do not already
+                        // use, by the rule concrete wrappers follow.
+                        let fresh = {
+                            let predicates = &where_clause;
+                            crate::environment::fresh_lifetime(
+                                quote! { #g #predicates #(#wrapper_args)* #ty },
+                            )
+                        };
+                        // `&'fresh Self<T>` requires every type parameter to
+                        // outlive it.
                         for param in g.params.iter_mut() {
                             if let syn::GenericParam::Type(tp) = param {
-                                tp.bounds.push(syn::parse_quote!('rustcall));
+                                tp.bounds.push(syn::TypeParamBound::Lifetime(fresh.clone()));
                             }
                         }
-                        g.params.insert(0, syn::parse_quote!('rustcall));
-                        syn::parse_quote!('rustcall)
+                        g.params.insert(
+                            0,
+                            syn::GenericParam::Lifetime(syn::LifetimeParam::new(fresh.clone())),
+                        );
+                        fresh
                     }
                 };
                 let mut ty = (**ty).clone();
