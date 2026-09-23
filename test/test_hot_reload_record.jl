@@ -58,6 +58,22 @@ function _hrr_record_in(ex)
     return found
 end
 
+# The statements of the `__init__` defined in a module expression (or parsed
+# source), line numbers stripped.
+function _hrr_init_body(ex)
+    found = Any[]
+    walk(x) = nothing
+    function walk(x::Expr)
+        if x.head === :function && x.args[1] == :(__init__())
+            push!(found, filter(a -> !(a isa LineNumberNode),
+                                Base.remove_linenums!(deepcopy(x.args[2])).args))
+        end
+        foreach(walk, x.args)
+    end
+    walk(ex)
+    return only(found)
+end
+
 function _hrr_stop(name)
     RustCall.is_hot_reload_enabled(name) && RustCall.disable_hot_reload(name)
     delete!(RustCall.HOT_RELOAD_REGISTRY, name)
@@ -127,6 +143,13 @@ _hrr_with(r::RustCall.CrateBuildRecord; kwargs...) =
             @test expr_record.crate_dir == abspath(info.path)
             @test RustCall.record_build_options(expr_record) == options
             @test expr_record.python == python
+            # Both `__init__`s begin with the same prologue — the strict
+            # build-environment check, then the mirror registration — and the
+            # written file cannot skip the check (#474 review).
+            prologue = collect(RustCall._crate_init_prologue())
+            @test _hrr_init_body(ex)[1:length(prologue)] == prologue
+            @test _hrr_init_body(Meta.parseall(code))[1:length(prologue)] == prologue
+            @test prologue[1] == :(RustCall._warn_if_build_env_changed(_BUILD_RECORD; strict = true))
             # `_LIB_NAME` is read from the record in both, never recorded twice.
             @test occursin("const _LIB_NAME = _BUILD_RECORD.lib_name", code)
             @test occursin("_LIB_NAME = _BUILD_RECORD.lib_name", string(ex))
@@ -282,6 +305,37 @@ _hrr_with(r::RustCall.CrateBuildRecord; kwargs...) =
             finally
                 _hrr_stop(name)
                 RustCall.unload_library(name; close = true)
+            end
+        end
+    end
+
+    # #474 review: a written module checks its recorded build environment in
+    # `__init__`, as the in-memory module does, instead of loading a library
+    # built under another `RUSTFLAGS`.
+    @testset "a written module refuses a changed build environment at load" begin
+        mktempdir() do dir
+            crate = _hrr_crate(joinpath(dir, "crate"); package = "hrr_env_written_474",
+                               body = "#[julia]\npub fn hrr_e474() -> i32 { 1 }\n")
+            out = joinpath(dir, "bindings.jl")
+            withenv("RUSTFLAGS" => "--cfg hrr_env474") do
+                RustCall.write_bindings_to_file(crate, out; output_module_name = "HrrEnv474")
+            end
+            host = Module(:HrrEnvHost474)
+            Core.eval(host, :(using RustCall))
+            err = withenv(() -> _hrr_error(() -> Base.include(host, out)), "RUSTFLAGS" => nothing)
+            @test err !== nothing
+            @test err !== nothing && occursin("RUSTFLAGS", sprint(showerror, err))
+            # Under the recorded environment it loads and calls.
+            host2 = Module(:HrrEnvHost474b)
+            Core.eval(host2, :(using RustCall))
+            withenv("RUSTFLAGS" => "--cfg hrr_env474") do
+                Base.include(host2, out)
+            end
+            m = Base.invokelatest(getglobal, host2, :HrrEnv474)
+            try
+                @test Base.invokelatest(Base.invokelatest(getglobal, m, :hrr_e474)) == 1
+            finally
+                RustCall.unload_library(Base.invokelatest(getglobal, m, :_LIB_NAME); close = true)
             end
         end
     end

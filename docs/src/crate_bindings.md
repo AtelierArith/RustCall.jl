@@ -849,7 +849,10 @@ build environment, the Cargo configuration and the toolchain — as one
 `RustCall.CrateBuildRecord` named `_BUILD_RECORD`, the same record an
 in-memory `@rust_crate` module holds. It is what
 `RustCall.enable_hot_reload_for_crate` rebuilds from (see
-[Hot reload](hot_reload.md)). A file emitted at this version does not load
+[Hot reload](hot_reload.md)). Its `__init__` also checks the recorded build
+environment before loading, exactly as an in-memory `@rust_crate` module does:
+a written (or precompiled) module refuses to load under another `RUSTFLAGS`,
+`PYO3_PYTHON`, Cargo configuration or toolchain. A file emitted at this version does not load
 against a RustCall that predates the name; a file emitted before it records no
 build, and its module is refused by the module form of hot reload.
 

@@ -1205,6 +1205,22 @@ _warn_if_build_env_changed(r::CrateBuildRecord; strict::Bool = false) =
                                r.toolchain; python = r.python, strict = strict)
 
 """
+    _crate_init_prologue()
+
+What a generated crate module's `__init__` does before it loads its library, in
+order, shared by both emitters: the in-memory module splices these expressions
+and `emit_crate_module_code` prints them, so a written file cannot drift from
+`@rust_crate` (#474 review). First the strict build-environment check against
+`_BUILD_RECORD` — a precompiled module refuses to load a library built under
+another `RUSTFLAGS`, `PYO3_PYTHON`, Cargo configuration or toolchain (#339,
+#355) — then the mirror registration, which must precede the load (#277).
+"""
+_crate_init_prologue() = (
+    :(RustCall._warn_if_build_env_changed(_BUILD_RECORD; strict = true)),
+    :(RustCall.register_handle_mirror!(_LIB_NAME, _LIB_GEN)),
+)
+
+"""
     emit_crate_module(info::CrateInfo, lib_path::String; module_name::Union{String, Nothing}=nothing) -> Expr
 
 Generate a Julia module expression containing bindings for the crate.
@@ -1351,8 +1367,7 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
             # assignment after it would overwrite a newer generation that a
             # concurrent reload had already published, and calls through this
             # module would go back to entering the retired image (#277).
-            RustCall._warn_if_build_env_changed(_BUILD_RECORD; strict = true)
-            RustCall.register_handle_mirror!(_LIB_NAME, _LIB_GEN)
+            $(_crate_init_prologue()...)
             # A private generation copy, never `_LIB_PATH` itself: that file is
             # Cargo's output or the cache copy, and an image mapped in place
             # cannot be overwritten on Windows — the next `cargo build` of the
@@ -4305,8 +4320,12 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     push!(lines, "function __init__()")
     push!(lines, "    # Register before loading, and do not assign afterwards: an assignment")
     push!(lines, "    # after `load_artifact!` would overwrite a newer generation that a")
-    push!(lines, "    # concurrent reload had already published.")
-    push!(lines, "    RustCall.register_handle_mirror!(_LIB_NAME, _LIB_GEN)")
+    push!(lines, "    # concurrent reload had already published. The prologue is the in-memory")
+    push!(lines, "    # module's, statement for statement (`_crate_init_prologue`): the build")
+    push!(lines, "    # environment is checked against `_BUILD_RECORD` first (#474).")
+    for statement in _crate_init_prologue()
+        push!(lines, "    " * string(statement))
+    end
     push!(lines, "    # A private generation copy, never `_LIB_PATH` itself: that file is")
     push!(lines, "    # Cargo's output (or the copy `write_bindings_to_file` made of it), and")
     push!(lines, "    # an image mapped in place cannot be overwritten on Windows -- the next")
