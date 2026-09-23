@@ -574,6 +574,17 @@ module records the values it was built under and refuses to load at `__init__`
 when they no longer match, naming the variables. Re-run `Pkg.precompile(; force
 = true)` (or touch a source file of the crate) under the desired environment.
 
+Those recorded values describe the build exactly. `@rust_crate` and
+`write_bindings_to_file` take **one snapshot** of the environment when they
+start. The cfg probe, the cache key, the registry name, every Cargo and Python
+subprocess and the recorded values all come from that snapshot, never from
+`ENV` read later. So another task that changes `RUSTFLAGS` or `PATH` during the
+build cannot produce a library built under one environment and recorded under
+another. When pyo3's build script configures the crate for a Python
+interpreter, that interpreter is asked again after the build. If it was
+replaced in place during the build, the build is refused before the library is
+cached or loaded.
+
 `cache=false` is not the shape to use in a package. The library is then not
 the cache copy but whatever the build produced: Cargo's own output under the
 crate's `target/` for a crate that is already a `cdylib`, and a copy in a

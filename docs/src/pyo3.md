@@ -290,6 +290,16 @@ cached libraries and two different registry entries — as is the build
 environment the wrapper inherits (`RUSTFLAGS` and the rest of the #282
 allowlist), which reaches `cargo` and so decides the binary.
 
+That environment is read **once** per build. The link plan, the interpreter
+selection, the cfg probe, the key, the wrapper build and the module's record
+all come from one snapshot taken when `@rust_crate` (or
+`write_bindings_to_file`, or `RustCall.build_pyo3_extension` on the host path)
+starts. A `PATH` or `PYO3_PYTHON` changed by another task during the build
+selects no other interpreter. The interpreter the build is pinned to is asked
+again after the build. If it was replaced in place, for example upgraded under
+the same path, the build is refused before it is cached, because the library
+was configured for a Python its key does not name.
+
 ### The crate needs an `rlib` target
 
 The wrapper crate depends on yours **as a Rust library**, so your `[lib]` must
