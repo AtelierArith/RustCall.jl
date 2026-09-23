@@ -652,8 +652,6 @@ fn cfg_producing_meta(meta: &Meta) -> Option<Meta> {
     Some(syn::parse_quote!(cfg_attr(#pred, #(#kept),*)))
 }
 
-/// The combined predicate text of an item's `#[cfg(...)]` attributes
-/// (`unix`, `all(unix, feature = "x")`), empty when there is none.
 /// The `#[cfg]` attributes an item is subject to: those of every enclosing
 /// inline module (`enclosing`, outermost first) followed by its own. An item in
 /// `#[cfg(feature = "x")] mod a { #[cfg(unix)] fn f }` exists only under
@@ -665,6 +663,8 @@ pub fn effective_cfg_attrs(enclosing: &[Attribute], attrs: &[Attribute]) -> Vec<
     out
 }
 
+/// The combined predicate text of an item's `#[cfg(...)]` attributes
+/// (`unix`, `all(unix, feature = "x")`), empty when there is none.
 pub fn predicate_string(attrs: &[Attribute]) -> String {
     let preds: Vec<String> = attrs
         .iter()
@@ -678,8 +678,6 @@ pub fn predicate_string(attrs: &[Attribute]) -> String {
     }
 }
 
-/// Canonical text of a cfg predicate: `unix`, `feature = "x"`, `all(a, b)`.
-/// (`quote` would insert spaces between every token.)
 /// The crate features an item's `#[cfg(...)]` predicates depend on, in the
 /// order they appear and without duplicates.
 ///
@@ -727,6 +725,8 @@ fn collect_features(meta: &Meta, out: &mut Vec<String>) {
     }
 }
 
+/// Canonical text of a cfg predicate: `unix`, `feature = "x"`, `all(a, b)`.
+/// (`quote` would insert spaces between every token.)
 pub fn meta_to_string(meta: &Meta) -> String {
     match meta {
         Meta::Path(path) => path

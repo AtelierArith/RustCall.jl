@@ -1,8 +1,8 @@
 //! `rustcall-extract`: command-line front end over `rustcall_julia_core`.
 //!
 //! ```text
-//! rustcall-extract manifest   --mode <inline|crate> [--edition YEAR] [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] (--crate-root FILE | FILE...)
-//! rustcall-extract wrap       --crate-name NAME [--edition YEAR] [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] (--crate-root FILE | FILE...)
+//! rustcall-extract manifest   --mode <inline|crate> [--edition YEAR] [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--build-env-file FILE] [--inputs-out FILE] [--skip-unparsable] (--crate-root FILE | FILE...)
+//! rustcall-extract wrap       --crate-name NAME [--edition YEAR] [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--build-env-file FILE] [--inputs-out FILE] [--skip-unparsable] (--crate-root FILE | FILE...)
 //! rustcall-extract expand     [--manifest FILE] [--cfg-file FILE] [--cfg-lenient] FILE
 //! rustcall-extract specialize --fn NAME --new-name NAME --bind T=TYPE... [--manifest FILE] FILE
 //! rustcall-extract specialize-many --spec FILE [--manifest FILE] FILE
@@ -29,8 +29,8 @@ use rustcall_julia_core::manifest::{Manifest, Mode, SCHEMA_VERSION};
 use serde::Deserialize;
 
 const USAGE: &str = "usage:
-  rustcall-extract manifest   --mode <inline|crate> [--edition YEAR] [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] (--crate-root FILE | FILE...)
-  rustcall-extract wrap       --crate-name NAME [--edition YEAR] [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--skip-unparsable] (--crate-root FILE | FILE...)
+  rustcall-extract manifest   --mode <inline|crate> [--edition YEAR] [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--build-env-file FILE] [--inputs-out FILE] [--skip-unparsable] (--crate-root FILE | FILE...)
+  rustcall-extract wrap       --crate-name NAME [--edition YEAR] [--out FILE] [--cfg-file FILE] [--cfg-lenient] [--build-env-file FILE] [--inputs-out FILE] [--skip-unparsable] (--crate-root FILE | FILE...)
   rustcall-extract expand     [--manifest FILE] [--cfg-file FILE] [--cfg-lenient] FILE
   rustcall-extract specialize --fn NAME --new-name NAME --bind PARAM=TYPE... [--manifest FILE] FILE
   rustcall-extract specialize-many --spec FILE [--manifest FILE] FILE
@@ -42,6 +42,7 @@ Use '-' as FILE to read from stdin.
 if a required variable is missing. Shared by manifest and wrap.
 --inputs-out: write the scanned source paths as a TOML files array; requires
 --crate-root in crate mode. Includes build-generated files actually read.
+Shared by manifest and wrap.
 --cfg-file: output of `rustc --print cfg`; items disabled by #[cfg] are dropped
 from the manifest and the expanded source. Without it every item is reported.
 --cfg-lenient: with --cfg-file, decide only target predicates (unix, windows,
