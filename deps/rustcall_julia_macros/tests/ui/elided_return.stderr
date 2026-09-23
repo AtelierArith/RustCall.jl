@@ -1,0 +1,17 @@
+error: `Buf::from_str`: the returned reference borrows from argument `s` by lifetime elision, but `s` arrives from Julia as a pointer and a length and is rebuilt into a string that lives only for the call, so nothing borrowed from it can be returned. Return an owned value, or give the returned reference a lifetime that does not come from `s` (#484).
+  --> tests/ui/elided_return.rs:16:24
+   |
+16 |     pub fn from_str(s: &str) -> &i32 {
+   |                        ^
+
+error: `Buf::from_named`: argument `s` arrives from Julia as a pointer and a length and is rebuilt into a string that lives only for the call, so `'a` cannot be required to outlive the call; but the wrapper returns `&'a i32`, which names it. Take `String`, or relate `'a` to nothing that outlives the call (#482).
+  --> tests/ui/elided_return.rs:23:31
+   |
+23 |     pub fn from_named<'a>(s: &'a str) -> &i32 {
+   |                               ^^
+
+error: `free_from_str`: the returned reference borrows from argument `s` by lifetime elision, but `s` arrives from Julia as a pointer and a length and is rebuilt into a string that lives only for the call, so nothing borrowed from it can be returned. Return an owned value, or give the returned reference a lifetime that does not come from `s` (#484).
+  --> tests/ui/elided_return.rs:37:25
+   |
+37 | pub fn free_from_str(s: &str) -> &i32 {
+   |                         ^

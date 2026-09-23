@@ -351,6 +351,32 @@ than as its outermost reference (`&'a mut &'a Buf`), or a type predicate over
 it (`where &'c str: Tr`) — is refused at that lifetime with a message naming
 the method; take `String` instead.
 
+### Returned references
+
+A method or function may return a reference with an elided lifetime
+(`pub fn get(&self) -> &i32`, `-> &Self`, `-> Option<&i32>`, `-> &'_ i32`) (#484).
+The wrapper takes the receiver as a raw pointer, so it can't copy that return
+as written. Instead it names the lifetime that Rust's elision rules pick for
+the method: the receiver's (`&self`, `&'a self`), or, with no receiver, the
+single lifetime of a passed-through argument (`fn pick(o: &Buf) -> &i32`).
+Exported symbols don't change.
+
+A reference crosses the C ABI as a pointer, and the FFI contract has no row
+for `&T`. So under the default `RustCall.FFI_STRICT[] = :error`, the block
+refuses such a method by name, as it always did for a named `-> &'a i32`.
+With `:warn`, the block compiles, and `@rust rustcall_Buf_get(obj.ptr)::Ptr{Int32}`
+returns a pointer into the object. That pointer is valid only while the object
+is. Returning a value (`-> i32`) is the usual choice.
+
+If the only lifetime is a `&str` argument's (`fn f(s: &str) -> &i32`), the
+returned reference would borrow the string that the wrapper rebuilt for the
+call, and that string is gone when the wrapper returns. RustCall refuses such
+a function at that argument, with a message that names it. Return an owned
+value, or give the return a lifetime that doesn't come from the string. An
+item whose own output lifetime is ambiguous (`fn f(a: &Buf, b: &Buf) -> &i32`)
+gets rustc's E0106 at its own signature, and RustCall generates no wrapper for
+it.
+
 ## Static Methods
 
 Static methods (methods without `self`) are supported on `#[derive(JuliaStruct)]`
