@@ -1,15 +1,14 @@
-# Compilation caching for RustCall.jl
-# Phase 2: Persistent cache system
+# Compilation caching for RustCall.jl: the persistent cache of compiled
+# artifacts in a Scratch.jl space (`get_cache_dir`, #252).
 #
-# IMPORTANT — Hashing rule for persistent keys
-# =============================================
+# IMPORTANT — Hashing rule for keys and names
+# ===========================================
 # Julia's built-in `hash()` is randomized per session (hash flooding protection).
-# NEVER use `hash()` for values that are persisted to disk or must be stable across
-# Julia processes (cache keys, library names, file names).
-#
-# Use `stable_content_hash()` (defined below) for all persistent identifiers.
-# In-memory-only Dict keys (e.g., IRUST_FUNCTIONS) may
-# still use `hash()` since they are never written to disk.
+# Every cache key, library name and temporary project name derives from the
+# artifact identity in `src/artifact_id.jl` (`artifact_key`, #278) — the
+# `@irust` snippet keys included — and `scripts/lint_artifact_identity.sh` fails
+# CI on a `hash()`-named artifact anywhere else. `stable_content_hash()` (below)
+# is a plain SHA-256 of a string for content digests that are not keys.
 
 using SHA
 using Dates
@@ -67,7 +66,8 @@ end
     CACHE_FORMAT_VERSION
 
 Version of the on-disk cache *layout*, and only of the layout: it names the
-directory every cached artifact lives under (`.../RustCall/v\$(CACHE_FORMAT_VERSION)`).
+directory every cached artifact lives under, the scratch space
+`cache-v\$(CACHE_FORMAT_VERSION)` (`CACHE_SCRATCH_NAME`, `get_cache_dir`).
 
 Bump it whenever the meaning of the files under `get_cache_dir` changes in a way
 that makes older entries unreachable — as issue #278 Phase B does by routing
@@ -79,8 +79,10 @@ The identity *record* has its own version, `ARTIFACT_ID_SCHEMA_VERSION`, which i
 part of every key; this constant covers the directory layout only.
 
 Version history:
-- `1` — implicit, pre-#278: cache files directly under `.../RustCall`.
-- `2` — every key produced by `artifact_key` (#278 Phase B).
+- `1` — implicit, pre-#278: cache files directly under `~/.julia/compiled/.../RustCall`.
+- `2` — every key produced by `artifact_key` (#278 Phase B); under
+  `~/.julia/compiled/.../RustCall/v2` until #252 moved the cache into the
+  `cache-v2` scratch space.
 """
 const CACHE_FORMAT_VERSION = 2
 
@@ -682,12 +684,12 @@ Save cache metadata to a JSON file.
 # Example
 ```julia
 metadata = CacheMetadata(
-    cache_key="abc123...",
-    code_hash=0x1234...,
-    compiler_config="2_false_x86_64-unknown-linux-gnu",
-    target_triple="x86_64-unknown-linux-gnu",
-    created_at=now(),
-    functions=["add", "multiply"]
+    "abc123...",                             # cache_key
+    stable_content_hash(source),             # code_hash
+    "2_false",                               # compiler_config
+    "x86_64-unknown-linux-gnu",              # target_triple
+    now(),                                   # created_at
+    ["add", "multiply"],                     # functions
 )
 save_cache_metadata("abc123...", metadata)
 ```
@@ -731,9 +733,8 @@ Load cache metadata from a JSON file.
 # Returns
 - `Union{CacheMetadata, Nothing}`: The loaded metadata, or `nothing` if not found
 
-# Note
-This function currently returns `nothing` as a placeholder. Full JSON parsing
-will be implemented in a future version.
+Reads back the flat JSON object `save_cache_metadata` writes; a file it cannot
+parse is reported with a warning and treated as absent.
 
 # Example
 ```julia

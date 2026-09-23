@@ -349,7 +349,8 @@ function _lockfile_names_root(path::AbstractString, root::AbstractString)
 end
 
 """
-    _publish_lockfile!(stored, target; wait = 10.0) -> String
+    _publish_lockfile!(stored, target; wait = 10.0, replace = false,
+                       root = nothing) -> String
 
 Publish the lockfile a project just resolved (`target`) to the store (`stored`)
 so that exactly one resolution wins, and return the digest of the file the
@@ -360,7 +361,8 @@ beside the entry (`_claim_lockfile!`), which every filesystem makes atomic — a
 rename guarded by an `isfile` check is not, and two first-time builders could
 pass the check together. The process that creates the claim is the publisher:
 it stages the content beside the entry and renames it into place (a whole file
-or none), then removes the claim. Every other process is a loser: it waits up
+or none) unless an entry is already there, then removes the claim. Every other
+process is a loser: it waits up
 to `wait` seconds for the published file to appear, discards its own
 resolution, copies the published file into its project and returns *that*
 digest — so every racer builds the published graph (#313 review).
@@ -372,14 +374,12 @@ precisely the two-publisher race the claim exists to prevent. A claim that
 outlives `wait` with nothing published behind it therefore fails loudly, naming
 the file: if no other RustCall process is resolving the set, a previous one
 died holding the claim — delete that file (or run `clear_lockfiles()`) and
-build again.
+build again. That failure is a `CargoBuildError`.
 
 With `replace = true` the claim holder revalidates the stored file while it
 holds the claim. It replaces the file only when it still does not name `root`;
 otherwise it replays the now-fresh entry. A loser with a stale file waits for
 the entry to name `root`, not merely for any file to exist (#322).
-
-Throws `CargoBuildError` in that case.
 """
 function _publish_lockfile!(stored::AbstractString, target::AbstractString;
                             wait::Real = 10.0, replace::Bool = false,

@@ -50,8 +50,13 @@ exception and the session survives.
   not unwind. RustCall pins `panic = "unwind"` in every manifest it writes and
   in the environment it passes to Cargo; a `@rust_crate` pointing at a crate
   that pins `abort` itself is the user's decision.
-- A panic inside a `Drop` implementation run by a destructor, and a panic in a
-  generated field accessor.
+- A second panic during Rust's unwind cleanup (a double-panicking `Drop`):
+  `catch_unwind` cannot contain it.
+
+Generated field accessors and clone helpers are behind the same boundary and
+raise this exception. A panic inside a `Drop` implementation run by a generated
+destructor is caught too; when the destructor runs from a finalizer it cannot
+raise, so it is counted in `finalizer_failure_count()` instead.
 
 See `docs/src/panics.md` for the full semantics matrix.
 

@@ -193,7 +193,7 @@ impl Policy {
 }
 
 /// The private thread-local slot the panic channel of a **function or method
-/// wrapper** writes (`codegen::function_wrapper`). The symbol is upper-cased,
+/// wrapper** writes (`codegen::generate_wrapper`). The symbol is upper-cased,
 /// so `foo` and `FOO` would share one slot — a duplicate `thread_local!` in
 /// the same module, which their differing exported symbols would not catch.
 pub fn panic_slot(symbol: &str) -> String {
@@ -317,15 +317,6 @@ pub fn declares_borrowed_string(abis: [&str; 4]) -> bool {
     abis.contains(&"str")
 }
 
-/// Every name the wrapper of this `#[julia]` or PyO3 function defines.
-///
-/// Empty when the entry defines nothing: a generic or unexported item, one
-/// whose `#[cfg]` the scan could not decide (two variants under mutually
-/// exclusive predicates are the normal shape of a portable crate, not a
-/// clash), or a plain `#[no_mangle] extern "C"` function, which is reported so
-/// Julia can register its return type but for which RustCall generates no
-/// wrapper at all — a hand-written `release` / `release_take_panic` pair is
-/// two unrelated exports, not a collision (#338).
 /// How many **trailing** arguments carry a Python default.
 ///
 /// The PyO3 wrapper crate emits one entry point per arity a Python caller may
@@ -353,6 +344,15 @@ pub fn default_arity_name(base: &str, omitted: usize) -> String {
     }
 }
 
+/// Every name the wrapper of this `#[julia]` or PyO3 function defines.
+///
+/// Empty when the entry defines nothing: a generic or unexported item, one
+/// whose `#[cfg]` the scan could not decide (two variants under mutually
+/// exclusive predicates are the normal shape of a portable crate, not a
+/// clash), or a plain `#[no_mangle] extern "C"` function, which is reported so
+/// Julia can register its return type but for which RustCall generates no
+/// wrapper at all — a hand-written `release` / `release_take_panic` pair is
+/// two unrelated exports, not a collision (#338).
 pub fn function_claims(f: &Function, policy: Policy) -> Vec<Claim> {
     if !f.exported || f.symbol.is_empty() || (policy.skip_cfg_gated && !f.cfg.is_empty()) {
         return Vec::new();
@@ -372,21 +372,6 @@ pub fn function_claims(f: &Function, policy: Policy) -> Vec<Claim> {
     }
     // The wrapper and its private items are emitted next to the function.
     exported_first(scoped(out, &Scope::Module(f.module_path.clone())))
-}
-
-/// The same for a PyO3-scanned function, whose ABI columns are not filled in
-/// yet: the wrapper crate decides them later (`crate::wrap`), so the string
-/// helpers are reserved from the declared types instead.
-pub fn scanned_function_claims(f: &Function, owned: bool, borrowed: bool) -> Vec<Claim> {
-    if f.symbol.is_empty() {
-        return Vec::new();
-    }
-    let policy = Policy::PYO3_SCAN;
-    let mut out = wrapper_claims(&f.symbol);
-    if !f.ffi_name.is_empty() {
-        out.extend(string_claims(&f.ffi_name, owned, borrowed, policy));
-    }
-    out
 }
 
 /// Every name the wrappers of this struct define: the destructor, `clone`,

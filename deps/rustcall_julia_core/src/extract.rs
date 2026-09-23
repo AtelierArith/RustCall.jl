@@ -78,10 +78,11 @@ pub fn typed_arg(pt: &syn::PatType) -> Arg {
 }
 
 /// The return kind of a wrapper that does no `Result`/`Option` lowering:
-/// `Unit` for `()` or no return type, `Plain` otherwise. Struct method
-/// wrappers are in that category (`generate_method_wrapper*` never wraps a
-/// `Result`), so their manifest entry says so explicitly rather than leaving a
-/// consumer to infer it from the type spelling (#275, #276).
+/// `Unit` for `()` or no return type, `Plain` otherwise, so a manifest entry
+/// says so explicitly rather than leaving a consumer to infer it from the type
+/// spelling (#275, #276). Since #268 a struct method's `Result` / `Option` is
+/// lowered like a free function's (`method_return_shape`); this kind stays for
+/// the methods that are not lowered — a constructor, a generic struct's.
 pub fn plain_return_kind(output: &ReturnType) -> ReturnKind {
     match output {
         ReturnType::Default => ReturnKind::Unit,
@@ -95,13 +96,8 @@ pub fn plain_return_kind(output: &ReturnType) -> ReturnKind {
     }
 }
 
-/// The manifest return shape of a `#[julia]` struct method (#268).
-///
-/// Before #268 a method wrapper never wrapped `Result` / `Option`, so this was
-/// always `Plain` / `Unit` and the payload columns were empty. Both wrapper
-/// flavours now lower them exactly like a free function, and this is the one
-/// place that says so, shared by inline expansion and crate extraction so the
-/// manifest cannot disagree with the code that was generated.
+/// The manifest return shape of a `#[julia]` struct method (#268): its return
+/// kind and the payload type / ABI columns (`method_return_shape`).
 #[derive(Debug, Default, Clone)]
 pub struct MethodReturnShape {
     pub kind: ReturnKind,
@@ -113,6 +109,14 @@ pub struct MethodReturnShape {
     pub inner_abi: String,
 }
 
+/// The manifest return shape of a `#[julia]` struct method.
+///
+/// Before #268 a method wrapper never wrapped `Result` / `Option`, so this was
+/// always `Plain` / `Unit` and the payload columns were empty. Both wrapper
+/// flavours now lower them exactly like a free function, and this is the one
+/// place that says so, shared by inline expansion and crate extraction so the
+/// manifest cannot disagree with the code that was generated.
+///
 /// `wrapped` is false for the methods of a **generic** struct: those wrappers
 /// are registered for monomorphization (`inline_generic_wrappers`) and return
 /// the type as written, so their manifest entry must keep saying `Plain`.

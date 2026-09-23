@@ -4,7 +4,7 @@ Everything an inline block with a `// cargo-deps:` comment (or a
 `` //! ```cargo `` block) goes through instead of a bare `rustc`: the
 dependency DSL and its resolution, and the temporary Cargo projects RustCall
 generates, builds and caches. External crates are on
-[External crates and hot reload](crates.md).
+[External crates](crates.md).
 
 ## Dependencies (`src/dependencies.jl`)
 

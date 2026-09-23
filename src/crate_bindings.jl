@@ -1423,17 +1423,6 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
     Expr(:module, true, mod_name, module_body)
 end
 
-"""
-    generate_crate_function_wrappers(info::CrateInfo, lib_path::String) -> Expr
-
-Generate Julia wrapper functions for the `#[julia]` functions at the crate root.
-Functions inside modules are emitted into the submodule of their `module_path`
-by `emit_crate_module` (#300).
-"""
-function generate_crate_function_wrappers(info::CrateInfo, lib_path::String)
-    _function_wrappers_expr(_module_tree(info).functions)
-end
-
 function _function_wrappers_expr(functions)
     exprs = Expr[]
 
@@ -1562,7 +1551,7 @@ function _check_module_names(tree::ModuleNode)
     for name in _CRATE_MODULE_HELPERS
         taken[String(name)] = "a helper every generated module defines"
     end
-    for name in ("_LIB_PATH", "_SYMBOLS", "_SYMBOL_LOCK", "_PRELOAD_LIBRARIES", "__init__")
+    for name in ("_LIB_PATH", "_SYMBOLS", "_PRELOAD_LIBRARIES", "__init__")
         taken[name] = "a helper every generated module defines"
     end
     for name in _CRATE_MODULE_PRELUDE
@@ -2138,18 +2127,6 @@ function _generate_option_function_wrapper(func::RustFunctionSignature, arg_syms
         end
         export $func_name
     end
-end
-
-"""
-    generate_crate_struct_wrappers(info::CrateInfo, lib_path::String) -> Expr
-
-Generate Julia struct definitions and wrappers for the `#[julia]` structs at the
-crate root. Structs inside modules are emitted into the submodule of their
-`module_path` by `emit_crate_module` (#300).
-"""
-function generate_crate_struct_wrappers(info::CrateInfo, lib_path::String)
-    root = _module_tree(info)
-    _struct_wrappers_expr(root.structs, _static_method_collisions(root.functions, root.structs))
 end
 
 function _struct_wrappers_expr(structs, colliding::Set{String})
@@ -3547,6 +3524,12 @@ end
     get_function_pointer_from_lib(lib_handle::Ptr{Cvoid}, func_name::String) -> Ptr{Cvoid}
 
 Get a function pointer from a loaded library.
+
+No generated wrapper calls it — they resolve through their module's generation
+snapshot. It stays because the `import RustCall: ...` prelude of every
+generated module names it, including every file an older RustCall wrote with
+`write_bindings_to_file`, and such a file must keep loading
+(`BINDINGS_FORMAT_VERSION`).
 """
 function get_function_pointer_from_lib(lib_handle::Ptr{Cvoid}, func_name::String)
     Libdl.dlsym(lib_handle, func_name)

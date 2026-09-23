@@ -39,23 +39,6 @@ pub extern "C" fn rust_box_new_bool(value: bool) -> *mut c_void {
     Box::into_raw(Box::new(value)) as *mut c_void
 }
 
-/// Drop a Box<T> (generic drop function)
-/// Note: This is unsafe because we don't know the type T
-/// In practice, type-specific drop functions should be used
-///
-/// # Safety
-///
-/// `ptr` must be null or the only owner of a `Box` allocation of size 1 and
-/// alignment 1 (it is freed with that layout); a box of any other type must go
-/// through its typed `rust_box_drop_<t>`. The pointer is invalid afterwards.
-#[no_mangle]
-#[allow(clippy::from_raw_with_void_ptr)] // the size-1 layout is this symbol's contract
-pub unsafe extern "C" fn rust_box_drop(ptr: *mut c_void) {
-    if !ptr.is_null() {
-        let _ = Box::from_raw(ptr);
-    }
-}
-
 /// Drop a Box<i32>
 ///
 /// # Safety

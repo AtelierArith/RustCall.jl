@@ -324,8 +324,7 @@ end
                 # An inherited profile override does not reach the probe
                 # either: the wrapper build pins unwinding through its
                 # policy, so the probe runs under the same environment
-                # (#307 review). The memo is cleared so the probe really runs.
-                empty!(RustCall._WRAPPER_CFG_TEXT)
+                # (#307 review). The probe is not memoized, so it really runs.
                 inherited = withenv("CARGO_PROFILE_RELEASE_PANIC" => "abort") do
                     RustCall.pyo3_link_plan(dir)
                 end
@@ -450,38 +449,6 @@ end
             write(joinpath(ws, "Cargo.lock"), "# revised again\n")
             RustCall._artifact_reset_digest_caches!()
             @test RustCall.compute_crate_hash(standalone_info) == key_standalone
-
-            # The probe's memo is keyed on the same root inputs: a changed
-            # root lockfile or manifest is a new probe, not the old answer
-            # (#307 review).
-            memo_before = RustCall._wrapper_probe_memo_key(member, String[], true, true)
-            write(joinpath(ws, "Cargo.lock"), "# revised once more\n")
-            @test RustCall._wrapper_probe_memo_key(member, String[], true, true) != memo_before
-            memo_lock = RustCall._wrapper_probe_memo_key(member, String[], true, true)
-            write(joinpath(ws, "Cargo.toml"),
-                  read(joinpath(ws, "Cargo.toml"), String) * "\n# a root manifest edit\n")
-            @test RustCall._wrapper_probe_memo_key(member, String[], true, true) != memo_lock
-            @test RustCall._wrapper_probe_memo_key(member, String[], true, false) !=
-                  RustCall._wrapper_probe_memo_key(member, String[], true, true)
-
-            # ... and on pyo3's own configuration, which `pyo3-build-config`
-            # turns into `Py_3_x` cfgs: a different `PYO3_PYTHON`, or the same
-            # `PYO3_CONFIG_FILE` path with different contents, is a new probe —
-            # the artifact key already moves, the memo must move with it (#307
-            # review).
-            memo_plain = RustCall._wrapper_probe_memo_key(member, String[], true, true)
-            withenv("PYO3_PYTHON" => joinpath(ws, "python3.12")) do
-                @test RustCall._wrapper_probe_memo_key(member, String[], true, true) != memo_plain
-            end
-            config = joinpath(ws, "pyo3-config.txt")
-            write(config, "implementation=CPython\nversion=3.12\n")
-            withenv("PYO3_CONFIG_FILE" => config) do
-                memo_config = RustCall._wrapper_probe_memo_key(member, String[], true, true)
-                @test memo_config != memo_plain
-                write(config, "implementation=CPython\nversion=3.13\n")
-                @test RustCall._wrapper_probe_memo_key(member, String[], true, true) != memo_config
-            end
-            @test RustCall._wrapper_probe_memo_key(member, String[], true, true) == memo_plain
         end
 
         # A PyO3 crate whose requested build exposes nothing falls back to the
@@ -863,14 +830,6 @@ end
         end
         @test !haskey(unpinned, "PYO3_PYTHON")
         @test unpinned["CARGO_PROFILE_DEV_PANIC"] == "unwind"
-        # ... and the pinned interpreter is a memo input, since it need not be
-        # in `ENV` for `_pyo3_env_key` to see.
-        crate = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_optional")
-        plain = RustCall._wrapper_probe_memo_key(crate, String[], true, true)
-        @test RustCall._wrapper_probe_memo_key(crate, String[], true, true; interpreter = python) !=
-              plain
-        @test RustCall._wrapper_probe_memo_key(crate, String[], true, true; interpreter = "") ==
-              plain
     end
 
     @testset "the conservative plan keeps the requested features (#307 review)" begin

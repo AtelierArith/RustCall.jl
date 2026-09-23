@@ -61,10 +61,6 @@ function _precompile_init_load_path()
                           Ref{Union{Nothing, Ptr{Cvoid}}}(nothing)),
                       :setindex!, ptr)
 
-        # DROP_WARNING_SHOWN[] = flag
-        _state_mutate(add(:__precompile_drop_warning_shown, Ref{Bool}(false)),
-                      :setindex!, true)
-
         # The deferred-drop queue, as `flush_deferred_drops` drains it.
         queue = add(:__precompile_deferred_drops, DeferredDrop[])
         _state_mutate(queue, :push!,

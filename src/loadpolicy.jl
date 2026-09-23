@@ -1,31 +1,32 @@
-# Explicit load/compile policy object (issue #277, Phase A).
+# Explicit load/compile policy object (issue #277).
 #
-# Today every compile/load front door carries its own copy of four decisions:
+# Before #277 every compile/load front door carried its own copy of four
+# decisions:
 #
-#   1. the `dlopen` flag set (`RTLD_LOCAL` vs `RTLD_GLOBAL`)          — 12 sites
+#   1. the `dlopen` flag set (`RTLD_LOCAL` vs `RTLD_GLOBAL`)
 #   2. the panic strategy of the produced artifact (`abort` vs `unwind`)
 #      and what the generated `extern "C"` boundary does about it
 #   3. whether the loaded handle is registered in `RUST_LIBRARIES`, under what
 #      kind of key, whether an existing entry is replaced or kept, and whether
-#      `CURRENT_LIB` moves                                            — 8 sites
+#      `CURRENT_LIB` moves
 #   4. the finalizer / ownership policy of the types the artifact produces
 #
-# Because the policy lives at the call site, the same user-visible construct
-# behaves differently depending on which door it came through — an inline
-# `rust"""` block is RTLD_LOCAL without `// cargo-deps:` and RTLD_GLOBAL with
-# it (#250).  This file introduces one record that names
-# those four decisions, plus one named constructor per existing front door, so
-# that Phase B can move call sites onto the shared loader one at a time without
-# having to agree on the target policy first.
+# so the same user-visible construct behaved differently depending on which
+# door it came through — an inline `rust"""` block was RTLD_LOCAL without
+# `// cargo-deps:` and RTLD_GLOBAL with it (#250).  This file names those four
+# decisions in one record, with one named constructor per front door.  Since
+# Phase B2 every policy is `RTLD_LOCAL | RTLD_NOW`, and every door RustCall
+# builds itself is pinned to `panic = "unwind"` behind a `catch_unwind`
+# boundary (#244); only the user's own crate (`:crate_profile`) keeps its
+# profile's strategy.
 #
 # Phase A was strictly additive.  Phase B (#277) makes this file the *only*
 # place that opens, registers and unloads a compiled artifact: `load_artifact!`
 # / `unload_artifact!` / `alias_artifact!` below own the `dlopen`, the
 # `RUST_LIBRARIES` entry, the per-library symbol and return-type tables, the
 # function-pointer cache and `CURRENT_LIB`, as one transaction under
-# `REGISTRY_LOCK`.  Each named constructor still records the policy of its own
-# front door, so a migration is behaviour-neutral at the moment of the swap and
-# any later change of policy is one edit in one place.
+# `REGISTRY_LOCK`.  Each named constructor records the policy of its own front
+# door, so a change of policy is one edit in one place.
 #
 # Related issues: #244 (panic containment), #249 (finalizers), #250 (symbol
 # visibility / unload), #252, #255 (failed hot reload empties the registry),
@@ -90,8 +91,8 @@ every front door keeps a name.
 
 - `name::String` — the front door this policy describes, for diagnostics.
 
-- `dlopen_flags::UInt32` — the exact flag set handed to `Libdl.dlopen`.
-  Subsumes the 12 open-coded flag sets listed in `call_sites`.
+- `dlopen_flags::UInt32` — the exact flag set handed to `Libdl.dlopen`:
+  `RTLD_LOCAL | RTLD_NOW` for every named policy.
 
 - `global_symbols::Bool` — whether the flag set includes `RTLD_GLOBAL`, i.e.
   whether this artifact publishes its symbols into the process-global
@@ -99,30 +100,28 @@ every front door keeps a name.
 
 - `panic_strategy::Symbol` — the panic strategy the artifact is *compiled*
   with, one of:
-    * `:abort` — RustCall passes `-C panic=abort` (`src/compiler.jl:219`, `:381`);
-    * `:unwind` — the artifact is pinned to unwinding;
-    * `:cargo_default` — RustCall drives Cargo but pins nothing: the generated
-      `[profile.release]` writes only `opt-level`/`lto`
-      (`src/cargoproject.jl:126-128`), and the helper library has no profile
-      section at all, so the result is *Cargo's default for the profile,
-      subject to `CARGO_PROFILE_<PROFILE>_PANIC` from the environment*.
-      `build_cargo_project` (`src/cargobuild.jl`) runs Cargo with the Julia
-      process environment unless a captured snapshot is replayed through
-      `setenv` (the `env` keyword, #272), and `deps/build.jl` always inherits,
-      so `CARGO_PROFILE_RELEASE_PANIC=abort` silently produces an aborting
-      artifact.  Resolve it with `effective_panic_strategy`;
+    * `:unwind` — RustCall pins unwinding: `-C panic=unwind` on the `rustc`
+      command line (`rustc_panic_flags`), `panic = "unwind"` in a generated
+      `[profile.release]` (`cargo_profile_panic_line`) and
+      `CARGO_PROFILE_<PROFILE>_PANIC=unwind` in Cargo's environment, so an
+      inherited `CARGO_PROFILE_RELEASE_PANIC=abort` cannot turn it into an
+      aborting build.  Every door RustCall builds itself carries this value;
     * `:crate_profile` — RustCall does **not** control the build: Cargo runs in
       the *user's* crate, so the effective profile (the crate's own
       `[profile.release]`, a workspace profile, `.cargo/config.toml`, or
       `CARGO_PROFILE_RELEASE_PANIC`) decides, and `panic = "abort"` there is
-      honoured.  Unknown to Phase A, hence a separate value rather than a
-      guess.
+      honoured, hence a separate value rather than a guess;
+    * `:abort` — `-C panic=abort`; the keyword constructor's default, which no
+      named policy uses any more (the direct-`rustc` path aborted until #244);
+    * `:cargo_default` — Cargo drives the build and RustCall pins nothing, so
+      Cargo's default for the profile applies, subject to
+      `CARGO_PROFILE_<PROFILE>_PANIC` from the environment.  No named policy
+      uses it any more; `effective_panic_strategy` resolves it.
 
 - `boundary_catches_panics::Bool` — whether the generated `extern "C"` wrapper
-  is expected to wrap the user body in `std::panic::catch_unwind`.  There are
-  zero `catch_unwind` in the tree today, so this is `false` everywhere; on the
-  `:unwind` paths that means a panic crossing the boundary is undefined
-  behaviour (#244).
+  wraps the user body in `std::panic::catch_unwind` and reports the panic
+  through the thread-local panic channel.  `true` for every named policy
+  (#244, #346).
 
 - `registry::Symbol` — where the loaded handle is recorded:
   `:rust_libraries` (the `RUST_LIBRARIES` dict), `:module_local` (a `Ref` in
@@ -134,28 +133,25 @@ every front door keeps a name.
   `:lib_basename` (unused since #278), `:irust_hash` (`irust_<short id>`),
   `:crate_lib_name` (hot reload), or `:none`.
 
-- `registration_mode::Symbol` — `:replace` (assign unconditionally, as the
-  five `src/ruststr.jl` sites do) or `:insert_only` (keep an existing entry, as
-  `src/generics.jl:250-253` deliberately does behind `if !haskey(...)`).  The
-  distinction matters because `_unique_source_name` (`src/compiler.jl:68-72`)
-  gives every non-debug compilation the same `rust_code` basename, so the
-  generics key collides across instantiations and an unconditional assignment
-  would drop the live handle together with its function-pointer cache.
+- `registration_mode::Symbol` — what `load_artifact!` does when the name is
+  already registered: `:replace` (install the new image and retire the old
+  one) or `:insert_only` (keep the existing entry and its function-pointer
+  cache, and hand the loser the incumbent image; `generics_policy`).
 
 - `sets_current_lib::Bool` — whether the site also moves `CURRENT_LIB[]`.
 
 - `finalizer_frees::Bool` — whether objects produced by this artifact free
-  their Rust allocation in their finalizer.  `false` for inline `#[julia]`
-  structs (`src/structs.jl:157-159`, `:282-285`, disabled "to diagnose
-  segfault"), `true` for `@rust_crate` structs (`src/crate_bindings.jl:550`) —
-  opposite lifetime semantics for the same user-visible construct (#249).
+  their Rust allocation in their finalizer.  `true` for inline `#[julia]`
+  structs (since #277 Phase B4) and `@rust_crate` structs alike (#249);
+  `false` for the generics and `@irust` policies.
 
-- `call_sites::Vector{String}` — the `file:line` sites this policy is intended
-  to subsume in Phase B.
+- `call_sites::Vector{String}` — the sites this policy was written to subsume
+  (#277).  Kept as a record of that inventory; its `file:line` references
+  date from it and are not maintained.
 
-- `issues::Vector{Int}` — the open issues caused by this policy's divergence.
+- `issues::Vector{Int}` — the issues behind this policy's decisions.
 
-- `notes::String` — free-form description of the divergence.
+- `notes::String` — free-form description of the policy.
 """
 struct LoadPolicy
     name::String
@@ -182,12 +178,13 @@ const _VALID_REGISTRATION_MODES = (:replace, :insert_only)
 """
     LoadPolicy(name; kwargs...) -> LoadPolicy
 
-Keyword constructor with the conservative defaults Phase B should converge on:
-`RTLD_LOCAL | RTLD_NOW`, `panic=abort`, registration in `RUST_LIBRARIES` under
-a content hash replacing any previous entry, `CURRENT_LIB` untouched, and
+Keyword constructor. The defaults are `RTLD_LOCAL | RTLD_NOW`, `panic=abort`
+with no `catch_unwind` boundary, registration in `RUST_LIBRARIES` under a
+content hash replacing any previous entry, `CURRENT_LIB` untouched, and
 finalizers that free.
 
-Every named constructor below overrides whatever its call sites do differently.
+Every named constructor below states its own values; none keeps the `:abort`
+default (every door RustCall builds is pinned to `:unwind`, #244).
 """
 function LoadPolicy(name::AbstractString;
                     dlopen_flags::Integer = Libdl.RTLD_LOCAL | Libdl.RTLD_NOW,
@@ -225,25 +222,21 @@ function LoadPolicy(name::AbstractString;
 end
 
 # ---------------------------------------------------------------------------
-# Named constructors: one per front door that exists on current `main`.
-# Each reproduces today's behaviour so a Phase B migration is behaviour-neutral
-# at the moment of the swap.
+# Named constructors: one per front door.
 # ---------------------------------------------------------------------------
 
 """
     inline_rustc_policy() -> LoadPolicy
 
 Inline `rust\"\"\"...\"\"\"` block with **no** `// cargo-deps:`, compiled straight by
-`rustc`.  Covers the path on both cache states — a disk-cache hit
-(`src/cache.jl:270`, registered at `src/ruststr.jl:251`) and a cache miss
-(`src/ruststr.jl:284`, registered at `:291`) both load `RTLD_LOCAL`, so
-visibility does **not** depend on the cache.  Compiled with `-C panic=abort`
-(`src/compiler.jl:381`).
+`rustc`, on both cache states (a disk-cache hit and a fresh compile).  Compiled
+with `-C panic=unwind` (`rustc_panic_flags`, `src/compiler.jl`) behind the
+generated `catch_unwind` boundary, and loaded `RTLD_LOCAL | RTLD_NOW`.
 
-The visibility divergence runs along the *dependency* axis, not the cache axis:
-this door is `RTLD_LOCAL` while `inline_cargo_policy` — the same `rust\"\"\"`
-construct that happens to declare `// cargo-deps:` — is `RTLD_GLOBAL` on both
-of its cache states (#250).
+Until #277 Phase B2 this door was `RTLD_LOCAL` while `inline_cargo_policy` —
+the same `rust\"\"\"` construct declaring `// cargo-deps:` — was `RTLD_GLOBAL`
+(#250); until #244 this one aborted on a panic and that one did not.  The two
+doors now agree on every decision.
 """
 inline_rustc_policy() = LoadPolicy("inline-rustc";
     dlopen_flags = Libdl.RTLD_LOCAL | Libdl.RTLD_NOW,
@@ -268,20 +261,15 @@ inline_rustc_policy() = LoadPolicy("inline-rustc";
 Inline `rust\"\"\"...\"\"\"` block carrying `// cargo-deps:`, built through a
 generated Cargo project.
 
-Covers both cache states: the Cargo cache hit (`src/ruststr.jl:386`,
-registered at `:389`) and the fresh build (`:419`, registered at `:426`) both
-load `RTLD_GLOBAL`, so — as with `inline_rustc_policy` — visibility does not
-depend on the cache.  The axis along which visibility differs is whether the
-block declares `// cargo-deps:` (#250).
+Covers both cache states (a Cargo cache hit and a fresh build), both loaded
+`RTLD_LOCAL | RTLD_NOW` like `inline_rustc_policy`.
 
-The generated `Cargo.toml` writes only `opt-level`/`lto`
-(`src/cargoproject.jl:126-128`) and never pins `panic`, so the strategy is
-`:cargo_default`: Cargo's release default (`unwind`) *unless*
-`CARGO_PROFILE_RELEASE_PANIC` is set in the Julia process, which
-`build_cargo_project` inherits (`src/cargobuild.jl` runs Cargo with the
-process environment unless a snapshot `env` is replayed, #272).  Either way the direct `rustc` path aborts and this one may not, and
-no boundary catches an unwind (#244).  Use `effective_panic_strategy` to
-resolve it; Phase B should pin `panic` in the generated manifest.
+The strategy is pinned to `:unwind`: the generated `Cargo.toml` writes
+`panic = "unwind"` into `[profile.release]` (`cargo_profile_panic_line`,
+`src/cargoproject.jl`) and `build_cargo_project` passes
+`CARGO_PROFILE_<PROFILE>_PANIC=unwind` to Cargo (`src/cargobuild.jl`), so an
+inherited `CARGO_PROFILE_RELEASE_PANIC=abort` cannot produce an artifact whose
+`catch_unwind` boundary never fires (#244).
 """
 inline_cargo_policy() = LoadPolicy("inline-cargo";
     dlopen_flags = Libdl.RTLD_LOCAL | Libdl.RTLD_NOW,
@@ -297,21 +285,21 @@ inline_cargo_policy() = LoadPolicy("inline-cargo";
                   "src/ruststr.jl:426", "src/cargobuild.jl:25-67",
                   "src/cargoproject.jl:126-128"],
     issues = [244, 250],
-    notes = "Cargo path takes Cargo's release default (unwind, or abort under " *
-            "CARGO_PROFILE_RELEASE_PANIC) while the rustc path always aborts.")
+    notes = "Pinned to unwind in the generated manifest and in Cargo's " *
+            "environment, like the direct rustc path; RTLD_LOCAL since B2.")
 
 """
     crate_direct_policy() -> LoadPolicy
 
 `@rust_crate` for a crate that already declares `crate-type = ["cdylib"]`, so
-RustCall builds it in place: `src/crate_bindings.jl:852` calls
-`build_crate_directly`, which points a `CargoProject` at `info.path` and runs
-Cargo there (`:914-925`).  The Cargo root is then the **user's** manifest, so
-their `[profile.release] panic = "abort"`, a workspace profile,
+RustCall builds it in place: `build_crate_directly` points a `CargoProject` at
+`info.path` and runs Cargo there.  The Cargo root is then the **user's**
+manifest, so their `[profile.release] panic = "abort"`, a workspace profile,
 `.cargo/config.toml` or `CARGO_PROFILE_RELEASE_PANIC` all decide — hence
 `:crate_profile`, which `effective_panic_strategy` deliberately leaves
-unresolved.  Phase B must read the effective profile (`cargo metadata` /
-`cargo config get`) or force the strategy explicitly (#244).
+unresolved.  The generated `#[julia]` boundary catches an unwinding panic; a
+crate that pins `panic = "abort"` itself aborts on one, which is the user's
+decision (`docs/src/panics.md`).
 
 Loading and ownership are shared with `crate_wrapper_policy`.  The generated
 module still keeps its own generation record — that is how its wrappers reach
@@ -342,18 +330,16 @@ crate_direct_policy() = LoadPolicy("rust-crate-direct";
     crate_wrapper_policy() -> LoadPolicy
 
 `@rust_crate` for a crate without `cdylib`, where RustCall generates a wrapper
-crate around it and builds *that* (`src/crate_bindings.jl:854-868`).  The Cargo
-root is then RustCall's own generated manifest, whose `[profile.release]` sets
-only `opt-level`/`lto` (`src/crate_bindings.jl:266-269`) and pins no `panic` —
-so this door is `:cargo_default`, exactly like `inline_cargo_policy`: Cargo's
-release default unless `CARGO_PROFILE_RELEASE_PANIC` is set in the inherited
-environment.  Resolve with `effective_panic_strategy`; Phase B should pin
-`panic` in the generated wrapper manifest.
+crate around it and builds *that*.  The Cargo root is then RustCall's own
+generated manifest, whose `[profile.release]` pins `panic = "unwind"`
+(`cargo_profile_panic_line`, in `src/crate_bindings.jl` and for the PyO3
+wrapper in `src/pyo3.jl`), and Cargo's environment pins it too — so this door
+is `:unwind`, like `inline_cargo_policy`.
 
-The two `@rust_crate` build paths therefore have different panic semantics for
-the same user-visible macro, chosen by `crate_has_cdylib` (#244).  Everything
-else — `RTLD_GLOBAL`, the module-local handle, freeing finalizers — matches
-`crate_direct_policy`.
+The two `@rust_crate` build paths therefore differ only in who decides the
+panic strategy, chosen by `crate_has_cdylib` (#244).  Everything else —
+`RTLD_LOCAL | RTLD_NOW`, registration under `crate_library_name`, freeing
+finalizers — matches `crate_direct_policy`.
 """
 crate_wrapper_policy() = LoadPolicy("rust-crate-wrapper";
     dlopen_flags = Libdl.RTLD_LOCAL | Libdl.RTLD_NOW,
@@ -369,8 +355,8 @@ crate_wrapper_policy() = LoadPolicy("rust-crate-wrapper";
                   "src/crate_bindings.jl:1360"],
     issues = [244, 249, 250],
     notes = "RustCall's generated wrapper manifest is the Cargo root and pins " *
-            "no panic, so this @rust_crate path takes Cargo's default while " *
-            "the direct-cdylib path takes the user's profile.")
+            "panic = \"unwind\", while the direct-cdylib path takes the " *
+            "user's profile.")
 
 """
     helper_library_policy() -> LoadPolicy
@@ -524,7 +510,7 @@ const ALL_LOAD_POLICIES = (
 )
 
 # ---------------------------------------------------------------------------
-# Accessors — the API Phase B call sites will use instead of open-coding.
+# Accessors — what the call sites ask instead of open-coding a decision.
 # ---------------------------------------------------------------------------
 
 """
@@ -569,9 +555,8 @@ end
     cargo_profile_panic_line(policy::LoadPolicy) -> Union{String, Nothing}
 
 The line the generated `[profile.release]` section needs to honour the policy's
-panic strategy, or `nothing` when the Cargo default already matches.
-`src/cargoproject.jl` emits no such line today, which is why the Cargo path
-unwinds (#244).
+panic strategy, or `nothing` when the Cargo default already matches.  The
+generated inline-block and `@rust_crate` wrapper manifests write this line.
 
 `:unwind` and `:abort` are both **pinned**, so both produce a line.  Writing
 `panic = "unwind"` explicitly even though it is Cargo's release default is the
@@ -615,14 +600,10 @@ Resolve `policy.panic_strategy` against the environment a build would inherit.
 - `:cargo_default` is resolved by reading `cargo_panic_env_var(policy)` out of
   the environment: `"abort"` gives `:abort`, `"unwind"` gives `:unwind`, and
   anything else — unset, empty, unrecognised — gives `:unwind`, Cargo's default
-  for the `release` profile.  Both doors that carry `:cargo_default` let the
-  Julia process environment reach the build (`src/cargobuild.jl` only calls
-  `setenv` to replay a captured snapshot, #272), so
-  `CARGO_PROFILE_RELEASE_PANIC=abort` really does change the artifact.
-  `deps/build.jl` is not one of them: it pins the variable itself.
+  for the `release` profile.  No named policy carries it any more.
 - `:crate_profile` is returned unchanged: the environment is only one of the
-  inputs there, and the user's manifest — which Phase A does not read — can
-  pin `panic`.  Still unknowable without reading it.
+  inputs there, and the user's manifest — which RustCall does not read for
+  this — can pin `panic`.
 
 # Which environment
 
@@ -639,11 +620,10 @@ serialized `KEY=VALUE` text, one entry per line — using the second method:
 which accepts that text (parsed by `parse_cargo_env_snapshot`) or any
 `AbstractDict`.  Never resolve a cached artifact against the live `ENV`.
 
-The related cache-*identity* problem — the Cargo cache key at
-`src/ruststr.jl:380-386` not covering the panic setting, so two artifacts built
-under different `CARGO_PROFILE_*` values share a key — is closed by #272 adding
-the `CARGO_PROFILE_` allowlist to `_cargo_block_identity`; the structural fix is
-tracked in #278.  Phase A only models the resolution, not the key.
+The related cache-*identity* problem — two artifacts built under different
+`CARGO_PROFILE_*` values sharing a key — is closed by the artifact identity
+(`src/artifact_id.jl`, #272, #278); this function models only the resolution,
+not the key.
 """
 function effective_panic_strategy(policy::LoadPolicy; env = ENV)
     policy.panic_strategy === :cargo_default || return policy.panic_strategy
@@ -690,8 +670,8 @@ end
 Whether a generated `extern "C"` wrapper for this artifact must wrap the user
 body in `std::panic::catch_unwind` to keep a panic from crossing the FFI
 boundary.  `true` exactly when the artifact unwinds and the boundary does not
-already catch — which, with no `CARGO_PROFILE_RELEASE_PANIC` set, is every path
-RustCall builds with Cargo today (#244).
+already catch — which no named policy does any more, since every one has
+`boundary_catches_panics` (#244).
 
 Routes through `effective_panic_strategy`, so a `:cargo_default` policy answers
 `false` under `CARGO_PROFILE_RELEASE_PANIC=abort`.  Returns **`missing`** for
@@ -731,7 +711,8 @@ must_assume_unwind(policy::LoadPolicy, snapshot_env::Union{AbstractDict, Abstrac
 """
     registers_in_rust_libraries(policy::LoadPolicy) -> Bool
 
-Whether `register_library!` will write into `RUST_LIBRARIES`.
+Whether `load_artifact!` / `adopt_artifact!` register the image in
+`RUST_LIBRARIES`.
 """
 registers_in_rust_libraries(policy::LoadPolicy) = policy.registry === :rust_libraries
 
@@ -742,88 +723,6 @@ Whether objects produced by this artifact free their allocation on finalization
 (#249).
 """
 finalizer_frees(policy::LoadPolicy) = policy.finalizer_frees
-
-# ---------------------------------------------------------------------------
-# Registration — the locking half of the policy (#251).
-# ---------------------------------------------------------------------------
-
-"""
-    register_library!(policy::LoadPolicy, lib_name::AbstractString,
-                      handle::Ptr{Cvoid}) -> String
-
-Record a loaded handle according to `policy`, as one transaction under
-`REGISTRY_LOCK`: the `RUST_LIBRARIES` entry, its fresh function-pointer cache
-and (when `policy.sets_current_lib`) `CURRENT_LIB[]` are installed together, so
-no other task can observe a half-registered library.
-
-`policy.registration_mode` decides what happens when the key is already taken:
-`:replace` overwrites the entry (what the five `src/ruststr.jl` sites do),
-`:insert_only` leaves the existing handle and its function-pointer cache
-untouched (what `src/generics.jl:250-253` does behind `if !haskey(...)`, which
-matters because the generics key collides — see `generics_policy`).
-
-Returns `lib_name`.  A no-op returning `lib_name` for policies that do not use
-`RUST_LIBRARIES` (`:module_local`, `:helper_slot`, `:none`), so a Phase B call
-site can call it unconditionally.
-
-Subsumes the five remaining open-coded `RUST_LIBRARIES[...] = ...` sites:
-`_register_manifest` and the `@irust` loader in `src/ruststr.jl`,
-`src/generics.jl`, `src/hot_reload.jl`, and the reload alias in
-`src/rustmacro.jl` (#272).  The four inline-block sites collapsed into
-`_register_manifest`, which publishes the handle together with the manifest's
-name-to-symbol mappings so the two cannot be observed apart (#279); a Phase B
-`register_library!` has to keep that guarantee, which is what the `symbols`
-argument this function will grow is for.  Not called from `src/` yet (Phase A
-is additive).
-"""
-function register_library!(policy::LoadPolicy, lib_name::AbstractString, handle::Ptr{Cvoid})
-    name = String(lib_name)
-    if !registers_in_rust_libraries(policy)
-        return name
-    end
-    handle == C_NULL && throw(ArgumentError("refusing to register a NULL handle for $(name)"))
-    lock(REGISTRY_LOCK) do
-        if policy.registration_mode === :insert_only && haskey(RUST_LIBRARIES, name)
-            return
-        end
-        RUST_LIBRARIES[name] = (handle, Dict{String, Ptr{Cvoid}}())
-        if policy.sets_current_lib
-            CURRENT_LIB[] = name
-        end
-    end
-    return name
-end
-
-"""
-    unregister_library!(policy::LoadPolicy, lib_name::AbstractString) -> Bool
-
-Remove the `RUST_LIBRARIES` entry, its function-pointer cache and the
-library's registry metadata — its name-to-symbol mappings and return-type
-hints (`clear_library_metadata!`, #279) — under
-`REGISTRY_LOCK`, clearing `CURRENT_LIB[]` if it pointed at `lib_name`.
-Returns whether an entry was removed.  Does not `dlclose`: Phase B decides that
-together with the unload purge described in #250.
-
-Not called from `src/` yet, so the live unload paths purge the symbol mappings
-themselves (`unload_library` in `src/ruststr.jl`, `_reload_library_locked` in
-`src/hot_reload.jl`); Phase B (#277) folds them into this one hook.
-"""
-function unregister_library!(policy::LoadPolicy, lib_name::AbstractString)
-    name = String(lib_name)
-    registers_in_rust_libraries(policy) || return false
-    return lock(REGISTRY_LOCK) do
-        removed = haskey(RUST_LIBRARIES, name)
-        if removed
-            delete!(RUST_LIBRARIES, name)
-            delete!(ARTIFACT_IMAGE_PATHS, name)
-        end
-        clear_library_metadata!(name)
-        if CURRENT_LIB[] == name
-            CURRENT_LIB[] = ""
-        end
-        return removed
-    end
-end
 
 function Base.show(io::IO, policy::LoadPolicy)
     vis = policy.global_symbols ? "RTLD_GLOBAL" : "RTLD_LOCAL"
@@ -976,8 +875,8 @@ the incumbent it lost to may be a retired image a stale reader revived from an
 *older* copy and has not yet retired again (#397). The memo is current and so
 is the image, yet it is not the fresh copy the memo names; this table is how
 the publication can tell. Written with the registry row, dropped with it, and
-shared by an alias. A name registered without a path (`register_library!`,
-`adopt_artifact!`) has no entry. Guarded by `REGISTRY_LOCK`.
+shared by an alias. A name registered without a path (`adopt_artifact!`) has
+no entry. Guarded by `REGISTRY_LOCK`.
 """
 const ARTIFACT_IMAGE_PATHS = _state_view(:artifact_image_paths, Dict{String, String}())
 
@@ -1327,12 +1226,11 @@ end
 
 An image that has left the registry but is **still mapped**.
 
-Carries what closing it later needs: where it came from, the liveness flag its
-objects captured, and the names it was known by (for diagnostics and for
-`unload_library(name; close = true)`).
+Carries what closing it later needs: the liveness flag its objects captured,
+the names it was known by (for diagnostics and for
+`unload_library(name; close = true)`) and how many owned opens it had.
 """
 struct RetiredImage
-    path::String
     alive::Base.RefValue{Bool}
     names::Vector{String}
     # How many owned opens this image had when it was retired — the number of
@@ -1447,8 +1345,7 @@ end
 # — `true` — because the image is still mapped and its objects must still be
 # able to free through it. Caller holds REGISTRY_LOCK.
 function _record_retired!(handle::Ptr{Cvoid}, names::Vector{String},
-                          alive::Union{Nothing, Base.RefValue{Bool}},
-                          path::AbstractString = "")
+                          alive::Union{Nothing, Base.RefValue{Bool}})
     handle == C_NULL && return nothing
     # Still live under some name (an alias that was not part of this removal):
     # it has not left the registry at all.
@@ -1467,8 +1364,8 @@ function _record_retired!(handle::Ptr{Cvoid}, names::Vector{String},
         end
     end
     RETIRED_HANDLES[handle] =
-        RetiredImage(String(path), alive === nothing ?
-                     (existing === nothing ? Ref(true) : existing.alive) : alive,
+        RetiredImage(alive === nothing ?
+                         (existing === nothing ? Ref(true) : existing.alive) : alive,
                      merged, get(OWNED_HANDLES, handle, 0))
     return nothing
 end
@@ -2236,18 +2133,22 @@ installer is called by the loader rather than lazily by the first wrapper call, 
 two first calls to two wrappers cannot race to install it — the defect that sank
 the per-wrapper attempt in #302.
 
-**The image decides, not the policy.** `__rustcall_install_panic_hook` exists
-exactly when the source was generated in full — `#[julia]` in a crate RustCall
-does not write never emits it — so asking the image cannot be wrong, and no
-door can forget to opt in. A `LoadPolicy` flag was tried first and was exactly
-that mistake: every `@rust_crate` module loads with `crate_direct_policy()`, the
-generated PyO3 wrapper crate included, so the flag silently excluded the one
-wrapper flavour that does carry a hook (#388 review). The doors are listed in
-`docs/src/panics.md` for readers; nothing branches on the list.
+**The image decides, not the policy.** `__rustcall_install_panic_hook` is
+exported exactly when the image carries the quiet-panic state: a file RustCall
+writes whole (inline blocks, `@irust`, generics) defines it at its root, and a
+`#[julia]` crate — hand-written, or the generated `@rust_crate` wrapper crate —
+gets it from the `rustcall_julia_macros` rlib it links, as long as some
+generated wrapper references that crate. Asking the image therefore cannot be
+wrong, and no door can forget to opt in. A `LoadPolicy` flag was tried first and
+was exactly that mistake: every `@rust_crate` module loads with
+`crate_direct_policy()`, the generated PyO3 wrapper crate included, so the flag
+silently excluded wrapper flavours that do carry a hook (#388 review). The doors
+are listed in `docs/src/panics.md` for readers; nothing branches on the list.
 
 Returns `false` — silently, it is not an error — when hooks are disabled for this
-process, or when the image exports no installer (a user crate, the hand-written
-helper library, or an artifact built by RustCall ≤ v0.3.4).
+process, or when the image exports no installer (a crate with no `#[julia]`
+wrapper, the hand-written helper library, or an artifact built by RustCall
+≤ v0.3.4).
 """
 function install_quiet_panic_hook!(handle::Ptr{Cvoid}; snapshot_env = nothing)
     handle == C_NULL && return false
@@ -2291,8 +2192,9 @@ How many times this process called an artifact's quiet-hook installer and
 uninstaller (#304). Counters, not registries: a test asserts that closing an
 artifact removed its hook without having to reach into the image.
 
-`INSTALLS` counts *calls*, and the generated installer is `Once`-guarded, so
-loading one image twice calls it twice and installs once. Calling it on every
+`INSTALLS` counts *calls*, and the generated installer is guarded by a mutex
+over an "installed" flag (not a `Once`, so it can install again after an
+uninstall), so loading one image twice calls it twice and installs once. Calling it on every
 load rather than only on the reference that opened the image is deliberate: two
 tasks racing on one path would otherwise let the loser call a wrapper before the
 winner had installed anything. `REMOVALS` counts only the last reference, because
@@ -2676,7 +2578,7 @@ function adopt_artifact!(policy::LoadPolicy, handle::Ptr{Cvoid};
         # After the swap, so `library_names_for_handle` sees the *new* mapping:
         # an old handle still live under an alias has not left the registry.
         if replaced != C_NULL && replaced != handle
-            _record_retired!(replaced, String[name], previous_alive, lib_path)
+            _record_retired!(replaced, String[name], previous_alive)
         elseif replaced == handle
             # The same file opened again: `dlopen` refcounts and hands back the
             # image that is already registered. That is not a retirement — but

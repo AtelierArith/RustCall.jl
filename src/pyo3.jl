@@ -456,8 +456,7 @@ answer.
 `interpreter`, when given, is pinned in `PYO3_PYTHON` for the probe exactly as
 the wrapper build pins it (`_wrapper_probe_env`), so a crate whose build script
 derives `Py_3_x` cfgs through `pyo3-build-config` is probed for the Python the
-wrapper is built against, not the one pyo3 would find on its own; it is part of
-the memo key.
+wrapper is built against, not the one pyo3 would find on its own.
 """
 function _wrapper_probe_cfg_text(crate_path::AbstractString;
                                  kwargs...)
@@ -471,8 +470,6 @@ function _wrapper_probe_context(crate_path::AbstractString;
     path = abspath(String(crate_path))
     package = _cargo_package_name(path)
     isempty(package) && return (cfg_text = "", build_env = nothing, build_inputs = String[])
-    key = _wrapper_probe_memo_key(path, features, default_features, release;
-                                  interpreter = interpreter)
     probe = () -> begin
         try
             # Under the crate's `target/`, with its lockfile and `[patch]`, so
@@ -510,7 +507,6 @@ function _wrapper_probe_context(crate_path::AbstractString;
             (cfg_text = "", build_env = nothing, build_inputs = String[])
         end
     end
-    _ = key
     return probe()
 end
 
@@ -588,9 +584,6 @@ function _cargo_rerun_inputs(out_dir::AbstractString, package_root::AbstractStri
     sort!(unique(inputs))
 end
 
-# Memo of `_wrapper_probe_cfg_text`, keyed like `_CRATE_CFG_TEXT`.
-const _WRAPPER_CFG_TEXT = _state_view(:wrapper_cfg_text, Dict{String, String}())
-
 # The environment the probe runs under — the one the real wrapper build runs
 # under: the wrapper policy's panic pin (`_cargo_panic_env`), the probe's own
 # build cache, and the plan's interpreter in `PYO3_PYTHON` when the plan has
@@ -604,43 +597,6 @@ function _wrapper_probe_env(path::AbstractString, release::Bool, interpreter::Ab
     env["CARGO_TARGET_DIR"] = joinpath(path, "target", "rustcall-pyo3-probe", "target")
     isempty(interpreter) || (env["PYO3_PYTHON"] = String(interpreter))
     return env
-end
-
-# The memo key of one probe: everything that decides its answer. On top of
-# `_crate_cfg_inputs_digest` (the crate's manifest, `build.rs` and Cargo
-# config), the inputs the probe takes from the crate's Cargo root — its
-# manifest (`[patch]`, `[workspace.dependencies]`) and lockfile — since a
-# changed resolution can change what a `build.rs` emits, and the probe would
-# otherwise keep answering for the previous one in a long-lived process (#307
-# review). When the crate is its own root these are its own files. pyo3's own
-# configuration (`_pyo3_env_key`) is an input too: `pyo3-build-config` turns
-# `PYO3_PYTHON` or a `PYO3_CONFIG_FILE` into `Py_3_x` cfgs, so a changed
-# Python is a new probe as it is a new artifact — including the one the plan
-# pins for the probe itself (`interpreter`), which need not be in `ENV`.
-function _wrapper_probe_memo_key(path::AbstractString, features::Vector{String},
-                                 default_features::Bool, release::Bool;
-                                 interpreter::AbstractString = "")
-    root = _cargo_root_dir(path)
-    return join(["wrapper-root", String(path), string(release), join(features, ","),
-                 string(default_features), _cargo_cfg_env_key(), _pyo3_env_key(),
-                 "pyo3-python=" * String(interpreter),
-                 _crate_cfg_inputs_digest(path),
-                 _file_content_digest(joinpath(root, "Cargo.toml")),
-                 _file_content_digest(joinpath(root, "Cargo.lock"))], "\n")
-end
-
-# pyo3's build inputs as one memo-key text: every `PYO3_*` variable (the
-# namespace `pyo3-build-config` reads — `PYO3_PYTHON`, `PYO3_CONFIG_FILE`,
-# `PYO3_CROSS_*`, `PYO3_NO_PYTHON`, …) and the digest of the configuration
-# file's *contents*, since the same path can name a different configuration.
-# `_cargo_cfg_env_key` deliberately excludes this namespace (it is replayed
-# into `// cargo-deps:` rebuilds), so a probe of a crate that may depend on
-# pyo3 adds it on its own (#307 review).
-function _pyo3_env_key()
-    keys = sort!(filter(k -> startswith(k, "PYO3_"), collect(Base.keys(ENV))))
-    lines = String["$k=$(ENV[k])" for k in keys]
-    push!(lines, "pyo3-config-file-digest=" * _pyo3_config_file_digest())
-    return join(lines, "\n")
 end
 
 # The digest of the file `PYO3_CONFIG_FILE` names; "" when it is unset.
@@ -2476,10 +2432,13 @@ end
 The `[dependencies.rustcall_pyo3]` table naming the *same* pyo3 package the
 target crate resolved (`_resolved_pyo3_dependency`).
 
-A registry package is pinned by exact version, a path dependency by its
-directory, and a git dependency by the commit Cargo resolved — the fragment of
-`git+<url>#<sha>` — so the alias cannot drift to another checkout of the same
-branch.
+A crates.io package is pinned by exact version and a path dependency by its
+directory. A git dependency repeats Cargo's source exactly, selector included
+(`_git_dependency_keys`), and not the resolved commit: `git+URL?branch=main`
+pinned as `rev = <sha>` would be a second source to Cargo, and the commit is
+pinned by the target crate's `Cargo.lock` the wrapper is seeded with. A
+package from any other registry raises `RustError`, because a bare version
+would select crates.io's pyo3 instead (#370, #392 review).
 """
 function _pyo3_alias_toml(dependency)
     lines = ["", "[dependencies.rustcall_pyo3]", "package = \"pyo3\""]
