@@ -543,8 +543,15 @@ end
                                                        build_release = true)
         debug_code = RustCall.emit_crate_module_code(info, "/tmp/d.so";
                                                      build_release = false)
-        @test occursin("const _LIB_NAME = $(repr(release))", release_code)
-        @test occursin("const _LIB_NAME = $(repr(debug))", debug_code)
+        # The name is part of the module's build record, and `_LIB_NAME` is
+        # read from it (#474).
+        record_of(code) = (m = Module(:CbRecord); Core.eval(m, :(import RustCall));
+            Core.eval(m, Meta.parse(chopprefix(only(filter(
+                l -> startswith(l, "const _BUILD_RECORD = "), split(code, '\n'))),
+                "const _BUILD_RECORD = "))))
+        @test record_of(release_code).lib_name == release
+        @test record_of(debug_code).lib_name == debug
+        @test occursin("const _LIB_NAME = _BUILD_RECORD.lib_name", release_code)
 
         # Two modules registered under the two names do not disturb each
         # other: separate registry entries, separate liveness flags, separate
