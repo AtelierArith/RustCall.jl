@@ -499,10 +499,12 @@ For a function like:
 fn add(a: i32, b: i32) -> i32 { ... }
 ```
 
-Generates:
-```julia
-add(a, b) = @rust add(Int32(a), Int32(b))::Int32
-```
+generates an `add(a, b)` that converts its arguments to the FFI slot types,
+takes the call's generation snapshot (`cached_call_target`, #253, #277), calls
+the exported wrapper through `ccall` and checks its panic channel
+(`guard_rust_panic_ptr`). Strings, `Result` / `Option` returns, by-value
+aggregates and callbacks each have their own generator
+(`_generate_single_wrapper` dispatches). Generic signatures are skipped.
 """
 function emit_julia_function_wrappers(signatures::Vector{RustFunctionSignature})
     exprs = Expr[]
@@ -579,15 +581,12 @@ function _generate_single_wrapper(sig::RustFunctionSignature)
 
     # Generate the wrapper function using internal API directly
     # This avoids macro expansion issues
-    lib_sym = _generated_local("lib_name", sig.arg_names)
-    ptr_sym = _generated_local("func_ptr", sig.arg_names)
     rust_name = sig.name
-    # `_resolve_call` returns the pointer **and the library it came from**.
-    # `get_current_library()` is only where the search starts: a wrapper
-    # defined by one block may well resolve through another (the cross-library
-    # fallback), and the panic channel has to be read on the library that
-    # actually holds the wrapper — otherwise a panic is looked for in the
-    # wrong image and silently missed (#244).
+    # The snapshot carries the pointer **and the panic channel of the image
+    # that holds it**. A wrapper defined by one block may well resolve through
+    # another (the cross-library fallback), and the panic channel has to be
+    # read on the library that actually holds the wrapper — otherwise a panic
+    # is looked for in the wrong image and silently missed (#244).
     channel_sym = _generated_local("panic_channel", sig.arg_names)
     # This call site's own cache, spliced into the body as a constant: one
     # object per generated wrapper, no binding in the caller's module, and a

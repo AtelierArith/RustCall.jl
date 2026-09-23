@@ -1158,11 +1158,10 @@ The destructor of one instantiation of a generic `#[julia]` struct, resolved by
 monomorphizing it **at construction time**, together with the image it came
 from.
 
-This is what `_precompile_generic_free` was reaching for: the specialization
-has to be compiled before the finalizer needs it, because monomorphizing from
-inside a finalizer would shell out to the extractor, invoke `rustc`, and take
-`REGISTRY_LOCK`. Here the pointer is not merely warmed up but captured, so the
-finalizer never consults a registry at all.
+The specialization has to be compiled before the finalizer needs it, because
+monomorphizing from inside a finalizer would shell out to the extractor, invoke
+`rustc`, and take `REGISTRY_LOCK`. Here the pointer is not merely warmed up but
+captured, so the finalizer never consults a registry at all.
 
 Not called directly by generated code: `generic_struct_generation_snapshot`
 pairs the pointer with the liveness flag of `handle` under one lock, which is
@@ -1239,16 +1238,6 @@ function check_not_freed(obj, type_name::AbstractString)
                         "Rust library image has been closed"))
     end
     return nothing
-end
-
-# Internal helpers
-function _call_rust_free(lib_name::String, func_name::String, ptr::Ptr{Cvoid})
-    # This is for non-generic
-    try
-        _rust_call_typed(lib_name, func_name, Cvoid, ptr)
-    catch e
-        @debug "Failed to call Rust free function $func_name in $lib_name: $e"
-    end
 end
 
 """
@@ -1520,54 +1509,3 @@ function _resolve_generic_struct_field_type(field_type::String, type_param_names
     return ffi_return_type_or_throw(stripped, "", "generic field -> $(stripped)")
 end
 
-function _precompile_generic_free(func_name::String, types::Tuple)
-    # Same as _call_generic_free but only compile/cache
-    generic_info = GENERIC_FUNCTION_REGISTRY[func_name]
-    param_names = generic_info.type_params
-
-    type_params = Dict{Symbol, Type}()
-    for (i, p) in enumerate(param_names)
-        type_params[p] = types[i]
-    end
-
-    # This will cache the function info
-    monomorphize_function(func_name, type_params)
-end
-
-function _call_generic_free(lib_name::String, func_name::String, ptr::Ptr{Cvoid}, types...)
-    # We need to construct the type params manually since we only have types, not values.
-    # call_generic_function infers from values.
-    # We need explicit monomorphization call.
-
-    generic_info = GENERIC_FUNCTION_REGISTRY[func_name]
-    param_names = generic_info.type_params
-
-    type_params = Dict{Symbol, Type}()
-    for (i, p) in enumerate(param_names)
-        type_params[p] = types[i]
-    end
-
-    # Should use cached version (fast path for finalizer)
-    info = get_monomorphized_function(func_name, type_params)
-    if info === nothing
-        # Fallback to monomorphize (unsafe in finalizer)
-        # Should not happen if precompiled
-        info = monomorphize_function(func_name, type_params)
-    end
-
-    call_rust_function(info.func_ptr, Cvoid, ptr)
-end
-
-"""
-    free_rust_obj(ptr::Ptr{Cvoid}, lib_func::String)
-
-Helper to safely call the Rust destructor.
-"""
-function free_rust_obj(ptr::Ptr{Cvoid}, lib_func::String)
-    if ptr != C_NULL
-        # We use @rust here as it handles library lookup automatically
-        # Since this is called from the finalizer, we need to be careful.
-        # However, @rust is generally thread-safe as it uses a global registry.
-        @eval RustCall.@rust $(Symbol(lib_func))(ptr::Ptr{Cvoid})::Cvoid
-    end
-end

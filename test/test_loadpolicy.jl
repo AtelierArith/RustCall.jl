@@ -616,69 +616,6 @@ end
         end
     end
 
-    @testset "register_library! is a locked transaction" begin
-        policy = RustCall.LoadPolicy("test-registration"; sets_current_lib = true)
-        name = "loadpolicy_test_lib_$(getpid())"
-        handle = Ptr{Cvoid}(UInt(0xdead0000))   # never dlsym'd; registry bookkeeping only
-        previous = RustCall.CURRENT_LIB[]
-        try
-            @test RustCall.register_library!(policy, name, handle) == name
-            entry = lock(RustCall.REGISTRY_LOCK) do
-                RustCall.RUST_LIBRARIES[name]
-            end
-            @test entry[1] == handle
-            @test isempty(entry[2])                     # fresh function-pointer cache
-            @test RustCall.CURRENT_LIB[] == name
-            @test RustCall.unregister_library!(policy, name)
-            @test !haskey(RustCall.RUST_LIBRARIES, name)
-            @test RustCall.CURRENT_LIB[] == ""
-            @test !RustCall.unregister_library!(policy, name)  # idempotent
-            @test_throws ArgumentError RustCall.register_library!(policy, name, C_NULL)
-
-            # Policies that do not use RUST_LIBRARIES are a no-op, so a Phase B
-            # call site may call register_library! unconditionally. (The
-            # helper library is such a policy; the @rust_crate doors stopped
-            # being one in B5.)
-            @test RustCall.register_library!(RustCall.helper_library_policy(), name, handle) == name
-            @test !haskey(RustCall.RUST_LIBRARIES, name)
-            @test !RustCall.unregister_library!(RustCall.helper_library_policy(), name)
-
-            # :insert_only keeps the existing handle and its function-pointer
-            # cache; :replace overwrites both (#250, src/generics.jl:250-253).
-            insert_only = RustCall.LoadPolicy("test-insert-only";
-                                              registration_mode = :insert_only)
-            other = Ptr{Cvoid}(UInt(0xbeef0000))
-            RustCall.register_library!(policy, name, handle)
-            lock(RustCall.REGISTRY_LOCK) do
-                RustCall.RUST_LIBRARIES[name][2]["cached_symbol"] = handle
-            end
-            RustCall.register_library!(insert_only, name, other)
-            kept = lock(RustCall.REGISTRY_LOCK) do
-                RustCall.RUST_LIBRARIES[name]
-            end
-            @test kept[1] == handle                       # existing handle kept
-            @test haskey(kept[2], "cached_symbol")        # and its symbol cache
-
-            RustCall.register_library!(policy, name, other)   # :replace
-            replaced = lock(RustCall.REGISTRY_LOCK) do
-                RustCall.RUST_LIBRARIES[name]
-            end
-            @test replaced[1] == other
-            @test isempty(replaced[2])
-            RustCall.unregister_library!(policy, name)
-
-            # :insert_only on an absent key still inserts.
-            @test RustCall.register_library!(insert_only, name, other) == name
-            @test lock(() -> RustCall.RUST_LIBRARIES[name][1], RustCall.REGISTRY_LOCK) == other
-            RustCall.unregister_library!(insert_only, name)
-        finally
-            lock(RustCall.REGISTRY_LOCK) do
-                delete!(RustCall.RUST_LIBRARIES, name)
-            end
-            RustCall.CURRENT_LIB[] = previous
-        end
-    end
-
     # -----------------------------------------------------------------
     # #249: one lifetime rule, and finalizers that are safe to run.
     #

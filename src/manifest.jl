@@ -160,8 +160,8 @@ SHA-256 of the extractor binary's bytes. **Not** part of a cache key on its
 own since #372: a patch release rebuilds the binary from unchanged sources and
 these bytes move with it, against the promise that a patch keeps the cache.
 `extractor_source_digest` is what every key folds in; this digest is its
-fallback identity for a selected binary that cannot report one, and a
-diagnostic otherwise.
+fallback identity (`binary:<sha256>`) for a selected binary without a trusted
+identity record, and a diagnostic otherwise.
 """
 function extractor_digest()
     lock(_EXTRACTOR_LOCK) do
@@ -276,37 +276,47 @@ end
     toolchain_fingerprint() -> String
 
 Fingerprint of everything that influences generated code besides the user's
-source: the manifest schema identifier, the **sources** of `rustcall_julia_core`,
-`rustcall_julia_macros` and `rustcall_extract`, the identity of the compiler
-that actually runs (`artifact_compiler_identity`) and the host target. Included
-in all cache keys.
+source. The lines hashed are `_toolchain_fingerprint_inputs()`, so a test can
+see them:
 
-# What identifies the extractor (#372 review)
+- `schema=` — the manifest schema identifier;
+- `extractor=` — the identity of the selected extractor
+  (`extractor_source_digest`);
+- `sources=` — the sources of `rustcall_julia_core`, `rustcall_julia_macros`
+  and `rustcall_julia_macros_impl` in this tree, with each crate's
+  `[package] version` left out (`_identity_file_bytes`), because a user's
+  `#[julia]` build compiles them from here;
+- `compiler=` — the compiler that actually runs (`artifact_compiler_identity`);
+- `target=` — the host target (`Sys.MACHINE`);
+- `cfg=` — a digest of `rustc --print cfg` under the default compiler's flags.
+
+Included in all cache keys.
+
+# What identifies the extractor (#372, #409, #417)
 
 Through v0.3.x the extractor entered as a digest of its executable. A patch
-release now bumps `rustcall_extract`'s package version, and Cargo folds the
-version into `-C metadata`, so the same sources produce a byte-different
-binary — every cache key would have moved on a release that promises to keep
-them. The extractor now enters as the digest of the sources **it** was built
-from, reported by the selected binary itself (`extractor_source_digest`): that
-follows `RUSTCALL_EXTRACT` to whatever executable actually runs, and does not
-move when only a version did. The tree's `rustcall_julia_core`,
-`rustcall_julia_macros` and `rustcall_julia_macros_impl` sources enter
-separately, because a user's build compiles them from this tree, with each
-crate's `[package] version` left out (`_identity_file_bytes`).
-`extractor_digest()` remains available as a diagnostic of which binary ran; it
-is in no key. The inputs are `_toolchain_fingerprint_inputs()`, so a test can
-see them.
+release bumps `rustcall_extract`'s package version, and Cargo folds the version
+into `-C metadata`, so the same sources produce a byte-different binary —
+every cache key would have moved on a release that promises to keep them. The
+extractor therefore enters as the source digest `deps/build.jl` recorded beside
+the binary it built (`extractor_source_digest`), trusted only while that binary
+is unchanged and was a plain build of this tree's layout; any other binary —
+including whatever `RUSTCALL_EXTRACT` names without such a record — enters by
+its bytes (`binary:<sha256>`). The binary reports nothing about itself: the
+`source-digest` subcommand it answered through v0.4.x was removed in v0.5
+(#417).
 
 # Missing toolchain (#252)
 
 `artifact_compiler_identity` throws when `rustc`/`cargo` cannot be identified,
 because an unidentifiable compiler cannot be part of a trustworthy key. This
-function stays **total** regardless: it records
-`_TOOLCHAIN_COMPILER_UNIDENTIFIED` instead and does not memoize the result, so
-callers that only need *a* fingerprint (`ArtifactId`'s default, test skipping,
-`_reset_extractor_state!` round-trips) keep working without a toolchain, and a
-toolchain appearing later is picked up.
+function then records `_TOOLCHAIN_COMPILER_UNIDENTIFIED` instead and does not
+memoize the result, so callers that only need *a* fingerprint (`ArtifactId`'s
+default, test skipping, `_reset_extractor_state!` round-trips) keep working
+without a compiler, and a compiler appearing later is picked up.
+
+It is **not** total, though: the `extractor=` line needs the extractor, so
+without one this raises the `ExtractorError` of `extractor_path`.
 
 Paths that are about to compile are the ones that must refuse: they go through
 `ArtifactId`, whose `compiler` field calls `artifact_compiler_identity` directly
@@ -453,11 +463,6 @@ end
 # (`CARGO_PROFILE_RELEASE_*`), `RUSTFLAGS` / `CARGO_ENCODED_RUSTFLAGS` and
 # `.cargo/config` settings are reflected. Cached per session and environment.
 const _CARGO_CFG_TEXT = _state_view(:cargo_cfg_text, Dict{String, String}())
-
-# `rustc --print cfg` probed inside a *specific external crate*, keyed by
-# (crate path, profile, Cargo/RUSTFLAGS environment). See
-# `_crate_build_cfg_text`.
-const _CRATE_CFG_TEXT = _state_view(:crate_cfg_text, Dict{String, String}())
 
 """
     _cargo_probe_profile() -> String
@@ -738,10 +743,6 @@ build, or a workspace member Cargo refuses to probe. The caller must treat an
 empty result as "unknown" and fall back to the lenient scan; guessing a
 configuration is worse than not deciding one.
 
-The older implementation memoized this per `(crate path, profile,
-environment)` plus a digest of the files it could enumerate. That was still
-unsound for build scripts that read generated files or sibling crates.
-
 The probe is intentionally **not memoized**. A digest can cover the manifest,
 `build.rs` and Cargo config, but a build script may read an environment
 variable, a generated file, or a sibling crate and emit a different
@@ -769,12 +770,6 @@ function _crate_build_cfg_text(crate_path::AbstractString; profile::AbstractStri
     path = abspath(String(crate_path))
     target = target_directory === nothing ? _mark_target_used!(crate_target_directory(path)) :
              abspath(String(target_directory))
-    # pyo3's configuration is an input too: a crate that depends on pyo3 gets
-    # `Py_3_x` cfgs from `pyo3-build-config`, which reads `PYO3_*` (#307
-    # review; `_cargo_cfg_env_key` excludes that namespace on purpose).
-    key = path * "\n" * String(profile) * "\n" * join(features, " ") * "\n" *
-          _cargo_cfg_env_key() * "\n" * _pyo3_env_key() * "\n" *
-          _crate_cfg_inputs_digest(path)
     probe = () -> begin
             try
                 flag = profile == "release" ? `--release` : ``
@@ -800,40 +795,20 @@ function _crate_build_cfg_text(crate_path::AbstractString; profile::AbstractStri
 end
 
 """
-    _crate_cfg_inputs_digest(path) -> String
-
-A digest of everything, other than the environment, that decides what
-`cargo rustc -- --print cfg` answers for the crate at `path`: its `Cargo.toml`,
-its `build.rs`, and the `.cargo/config.toml` chain Cargo would consult from the
-crate directory upwards (including `CARGO_HOME`).
-
-Not the whole crate: the `.rs` sources do not change the cfg set, and hashing
-them would invalidate the memo on every edit during a hot-reload session — the
-one workload that probes most often. `Cargo.lock` is deliberately absent for
-the reason it is absent from the reload fingerprint: the build writes it.
-"""
-function _crate_cfg_inputs_digest(path::AbstractString)
-    io = IOBuffer()
-    for name in ("Cargo.toml", "build.rs")
-        file = joinpath(path, name)
-        print(io, name, "=", isfile(file) ? _file_content_digest(file) : "absent", "\n")
-    end
-    print(io, "cargo-config=", _cargo_config_digest(ENV; dir = path), "\n")
-    return bytes2hex(sha256(take!(io)))
-end
-
-"""
     _cfg_mode(cfg) -> Symbol
 
 Normalize the `cfg` keyword: `:strict` (direct `rustc` builds: the full
-configuration of the actual compiler invocation), `:cargo` (Cargo projects
-RustCall generates for `// cargo-deps:` blocks: also a full evaluation, but of
-Cargo's effective configuration, see [`_cargo_cfg_text`] — RustCall writes that
+configuration of the actual compiler invocation), `:cargo` (a full evaluation
+of Cargo's effective configuration: for the projects RustCall generates for
+`// cargo-deps:` blocks the text is `_cargo_cfg_text` — RustCall writes that
 project itself, so it has no build script and declares no features and the
-probe is authoritative), `:lenient` (`@rust_crate`, an external crate with its
-own features and possibly a build script: only target predicates are decided,
-the cfg text still comes from Cargo) or `:none` (report everything, used for
-the platform-independent golden corpus). `true`/`false` map to `:strict`/`:none`.
+probe is authoritative — and for an external crate it is the text its caller
+probed from the crate's own build, `_crate_build_cfg_text` or
+`_wrapper_probe_cfg_text`), `:lenient` (`scan_crate`'s default for an external
+crate whose build configuration is not known: only target predicates are
+decided, against `_cargo_cfg_text` unless a `cfg_text` is passed) or `:none`
+(report everything, used for the platform-independent golden corpus).
+`true`/`false` map to `:strict`/`:none`.
 """
 _cfg_mode(cfg::Symbol) = cfg in (:strict, :cargo, :lenient, :none) ? cfg :
     throw(ArgumentError("cfg must be :strict, :cargo, :lenient or :none"))
@@ -898,8 +873,9 @@ compile step spawn the extractor only once.
 
 `cfg` selects how `#[cfg(...)]` predicates are evaluated (see [`_cfg_mode`]):
 `:strict` (default) drops every item the direct `rustc` build would not
-compile, `:lenient` decides only target predicates (for blocks built by Cargo),
-`:none` keeps everything (golden corpus comparison). `cfg_text` is the cfg
+compile, `:cargo` evaluates against Cargo's configuration (blocks built by
+Cargo), `:lenient` decides only target predicates, and `:none` keeps
+everything (golden corpus comparison). `cfg_text` is the cfg
 snapshot to evaluate against (default: the current compiler's, see
 [`_cfg_snapshot`]); the memo key is `(code, mode, digest(cfg_text))`.
 """

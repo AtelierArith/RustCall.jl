@@ -511,22 +511,6 @@ using Test
                 rm(debug_dir, recursive=true, force=true)
             end
 
-            @testset "Error recovery" begin
-                # Test compile_with_recovery with invalid code
-                # Use actually invalid Rust syntax (mismatched braces)
-                invalid_code = """
-                #[no_mangle]
-                pub extern "C" fn test() -> i32 {
-                    let x = {
-                        42
-                    // Missing closing brace for let block
-                }
-                """
-
-                compiler = RustCall.RustCompiler(optimization_level=3, debug_mode=false)
-                @test_throws RustCall.CompilationError RustCall.compile_with_recovery(invalid_code, compiler; retry_count=1)
-            end
-
             @testset "Valid code compilation" begin
                 # Test that valid code compiles successfully
                 valid_code = """

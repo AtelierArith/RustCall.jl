@@ -254,17 +254,20 @@ ArtifactGeneration(handle, free_ptr, alive, generation) =
 reader, or `C_NULL` when the library exports none.
 
 A `#[julia]` wrapper catches the panic, records the message in a thread-local
-slot and exports `<symbol>_take_panic` to read it (#244). Julia has to look
-that symbol up once per wrapper — a `dlsym` per call would cost more than the
-call — and remember the answer, including the negative one: an artifact built
-before #244, or a raw `#[no_mangle]` function the user wrote themselves, has no
-channel and must not be probed again.
+slot and exports `<symbol>_take_panic` to read it (#244). This is the legacy,
+name-keyed memo of that lookup, written only by `panic_channel_pointer` (which
+records the negative answer too: an artifact built before #244, or a raw
+`#[no_mangle]` function, has no channel and is not probed again). No generated
+call site uses it any more: a call resolves its channel inside its generation
+snapshot (`resolve_call_target`), which reads this memo first and otherwise the
+image's own pointer cache, so a channel always comes from the image the call
+captured.
 
 Entries are dropped with their library (`purge_library_state!`), so a reloaded
 library re-resolves against the image that is actually mapped rather than
 calling a pointer into a `dlclose`d one.
 
-Guarded by `REGISTRY_LOCK`.
+A `StateView` into `STATE`: every access takes the state lock (`REGISTRY_LOCK`).
 """
 const PANIC_CHANNELS = _state_view(:panic_channels,
     Dict{Tuple{String, String}, Ptr{Cvoid}}())
@@ -616,13 +619,13 @@ panic entirely, while a later task landing on the original thread would pick up
 a message that does not belong to it.
 
 So the resolution happens **before** the wrapper call, where yielding is
-harmless, and this function is what runs immediately after it: one `ccall` into
-a thread-local read, no lock, no allocation, no logging. The shape every call
-site uses is
+harmless — the channel is part of the call's generation snapshot — and this
+function is what runs immediately after it: one `ccall` into a thread-local
+read, no lock, no allocation, no logging. The shape every call site uses is
 
-    channel = panic_channel_pointer(lib, symbol)   # may yield: before the call
-    value   = call_rust_function(ptr, T, args...)  # cannot yield
-    guard_rust_panic_ptr(value, channel, name)     # cannot yield
+    target  = resolve_call_target(lib, name)       # may yield: before the call
+    value   = call_rust_function(target.func_ptr, T, args...)  # cannot yield
+    guard_rust_panic_ptr(value, target.channel, name)          # cannot yield
 
 `C_NULL` means the artifact has no channel (built before #244, or a raw
 `#[no_mangle]` function the user wrote), and the guard is then a no-op.
@@ -872,13 +875,6 @@ convert_return(::Type{Bool}, value) = Bool(value != 0)
 convert_return(::Type{Char}, value::Integer) = ffi_char_from_code_point(value)
 convert_return(::Type{T}, value) where {T} = value
 
-default_numeric_arg_type(::Type{Bool}) = Int32
-default_numeric_arg_type(::Type{UInt32}) = Int32
-default_numeric_arg_type(::Type{Cstring}) = Int32
-default_numeric_arg_type(::Type{String}) = Int32
-default_numeric_arg_type(::Type{Cvoid}) = Int64
-default_numeric_arg_type(::Type{T}) where {T} = T
-
 normalize_arg_type(::Type{R}, ::Type{T}) where {R,T} = T
 normalize_arg_type(::Type{R}, ::Type{T}) where {R,T<:AbstractString} = String
 normalize_arg_type(::Type{R}, ::Type{Cstring}) where {R} = Cstring
@@ -1055,13 +1051,6 @@ end
 # argument, was deprecated in #276 (it only ever raised after that) and
 # removed in v0.5 (#417). Pass the return type: `call_rust_function(func_ptr,
 # T, args...)` or `@rust f(x)::T`.
-
-# The Rust spelling of a Julia argument type, for the message above; falls back
-# to the Julia name when there is no Rust counterpart, so `ffi_describe` still
-# renders something useful.
-function juliatype_to_rust_or_name(::Type{T}) where {T}
-    return get(JULIA_TO_RUST_TYPE_MAP, T, string(nameof(T)))
-end
 
 """
     @rust_ccall(func_name, ret_type, arg_types, args...)
