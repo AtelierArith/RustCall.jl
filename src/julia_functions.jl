@@ -511,7 +511,7 @@ function emit_julia_function_wrappers(signatures::Vector{RustFunctionSignature})
     exprs = Expr[]
 
     for sig in signatures
-        if sig.is_generic
+        if _function_skipped!(sig)
             # Generic functions are registered for monomorphization at load time
             # and called through `@rust`; no static wrapper is emitted.
             @debug "Skipping generic function wrapper generation for $(sig.name)"
@@ -529,6 +529,34 @@ function emit_julia_function_wrappers(signatures::Vector{RustFunctionSignature})
     end
 
     return Expr(:block, exprs...)
+end
+
+"""
+    _binds_julia_wrapper(sig) -> Bool
+
+Whether a function gets a static Julia wrapper, and so a binding in the
+generated module: not a generic (inline, it is monomorphized per call; in a
+crate, the proc macro refuses it), and not an item the Rust codegen refuses
+(#491, `_rust_refuses`). The one predicate the emitters
+(`_function_skipped!`) and the layout checks (`_check_module_names`,
+`_static_method_collisions`) share, so a name is checked exactly when it is
+bound.
+"""
+_binds_julia_wrapper(sig::RustFunctionSignature) =
+    !sig.is_generic && !_rust_refuses(sig.skip_reason)
+
+"""
+    _function_skipped!(sig) -> Bool
+
+Whether a function emitter skips `sig` (`!_binds_julia_wrapper(sig)`). The
+emitter is still where a refusal the Rust codegen makes on its own is recorded
+(#491), a generic `#[julia] unsafe fn` included, so the report names it.
+"""
+function _function_skipped!(sig::RustFunctionSignature)
+    _binds_julia_wrapper(sig) && return false
+    _boundary_item!(_boundary_label(sig))
+    _rust_refused_item!(sig.skip_reason, sig.name)
+    return true
 end
 
 """
@@ -557,6 +585,8 @@ function _generate_single_wrapper(sig::RustFunctionSignature)
     # The item every position below is filed under (#454), named before the
     # argument plan, which records first.
     _boundary_item!(_boundary_label(sig))
+    # An item the Rust codegen refuses gets no wrapper (#491).
+    _rust_refused_item!(sig.skip_reason, sig.name) && return nothing
     # The Julia wrapper keeps the Rust *name* (`add(1, 2)`); the call goes to
     # the exported *symbol*, which since #279 is `rustcall_add`.
     func_name = esc(Symbol(sig.name))

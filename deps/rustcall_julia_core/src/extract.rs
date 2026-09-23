@@ -263,7 +263,13 @@ pub fn function_entry(
         symbol,
         attribute,
         vis: crate::attrs::visibility_string(&func.vis),
-        skip_reason: String::new(),
+        // `transform_function` refuses a `#[julia] unsafe fn`; the reason
+        // says so to Julia, whose generators name the refusal (#491).
+        skip_reason: if attribute == Attribute::Julia && func.sig.unsafety.is_some() {
+            crate::manifest::skip_reason::UNSAFE_FN.to_string()
+        } else {
+            String::new()
+        },
         python_name: String::new(),
         python_path: Vec::new(),
         exported,
@@ -1314,7 +1320,7 @@ fn crate_struct_entry(
             is_constructor: returns_boxed_struct(struct_name, &m.func),
             is_classmethod: false,
             vis: crate::attrs::visibility_string(&m.func.vis),
-            skip_reason: String::new(),
+            skip_reason: crate::codegen::method_skip_reason(m),
             python_name: String::new(),
             accessor: String::new(),
             attribute: m.attribute,

@@ -1,0 +1,5 @@
+error: `Cell::read` is an `unsafe fn`: its `extern "C"` entry point would let Julia call it with none of the requirements its `unsafe` states upheld. Expose a safe method that upholds them and calls this one, and let Julia call that instead (#491).
+  --> tests/ui/unsafe_method.rs:13:9
+   |
+13 |     pub unsafe fn read(&self, p: *const i32) -> i32 {
+   |         ^^^^^^

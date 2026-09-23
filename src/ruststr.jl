@@ -1057,7 +1057,10 @@ function _register_manifest(expanded, lib_name::String; compiler = nothing,
         register_generic_struct_wrappers(info, expanded.source; compiler, cargo = cargo_context)
     end
     for sig in signatures
-        if sig.is_generic
+        # A generic the Rust codegen refuses (#491: an `unsafe fn`) is not
+        # registered for specialization: a specialized wrapper would call it
+        # from a safe body. The block carrying it does not compile anyway.
+        if sig.is_generic && !_rust_refused_item!(sig.skip_reason, sig.name)
             # Generic functions are compiled lazily; keep the compiler they were
             # expanded for so a later `set_default_compiler` cannot drop
             # #[cfg]-gated items from the specialization.

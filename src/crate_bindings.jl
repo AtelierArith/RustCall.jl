@@ -1770,9 +1770,9 @@ function _function_wrappers_expr(functions)
     exprs = Expr[]
 
     for func in functions
-        if func.is_generic
-            continue  # Skip generics for now
-        end
+        # A generic item gets no wrapper (the proc macro refuses it); one the
+        # codegen refuses as `unsafe` is still recorded (#491).
+        _function_skipped!(func) && continue
 
         wrapper = _generate_crate_function_wrapper(func)
         push!(exprs, wrapper)
@@ -1917,7 +1917,7 @@ function _check_module_names(tree::ModuleNode)
         "cannot lay out the bindings of $where_: $what binds `$name`, which every " *
         "generated module defines itself (#463). Rename it.")
     for f in tree.functions
-        f.is_generic && continue
+        _binds_julia_wrapper(f) || continue  # no binding, no name (#491)
         refuse_reserved(f.name, "the function `$(qualified_name(f.module_path, f.name))`")
         get!(taken, f.name, "the function `$(qualified_name(f.module_path, f.name))`")
     end
@@ -2159,7 +2159,7 @@ function _submodule_code(node::ModuleNode; strict::Symbol = FFI_STRICT[])
         push!(lines, _parent_helper_imports_source())
         push!(lines, "")
         for func in child.functions
-            func.is_generic && continue
+            _function_skipped!(func) && continue
             push!(lines, _emit_function_code(func; strict = strict))
             push!(lines, "")
         end
@@ -2179,6 +2179,8 @@ function _generate_crate_function_wrapper(func::RustFunctionSignature)
     # The item every position below is filed under (#454), named before the
     # argument plan, which records first.
     _boundary_item!(_boundary_label(func))
+    # An item the Rust codegen refuses gets no wrapper (#491).
+    _rust_refused_item!(func.skip_reason, func.name) && return Expr(:block)
     func_name = Symbol(func.name)
     func_name_str = func.name
     # The Julia wrapper keeps the Rust name; the exported symbol it calls is
@@ -2888,6 +2890,8 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     # The item every position below is filed under (#454), named before the
     # argument plan, which records first.
     _boundary_item!(_boundary_label(info, method.name))
+    # A method the Rust codegen refuses gets no wrapper (#491).
+    _rust_refused_item!(method.skip_reason, method.name) && return Expr(:block)
     struct_name = Symbol(info.name)
     struct_name_str = info.name
     method_name = Symbol(method.name)
@@ -4877,9 +4881,7 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     tree = _module_tree(info)
     _check_module_names(tree)
     for func in tree.functions
-        if func.is_generic
-            continue
-        end
+        _function_skipped!(func) && continue
         code = _emit_function_code(func; strict = strict)
         push!(lines, code)
         push!(lines, "")
@@ -4937,6 +4939,8 @@ function _emit_function_code(func::RustFunctionSignature; strict::Symbol = FFI_S
     # The item every position below is filed under (#454), named before the
     # argument plan, which records first.
     _boundary_item!(_boundary_label(func))
+    # An item the Rust codegen refuses gets no wrapper (#491).
+    _rust_refused_item!(func.skip_reason, func.name) && return ""
     func_name = func.name
     # The generated Julia function keeps the Rust name; the symbol it looks up
     # is the additive wrapper `rustcall_<name>` (#279).
@@ -5297,6 +5301,8 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
     # The item every position below is filed under (#454), named before the
     # argument plan, which records first.
     _boundary_item!(_boundary_label(struct_info, method.name))
+    # A method the Rust codegen refuses gets no wrapper (#491).
+    _rust_refused_item!(method.skip_reason, method.name) && return ""
     struct_name = struct_info.name
     method_name = method.name
     # Exported symbol (`rustcall_<Struct>_<method>`, #279) and the owner of the

@@ -44,6 +44,12 @@ const PYO3_SKIP_REASONS = Base.ImmutableDict(Base.ImmutableDict{String, String}(
                            "`CResult` aggregate; widening this is tracked in #303",
     "cfg_undecided" => "the item is behind a `#[cfg]` the scan could not decide, so whether " *
                        "the build the wrapper links against has it is unknown",
+    # A `#[julia]` item the Rust codegen refuses (#491); `_rust_refused_item!`
+    # reports it through the boundary report.
+    "unsafe_fn" => "an `unsafe fn`: its `extern \"C\"` entry point would let Julia call it " *
+                   "with none of the requirements its `unsafe` states upheld, so `#[julia]` " *
+                   "refuses it; expose a safe function or method that upholds them and " *
+                   "calls this one (#491)",
 )
 
 """

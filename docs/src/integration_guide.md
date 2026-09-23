@@ -208,8 +208,10 @@ generated, and nothing is noted, for them. What no signature shows is out of
 the report's reach and stays a caller contract: concurrent `&mut self` calls on
 one object, use after `unload_library(...; close = true)`, a callback stored
 or called from another thread, and panics on threads Rust spawns (see the
-limitation matrix below). A `#[julia] unsafe fn` is refused when the block
-compiles.
+limitation matrix below). A `#[julia]` function or method that is an
+`unsafe fn` is refused when the block compiles, and the report lists it as an
+`"entry point"` finding before anything is built (#491): expose a safe function
+that upholds what its `unsafe` requires and calls it.
 
 For callbacks, document the thread and lifetime assumptions explicitly. The
 current callback path is for synchronous calls, argument-position callbacks,

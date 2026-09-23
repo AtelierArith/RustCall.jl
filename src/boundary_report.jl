@@ -54,7 +54,9 @@ Prints a summary to `io` and returns `(; unsupported, checked, notes)`:
   where `item` is `"f"`, `"Struct::method"` or `"Struct::field"` (module-qualified
   below the crate root, `"a::f"`) and `position`
   is ``"argument `x`"``, `"return"`, `"Ok payload"`, `"Err payload"`,
-  `"Some payload"` or `"field getter"`;
+  `"Some payload"`, `"field getter"`, or `"entry point"` for an item the Rust
+  codegen refuses outright — a `#[julia]` function or method that is an
+  `unsafe fn` (#491), whose other positions are then not examined;
 * `checked` — how many positions were examined;
 * `notes` — one `(; item, position, rust_type, note)` per note; `position` is
   `"return"`, a payload, or `"entry point"` for an unguarded export. A note is

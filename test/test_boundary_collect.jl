@@ -137,7 +137,7 @@ end
     end
     source = RustCall._collect_boundary() do
         for f in tree.functions
-            f.is_generic || RustCall._emit_function_code(f)
+            RustCall._function_skipped!(f) || RustCall._emit_function_code(f)
         end
         colliding = RustCall._static_method_collisions(tree.functions, tree.structs)
         for s in tree.structs
@@ -232,4 +232,33 @@ end
     else
         @info "Skipping the Self-returning method call: rustc unavailable"
     end
+end
+
+# The refusal of #491 is the Rust codegen's (`compile_error!` at the item,
+# gated by its `#[cfg]`); the manifest carries it as `skip_reason`, and the
+# generators record it at the item's entry point through `_boundary_refuse`.
+# Outside the report they emit no wrapper for the item and raise nothing, so
+# a crate whose build configures the item away still binds.
+@testset "the generators record the codegen's refusal of an unsafe fn (#491)" begin
+    manifest = RustCall.extract_manifest(raw"""
+        #[julia]
+        pub unsafe fn danger(p: *const i32) -> i32 { *p }
+        #[julia]
+        pub fn safe(x: i32) -> i32 { x }
+        """; mode = "inline")
+    signatures = RustCall.manifest_function_signatures(manifest)
+    @test [s.skip_reason for s in signatures] == ["unsafe_fn", ""]
+    outside = RustCall.emit_julia_function_wrappers(signatures)
+    @test !occursin("rustcall_danger", string(outside))
+    @test occursin("rustcall_safe", string(outside))
+    collector = RustCall._collect_boundary() do
+        RustCall.emit_julia_function_wrappers(signatures)
+    end
+    @test _bc_keys(collector.positions) ==
+          [("danger", "entry point"), ("safe", "argument `x`"), ("safe", "return")]
+    @test occursin("`unsafe fn`", collector.positions[1].reason)
+    # Only that reason: another `skip_reason` is not the codegen's refusal.
+    @test !RustCall._rust_refused_item!("", "f")
+    @test !RustCall._rust_refused_item!("not_public", "f")
+    @test RustCall._rust_refused_item!("unsafe_fn", "f")
 end

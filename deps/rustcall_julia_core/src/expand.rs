@@ -169,6 +169,14 @@ fn expand_items(
                             );
                             out.push(Item::Fn(f));
                         } else if has_type_params(&f.sig.generics) {
+                            // A generic `unsafe fn` is refused like a concrete
+                            // one (#491): its specialized wrapper would call it
+                            // from a safe body. The manifest entry carries
+                            // `skip_reason = "unsafe_fn"`, and Julia registers
+                            // nothing for it.
+                            if let Some(error) = crate::codegen::unsafe_function_error(&f) {
+                                out.extend(items_of(error)?);
+                            }
                             f.vis = Visibility::Public(Default::default());
                             push_fn(
                                 manifest,
@@ -359,6 +367,11 @@ fn methods_of(
         // instantiation binds only the struct's parameters), so there is
         // nothing for Julia to bind.
         .filter(|m| !crate::codegen::inline_method_is_generic(m))
+        // An `unsafe` method is refused at the method too (#491), and kept
+        // here with its `skip_reason` — a concrete struct's and a generic
+        // struct's alike — so the Julia generators name the refusal. It gets
+        // no wrapper (nor, on a generic struct, a generic wrapper), and Julia
+        // binds nothing for it.
         .map(|m| {
             let shape = crate::extract::method_return_shape(struct_name, &m.func, symbols);
             let returns_self = matches!(
@@ -382,7 +395,7 @@ fn methods_of(
                 is_constructor: m.name() == "new" || returns_self,
                 is_classmethod: false,
                 vis: crate::attrs::visibility_string(&m.func.vis),
-                skip_reason: String::new(),
+                skip_reason: crate::codegen::method_skip_reason(m),
                 python_name: String::new(),
                 accessor: String::new(),
                 attribute: m.attribute,

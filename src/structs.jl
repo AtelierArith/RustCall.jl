@@ -392,7 +392,7 @@ their bare name.
 function _static_method_collisions(functions, structs)
     counts = Dict{String, Int}()
     for func in functions
-        func.is_generic && continue
+        _binds_julia_wrapper(func) || continue  # no binding, no name (#491)
         counts[func.name] = get(counts, func.name, 0) + 1
     end
     for s in structs, m in s.methods
@@ -480,6 +480,12 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
 
         # 2. Methods
         for m in info.methods
+            # A method the Rust codegen refuses has no generic wrapper and gets
+            # no binding; the report names the refusal (#491). Nothing else of
+            # a generic struct is examined, so naming the item here files
+            # only that.
+            _boundary_item!(_boundary_label(info, m.name))
+            _rust_refused_item!(m.skip_reason, m.name) && continue
             fname = esc(Symbol(m.name))
             wrapper_name = _generic_method_wrapper_name(info, m)
             is_ctor = m.is_constructor
@@ -546,9 +552,10 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
             end
         end
 
-        method_names = Set([Symbol(m.name) for m in info.methods])
+        method_names = Set([Symbol(m.name) for m in info.methods if !_rust_refuses(m.skip_reason)])
         method_accessors = Expr[]
         for m in info.methods
+            _rust_refuses(m.skip_reason) && continue  # no binding (#491)
             method_sym = Symbol(m.name)
             method_func = esc(Symbol(m.name))
             push!(method_accessors, quote
@@ -649,6 +656,8 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
         # The item every position below is filed under (#454), named before
         # the argument plan, which records first.
         _boundary_item!(_boundary_label(info, m.name))
+        # A method the Rust codegen refuses gets no wrapper (#491).
+        _rust_refused_item!(m.skip_reason, m.name) && continue
 
         is_ctor = m.is_constructor
 
@@ -807,10 +816,11 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
         end
 
         # Single Base.getproperty for all fields and methods
-        method_names = Set([Symbol(m.name) for m in info.methods])
+        method_names = Set([Symbol(m.name) for m in info.methods if !_rust_refuses(m.skip_reason)])
         # Build method accessor expressions
         method_accessors = Expr[]
         for m in info.methods
+            _rust_refuses(m.skip_reason) && continue  # no binding (#491)
             method_sym = Symbol(m.name)
             method_func = esc(Symbol(m.name))
             # Use a fixed name 'args' – it's safe within the anonymous function scope

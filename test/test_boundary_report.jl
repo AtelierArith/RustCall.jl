@@ -328,3 +328,217 @@ end
     crate = RustCall.boundary_report(BR_SAMPLE_CRATE; io = devnull)
     @test !any(n -> n.position == "entry point", crate.notes)
 end
+
+# A `#[julia]` item that is an `unsafe fn` is refused by the Rust codegen with
+# a `compile_error!`; the manifest says so (`skip_reason = "unsafe_fn"`) and
+# the generators record the refusal, so the report names it before anything
+# is built (#491).
+@testset "boundary report lists a refused unsafe fn and unsafe method (#491)" begin
+    source = raw"""
+        #[julia]
+        pub unsafe fn danger(p: *const i32) -> i32 { *p }
+
+        #[julia]
+        pub fn safe(x: i32) -> i32 { x }
+
+        #[julia]
+        pub struct Cell { pub v: i32 }
+
+        impl Cell {
+            pub fn new() -> Self { Cell { v: 1 } }
+            pub unsafe fn read(&self, p: *const i32) -> i32 { *p + self.v }
+        }
+        """
+    report = RustCall.inline_boundary_report(source; io = devnull)
+    @test _br_positions(report) == Set([("danger", "entry point"),
+                                        ("Cell::read", "entry point")])
+    for u in report.unsupported
+        @test occursin("`unsafe fn`", u.reason)
+        @test occursin("#491", u.reason)
+    end
+    danger = only(u for u in report.unsupported if u.item == "danger")
+    @test danger.rust_type == "unsafe fn danger"
+    # No wrapper exists for a refused item, so none of its argument or return
+    # positions is examined: `safe`'s two and the `v` getter.
+    @test report.checked == 2 + 1 + 2
+    text = sprint(io -> RustCall.inline_boundary_report(source; io))
+    @test occursin("2 unsupported position(s)", text)
+    @test occursin("danger, entry point: unsafe fn danger", text)
+
+    # The crate flavour: a `#[julia] unsafe fn` and an unsafe `#[julia]`
+    # method, the latter behind a feature the lenient scan does not decide —
+    # reported, not decided, like every other feature-gated item.
+    mktempdir() do root
+        crate = joinpath(root, "br_unsafe")
+        mkpath(joinpath(crate, "src"))
+        write(joinpath(crate, "Cargo.toml"), """
+            [package]
+            name = "br_unsafe"
+            version = "0.1.0"
+            edition = "2021"
+
+            [lib]
+            crate-type = ["cdylib"]
+
+            [features]
+            peek = []
+
+            [dependencies]
+            rustcall_julia_macros = { path = $(repr(RustCall.rustcall_runtime_crate_path())) }
+            """)
+        write(joinpath(crate, "src", "lib.rs"), """
+            use rustcall_julia_macros::julia;
+
+            #[julia]
+            pub unsafe fn danger(p: *const i32) -> i32 { *p }
+
+            #[julia]
+            pub struct Cell { pub v: i32 }
+
+            #[julia]
+            impl Cell {
+                #[julia]
+                pub fn get(&self) -> i32 { self.v }
+                #[cfg(feature = "peek")]
+                #[julia]
+                pub unsafe fn read(&self, p: *const i32) -> i32 { *p + self.v }
+            }
+            """)
+        report = RustCall.boundary_report(crate; io = devnull)
+        @test _br_positions(report) == Set([("danger", "entry point"),
+                                            ("Cell::read", "entry point")])
+        @test all(u -> occursin("`unsafe fn`", u.reason), report.unsupported)
+    end
+end
+
+# A generic `#[julia] unsafe fn` is registered for specialization rather than
+# wrapped, so it used to escape both the codegen's refusal and the report: the
+# block compiled and the first `@rust` call failed with E0133 inside the
+# specialized wrapper (#491 review). It is refused like a concrete one, the
+# report names it, and it is never registered as a generic.
+@testset "a generic #[julia] unsafe fn is reported and refused (#491 review)" begin
+    source = raw"""
+        #[julia]
+        pub unsafe fn g491<T: Copy>(x: T) -> T { x }
+        #[julia]
+        pub fn h491<T: Copy>(x: T) -> T { x }
+        """
+    report = RustCall.inline_boundary_report(source; io = devnull)
+    @test _br_positions(report) == Set([("g491", "entry point")])
+    @test occursin("`unsafe fn`", only(report.unsupported).reason)
+
+    # Registration keeps the refused generic out of the specialization
+    # registry; the safe one is registered as before.
+    RustCall._register_manifest(RustCall.expand_inline(source), "rust_fake_lib_491")
+    @test !RustCall.is_generic_function("g491")
+    @test RustCall.is_generic_function("h491")
+
+    # The block itself fails to compile, at the refusal rather than in a
+    # specialized wrapper.
+    scope = Module()
+    Core.eval(scope, :(using RustCall))
+    message = try
+        Core.eval(scope, Expr(:macrocall, Symbol("@rust_str"), LineNumberNode(1), source))
+        ""
+    catch err
+        sprint(showerror, err)
+    end
+    @test occursin("cannot be applied to unsafe functions directly", message)
+    @test !occursin("E0133", message)
+end
+
+# An item the codegen refuses gets no Julia binding, so it takes no name in the
+# generated module: a lenient scan keeps a feature-gated `#[julia] unsafe fn`
+# the build may configure away, and its name — here a helper every generated
+# module defines — must not fail the layout (#491 review). The layout checks
+# and the emitters share one predicate, `_binds_julia_wrapper`.
+@testset "a refused unsafe fn takes no name in the generated module (#491 review)" begin
+    mktempdir() do root
+        crate = joinpath(root, "br_names")
+        mkpath(joinpath(crate, "src"))
+        write(joinpath(crate, "Cargo.toml"), """
+            [package]
+            name = "br_names"
+            version = "0.1.0"
+            edition = "2021"
+
+            [lib]
+            crate-type = ["cdylib"]
+
+            [features]
+            raw = []
+
+            [dependencies]
+            rustcall_julia_macros = { path = $(repr(RustCall.rustcall_runtime_crate_path())) }
+            """)
+        write(joinpath(crate, "src", "lib.rs"), """
+            use rustcall_julia_macros::julia;
+
+            #[cfg(feature = "raw")]
+            #[julia]
+            pub unsafe fn _symbol(p: *const i32) -> i32 { *p }
+
+            #[cfg(feature = "raw")]
+            #[julia]
+            pub unsafe fn shared(p: *const i32) -> i32 { *p }
+
+            #[julia]
+            pub struct Cell { pub v: i32 }
+
+            #[julia]
+            impl Cell {
+                #[julia]
+                pub fn shared() -> i32 { 0 }
+            }
+            """)
+        _, _, manifest = RustCall._crate_manifest(crate; cfg_text = RustCall._rustc_cfg_text(),
+                                                  allow_cargo = false)
+        functions = RustCall.manifest_function_signatures(manifest)
+        structs = RustCall.manifest_struct_infos(manifest)
+        @test Set(f.name for f in functions if !RustCall._binds_julia_wrapper(f)) ==
+              Set(["_symbol", "shared"])
+        tree = RustCall._module_tree(functions, structs)
+        # Neither refused function is a binding: no reserved-name error, and
+        # `Cell::shared` keeps its bare static form.
+        @test RustCall._check_module_names(tree) === nothing
+        @test isempty(RustCall._static_method_collisions(functions, structs))
+        @test RustCall._crate_wrapper_exprs(tree) isa Any
+        # The report still names both refusals.
+        report = RustCall.boundary_report(crate; io = devnull)
+        @test _br_positions(report) == Set([("_symbol", "entry point"), ("shared", "entry point")])
+    end
+end
+
+# A non-generic `unsafe fn` method of a generic inline struct is refused next
+# to the struct and gets no generic wrapper; the manifest keeps it with its
+# `skip_reason`, so the report names it like any other refused method, and the
+# generic-struct emitter binds nothing for it (#491 review).
+@testset "an unsafe method of a generic struct is reported (#491 review)" begin
+    source = raw"""
+        #[julia]
+        pub struct W491<T> { pub x: T }
+        impl<T: Copy> W491<T> {
+            pub fn get(&self) -> T { self.x }
+            pub unsafe fn peek(&self, p: *const T) -> T { *p }
+        }
+        """
+    report = RustCall.inline_boundary_report(source; io = devnull)
+    @test _br_positions(report) == Set([("W491::peek", "entry point")])
+    @test occursin("`unsafe fn`", only(report.unsupported).reason)
+    info = only(RustCall.manifest_struct_infos(RustCall.extract_manifest(source; mode = "inline")))
+    defs = string(RustCall.emit_julia_definitions(info))
+    @test occursin("get", defs)
+    @test !occursin(":peek", defs)
+
+    # The block fails at the refusal, not in a specialized wrapper.
+    scope = Module()
+    Core.eval(scope, :(using RustCall))
+    message = try
+        Core.eval(scope, Expr(:macrocall, Symbol("@rust_str"), LineNumberNode(1), source))
+        ""
+    catch err
+        sprint(showerror, err)
+    end
+    @test occursin("`W491::peek` is an `unsafe fn`", message)
+    @test !occursin("E0133", message)
+end
