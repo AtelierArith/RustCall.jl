@@ -45,6 +45,12 @@ const _PUBLISHED_CRATES = ("rustcall_julia_core", "rustcall_julia_macros",
         # version, so a caret requirement would let Cargo pair an old facade
         # with a newer proc macro (#451 review).
         shared = only(unique(versions))
+        # 0.1.0 is on crates.io and #475 / #479 removed `pub` items it
+        # exports (`CfgSet::is_lenient`, `paths::imports_in`,
+        # `model::collect_struct_models`, ...), while #470 / #480 / #483
+        # changed public signatures and struct fields: for a `0.x` crate that
+        # is a minor bump, so the set can never be back at 0.1 (#487).
+        @test shared >= v"0.2.0"
         for (crate, below) in (("rustcall_julia_macros", "rustcall_julia_macros_impl"),
                                ("rustcall_julia_macros_impl", "rustcall_julia_core"))
             toml = TOML.parsefile(joinpath(_ROOT, "deps", crate, "Cargo.toml"))
@@ -78,6 +84,32 @@ const _PUBLISHED_CRATES = ("rustcall_julia_core", "rustcall_julia_macros",
         end
         extract_lock = TOML.parsefile(lockfiles[1])
         @test any(p -> p["name"] == "rustcall_julia_core", extract_lock["package"])
+        # The list above is the one AGENTS.md tells a bump to refresh; a new
+        # lockfile that records the crates must join it, or a bump would pass
+        # here and fail that crate's `--locked` build instead (#487). Every
+        # committed lockfile that records one of the crates is on the list.
+        # Committed, not merely present: building an example writes an
+        # untracked `Cargo.lock` beside it, which no bump has to refresh.
+        tracked = if Sys.which("git") !== nothing && ispath(joinpath(_ROOT, ".git"))
+            try
+                readlines(`git -C $_ROOT ls-files -- '*Cargo.lock'`)
+            catch
+                nothing
+            end
+        else
+            nothing
+        end
+        if tracked === nothing
+            @test_skip "needs a git checkout to list the committed lockfiles"
+        else
+            recording = String[]
+            for rel in tracked
+                path = joinpath(_ROOT, rel)
+                packages = get(TOML.parsefile(path), "package", Any[])
+                any(p -> p["name"] in _PUBLISHED_CRATES, packages) && push!(recording, path)
+            end
+            @test sort(normpath.(recording)) == sort(normpath.(collect(lockfiles)))
+        end
     end
 
     @testset "the extractor keeps the package's version" begin
@@ -403,7 +435,15 @@ const _PUBLISHED_CRATES = ("rustcall_julia_core", "rustcall_julia_macros",
             # records for the path crate, not the one installed now: a lock
             # written under the previous release hashes as it did then, so
             # the two identities are equal (#372 review).
-            previous = replace(two, core_version => "0.0.1")
+            # Only the release crates' own entries move: `probe` is not one,
+            # and a blanket replace of the version string would rewrite it
+            # too whenever the crates' version happens to equal it (#487).
+            previous = replace(two, "\"rustcall_julia_core $(core_version)\"" => "\"rustcall_julia_core 0.0.1\"",
+                                    "name = \"rustcall_julia_core\"\nversion = \"$(core_version)\"" =>
+                                        "name = \"rustcall_julia_core\"\nversion = \"0.0.1\"",
+                                    "name = \"rustcall_julia_macros\"\nversion = \"$(core_version)\"" =>
+                                        "name = \"rustcall_julia_macros\"\nversion = \"0.0.1\"")
+            @test previous != two
             @test digest("Cargo.lock", previous) == digest("Cargo.lock", two)
             # A lockfile resolved under an earlier patch release replays
             # `--locked` under this one: the release crates' version lines,

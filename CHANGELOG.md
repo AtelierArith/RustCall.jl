@@ -167,6 +167,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wrapper for them, and `boundary_report` / `inline_boundary_report` list
   them as a finding at the item's `"entry point"` with the reason.
 
+### Rust crates
+- **`rustcall_julia_core`, `rustcall_julia_macros_impl` and
+  `rustcall_julia_macros` are `0.2.0`**
+  ([#487](https://github.com/AtelierArith/RustCall.jl/issues/487)). The
+  published `0.1.0` (from #451) exported items that have since been removed
+  or changed, so for a `0.x` crate set this is a minor bump; each crate still
+  pins the one below it exactly (`version = "=0.2.0"`), and a `#[julia]` crate
+  depending on the release writes `rustcall_julia_macros = "0.2"`. The bump
+  moves no cache key: the crates' `[package] version` and the exact
+  requirements stay out of every artifact identity, and the extractor's source
+  digest and `toolchain_fingerprint()` are the same before and after it.
+  - Removed from `rustcall_julia_core` (#475):
+    `cfg::CfgSet::is_lenient`, `paths::imports_in`, `types::is_bare_ident`.
+  - Removed from `rustcall_julia_core` (#479):
+    `claims::scanned_function_claims`, `codegen::function_uses_strings`,
+    `manifest::Function::claimed_symbols`,
+    `manifest::Method::declares_owned_string`,
+    `manifest::Struct::claimed_symbols`, `model::collect_struct_models`,
+    `model::collect_struct_models_in`.
+  - Changed in `rustcall_julia_core`:
+    `codegen::inline_generic_wrappers` takes the struct's module path
+    (`(model, module_path)`, #470); `manifest::Method` has a new public field
+    `generic_wrapper_name` (#470); `model::MethodModel` has a new public field
+    `host: Option<ImplHost>` and `model::ImplHost` is new (#483). A struct
+    literal of either no longer compiles without the field.
+  - Added to `rustcall_julia_core`: the `environment` module (#483),
+    `claims::aggregate_name`, `codegen::generic_method_wrapper_name`,
+    `codegen::inline_generic_method_refusals`,
+    `codegen::inline_method_is_generic` (#470, #476, #480),
+    `model::StructModel::field_cfg_attrs` (#470).
+  - Changed in what `#[julia]` generates: a plain return is
+    `MaybeUninit<T>` in the wrapper (same C ABI; the panic sentinel is sound
+    for any `T`, #470); a wrapper declares the wrapped item's lifetime
+    parameters and `where` clause, with `Self` spelled as the impl type
+    (#480, #483); and `#[julia]` refuses a generic function, method or struct
+    item it used to accept, and a lowered `&str` argument whose lifetime the
+    wrapper cannot instantiate (#470, #483), with a compile error at the item.
+
 ## [0.6.6] - 2026-09-22
 
 ### Changed
