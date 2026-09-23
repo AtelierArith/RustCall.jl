@@ -392,7 +392,7 @@ their bare name.
 function _static_method_collisions(functions, structs)
     counts = Dict{String, Int}()
     for func in functions
-        func.is_generic && continue
+        _binds_julia_wrapper(func) || continue  # no binding, no name (#491)
         counts[func.name] = get(counts, func.name, 0) + 1
     end
     for s in structs, m in s.methods

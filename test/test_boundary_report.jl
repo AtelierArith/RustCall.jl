@@ -446,3 +446,65 @@ end
     @test occursin("cannot be applied to unsafe functions directly", message)
     @test !occursin("E0133", message)
 end
+
+# An item the codegen refuses gets no Julia binding, so it takes no name in the
+# generated module: a lenient scan keeps a feature-gated `#[julia] unsafe fn`
+# the build may configure away, and its name — here a helper every generated
+# module defines — must not fail the layout (#491 review). The layout checks
+# and the emitters share one predicate, `_binds_julia_wrapper`.
+@testset "a refused unsafe fn takes no name in the generated module (#491 review)" begin
+    mktempdir() do root
+        crate = joinpath(root, "br_names")
+        mkpath(joinpath(crate, "src"))
+        write(joinpath(crate, "Cargo.toml"), """
+            [package]
+            name = "br_names"
+            version = "0.1.0"
+            edition = "2021"
+
+            [lib]
+            crate-type = ["cdylib"]
+
+            [features]
+            raw = []
+
+            [dependencies]
+            rustcall_julia_macros = { path = $(repr(RustCall.rustcall_runtime_crate_path())) }
+            """)
+        write(joinpath(crate, "src", "lib.rs"), """
+            use rustcall_julia_macros::julia;
+
+            #[cfg(feature = "raw")]
+            #[julia]
+            pub unsafe fn _symbol(p: *const i32) -> i32 { *p }
+
+            #[cfg(feature = "raw")]
+            #[julia]
+            pub unsafe fn shared(p: *const i32) -> i32 { *p }
+
+            #[julia]
+            pub struct Cell { pub v: i32 }
+
+            #[julia]
+            impl Cell {
+                #[julia]
+                pub fn shared() -> i32 { 0 }
+            }
+            """)
+        _, _, manifest = RustCall._crate_manifest(crate; cfg_text = RustCall._rustc_cfg_text(),
+                                                  allow_cargo = false)
+        functions = RustCall.manifest_function_signatures(manifest)
+        structs = RustCall.manifest_struct_infos(manifest)
+        @test Set(f.name for f in functions if !RustCall._binds_julia_wrapper(f)) ==
+              Set(["_symbol", "shared"])
+        tree = RustCall._module_tree(functions, structs)
+        # Neither refused function is a binding: no reserved-name error, and
+        # `Cell::shared` keeps its bare static form.
+        @test RustCall._check_module_names(tree) === nothing
+        @test isempty(RustCall._static_method_collisions(functions, structs))
+        @test RustCall._crate_wrapper_exprs(tree) isa Any
+        # The report still names both refusals.
+        report = RustCall.boundary_report(crate; io = devnull)
+        @test _br_positions(report) == Set([("_symbol", "entry point"), ("shared", "entry point")])
+    end
+end

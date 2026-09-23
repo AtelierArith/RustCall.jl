@@ -511,7 +511,7 @@ function emit_julia_function_wrappers(signatures::Vector{RustFunctionSignature})
     exprs = Expr[]
 
     for sig in signatures
-        if _generic_function_skipped!(sig)
+        if _function_skipped!(sig)
             # Generic functions are registered for monomorphization at load time
             # and called through `@rust`; no static wrapper is emitted.
             @debug "Skipping generic function wrapper generation for $(sig.name)"
@@ -532,16 +532,28 @@ function emit_julia_function_wrappers(signatures::Vector{RustFunctionSignature})
 end
 
 """
-    _generic_function_skipped!(sig) -> Bool
+    _binds_julia_wrapper(sig) -> Bool
 
-Whether a function emitter skips `sig` because it is generic: a generic item
-gets no static wrapper (inline, it is monomorphized per call; in a crate, the
-proc macro refuses it). The emitter is still where a refusal the Rust codegen
-makes on its own is recorded (#491): a generic `#[julia] unsafe fn` is refused
-like a concrete one, so the report names it too.
+Whether a function gets a static Julia wrapper, and so a binding in the
+generated module: not a generic (inline, it is monomorphized per call; in a
+crate, the proc macro refuses it), and not an item the Rust codegen refuses
+(#491, `_rust_refuses`). The one predicate the emitters
+(`_function_skipped!`) and the layout checks (`_check_module_names`,
+`_static_method_collisions`) share, so a name is checked exactly when it is
+bound.
 """
-function _generic_function_skipped!(sig::RustFunctionSignature)
-    sig.is_generic || return false
+_binds_julia_wrapper(sig::RustFunctionSignature) =
+    !sig.is_generic && !_rust_refuses(sig.skip_reason)
+
+"""
+    _function_skipped!(sig) -> Bool
+
+Whether a function emitter skips `sig` (`!_binds_julia_wrapper(sig)`). The
+emitter is still where a refusal the Rust codegen makes on its own is recorded
+(#491), a generic `#[julia] unsafe fn` included, so the report names it.
+"""
+function _function_skipped!(sig::RustFunctionSignature)
+    _binds_julia_wrapper(sig) && return false
     _boundary_item!(_boundary_label(sig))
     _rust_refused_item!(sig.skip_reason, sig.name)
     return true

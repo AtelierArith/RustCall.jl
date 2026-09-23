@@ -1772,7 +1772,7 @@ function _function_wrappers_expr(functions)
     for func in functions
         # A generic item gets no wrapper (the proc macro refuses it); one the
         # codegen refuses as `unsafe` is still recorded (#491).
-        _generic_function_skipped!(func) && continue
+        _function_skipped!(func) && continue
 
         wrapper = _generate_crate_function_wrapper(func)
         push!(exprs, wrapper)
@@ -1917,7 +1917,7 @@ function _check_module_names(tree::ModuleNode)
         "cannot lay out the bindings of $where_: $what binds `$name`, which every " *
         "generated module defines itself (#463). Rename it.")
     for f in tree.functions
-        f.is_generic && continue
+        _binds_julia_wrapper(f) || continue  # no binding, no name (#491)
         refuse_reserved(f.name, "the function `$(qualified_name(f.module_path, f.name))`")
         get!(taken, f.name, "the function `$(qualified_name(f.module_path, f.name))`")
     end
@@ -2159,7 +2159,7 @@ function _submodule_code(node::ModuleNode; strict::Symbol = FFI_STRICT[])
         push!(lines, _parent_helper_imports_source())
         push!(lines, "")
         for func in child.functions
-            _generic_function_skipped!(func) && continue
+            _function_skipped!(func) && continue
             push!(lines, _emit_function_code(func; strict = strict))
             push!(lines, "")
         end
@@ -4881,7 +4881,7 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     tree = _module_tree(info)
     _check_module_names(tree)
     for func in tree.functions
-        _generic_function_skipped!(func) && continue
+        _function_skipped!(func) && continue
         code = _emit_function_code(func; strict = strict)
         push!(lines, code)
         push!(lines, "")

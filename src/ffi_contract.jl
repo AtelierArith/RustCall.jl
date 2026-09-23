@@ -1241,6 +1241,15 @@ function _boundary_refuse(position::AbstractString, rust_type::AbstractString,
 end
 
 """
+    _rust_refuses(skip_reason) -> Bool
+
+Whether a manifest `skip_reason` says the Rust codegen refuses the item
+outright (#491: `"unsafe_fn"`), so it gets no Julia binding. Pure: the
+recording form is `_rust_refused_item!`.
+"""
+_rust_refuses(skip_reason::AbstractString) = partition_skip_reason(skip_reason)[1] == "unsafe_fn"
+
+"""
     _rust_refused_item!(skip_reason, name) -> Bool
 
 Whether the Rust codegen refuses the current item outright, as the manifest's
@@ -1256,7 +1265,7 @@ gated by the item's `#[cfg]` — so nothing is raised here: a crate is scanned
 leniently, and raising would refuse a build that configures the item away.
 """
 function _rust_refused_item!(skip_reason::AbstractString, name::AbstractString)
-    partition_skip_reason(skip_reason)[1] == "unsafe_fn" || return false
+    _rust_refuses(skip_reason) || return false
     _boundary_collecting() &&
         _boundary_refuse("entry point", "unsafe fn $(name)", "",
                          pyo3_skip_explanation(skip_reason))
