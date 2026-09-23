@@ -2,8 +2,8 @@
 // These functions provide FFI-safe wrappers for Box, Rc, and Arc
 
 use std::ffi::c_void;
-use std::sync::Arc;
 use std::rc::Rc;
+use std::sync::Arc;
 
 // ============================================================================
 // Box<T> helpers
@@ -42,7 +42,14 @@ pub extern "C" fn rust_box_new_bool(value: bool) -> *mut c_void {
 /// Drop a Box<T> (generic drop function)
 /// Note: This is unsafe because we don't know the type T
 /// In practice, type-specific drop functions should be used
+///
+/// # Safety
+///
+/// `ptr` must be null or the only owner of a `Box` allocation of size 1 and
+/// alignment 1 (it is freed with that layout); a box of any other type must go
+/// through its typed `rust_box_drop_<t>`. The pointer is invalid afterwards.
 #[no_mangle]
+#[allow(clippy::from_raw_with_void_ptr)] // the size-1 layout is this symbol's contract
 pub unsafe extern "C" fn rust_box_drop(ptr: *mut c_void) {
     if !ptr.is_null() {
         let _ = Box::from_raw(ptr);
@@ -50,6 +57,11 @@ pub unsafe extern "C" fn rust_box_drop(ptr: *mut c_void) {
 }
 
 /// Drop a Box<i32>
+///
+/// # Safety
+///
+/// `ptr` must be null or a pointer returned by `rust_box_new_i32` that has not
+/// been dropped yet. The pointer is invalid afterwards.
 #[no_mangle]
 pub unsafe extern "C" fn rust_box_drop_i32(ptr: *mut c_void) {
     if !ptr.is_null() {
@@ -58,6 +70,11 @@ pub unsafe extern "C" fn rust_box_drop_i32(ptr: *mut c_void) {
 }
 
 /// Drop a Box<i64>
+///
+/// # Safety
+///
+/// `ptr` must be null or a pointer returned by `rust_box_new_i64` that has not
+/// been dropped yet. The pointer is invalid afterwards.
 #[no_mangle]
 pub unsafe extern "C" fn rust_box_drop_i64(ptr: *mut c_void) {
     if !ptr.is_null() {
@@ -66,6 +83,11 @@ pub unsafe extern "C" fn rust_box_drop_i64(ptr: *mut c_void) {
 }
 
 /// Drop a Box<f32>
+///
+/// # Safety
+///
+/// `ptr` must be null or a pointer returned by `rust_box_new_f32` that has not
+/// been dropped yet. The pointer is invalid afterwards.
 #[no_mangle]
 pub unsafe extern "C" fn rust_box_drop_f32(ptr: *mut c_void) {
     if !ptr.is_null() {
@@ -74,6 +96,11 @@ pub unsafe extern "C" fn rust_box_drop_f32(ptr: *mut c_void) {
 }
 
 /// Drop a Box<f64>
+///
+/// # Safety
+///
+/// `ptr` must be null or a pointer returned by `rust_box_new_f64` that has not
+/// been dropped yet. The pointer is invalid afterwards.
 #[no_mangle]
 pub unsafe extern "C" fn rust_box_drop_f64(ptr: *mut c_void) {
     if !ptr.is_null() {
@@ -82,6 +109,11 @@ pub unsafe extern "C" fn rust_box_drop_f64(ptr: *mut c_void) {
 }
 
 /// Drop a Box<bool>
+///
+/// # Safety
+///
+/// `ptr` must be null or a pointer returned by `rust_box_new_bool` that has not
+/// been dropped yet. The pointer is invalid afterwards.
 #[no_mangle]
 pub unsafe extern "C" fn rust_box_drop_bool(ptr: *mut c_void) {
     if !ptr.is_null() {
@@ -118,6 +150,14 @@ pub extern "C" fn rust_rc_new_f64(value: f64) -> *mut c_void {
 }
 
 /// Clone an Rc<i32> (increment reference count)
+///
+/// # Safety
+///
+/// `ptr` must be null or a live pointer returned by `rust_rc_new_i32` or
+/// `rust_rc_clone_i32` whose reference has not been dropped. The returned
+/// pointer is a new reference and must be dropped on its own.
+/// An `Rc` is not thread-safe: the clones and drops of one allocation must not
+/// run concurrently.
 #[no_mangle]
 pub unsafe extern "C" fn rust_rc_clone_i32(ptr: *mut c_void) -> *mut c_void {
     if ptr.is_null() {
@@ -126,11 +166,19 @@ pub unsafe extern "C" fn rust_rc_clone_i32(ptr: *mut c_void) -> *mut c_void {
     // Reconstruct Rc from raw pointer, clone it, then return new raw pointer
     let rc = Rc::from_raw(ptr as *const i32);
     let cloned = Rc::clone(&rc);
-    std::mem::forget(rc);  // Keep original reference alive
+    std::mem::forget(rc); // Keep original reference alive
     Rc::into_raw(cloned) as *mut c_void
 }
 
 /// Clone an Rc<i64> (increment reference count)
+///
+/// # Safety
+///
+/// `ptr` must be null or a live pointer returned by `rust_rc_new_i64` or
+/// `rust_rc_clone_i64` whose reference has not been dropped. The returned
+/// pointer is a new reference and must be dropped on its own.
+/// An `Rc` is not thread-safe: the clones and drops of one allocation must not
+/// run concurrently.
 #[no_mangle]
 pub unsafe extern "C" fn rust_rc_clone_i64(ptr: *mut c_void) -> *mut c_void {
     if ptr.is_null() {
@@ -138,11 +186,19 @@ pub unsafe extern "C" fn rust_rc_clone_i64(ptr: *mut c_void) -> *mut c_void {
     }
     let rc = Rc::from_raw(ptr as *const i64);
     let cloned = Rc::clone(&rc);
-    std::mem::forget(rc);  // Keep original reference alive
+    std::mem::forget(rc); // Keep original reference alive
     Rc::into_raw(cloned) as *mut c_void
 }
 
 /// Clone an Rc<f32> (increment reference count)
+///
+/// # Safety
+///
+/// `ptr` must be null or a live pointer returned by `rust_rc_new_f32` or
+/// `rust_rc_clone_f32` whose reference has not been dropped. The returned
+/// pointer is a new reference and must be dropped on its own.
+/// An `Rc` is not thread-safe: the clones and drops of one allocation must not
+/// run concurrently.
 #[no_mangle]
 pub unsafe extern "C" fn rust_rc_clone_f32(ptr: *mut c_void) -> *mut c_void {
     if ptr.is_null() {
@@ -155,6 +211,14 @@ pub unsafe extern "C" fn rust_rc_clone_f32(ptr: *mut c_void) -> *mut c_void {
 }
 
 /// Clone an Rc<f64> (increment reference count)
+///
+/// # Safety
+///
+/// `ptr` must be null or a live pointer returned by `rust_rc_new_f64` or
+/// `rust_rc_clone_f64` whose reference has not been dropped. The returned
+/// pointer is a new reference and must be dropped on its own.
+/// An `Rc` is not thread-safe: the clones and drops of one allocation must not
+/// run concurrently.
 #[no_mangle]
 pub unsafe extern "C" fn rust_rc_clone_f64(ptr: *mut c_void) -> *mut c_void {
     if ptr.is_null() {
@@ -167,6 +231,13 @@ pub unsafe extern "C" fn rust_rc_clone_f64(ptr: *mut c_void) -> *mut c_void {
 }
 
 /// Drop an Rc<i32> (decrement reference count)
+///
+/// # Safety
+///
+/// `ptr` must be null or a live pointer returned by `rust_rc_new_i32` or
+/// `rust_rc_clone_i32`, dropped at most once; it is invalid afterwards.
+/// An `Rc` is not thread-safe: the clones and drops of one allocation must not
+/// run concurrently.
 #[no_mangle]
 pub unsafe extern "C" fn rust_rc_drop_i32(ptr: *mut c_void) {
     if !ptr.is_null() {
@@ -175,6 +246,13 @@ pub unsafe extern "C" fn rust_rc_drop_i32(ptr: *mut c_void) {
 }
 
 /// Drop an Rc<i64> (decrement reference count)
+///
+/// # Safety
+///
+/// `ptr` must be null or a live pointer returned by `rust_rc_new_i64` or
+/// `rust_rc_clone_i64`, dropped at most once; it is invalid afterwards.
+/// An `Rc` is not thread-safe: the clones and drops of one allocation must not
+/// run concurrently.
 #[no_mangle]
 pub unsafe extern "C" fn rust_rc_drop_i64(ptr: *mut c_void) {
     if !ptr.is_null() {
@@ -183,6 +261,13 @@ pub unsafe extern "C" fn rust_rc_drop_i64(ptr: *mut c_void) {
 }
 
 /// Drop an Rc<f32> (decrement reference count)
+///
+/// # Safety
+///
+/// `ptr` must be null or a live pointer returned by `rust_rc_new_f32` or
+/// `rust_rc_clone_f32`, dropped at most once; it is invalid afterwards.
+/// An `Rc` is not thread-safe: the clones and drops of one allocation must not
+/// run concurrently.
 #[no_mangle]
 pub unsafe extern "C" fn rust_rc_drop_f32(ptr: *mut c_void) {
     if !ptr.is_null() {
@@ -191,6 +276,13 @@ pub unsafe extern "C" fn rust_rc_drop_f32(ptr: *mut c_void) {
 }
 
 /// Drop an Rc<f64> (decrement reference count)
+///
+/// # Safety
+///
+/// `ptr` must be null or a live pointer returned by `rust_rc_new_f64` or
+/// `rust_rc_clone_f64`, dropped at most once; it is invalid afterwards.
+/// An `Rc` is not thread-safe: the clones and drops of one allocation must not
+/// run concurrently.
 #[no_mangle]
 pub unsafe extern "C" fn rust_rc_drop_f64(ptr: *mut c_void) {
     if !ptr.is_null() {
@@ -227,6 +319,12 @@ pub extern "C" fn rust_arc_new_f64(value: f64) -> *mut c_void {
 }
 
 /// Clone an Arc<i32> (increment reference count)
+///
+/// # Safety
+///
+/// `ptr` must be null or a live pointer returned by `rust_arc_new_i32` or
+/// `rust_arc_clone_i32` whose reference has not been dropped. The returned
+/// pointer is a new reference and must be dropped on its own.
 #[no_mangle]
 pub unsafe extern "C" fn rust_arc_clone_i32(ptr: *mut c_void) -> *mut c_void {
     if ptr.is_null() {
@@ -235,11 +333,17 @@ pub unsafe extern "C" fn rust_arc_clone_i32(ptr: *mut c_void) -> *mut c_void {
     // Reconstruct Arc from raw pointer, clone it, then return new raw pointer
     let arc = Arc::from_raw(ptr as *const i32);
     let cloned = Arc::clone(&arc);
-    std::mem::forget(arc);  // Keep original reference alive
+    std::mem::forget(arc); // Keep original reference alive
     Arc::into_raw(cloned) as *mut c_void
 }
 
 /// Clone an Arc<i64> (increment reference count)
+///
+/// # Safety
+///
+/// `ptr` must be null or a live pointer returned by `rust_arc_new_i64` or
+/// `rust_arc_clone_i64` whose reference has not been dropped. The returned
+/// pointer is a new reference and must be dropped on its own.
 #[no_mangle]
 pub unsafe extern "C" fn rust_arc_clone_i64(ptr: *mut c_void) -> *mut c_void {
     if ptr.is_null() {
@@ -247,11 +351,17 @@ pub unsafe extern "C" fn rust_arc_clone_i64(ptr: *mut c_void) -> *mut c_void {
     }
     let arc = Arc::from_raw(ptr as *const i64);
     let cloned = Arc::clone(&arc);
-    std::mem::forget(arc);  // Keep original reference alive
+    std::mem::forget(arc); // Keep original reference alive
     Arc::into_raw(cloned) as *mut c_void
 }
 
 /// Clone an Arc<f32> (increment reference count)
+///
+/// # Safety
+///
+/// `ptr` must be null or a live pointer returned by `rust_arc_new_f32` or
+/// `rust_arc_clone_f32` whose reference has not been dropped. The returned
+/// pointer is a new reference and must be dropped on its own.
 #[no_mangle]
 pub unsafe extern "C" fn rust_arc_clone_f32(ptr: *mut c_void) -> *mut c_void {
     if ptr.is_null() {
@@ -264,6 +374,12 @@ pub unsafe extern "C" fn rust_arc_clone_f32(ptr: *mut c_void) -> *mut c_void {
 }
 
 /// Clone an Arc<f64> (increment reference count)
+///
+/// # Safety
+///
+/// `ptr` must be null or a live pointer returned by `rust_arc_new_f64` or
+/// `rust_arc_clone_f64` whose reference has not been dropped. The returned
+/// pointer is a new reference and must be dropped on its own.
 #[no_mangle]
 pub unsafe extern "C" fn rust_arc_clone_f64(ptr: *mut c_void) -> *mut c_void {
     if ptr.is_null() {
@@ -271,11 +387,16 @@ pub unsafe extern "C" fn rust_arc_clone_f64(ptr: *mut c_void) -> *mut c_void {
     }
     let arc = Arc::from_raw(ptr as *const f64);
     let cloned = Arc::clone(&arc);
-    std::mem::forget(arc);  // Keep original reference alive
+    std::mem::forget(arc); // Keep original reference alive
     Arc::into_raw(cloned) as *mut c_void
 }
 
 /// Drop an Arc<i32> (decrement reference count)
+///
+/// # Safety
+///
+/// `ptr` must be null or a live pointer returned by `rust_arc_new_i32` or
+/// `rust_arc_clone_i32`, dropped at most once; it is invalid afterwards.
 #[no_mangle]
 pub unsafe extern "C" fn rust_arc_drop_i32(ptr: *mut c_void) {
     if !ptr.is_null() {
@@ -284,6 +405,11 @@ pub unsafe extern "C" fn rust_arc_drop_i32(ptr: *mut c_void) {
 }
 
 /// Drop an Arc<i64> (decrement reference count)
+///
+/// # Safety
+///
+/// `ptr` must be null or a live pointer returned by `rust_arc_new_i64` or
+/// `rust_arc_clone_i64`, dropped at most once; it is invalid afterwards.
 #[no_mangle]
 pub unsafe extern "C" fn rust_arc_drop_i64(ptr: *mut c_void) {
     if !ptr.is_null() {
@@ -292,6 +418,11 @@ pub unsafe extern "C" fn rust_arc_drop_i64(ptr: *mut c_void) {
 }
 
 /// Drop an Arc<f32> (decrement reference count)
+///
+/// # Safety
+///
+/// `ptr` must be null or a live pointer returned by `rust_arc_new_f32` or
+/// `rust_arc_clone_f32`, dropped at most once; it is invalid afterwards.
 #[no_mangle]
 pub unsafe extern "C" fn rust_arc_drop_f32(ptr: *mut c_void) {
     if !ptr.is_null() {
@@ -300,6 +431,11 @@ pub unsafe extern "C" fn rust_arc_drop_f32(ptr: *mut c_void) {
 }
 
 /// Drop an Arc<f64> (decrement reference count)
+///
+/// # Safety
+///
+/// `ptr` must be null or a live pointer returned by `rust_arc_new_f64` or
+/// `rust_arc_clone_f64`, dropped at most once; it is invalid afterwards.
 #[no_mangle]
 pub unsafe extern "C" fn rust_arc_drop_f64(ptr: *mut c_void) {
     if !ptr.is_null() {
@@ -327,11 +463,17 @@ pub extern "C" fn rust_vec_new_i32() -> CVec {
     let len = vec.len();
     let cap = vec.capacity();
     let ptr = vec.as_ptr() as *mut c_void;
-    std::mem::forget(vec);  // Transfer ownership to caller
+    std::mem::forget(vec); // Transfer ownership to caller
     CVec { ptr, len, cap }
 }
 
 /// Drop a Vec<i32>
+///
+/// # Safety
+///
+/// `vec` must have a null `ptr`, or describe a live `Vec<i32>` created by this
+/// library (`ptr`, `len` and `cap` exactly as returned) and not yet dropped.
+/// It is freed here and must not be used afterwards.
 #[no_mangle]
 pub unsafe extern "C" fn rust_vec_drop_i32(vec: CVec) {
     if !vec.ptr.is_null() && vec.cap > 0 {
@@ -340,6 +482,12 @@ pub unsafe extern "C" fn rust_vec_drop_i32(vec: CVec) {
 }
 
 /// Drop a Vec<i64>
+///
+/// # Safety
+///
+/// `vec` must have a null `ptr`, or describe a live `Vec<i64>` created by this
+/// library (`ptr`, `len` and `cap` exactly as returned) and not yet dropped.
+/// It is freed here and must not be used afterwards.
 #[no_mangle]
 pub unsafe extern "C" fn rust_vec_drop_i64(vec: CVec) {
     if !vec.ptr.is_null() && vec.cap > 0 {
@@ -348,6 +496,12 @@ pub unsafe extern "C" fn rust_vec_drop_i64(vec: CVec) {
 }
 
 /// Drop a Vec<f32>
+///
+/// # Safety
+///
+/// `vec` must have a null `ptr`, or describe a live `Vec<f32>` created by this
+/// library (`ptr`, `len` and `cap` exactly as returned) and not yet dropped.
+/// It is freed here and must not be used afterwards.
 #[no_mangle]
 pub unsafe extern "C" fn rust_vec_drop_f32(vec: CVec) {
     if !vec.ptr.is_null() && vec.cap > 0 {
@@ -356,6 +510,12 @@ pub unsafe extern "C" fn rust_vec_drop_f32(vec: CVec) {
 }
 
 /// Drop a Vec<f64>
+///
+/// # Safety
+///
+/// `vec` must have a null `ptr`, or describe a live `Vec<f64>` created by this
+/// library (`ptr`, `len` and `cap` exactly as returned) and not yet dropped.
+/// It is freed here and must not be used afterwards.
 #[no_mangle]
 pub unsafe extern "C" fn rust_vec_drop_f64(vec: CVec) {
     if !vec.ptr.is_null() && vec.cap > 0 {
@@ -383,7 +543,7 @@ pub unsafe extern "C" fn rust_vec_new_from_array_i32(data: *const i32, len: usiz
     let len = vec.len();
     let cap = vec.capacity();
     let ptr = vec.as_ptr() as *mut c_void;
-    std::mem::forget(vec);  // Transfer ownership to caller
+    std::mem::forget(vec); // Transfer ownership to caller
 
     CVec { ptr, len, cap }
 }
@@ -466,6 +626,11 @@ pub unsafe extern "C" fn rust_vec_new_from_array_f64(data: *const f64, len: usiz
 
 /// Get an element from Vec<i32> by index
 /// Returns 0 if index is out of bounds (caller should check bounds first)
+///
+/// # Safety
+///
+/// `vec` must have a null `ptr`, or describe a live `Vec<i32>` created by this
+/// library (`ptr`, `len` and `cap` exactly as returned) and not yet dropped.
 #[no_mangle]
 pub unsafe extern "C" fn rust_vec_get_i32(vec: CVec, index: usize) -> i32 {
     if vec.ptr.is_null() || index >= vec.len {
@@ -476,6 +641,11 @@ pub unsafe extern "C" fn rust_vec_get_i32(vec: CVec, index: usize) -> i32 {
 }
 
 /// Get an element from Vec<i64> by index
+///
+/// # Safety
+///
+/// `vec` must have a null `ptr`, or describe a live `Vec<i64>` created by this
+/// library (`ptr`, `len` and `cap` exactly as returned) and not yet dropped.
 #[no_mangle]
 pub unsafe extern "C" fn rust_vec_get_i64(vec: CVec, index: usize) -> i64 {
     if vec.ptr.is_null() || index >= vec.len {
@@ -486,6 +656,11 @@ pub unsafe extern "C" fn rust_vec_get_i64(vec: CVec, index: usize) -> i64 {
 }
 
 /// Get an element from Vec<f32> by index
+///
+/// # Safety
+///
+/// `vec` must have a null `ptr`, or describe a live `Vec<f32>` created by this
+/// library (`ptr`, `len` and `cap` exactly as returned) and not yet dropped.
 #[no_mangle]
 pub unsafe extern "C" fn rust_vec_get_f32(vec: CVec, index: usize) -> f32 {
     if vec.ptr.is_null() || index >= vec.len {
@@ -496,6 +671,11 @@ pub unsafe extern "C" fn rust_vec_get_f32(vec: CVec, index: usize) -> f32 {
 }
 
 /// Get an element from Vec<f64> by index
+///
+/// # Safety
+///
+/// `vec` must have a null `ptr`, or describe a live `Vec<f64>` created by this
+/// library (`ptr`, `len` and `cap` exactly as returned) and not yet dropped.
 #[no_mangle]
 pub unsafe extern "C" fn rust_vec_get_f64(vec: CVec, index: usize) -> f64 {
     if vec.ptr.is_null() || index >= vec.len {
@@ -507,6 +687,12 @@ pub unsafe extern "C" fn rust_vec_get_f64(vec: CVec, index: usize) -> f64 {
 
 /// Set an element in Vec<i32> by index
 /// Returns true if successful, false if index is out of bounds
+///
+/// # Safety
+///
+/// `vec` must have a null `ptr`, or describe a live `Vec<i32>` created by this
+/// library (`ptr`, `len` and `cap` exactly as returned) and not yet dropped.
+/// No other reference to the vector's elements may be live during the call.
 #[no_mangle]
 pub unsafe extern "C" fn rust_vec_set_i32(vec: CVec, index: usize, value: i32) -> bool {
     if vec.ptr.is_null() || index >= vec.len {
@@ -518,6 +704,12 @@ pub unsafe extern "C" fn rust_vec_set_i32(vec: CVec, index: usize, value: i32) -
 }
 
 /// Set an element in Vec<i64> by index
+///
+/// # Safety
+///
+/// `vec` must have a null `ptr`, or describe a live `Vec<i64>` created by this
+/// library (`ptr`, `len` and `cap` exactly as returned) and not yet dropped.
+/// No other reference to the vector's elements may be live during the call.
 #[no_mangle]
 pub unsafe extern "C" fn rust_vec_set_i64(vec: CVec, index: usize, value: i64) -> bool {
     if vec.ptr.is_null() || index >= vec.len {
@@ -529,6 +721,12 @@ pub unsafe extern "C" fn rust_vec_set_i64(vec: CVec, index: usize, value: i64) -
 }
 
 /// Set an element in Vec<f32> by index
+///
+/// # Safety
+///
+/// `vec` must have a null `ptr`, or describe a live `Vec<f32>` created by this
+/// library (`ptr`, `len` and `cap` exactly as returned) and not yet dropped.
+/// No other reference to the vector's elements may be live during the call.
 #[no_mangle]
 pub unsafe extern "C" fn rust_vec_set_f32(vec: CVec, index: usize, value: f32) -> bool {
     if vec.ptr.is_null() || index >= vec.len {
@@ -540,6 +738,12 @@ pub unsafe extern "C" fn rust_vec_set_f32(vec: CVec, index: usize, value: f32) -
 }
 
 /// Set an element in Vec<f64> by index
+///
+/// # Safety
+///
+/// `vec` must have a null `ptr`, or describe a live `Vec<f64>` created by this
+/// library (`ptr`, `len` and `cap` exactly as returned) and not yet dropped.
+/// No other reference to the vector's elements may be live during the call.
 #[no_mangle]
 pub unsafe extern "C" fn rust_vec_set_f64(vec: CVec, index: usize, value: f64) -> bool {
     if vec.ptr.is_null() || index >= vec.len {
@@ -556,8 +760,19 @@ pub unsafe extern "C" fn rust_vec_set_f64(vec: CVec, index: usize, value: f64) -
 
 /// Copy Vec<i32> contents to a C array
 /// Returns the number of elements copied
+///
+/// # Safety
+///
+/// `vec` must have a null `ptr`, or describe a live `Vec<i32>` created by this
+/// library (`ptr`, `len` and `cap` exactly as returned) and not yet dropped.
+/// `dest` must be null or valid for writes of `dest_len` `i32` values that
+/// do not overlap the vector's buffer.
 #[no_mangle]
-pub unsafe extern "C" fn rust_vec_copy_to_array_i32(vec: CVec, dest: *mut i32, dest_len: usize) -> usize {
+pub unsafe extern "C" fn rust_vec_copy_to_array_i32(
+    vec: CVec,
+    dest: *mut i32,
+    dest_len: usize,
+) -> usize {
     if vec.ptr.is_null() || dest.is_null() {
         return 0;
     }
@@ -569,8 +784,19 @@ pub unsafe extern "C" fn rust_vec_copy_to_array_i32(vec: CVec, dest: *mut i32, d
 }
 
 /// Copy Vec<i64> contents to a C array
+///
+/// # Safety
+///
+/// `vec` must have a null `ptr`, or describe a live `Vec<i64>` created by this
+/// library (`ptr`, `len` and `cap` exactly as returned) and not yet dropped.
+/// `dest` must be null or valid for writes of `dest_len` `i64` values that
+/// do not overlap the vector's buffer.
 #[no_mangle]
-pub unsafe extern "C" fn rust_vec_copy_to_array_i64(vec: CVec, dest: *mut i64, dest_len: usize) -> usize {
+pub unsafe extern "C" fn rust_vec_copy_to_array_i64(
+    vec: CVec,
+    dest: *mut i64,
+    dest_len: usize,
+) -> usize {
     if vec.ptr.is_null() || dest.is_null() {
         return 0;
     }
@@ -582,8 +808,19 @@ pub unsafe extern "C" fn rust_vec_copy_to_array_i64(vec: CVec, dest: *mut i64, d
 }
 
 /// Copy Vec<f32> contents to a C array
+///
+/// # Safety
+///
+/// `vec` must have a null `ptr`, or describe a live `Vec<f32>` created by this
+/// library (`ptr`, `len` and `cap` exactly as returned) and not yet dropped.
+/// `dest` must be null or valid for writes of `dest_len` `f32` values that
+/// do not overlap the vector's buffer.
 #[no_mangle]
-pub unsafe extern "C" fn rust_vec_copy_to_array_f32(vec: CVec, dest: *mut f32, dest_len: usize) -> usize {
+pub unsafe extern "C" fn rust_vec_copy_to_array_f32(
+    vec: CVec,
+    dest: *mut f32,
+    dest_len: usize,
+) -> usize {
     if vec.ptr.is_null() || dest.is_null() {
         return 0;
     }
@@ -595,8 +832,19 @@ pub unsafe extern "C" fn rust_vec_copy_to_array_f32(vec: CVec, dest: *mut f32, d
 }
 
 /// Copy Vec<f64> contents to a C array
+///
+/// # Safety
+///
+/// `vec` must have a null `ptr`, or describe a live `Vec<f64>` created by this
+/// library (`ptr`, `len` and `cap` exactly as returned) and not yet dropped.
+/// `dest` must be null or valid for writes of `dest_len` `f64` values that
+/// do not overlap the vector's buffer.
 #[no_mangle]
-pub unsafe extern "C" fn rust_vec_copy_to_array_f64(vec: CVec, dest: *mut f64, dest_len: usize) -> usize {
+pub unsafe extern "C" fn rust_vec_copy_to_array_f64(
+    vec: CVec,
+    dest: *mut f64,
+    dest_len: usize,
+) -> usize {
     if vec.ptr.is_null() || dest.is_null() {
         return 0;
     }
@@ -613,12 +861,17 @@ pub unsafe extern "C" fn rust_vec_copy_to_array_f64(vec: CVec, dest: *mut f64, d
 
 /// Push a value to Vec<i32>
 /// Returns a new CVec (the original vec is consumed)
+///
+/// # Safety
+///
+/// `vec` must have a null `ptr`, or describe a live `Vec<i32>` created by this
+/// library (`ptr`, `len` and `cap` exactly as returned) and not yet dropped.
+/// `vec` is consumed: only the returned `CVec` may be used afterwards.
 #[no_mangle]
 pub unsafe extern "C" fn rust_vec_push_i32(vec: CVec, value: i32) -> CVec {
     if vec.ptr.is_null() {
         // Create new vec with single element
-        let mut new_vec = Vec::with_capacity(1);
-        new_vec.push(value);
+        let new_vec = vec![value];
         let len = new_vec.len();
         let cap = new_vec.capacity();
         let ptr = new_vec.as_ptr() as *mut c_void;
@@ -636,11 +889,16 @@ pub unsafe extern "C" fn rust_vec_push_i32(vec: CVec, value: i32) -> CVec {
 }
 
 /// Push a value to Vec<i64>
+///
+/// # Safety
+///
+/// `vec` must have a null `ptr`, or describe a live `Vec<i64>` created by this
+/// library (`ptr`, `len` and `cap` exactly as returned) and not yet dropped.
+/// `vec` is consumed: only the returned `CVec` may be used afterwards.
 #[no_mangle]
 pub unsafe extern "C" fn rust_vec_push_i64(vec: CVec, value: i64) -> CVec {
     if vec.ptr.is_null() {
-        let mut new_vec = Vec::with_capacity(1);
-        new_vec.push(value);
+        let new_vec = vec![value];
         let len = new_vec.len();
         let cap = new_vec.capacity();
         let ptr = new_vec.as_ptr() as *mut c_void;
@@ -658,11 +916,16 @@ pub unsafe extern "C" fn rust_vec_push_i64(vec: CVec, value: i64) -> CVec {
 }
 
 /// Push a value to Vec<f32>
+///
+/// # Safety
+///
+/// `vec` must have a null `ptr`, or describe a live `Vec<f32>` created by this
+/// library (`ptr`, `len` and `cap` exactly as returned) and not yet dropped.
+/// `vec` is consumed: only the returned `CVec` may be used afterwards.
 #[no_mangle]
 pub unsafe extern "C" fn rust_vec_push_f32(vec: CVec, value: f32) -> CVec {
     if vec.ptr.is_null() {
-        let mut new_vec = Vec::with_capacity(1);
-        new_vec.push(value);
+        let new_vec = vec![value];
         let len = new_vec.len();
         let cap = new_vec.capacity();
         let ptr = new_vec.as_ptr() as *mut c_void;
@@ -680,11 +943,16 @@ pub unsafe extern "C" fn rust_vec_push_f32(vec: CVec, value: f32) -> CVec {
 }
 
 /// Push a value to Vec<f64>
+///
+/// # Safety
+///
+/// `vec` must have a null `ptr`, or describe a live `Vec<f64>` created by this
+/// library (`ptr`, `len` and `cap` exactly as returned) and not yet dropped.
+/// `vec` is consumed: only the returned `CVec` may be used afterwards.
 #[no_mangle]
 pub unsafe extern "C" fn rust_vec_push_f64(vec: CVec, value: f64) -> CVec {
     if vec.ptr.is_null() {
-        let mut new_vec = Vec::with_capacity(1);
-        new_vec.push(value);
+        let new_vec = vec![value];
         let len = new_vec.len();
         let cap = new_vec.capacity();
         let ptr = new_vec.as_ptr() as *mut c_void;

@@ -107,7 +107,10 @@ end
     publish(2)
     @test Set(info.name for info in snapshot()) == expected[2]
     @test all(info -> info.code == versions[2].source, snapshot())
-    if Threads.nthreads() > 1
+    if Threads.nthreads() < 2
+        @test_skip "concurrent group publication needs Threads.nthreads() >= 2 " *
+                   "(the CI matrix has a multithreaded Julia entry)"
+    else
         stop = Threads.Atomic{Bool}(false)
         ready = Channel{Nothing}(3)
         readers = [Threads.@spawn(begin
@@ -185,8 +188,14 @@ end
     readers = Task[]
     objects = Any[old]
     before = RustCall.finalizer_failure_count()
+    if Threads.nthreads() < 2
+        # The reload below still runs single-threaded; only the concurrent
+        # readers that enter the old image while it is replaced need threads.
+        @test_skip "concurrent readers across a generic reload need " *
+                   "Threads.nthreads() >= 2 (the CI matrix has a multithreaded Julia entry)"
+    end
     try
-        if Threads.nthreads() > 1
+        if Threads.nthreads() >= 2
             for _ in 1:3
                 push!(readers, Threads.@spawn begin
                     valid = true

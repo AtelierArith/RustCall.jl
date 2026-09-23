@@ -206,9 +206,11 @@ default = []
 python = ["pyo3"]
 ```
 
-`rustcall_julia_macros` (the `#[julia]` attribute) is not on crates.io yet, so it is
-a path dependency into the RustCall.jl checkout — the only reference this
-example makes outside `examples/SampleCratePyO3.jl/`.
+`rustcall_julia_macros` (the `#[julia]` attribute) is on crates.io, but this
+example takes it by path from the RustCall.jl checkout, so that it is tested with
+the attribute of the same tree as the RustCall it runs against — the only
+reference this example makes outside `examples/SampleCratePyO3.jl/`. A crate of
+your own can depend on the release instead (`rustcall_julia_macros = "0.1"`).
 
 ## Why the feature flag?
 

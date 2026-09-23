@@ -38,7 +38,10 @@ guide prescribes). Most keep Rust and Julia in separate files; the inline
 `SampleCrate.jl` and `RustCrateMacro.jl` use it deliberately beside a crate to
 show the two front doors coexisting. The only reference an example makes outside
 its own directory is the `rustcall_julia_macros` path dependency in its
-`Cargo.toml`, because it is not on crates.io yet — and the PyO3-only packages,
+`Cargo.toml`. The crate is published on crates.io; the examples take it by path
+from this checkout so that they test the `#[julia]` attribute of the same tree
+as the RustCall they run against, and a crate of your own can depend on the
+release (`rustcall_julia_macros = "0.1"`). The PyO3-only packages,
 `SampleCratePyO3Only.jl`, `RustCrateMacroPyO3Only.jl` and `Pyo3HostImport.jl`,
 make none at all: their crates depend on pyo3 alone, and RustCall generates no
 wrapper crate for them — it builds each crate as the Python extension it is and

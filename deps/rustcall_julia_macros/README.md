@@ -22,7 +22,8 @@ rustcall_julia_macros = "0.1"
 
 ### Functions
 
-The `#[julia]` attribute on functions makes them FFI-compatible:
+`#[julia]` on a function keeps the function as written and adds an
+`extern "C"` wrapper next to it, exported as `rustcall_<name>`:
 
 ```rust
 use rustcall_julia_macros::julia;
@@ -33,18 +34,15 @@ fn add(a: i32, b: i32) -> i32 {
 }
 ```
 
-This expands to:
-
-```rust
-#[no_mangle]
-pub extern "C" fn add(a: i32, b: i32) -> i32 {
-    a + b
-}
-```
+exports `rustcall_add(a: i32, b: i32) -> i32`, which calls `add` inside a
+panic boundary: a panic is caught, recorded in a thread-local channel read
+through `rustcall_add_take_panic`, and raised in Julia as a `RustPanicError`.
+Your own Rust code keeps calling `add` with the signature you wrote.
 
 ### Structs
 
-The `#[julia]` attribute on structs adds `#[repr(C)]` and generates FFI accessor functions:
+`#[julia]` on a struct adds `#[repr(C)]` and exports a destructor and field
+accessors, named after the struct:
 
 ```rust
 use rustcall_julia_macros::julia;
@@ -56,20 +54,23 @@ pub struct Point {
 }
 ```
 
-This generates:
-- `Point_free(ptr: *mut Point)` - Free the struct
-- `Point_get_x(ptr: *const Point) -> f64` - Get the `x` field
-- `Point_set_x(ptr: *mut Point, value: f64)` - Set the `x` field
-- `Point_get_y(ptr: *const Point) -> f64` - Get the `y` field
-- `Point_set_y(ptr: *mut Point, value: f64)` - Set the `y` field
+exports `Point_free`, `Point_get_x` / `Point_set_x` and `Point_get_y` /
+`Point_set_y`. A field gets accessors only when its value crosses `extern "C"`
+on its own. Julia constructs a struct through an exported constructor (see
+below), so `Point` as written is reached only through values Rust returns.
 
 ### Methods
 
-Use `#[julia]` on impl blocks to generate FFI wrappers for methods:
+Mark the struct **and** the `impl` block, and each method to export. The
+struct's `#[julia]` is what provides the destructor (`Counter_free`) that the
+Julia object calls when it is finalized. A `#[julia] impl` on an unmarked
+struct has none, and RustCall.jl's extractor refuses it with a diagnostic
+naming the struct.
 
 ```rust
 use rustcall_julia_macros::julia;
 
+#[julia]
 pub struct Counter {
     value: i32,
 }
@@ -87,29 +88,53 @@ impl Counter {
     }
 
     #[julia]
-    pub fn get_value(&self) -> i32 {
+    pub fn value(&self) -> i32 {
         self.value
     }
 }
 ```
 
-This generates:
-- `Counter_new(initial: i32) -> *mut Counter` - Constructor
-- `Counter_increment(ptr: *mut Counter)` - Increment method
-- `Counter_get_value(ptr: *const Counter) -> i32` - Getter method
+exports `rustcall_Counter_new` (the constructor, returning a `*mut Counter`),
+`rustcall_Counter_increment` and `rustcall_Counter_value`, plus `Counter_free`
+and the field accessors of the struct.
+
+### Modules
+
+An item inside an inline module is exported under a name that folds the module
+path in, so two modules can each have a `run` — mark the module too:
+
+```rust
+use rustcall_julia_macros::julia;
+
+#[julia]
+pub mod geometry {
+    #[julia]
+    pub fn area(w: f64, h: f64) -> f64 {
+        w * h
+    }
+}
+```
+
+exports `rustcall_geometry__area` (a `_` inside a module or item name is
+spelled `_0`). A `#[julia]` item in an unmarked inline module is refused.
+
+The symbol names are an implementation detail shared with RustCall.jl's
+extractor; Julia code never spells them.
 
 ## Julia Integration
 
-On the Julia side, use `@rust_crate` to automatically generate bindings:
+On the Julia side, `@rust_crate` builds the crate and generates bindings:
 
 ```julia
 using RustCall
 
-@rust_crate "/path/to/my_crate"
+const MyCrate = @rust_crate "/path/to/my_crate"
 
-# Now you can use the functions and types
-result = MyCrate.add(1, 2)
-p = MyCrate.Point(1.0, 2.0)
+MyCrate.add(1, 2)                  # 3
+c = MyCrate.Counter(10)            # calls rustcall_Counter_new
+MyCrate.increment(c)
+MyCrate.value(c)                   # 11
+MyCrate.geometry.area(2.0, 3.0)    # 6.0
 ```
 
 ## License

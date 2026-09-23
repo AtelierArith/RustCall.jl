@@ -22,13 +22,14 @@ julia --project test/test_cache.jl
 # Build documentation
 julia --project=docs docs/make.jl
 
-# Rust crates (deps/rustcall_julia_core, deps/rustcall_extract, deps/rustcall_julia_macros{,_impl})
+# Rust crates (deps/rustcall_julia_core, deps/rustcall_extract, deps/rustcall_julia_macros{,_impl}, deps/rustcall_helpers)
 cd deps/rustcall_julia_core && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 UPDATE_GOLDEN=1 cargo test          # in deps/rustcall_julia_core: regenerate tests/corpus/*.toml and *.expanded.rs
 julia --project deps/build.jl                       # builds the helpers and the CLI Julia calls, and writes the extractor's identity record (#409)
 cd deps/rustcall_extract && cargo build --release   # the CLI alone; no identity record, so that binary is identified by its bytes
 cd deps/rustcall_julia_macros && cargo test --all-features
 cd deps/rustcall_julia_macros_impl && cargo test
+cd deps/rustcall_helpers && cargo fmt --check && cargo clippy --all-targets --all-features -- -D warnings
 
 # Lints run in CI
 bash scripts/lint_interpolation.sh src
@@ -36,6 +37,7 @@ bash scripts/lint_rust_syntax_regex.sh src   # Julia must not parse Rust syntax 
 bash scripts/lint_artifact_identity.sh src  # artifact identity only via src/artifact_id.jl
 bash scripts/lint_load_path.sh src          # dlopen/dlclose/RUST_LIBRARIES only via src/loadpolicy.jl
 bash scripts/lint_generation_snapshot.sh src  # FFI entry points resolve via a snapshot, never piecemeal
+bash scripts/lint_state_container.sh src      # mutable registries are StateViews into RustCall.STATE
 ```
 
 ## Architecture
@@ -43,7 +45,7 @@ bash scripts/lint_generation_snapshot.sh src  # FFI entry points resolve via a s
 ### Rust syntax is parsed only on the Rust side (issue #264)
 
 - `deps/rustcall_julia_core` — `syn`-based core: FFI manifest model (`manifest.rs`), extraction (`extract.rs`), inline expansion of `#[julia]` items (`expand.rs`), wrapper codegen for both the proc-macro and inline flavours (`codegen.rs`), AST-level generic instantiation (`specialize.rs`). Golden tests in `tests/corpus/`.
-- `deps/rustcall_extract` — the `rustcall-extract` CLI (`manifest`, `expand`, `specialize` subcommands; `--cfg-file` takes `rustc --print cfg` so `#[cfg]`-disabled items are dropped). Built by `Pkg.build("RustCall")`; located by `RustCall.extractor_path()` (override with `RUSTCALL_EXTRACT`).
+- `deps/rustcall_extract` — the `rustcall-extract` CLI: `manifest` (crate/inline scan), `expand` (inline `#[julia]` expansion), `wrap` (the generated PyO3 wrapper crate, `wrap_crate` in `src/manifest.jl`), `specialize` / `specialize-many` (one or a batch of generic instantiations; `specialize_generic_group`), `schema-version` (the manifest identifier `test/test_schema_version.jl` compares with `MANIFEST_SCHEMA_VERSION`). `--cfg-file` takes `rustc --print cfg` so `#[cfg]`-disabled items are dropped. Built by `Pkg.build("RustCall")`; located by `RustCall.extractor_path()` (override with `RUSTCALL_EXTRACT`).
 - `deps/rustcall_julia_macros` — the crate a user's `#[julia]` crate depends on. It is a **normal library**, not a proc-macro crate: it re-exports the attribute from `deps/rustcall_julia_macros_impl` (the thin proc-macro wrapper over `rustcall_julia_core::codegen`) and carries the one thing a proc macro cannot emit for itself — the crate-wide quiet-panic state of #304, in `src/rt.rs`. That file is **generated** from `rustcall_julia_core::codegen::runtime_module_source()` and asserted against it by `deps/rustcall_julia_core/tests/runtime_crate.rs` (regenerate with `UPDATE_GOLDEN=1 cargo test`, then `cargo fmt`), so the hook a `#[julia]` crate gets and the hook an inline block gets cannot drift apart.
 - `src/native_layout.jl` — the one place that decides where `Pkg.build` puts the two native products and where they are found again (#258). Included by `src/RustCall.jl` **and** by `deps/build.jl`, which runs before the module exists, so the build and the lookup cannot drift. A checkout builds into `deps/<crate>/target`; an installed package (a tree under a depot's `packages/`) builds into `<depot>/scratchspaces/<UUID>/native-v1/<slug>/<crate>` and its package directory is never written to. `deps/build.jl` runs no `cargo clean` (Cargo's own fingerprint decides what to redo) and passes `--locked`, because Cargo writes `Cargo.lock` beside the manifest whatever `CARGO_TARGET_DIR` says; `deps/rustcall_helpers/Cargo.lock` and `deps/rustcall_extract/Cargo.lock` are committed for that reason, and a stale one fails the build. Overrides: `RUSTCALL_EXTRACT`, `RUSTCALL_HELPERS` (`RUSTCALL_RUST_HELPERS` is a deprecated alias). The helper crate was `deps/rust_helpers` / `librust_helpers` through v0.3.x (#387); the old name was a lookup fallback through v0.4.x and is not searched since v0.5 (#417), and `helper_library_policy()` registers the image as `rustcall_helpers`.
 - `src/manifest.jl` — runs the CLI, validates `schema_version`, converts the TOML manifest into `RustFunctionSignature` / `RustStructInfo` / `RustMethod`, and computes `toolchain_fingerprint()` (the schema identifier + the source digest of the **selected extractor's build**, computed by `deps/build.jl` from Cargo's own view of that build (`src/extractor_identity.jl`, #409) and stored beside the binary keyed by its SHA-256 (`extractor_source_digest()`) + the tree's `rustcall_julia_core` / `rustcall_julia_macros` / `rustcall_julia_macros_impl` sources with each `[package] version` left out + `artifact_compiler_identity()`) that is part of every cache key. The extractor's *bytes* are deliberately not in it (#372): a patch release bumps the crate version and Cargo folds that into `-C metadata`, so the same sources give a byte-different executable, and the key would move on a release that promises to keep it; the record follows `RUSTCALL_EXTRACT` only to a binary it names, and any other binary — one without a record, one whose record names another binary, or one whose build was not this tree's own layout (Cargo's `locate-project` and `tree` decide: the crate must be its own workspace root, every local package one of the four release crates in `deps/`, every other package from crates.io) — is identified by its bytes (`binary:<sha256>`), never by this checkout's sources. A digest is claimed only for a **plain** build (the closed rule, #413): nothing in the environment that Cargo or rustc would act on beyond where things are, which toolchain, and how Cargo talks (`CARGO_HOME`, `CARGO_TARGET_DIR`, `RUSTUP_*`, `CARGO_TERM_*`, `CARGO_NET_*`, ...), and no discovered configuration file with a table beyond those kinds (`[net]`, `[http]`, `[term]`, `[registries]`, ...). A flag, a wrapper, a linker, a profile override, a source replacement, a `[build]` or `[target]` table — anything else — is not hashed on top of the sources; it makes the build non-canonical and the binary is identified by its bytes. There is therefore no list of build inputs to keep complete. The binary reports nothing about itself: `deps/rustcall_extract/build.rs` and the `source-digest` subcommand, which embedded the same digest as a cross-check through v0.4.x, were removed in v0.5 (#417). Only the four release crates (`RUSTCALL_RELEASE_CRATES`, `src/artifact_id.jl`) lose their version in an identity — any other crate may read `env!("CARGO_PKG_VERSION")` — and only as *this package's* `deps/<name>` (`_is_rustcall_release_crate`, a `realpath` comparison; a lockfile entry only when the crate takes that name by path from there): a same-named fork keeps its version. The extractor's own digest folds in `deps/rustcall_extract/Cargo.lock` minus the release-coupled version lines, so a registry bump of `syn` or `prettyplease` moves it.
@@ -187,7 +189,10 @@ crate-wide state. **The generated `@rust_crate` wrapper crate uses `Runtime` too
 although RustCall writes it whole: it links the same rlib as the crate it wraps,
 so emitting the items as well would define `#[no_mangle]`
 `__rustcall_install_panic_hook` twice in one `cdylib` and split the image's
-wrappers across two counters. `#[no_mangle]` items of a dependency rlib are
+wrappers across two counters. A third variant, `External`, takes no guard
+at all and keeps the default hook; nothing RustCall generates uses it — it is
+the conservative default of `FreeFnOptions`, since a wrapper without a guard
+still compiles where one naming an unreachable guard would not. `#[no_mangle]` items of a dependency rlib are
 exported from the `cdylib` that links it — that is what makes the `Runtime`
 route work at all — but only when something references the crate, so an artifact
 with no generated wrapper exports no installer and gets no hook, which is
@@ -332,7 +337,8 @@ or take STATE inside a finalizer. `test_destructor_panics.jl` runs real panickin
 destructors in child processes, so a missing boundary fails instead of aborting
 the entire test worker.
 
-- Entry point: `test/runtests.jl` (includes 30+ test files)
+- Entry point: `test/runtests.jl`, driven by ParallelTestRunner. It auto-discovers every `test/test_*.jl` (74 files; other `.jl` files there are helpers) and runs them in parallel worker processes, then runs a serial set one at a time — `test_cache`, `test_core_api`, `test_cargo`, `test_pyo3_wrapper`, `test_pyo3_host` — because they assert on or share the Cargo cache. Positional arguments filter by name (`Pkg.test(test_args = ["test_cache"])`), `--list` lists, `--jobs=N` sets the workers.
+- Network-dependent testsets (`test_external_crates`, `test_ndarray`, `test_phase4_ndarray`) skip unless `RUSTCALL_RUN_SERDE_TESTS` / `_REGEX_` / `_UUID_` / `_CHRONO_` / `RUSTCALL_RUN_HEAVY_INTEGRATION_TESTS` are set; the PythonCall layer of `test_pyo3_host` runs only in a session that has PythonCall. A skip is a visible `@test_skip`, never a silent `return` or an `if` with no `else` (#464).
 - Tests are organized by feature: ownership, arrays, generics, cargo, crate bindings, hot reload, etc.
 - `test/test_regressions.jl` holds regression tests for fixed issues
 - Proc-macro tests: `deps/rustcall_julia_macros/tests/`
@@ -342,9 +348,17 @@ the entire test worker.
 ## CI
 
 `.github/workflows/CI.yml`:
-- **Rust tests**: `cargo fmt --check`, `cargo clippy`, `cargo test` in `deps/rustcall_julia_core`, `deps/rustcall_extract`, `deps/rustcall_julia_macros`, `deps/rustcall_julia_macros_impl` (stable + beta, Linux/macOS/Windows)
-- **Julia tests**: `Pkg.test()` on Julia 1.x (Ubuntu x64, Windows x64, macOS aarch64) with `JULIA_NUM_THREADS=1`, plus **one Ubuntu job with `JULIA_NUM_THREADS=4`**
+- **Rust tests**: `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all-features` in `deps/rustcall_julia_core`, `deps/rustcall_extract`, `deps/rustcall_julia_macros`, `deps/rustcall_julia_macros_impl`, `deps/rustcall_helpers` (stable + beta, Linux/macOS/Windows)
+- **Julia tests**: `Pkg.test()` on Julia 1.x (Ubuntu x64, Windows x64, macOS aarch64) with `JULIA_NUM_THREADS=1`, plus **one Ubuntu job with `JULIA_NUM_THREADS=4`**, which first runs `test_state.jl`, `test_hot_reload_transaction.jl` and `test_generic_reload.jl` with `--threads=4 --check-bounds=yes` (the bounds-checked state and mixed-reload stress step)
 - **Code Lint**: every `scripts/lint_*.sh`
+- **Compile benchmark**: `benchmark/benchmarks_compile.jl` (cold and warm) on all three OSes, result in the job summary; informational
+
+Other workflows:
+- `Examples.yml` — `Pkg.test()` of every package under `examples/` (one job each, Ubuntu) against this checkout, plus the Pluto notebook `examples/pluto/hello.jl` run headlessly; a new example package must be added to its matrix.
+- `OfflineTests.yml` — the whole suite with `CARGO_NET_OFFLINE=true` after fetching only the declared crates (`test/fixtures/offline_prefetch/Cargo.toml`) into an empty `CARGO_HOME`, no caches (#259); a test that needs a new registry crate must be added there.
+- `NetworkIntegration.yml` — weekly (and `workflow_dispatch`) run with the network test flags on, three OSes, `continue-on-error`, not a required check.
+- `PublishCrates.yml` — after a green `CI` **push** run on `main`, `scripts/publish_rust_crates.sh` publishes whichever of the three crates.io crates is not published yet (`release` environment secret).
+- `Documenter.yml`, `TagBot.yml`, `CompatHelper.yml` — docs deploy, release tags, compat bumps.
 
 **Why the 4-thread job exists.** Three guarantees are only *exercised* with more than one thread, and their testsets skip themselves when `Threads.nthreads() < 2`, so without this job they would never run anywhere: (1) the panic channel is a thread-local — the rule that the wrapper `ccall` and the channel-read `ccall` happen on one thread with no yield point between them (#244) is invisible single-threaded; (2) `load_artifact!` racing two tasks on the same path (#277); (3) finalizers running on a thread other than the allocating one (#249). Keep the skip guards and this job together: a new thread-sensitive test must skip below 2 threads *and* be covered by the 4-thread job.
 
@@ -393,5 +407,5 @@ Practical rules that CI enforces or that have bitten before:
 - Run every `scripts/lint_*.sh src` locally; they are all CI jobs.
 - On Windows a loaded DLL cannot be deleted or overwritten: tests unload libraries before removing temp trees and clean up best-effort; hot reload opens a fresh generation path per rebuild.
 - Finalizers must never take `REGISTRY_LOCK`, `dlsym`, or log; they use pointers captured at construction. Enforced by `test/test_finalizers.jl` from #277 Phase B (PR #289) onward; older finalizers in `src/types.jl` / `src/crate_bindings.jl` are migrated there.
-- `docs/src/api.md` is close to Documenter's size threshold (#288); a new docstring can break the docs job — check `julia --project=docs docs/make.jl` locally.
+- The API reference is split into `docs/src/reference/*.md` (#288), each page filtered by source file, under Documenter's default 200 KiB limit with a 150 KiB warning (`docs/make.jl`). A reference page that warns is split further, never the limit raised; a docstring in a new `src/` file needs its file added to a page's `Pages` filter.
 - Verify tests pass before every commit; never commit red.
