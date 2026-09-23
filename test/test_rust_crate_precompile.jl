@@ -136,7 +136,7 @@ end
                           B._LIB_GEN.owner === B._SYMBOLS.owner === B, " ",
                           haskey(RustCall.MODULE_STATES, B), " ",
                           B._PRELOAD_LIBRARIES isa Tuple && B._CRATE_INPUTS isa Tuple &&
-                          B._BUILD_ENV isa Tuple, " ", add(Int32(2), Int32(3)))
+                          B._BUILD_RECORD.build_env isa Tuple, " ", add(Int32(2), Int32(3)))
                     """)
                 @test owned == "true true true true true 5"
             end

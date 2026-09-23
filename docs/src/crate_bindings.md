@@ -679,35 +679,37 @@ target is built in.
 
 `RustCall.enable_hot_reload_for_crate` rebuilds a crate with its own `cdylib`
 target when its sources change, and swaps the new library in under the registry
-name the module loaded it as. Pass the value `@rust_crate` returned: the module
-records both that name (`_LIB_NAME`) and the build it was made from
-(`_BUILD_OPTIONS`: profile, `features`, `default_features`), and every reload
-rebuilds that same build, so the rebuilt library has the `#[cfg]`s the module's
-wrappers were generated for:
+name the module loaded it as. Pass the value `@rust_crate` returned. Every
+generated module — in memory, or written by `write_bindings_to_file` — records
+everything its build was made from as one immutable `RustCall.CrateBuildRecord`,
+`_BUILD_RECORD`: the crate directory, the registry name (`_LIB_NAME` is read
+from it), the profile, `features`, `default_features`, the kind of build, the
+build environment (`RUSTFLAGS` and the rest of the allowlisted variables), the
+effective Cargo configuration and the toolchain. Every reload rebuilds from that
+record alone, so the rebuilt library has the `#[cfg]`s the module's wrappers
+were generated for:
 
 ```julia
 B = @rust_crate "deps/my_rust_crate" release=false features=["simd"]
 RustCall.enable_hot_reload_for_crate(B)  # rebuilds debug, with "simd"
 ```
 
-The crate is the one the module was generated from, which the module records
-too, so the path may be omitted. When it is given it must name that same
-directory (a relative or symlinked spelling is fine); another checkout is
-refused rather than published under the module's registry name.
-
-The module also records the build environment it was made under (`RUSTFLAGS`
-and the rest of the allowlisted variables, the effective Cargo configuration,
-the toolchain). The module form compares it with the current environment when
-hot reload is enabled — an `ArgumentError` on a mismatch — and again before every
-rebuild, where a mismatch fails the reload and keeps the previous library loaded
-(reported like any failed rebuild, through the callback). Restore the
-environment, or load the crate again under the new one.
+Arguments are compared with the record, never added to it. The crate path may
+be omitted; when it is given it must name the recorded directory (a relative or
+symlinked spelling is fine), and `lib_name`, `release`, `features` and
+`default_features`, when given, must equal the recorded ones. The recorded
+environment is compared with the current one when hot reload is enabled and
+again before every rebuild. Any mismatch is refused: an `ArgumentError` at
+enable time, and a failed reload that keeps the previous library loaded
+(reported like any failed rebuild, through the callback) at rebuild time.
+Restore the environment, or load the crate again under the new one.
 
 The path-only form, `enable_hot_reload_for_crate(crate_path; release, features,
-default_features)`, takes the build as keywords (defaulting to `@rust_crate`'s
-defaults) and does not guess it; it has no record of the environment, so it
-rebuilds under the current one. Only a crate that is its own `cdylib` can be
-reloaded; a module bound through a generated wrapper crate is refused.
+default_features)`, constructs the same record from its keywords (defaulting to
+`@rust_crate`'s defaults) and the current environment; it does not guess the
+build. Only a crate that is its own `cdylib` can be reloaded: both forms refuse
+a crate without one, or a module bound through a generated wrapper crate, when
+hot reload is enabled.
 
 The rebuild is the build `@rust_crate` itself runs: RustToolChain's `cargo`,
 output under RustCall's own target directory for the crate (not the crate's
@@ -839,7 +841,20 @@ library; see [Panics, Visibility and Lifetime](panics.md) for the full contract.
 ## Regenerating bindings after an upgrade
 
 Files written by `write_bindings_to_file` carry a format marker
-(`# Bindings format: 12`). Regenerate after upgrading RustCall.
+(`# Bindings format: 13`). Regenerate after upgrading RustCall.
+
+Format `13` (#474) records every input of the file's build — the crate
+directory, the registry name, the profile and features, the kind of build, the
+build environment, the Cargo configuration and the toolchain — as one
+`RustCall.CrateBuildRecord` named `_BUILD_RECORD`, the same record an
+in-memory `@rust_crate` module holds. It is what
+`RustCall.enable_hot_reload_for_crate` rebuilds from (see
+[Hot reload](hot_reload.md)). Its `__init__` also checks the recorded build
+environment before loading, exactly as an in-memory `@rust_crate` module does:
+a written (or precompiled) module refuses to load under another `RUSTFLAGS`,
+`PYO3_PYTHON`, Cargo configuration or toolchain. A file emitted at this version does not load
+against a RustCall that predates the name; a file emitted before it records no
+build, and its module is refused by the module form of hot reload.
 
 Format `12` (#460) hands Rust each callback argument as
 `@cfunction(RustCall.CallbackSlot{k, R}(), ...)`, a slot that knows its return

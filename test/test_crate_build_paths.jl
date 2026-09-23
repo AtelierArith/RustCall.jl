@@ -243,7 +243,7 @@ const _CBP_MISSING_DEP = "rustcall_nonexistent_crate_461 = \"=0.0.1\""
                 lib_path = binding(bindings, :_LIB_PATH)
                 @test isfile(lib_path)
                 @test Base.invokelatest(binding(bindings, :cbp_add461), Int32(40), Int32(2)) == 42
-                @test binding(bindings, :_BUILD_OPTIONS).kind === :wrapper
+                @test binding(bindings, :_BUILD_RECORD).kind === :wrapper
                 # Closed before `mktempdir` removes the tree: a mapped DLL
                 # cannot be deleted on Windows.
                 RustCall.unload_library(binding(bindings, :_LIB_NAME); close = true)
@@ -338,7 +338,7 @@ const _CBP_MISSING_DEP = "rustcall_nonexistent_crate_461 = \"=0.0.1\""
             write(joinpath(crate, "src", "lib.rs"), source(1))
             bindings = @rust_crate crate name = "CbpOpts461" release = false features = ["extra"]
             name = bindings._LIB_NAME
-            @test bindings._BUILD_OPTIONS ==
+            @test RustCall.record_build_options(bindings._BUILD_RECORD) ==
                   (release = false, features = ("extra",), default_features = true, kind = :direct)
             # The path form does not guess: with the defaults it names another
             # build, and with the options it names this one.
@@ -349,7 +349,7 @@ const _CBP_MISSING_DEP = "rustcall_nonexistent_crate_461 = \"=0.0.1\""
                 state = RustCall.enable_hot_reload_for_crate(bindings, crate;
                                                              poll = true, interval = 60.0)
                 @test state.lib_name == name
-                @test state.build_options == bindings._BUILD_OPTIONS
+                @test state.record === bindings._BUILD_RECORD
                 @test Base.invokelatest(bindings.cbp_gated461) == 1
                 @test Base.invokelatest(bindings.cbp_debug461) == 1
                 write(joinpath(crate, "src", "lib.rs"), source(2))
@@ -419,7 +419,7 @@ const _CBP_MISSING_DEP = "rustcall_nonexistent_crate_461 = \"=0.0.1\""
                     RustCall.enable_hot_reload_for_crate(bindings, crate; poll = true,
                         interval = 60.0, callback = (lib, ok, e) -> push!(outcomes, (ok, e)))
                 end
-                @test state.build_env_record !== nothing
+                @test state.record === bindings._BUILD_RECORD
                 write(joinpath(crate, "src", "lib.rs"), source(2))
                 @test withenv(() -> RustCall.trigger_reload(name), "RUSTFLAGS" => flags) == true
                 @test Base.invokelatest(bindings.cbp_custom461) == 2
@@ -504,10 +504,9 @@ const _CBP_MISSING_DEP = "rustcall_nonexistent_crate_461 = \"=0.0.1\""
                                body = "#[julia]\npub fn cbp_w461() -> i32 { 1 }\n")
             bindings = @rust_crate crate name = "CbpWrapped461"
             try
-                @test bindings._BUILD_OPTIONS.kind === :wrapper
+                @test bindings._BUILD_RECORD.kind === :wrapper
                 @test_throws ArgumentError RustCall.enable_hot_reload_for_crate(bindings, crate)
-                @test_throws ArgumentError RustCall.rebuild_crate(crate;
-                    build_options = bindings._BUILD_OPTIONS)
+                @test_throws ArgumentError RustCall.rebuild_crate(bindings._BUILD_RECORD)
             finally
                 RustCall.unload_library(bindings._LIB_NAME; close = true)
             end

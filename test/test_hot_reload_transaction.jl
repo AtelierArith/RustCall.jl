@@ -430,7 +430,7 @@ end
         # The previous image is RETIRED after the swap, never closed under a
         # call that may still be inside it (#277).
         @test !occursin("on_replace = :dlclose", _HRT_SRC)
-        @test findfirst("rebuild_crate(state.crate_path", _HRT_SRC) <
+        @test findfirst("rebuild_crate(record; env = env)", _HRT_SRC) <
               findfirst("loadable_library_copy(built)", _HRT_SRC) <
               findfirst("load_artifact!(hot_reload_policy()", _HRT_SRC)
     end

@@ -1000,12 +1000,12 @@ end
                        recorded_toolchain = ""; python = false) -> Union{Nothing, Vector{String}}
 
 What differs between the build environment a generated module recorded
-(`_BUILD_ENV`, `_CARGO_CONFIG`, `_TOOLCHAIN`) and the current one: the names of
+(the `build_env`, `cargo_config` and `toolchain` of its `CrateBuildRecord`) and the current one: the names of
 the changed allowlisted variables, plus `<effective Cargo configuration>` and
 `<Rust toolchain>` when those moved. `nothing` when the current environment
 cannot be read. The one comparison both a module's `__init__`
 (`_warn_if_build_env_changed`) and a hot reload of that module
-(`enable_hot_reload_for_crate`) make.
+(`_build_record_mismatch`) make.
 """
 function _build_env_changes(recorded, crate_path::AbstractString,
                             recorded_cargo_config::AbstractString = "",
@@ -1061,7 +1061,7 @@ end
     crate_build_options(; release, features, default_features, kind) -> NamedTuple
 
 The build a generated `@rust_crate` module was made from, as the module records
-it in `_BUILD_OPTIONS`: the profile, the feature selection, and `kind` — how the
+it in its `CrateBuildRecord` (`_BUILD_RECORD`): the profile, the feature selection, and `kind` — how the
 library was produced (`:direct`, the crate built as its own `cdylib`;
 `:wrapper`, a generated wrapper crate around an rlib; `:pyo3_wrapper`, the PyO3
 wrapper of #275). Hot reload rebuilds from it (`enable_hot_reload_for_crate`),
@@ -1072,6 +1072,251 @@ crate_build_options(; release::Bool = true, features::Vector{String} = String[],
                     default_features::Bool = true, kind::Symbol = :direct) =
     (release = release, features = Tuple(features), default_features = default_features,
      kind = kind)
+
+"""
+    CrateBuildRecord
+
+Everything a build of a `@rust_crate` library was made from — and therefore
+everything a hot reload must reproduce before it may publish another image under
+that library's registry name (#474):
+
+- `crate_dir` — the crate the module was generated from (absolute);
+- `lib_name` — the registry name the library is loaded as (`_LIB_NAME`);
+- `release`, `features`, `default_features` — the profile and the feature
+  selection (`crate_build_options`);
+- `kind` — how the library was produced: `:direct` (the crate is its own
+  `cdylib`), `:wrapper` (a generated wrapper crate around an rlib) or
+  `:pyo3_wrapper` (#275);
+- `build_env`, `cargo_config`, `toolchain` — the part of the artifact identity
+  that is not a file: the allowlisted variables, the effective Cargo
+  configuration's digest and the toolchain fingerprint (`""` when it could not
+  be read, which then is not compared);
+- `python` — whether `build_env` carries the Python selection of a module that
+  links libpython (`_recorded_build_env(; python)`).
+
+A generated module holds exactly one, as `_BUILD_RECORD`, emitted by both crate
+emitters from one call (`crate_build_record`); `_LIB_NAME` is read from it.
+Hot reload takes every rebuild input from it and nothing else: the module form
+of `enable_hot_reload_for_crate` reads it once and compares caller arguments
+against it (`_check_record_arguments`), and every reload compares the current
+environment with it (`_build_record_mismatch`) before building. Immutable, so a
+reload cannot drift from what the module was generated for.
+"""
+struct CrateBuildRecord
+    crate_dir::String
+    lib_name::String
+    release::Bool
+    features::Tuple{Vararg{String}}
+    default_features::Bool
+    kind::Symbol
+    build_env::Tuple{Vararg{Pair{String, String}}}
+    cargo_config::String
+    toolchain::String
+    python::Bool
+end
+
+CrateBuildRecord(crate_dir::AbstractString, lib_name::AbstractString, release::Bool,
+                 features, default_features::Bool, kind::Symbol, build_env,
+                 cargo_config::AbstractString, toolchain::AbstractString, python::Bool) =
+    CrateBuildRecord(String(crate_dir), String(lib_name), release,
+                     Tuple(String(f) for f in features), default_features, kind,
+                     Tuple(String(k) => String(v) for (k, v) in build_env),
+                     String(cargo_config), String(toolchain), python)
+
+# The written-bindings spelling: `repr(record)` is source that evaluates to an
+# equal record, so the source-text emitter can emit the very value the
+# expression emitter splices (asserted by `test/test_hot_reload_record.jl`).
+function Base.show(io::IO, r::CrateBuildRecord)
+    print(io, "RustCall.CrateBuildRecord(")
+    fields = fieldnames(CrateBuildRecord)
+    for (i, f) in enumerate(fields)
+        show(io, getfield(r, f))
+        i < length(fields) && print(io, ", ")
+    end
+    print(io, ")")
+end
+
+"""
+    record_build_options(record::CrateBuildRecord) -> NamedTuple
+
+The record's build in `crate_build_options` shape.
+"""
+record_build_options(r::CrateBuildRecord) =
+    crate_build_options(release = r.release, features = collect(String, r.features),
+                        default_features = r.default_features, kind = r.kind)
+
+"""
+    crate_build_record(crate_path, lib_name; build_options, python = false) -> CrateBuildRecord
+
+The record of a build of `crate_path` made **now**: the given build options,
+plus the current build environment, Cargo configuration and toolchain. What both
+crate emitters record (one call, one value), and what the path form of
+`enable_hot_reload_for_crate` constructs for a library it has no module of.
+"""
+function crate_build_record(crate_path::AbstractString, lib_name::AbstractString;
+                            build_options::NamedTuple = crate_build_options(),
+                            python::Bool = false)
+    crate_dir = abspath(String(crate_path))
+    # The part of the artifact identity that is *not* a file, recorded so the
+    # module can say so at load time (`_warn_if_build_env_changed`).
+    build_env = try
+        _recorded_build_env(; python = python)
+    catch e
+        @debug "Could not record the build environment" exception = e
+        Pair{String, String}[]
+    end
+    toolchain = try
+        toolchain_fingerprint()
+    catch e
+        @debug "Could not record the toolchain fingerprint" exception = e
+        ""
+    end
+    # The effective Cargo configuration is chosen by `CARGO_HOME`, which is not
+    # an allowlisted variable: its digest is what says whether the same build
+    # would run under the same flags (#339 review).
+    cargo_config = try
+        _cargo_config_digest(ENV; dir = crate_dir)
+    catch e
+        @debug "Could not record the Cargo configuration" exception = e
+        ""
+    end
+    return CrateBuildRecord(crate_dir, lib_name, build_options.release,
+                            build_options.features, build_options.default_features,
+                            build_options.kind, build_env, cargo_config, toolchain, python)
+end
+
+"""
+    _build_record_mismatch(record::CrateBuildRecord) -> Vector{String}
+
+What differs between the environment `record` was built under and the current
+one (`_build_env_changes`): the changed variables, `<effective Cargo
+configuration>`, `<Rust toolchain>`. Empty when nothing does, or when the
+current environment cannot be read.
+"""
+function _build_record_mismatch(r::CrateBuildRecord)
+    changed = _build_env_changes(r.build_env, r.crate_dir, r.cargo_config, r.toolchain;
+                                 python = r.python)
+    return changed === nothing ? String[] : changed
+end
+
+# The module's `__init__` check (`_warn_if_build_env_changed`), from its record.
+_warn_if_build_env_changed(r::CrateBuildRecord; strict::Bool = false) =
+    _warn_if_build_env_changed(r.build_env, r.crate_dir, r.lib_name, r.cargo_config,
+                               r.toolchain; python = r.python, strict = strict)
+
+"""
+    _record_build_subprocess_env(record::CrateBuildRecord) -> Dict{String, String}
+
+The environment every Cargo subprocess of a build described by `record` runs
+under — the cfg probe and the build of `@rust_crate`, `write_bindings_to_file`
+and a hot reload — derived from the record over one snapshot of `ENV`, so the
+build is the one the record describes even if another task changes `ENV`
+meanwhile (#474 review):
+
+- every variable `artifact_build_env_captured` accepts is removed from the
+  snapshot and the record's own values are put back (`RUSTFLAGS`,
+  `CARGO_PROFILE_*`, `RUSTUP_TOOLCHAIN`, `PYO3_*`, a build script's `CC`, ...);
+- the interpreter pyo3's build script would pick — recorded as `<pyo3 build
+  interpreter>`, found on `PATH` when `PYO3_PYTHON` is unset — is pinned in
+  `PYO3_PYTHON`, so a `PATH` changed after the record was taken cannot select
+  another Python for the build;
+- the Cargo configuration `CARGO_HOME` selects is checked against the record's
+  digest *on this environment*, and a different one is refused.
+
+The rest of the snapshot (`PATH`, `CARGO_HOME`, ...) is what the build needs to
+run. Other `<...>` entries of `record.build_env` are digests, not variables.
+"""
+function _record_build_subprocess_env(record::CrateBuildRecord)
+    snapshot = Dict{String, String}(ENV)
+    env = Dict{String, String}(k => v for (k, v) in snapshot
+                               if !artifact_build_env_captured(k))
+    interpreter = ""
+    for (k, v) in record.build_env
+        if k == "<pyo3 build interpreter>"
+            interpreter = v
+            continue
+        end
+        startswith(k, "<") && continue
+        # Allowlisted values are recorded in `_artifact_env_value`'s encoding
+        # (`present:<value>`, or `ARTIFACT_ENV_ABSENT`); the others as is.
+        if v == ARTIFACT_ENV_ABSENT
+            delete!(env, k)
+        else
+            env[k] = startswith(v, "present:") && artifact_build_env_captured(k) ?
+                     chopprefix(v, "present:") : v
+        end
+    end
+    # Only when the record's own `PYO3_PYTHON` did not already decide it: then
+    # the recorded interpreter is the one `PATH` selected when it was taken.
+    isempty(interpreter) || haskey(env, "PYO3_PYTHON") || (env["PYO3_PYTHON"] = interpreter)
+    if !isempty(record.cargo_config)
+        now_config = try
+            _cargo_config_digest(env; dir = record.crate_dir)
+        catch e
+            @debug "Could not read the Cargo configuration" exception = e
+            record.cargo_config
+        end
+        now_config == record.cargo_config || throw(ArgumentError(
+            "The build environment of $(isempty(record.lib_name) ? record.crate_dir : record.lib_name) " *
+            "changed while it was being built (<effective Cargo configuration>): the Cargo " *
+            "configuration `CARGO_HOME` selects is not the recorded one, so the build is " *
+            "refused rather than made under it. Restore the environment and try again."))
+    end
+    return env
+end
+
+"""
+    _plain_crate_build_env(record::CrateBuildRecord) -> Vector{Pair{String, String}}
+
+The environment part of a plain crate's artifact identity (`compute_crate_hash`,
+`crate_library_name`), read from `record` rather than from `ENV`: the same
+values `_plain_crate_build_env()` reads, under the same names and in the same
+order, so the cache key, the registry name and the build all come from one
+snapshot (#474 review).
+"""
+function _plain_crate_build_env(record::CrateBuildRecord)
+    out = Pair{String, String}[]
+    interpreter = fingerprint = ""
+    for (k, v) in record.build_env
+        if k == "<PYO3_CONFIG_FILE digest>"
+            isempty(v) || push!(out, "pyo3-config-file-digest" => v)
+        elseif k == "<pyo3 build interpreter>"
+            interpreter = v
+        elseif k == "<pyo3 build fingerprint>"
+            fingerprint = v
+        elseif !startswith(k, "<")
+            push!(out, k => v)
+        end
+    end
+    if !isempty(interpreter)
+        push!(out, "rustcall-pyo3-python" => interpreter)
+        push!(out, "rustcall-pyo3-python-config" => fingerprint)
+    end
+    return out
+end
+
+# `record` under another registry name: the name of a plain build is computed
+# from the record's own environment, so the record is taken first and named
+# after.
+_record_named(r::CrateBuildRecord, lib_name::AbstractString) =
+    CrateBuildRecord(r.crate_dir, lib_name, r.release, r.features, r.default_features, r.kind,
+                     r.build_env, r.cargo_config, r.toolchain, r.python)
+
+"""
+    _crate_init_prologue()
+
+What a generated crate module's `__init__` does before it loads its library, in
+order, shared by both emitters: the in-memory module splices these expressions
+and `emit_crate_module_code` prints them, so a written file cannot drift from
+`@rust_crate` (#474 review). First the strict build-environment check against
+`_BUILD_RECORD` — a precompiled module refuses to load a library built under
+another `RUSTFLAGS`, `PYO3_PYTHON`, Cargo configuration or toolchain (#339,
+#355) — then the mirror registration, which must precede the load (#277).
+"""
+_crate_init_prologue() = (
+    :(RustCall._warn_if_build_env_changed(_BUILD_RECORD; strict = true)),
+    :(RustCall.register_handle_mirror!(_LIB_NAME, _LIB_GEN)),
+)
 
 """
     emit_crate_module(info::CrateInfo, lib_path::String; module_name::Union{String, Nothing}=nothing) -> Expr
@@ -1096,7 +1341,8 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
                            extra_inputs::Vector{String} = String[],
                            python::Bool = false,
                            pin_library::Bool = false,
-                           build_options::NamedTuple = crate_build_options(release = build_release))
+                           build_options::NamedTuple = crate_build_options(release = build_release),
+                           build_record::Union{Nothing, CrateBuildRecord} = nothing)
     # Determine module name
     mod_name = if module_name !== nothing
         Symbol(module_name)
@@ -1130,32 +1376,17 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
         (isfile(extra) || isdir(extra)) && push!(crate_inputs, abspath(extra))
     end
     unique!(crate_inputs)
-    # The part of the artifact identity that is *not* a file, recorded so the
-    # module can say so at load time (`_warn_if_build_env_changed`).
-    build_env = try
-        _recorded_build_env(; python = python)
-    catch e
-        @debug "Could not record the build environment" exception = e
-        Pair{String, String}[]
-    end
-    recorded_env = Any[String(k) => String(v) for (k, v) in build_env]
-    toolchain = try
-        toolchain_fingerprint()
-    catch e
-        @debug "Could not record the toolchain fingerprint" exception = e
-        ""
-    end
-    @debug "Recording generated crate toolchain" lib_key toolchain
-    crate_dir = abspath(String(info.path))
-    # The effective Cargo configuration is chosen by `CARGO_HOME`, which is not
-    # an allowlisted variable: its digest is what says whether the same build
-    # would run under the same flags (#339 review).
-    cargo_config_digest = try
-        _cargo_config_digest(ENV; dir = crate_dir)
-    catch e
-        @debug "Could not record the Cargo configuration" exception = e
-        ""
-    end
+    # Every input of this build — crate, registry name, profile, features,
+    # kind, and the environment that is not a file — as one immutable value
+    # (#474). The source-text emitter records the same value from the same
+    # call.
+    # A caller that built the library passes the record it built under
+    # (`_record_build_subprocess_env`); otherwise it is taken now.
+    build_record = something(build_record,
+        crate_build_record(info.path, lib_key; build_options = build_options, python = python))
+    build_record.lib_name == lib_key || throw(ArgumentError(
+        "the build record names `$(build_record.lib_name)`, not `$(lib_key)`"))
+    @debug "Recording generated crate build" lib_key build_record.toolchain
 
     # Build the module body as a block
     module_body = quote
@@ -1175,11 +1406,13 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
         # of a package (`@rust_crate` at top level, #339): its `__init__` then
         # runs in a later session, which must still find this file.
         const _LIB_PATH = $lib_path
-        const _LIB_NAME = $lib_key
-        # The profile, features and kind of build `_LIB_PATH` is: what a hot
-        # reload rebuilds, so the image it publishes under `_LIB_NAME` has the
-        # `#[cfg]`s these wrappers were generated for (#461 review).
-        const _BUILD_OPTIONS = $build_options
+        # Every input of the build `_LIB_PATH` is — crate, registry name,
+        # profile, features, kind, build environment, Cargo configuration,
+        # toolchain — as one immutable record: the only thing a hot reload
+        # rebuilds from, so the image it publishes under `_LIB_NAME` has the
+        # `#[cfg]`s these wrappers were generated for (#461 review, #474).
+        const _BUILD_RECORD = $build_record
+        const _LIB_NAME = _BUILD_RECORD.lib_name
         # Libraries the image imports by name that the loader would not find on
         # its own — a PyO3 wrapper's `python3xy.dll` on Windows, where there is
         # no rpath — opened before it (`PyO3LinkPlan.runtime_libraries`).
@@ -1211,12 +1444,8 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
         # The rest of the identity is environment, not files —
         # `RUSTFLAGS`, `PYO3_PYTHON`, a `PYO3_CONFIG_FILE` pointing elsewhere.
         # Julia cannot invalidate an image on those, so the values are recorded
-        # and `__init__` says when they no longer match (#339 review).
-        const _BUILD_ENV = $(Tuple(recorded_env))
-        const _CRATE_DIR = $crate_dir
-        const _CARGO_CONFIG = $cargo_config_digest
-        const _TOOLCHAIN = $toolchain
-        const _RECORDS_PYTHON = $python
+        # in `_BUILD_RECORD` and `__init__` says when they no longer match
+        # (#339 review).
 
         # Everything this module knows about the image it calls — handle,
         # liveness flag and generation number — as **one immutable value**, in
@@ -1241,10 +1470,7 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
             # assignment after it would overwrite a newer generation that a
             # concurrent reload had already published, and calls through this
             # module would go back to entering the retired image (#277).
-            RustCall._warn_if_build_env_changed(_BUILD_ENV, _CRATE_DIR, _LIB_NAME, _CARGO_CONFIG,
-                                                _TOOLCHAIN; python = _RECORDS_PYTHON,
-                                                strict = true)
-            RustCall.register_handle_mirror!(_LIB_NAME, _LIB_GEN)
+            $(_crate_init_prologue()...)
             # A private generation copy, never `_LIB_PATH` itself: that file is
             # Cargo's output or the cache copy, and an image mapped in place
             # cannot be overwritten on Windows — the next `cargo build` of the
@@ -1551,8 +1777,8 @@ function _check_module_names(tree::ModuleNode)
     for name in _CRATE_MODULE_HELPERS
         taken[String(name)] = "a helper every generated module defines"
     end
-    for name in ("_LIB_PATH", "_SYMBOLS", "_PRELOAD_LIBRARIES", "__init__")
-        taken[name] = "a helper every generated module defines"
+    for name in _CRATE_MODULE_ROOT_CONSTANTS
+        taken[String(name)] = "a constant every generated module defines"
     end
     for name in _CRATE_MODULE_PRELUDE
         taken[String(name)] = "a name every generated module imports from RustCall"
@@ -1566,9 +1792,24 @@ function _check_module_names(tree::ModuleNode)
     for base_name in _BASE_EXPORTED_NAMES
         get!(taken, base_name, "a name exported by Base")
     end
+    # A function-like binding may not take a name the module itself defines —
+    # the build record, the library path, a snapshot helper: the wrapper would
+    # redefine a `const` or add a method to RustCall's own helper (#463).
+    reserved = Set{String}(String.((_CRATE_MODULE_HELPERS..., _CRATE_MODULE_ROOT_CONSTANTS...)))
+    refuse_reserved(name, what) = name in reserved && error(
+        "cannot lay out the bindings of $where_: $what binds `$name`, which every " *
+        "generated module defines itself (#463). Rename it.")
     for f in tree.functions
         f.is_generic && continue
+        refuse_reserved(f.name, "the function `$(qualified_name(f.module_path, f.name))`")
         get!(taken, f.name, "the function `$(qualified_name(f.module_path, f.name))`")
+    end
+    for s in tree.structs
+        owner = qualified_name(s.module_path, s.name)
+        for m in s.methods
+            (isempty(m.skip_reason) && !m.is_constructor) || continue
+            refuse_reserved(m.name, "the method `$owner::$(m.name)`")
+        end
     end
     # A method or an accessor is emitted *after* its struct, so it only clashes
     # with a type name a **later** struct of this node defines: `function C(...)`
@@ -1637,6 +1878,19 @@ const _CRATE_MODULE_HELPERS = (:_LIB_NAME, :_LIB_GEN, :_symbol, :_required_symbo
                                :_struct_generation, :_guard_panic,
                                :_CALL_TARGET, :_STRING_TARGET, :_VEC_TARGET, :_CTOR_TARGET,
                                :_FREE_TARGET)
+
+"""
+    _CRATE_MODULE_ROOT_CONSTANTS
+
+The other names a generated crate module binds at its root — the library path,
+the build record, the preload list, the pin flag, the crate's tracked inputs,
+the symbol cache and `__init__` — which a Rust item or module may not take.
+`test/test_hot_reload_record.jl` collects every root binding either emitter
+actually defines and asserts it is reserved here or in `_CRATE_MODULE_HELPERS`,
+so a constant added to an emitter without reserving its name fails (#463).
+"""
+const _CRATE_MODULE_ROOT_CONSTANTS = (:_LIB_PATH, :_BUILD_RECORD, :_PRELOAD_LIBRARIES,
+                                      :_PIN_LIBRARY, :_CRATE_INPUTS, :_SYMBOLS, :__init__)
 
 """
     _target_cache_name(kind, symbol) -> Symbol
@@ -3141,7 +3395,18 @@ function generate_bindings(crate_path::String;
                                          kind = :pyo3_wrapper))
         end
     end
-    info = _plain_scan_info(crate_path, info, features, default_features, build_release)
+    # One snapshot of the environment for everything below — the cfg probe,
+    # the cache key, the registry name, the build and the module's record — so
+    # a task changing `ENV` meanwhile cannot make them describe different
+    # builds (#474 review). Named once the name, which it decides, is known.
+    plain_kind = crate_has_cdylib(crate_path) ? :direct : :wrapper
+    snapshot = crate_build_record(crate_path, "";
+        build_options = crate_build_options(release = build_release, features = features,
+                                            default_features = default_features,
+                                            kind = plain_kind))
+    build_env = _record_build_subprocess_env(snapshot)
+    info = _plain_scan_info(crate_path, info, features, default_features, build_release;
+                            env = build_env)
 
     # Check cache. The feature set is part of the identity on this path too:
     # a build the caller asked for with `features` / `default_features` is
@@ -3155,7 +3420,7 @@ function generate_bindings(crate_path::String;
     # previous library in the cache and handed it back — which also made the
     # load-time warning's advice wrong, since re-precompiling the package
     # rebuilt the bindings around the same stale artifact (#339 review).
-    build_env_snapshot = _plain_crate_build_env()
+    build_env_snapshot = _plain_crate_build_env(snapshot)
     cache_key = compute_crate_hash(info; release = build_release,
                                    features = features, default_features = default_features,
                                    build_env = build_env_snapshot)
@@ -3171,7 +3436,8 @@ function generate_bindings(crate_path::String;
             @info "Building crate directly (already has cdylib crate-type)..."
             built = build_crate_directly(info, build_release;
                                          features = features,
-                                         default_features = default_features)
+                                         default_features = default_features,
+                                         env = build_env)
             # Cargo's own output under the crate's `target/`: durable, but the
             # next `cargo build` of the crate rewrites it, so with caching on
             # the module names the cache copy instead — which is what a module
@@ -3194,7 +3460,7 @@ function generate_bindings(crate_path::String;
 
             try
                 built = build_cargo_project(wrapper_project, release=build_release,
-                                            policy=crate_wrapper_policy())
+                                            policy=crate_wrapper_policy(), env=build_env)
                 # The library must leave the wrapper project *here*: the
                 # `finally` below removes the whole project, the build output
                 # included, so anything that names a path inside it afterwards
@@ -3233,16 +3499,12 @@ function generate_bindings(crate_path::String;
     # replaced the entry and re-pointed the first module's mirror at it, so its
     # wrappers called the other build — a wrong ABI or a missing symbol where
     # the environment changed the cfg-selected exports (#339 review).
+    lib_name = crate_library_name(info; release = build_release, features = features,
+                                  default_features = default_features,
+                                  build_env = build_env_snapshot)
     return emit_crate_module(info, lib_path; module_name=output_module_name,
-                             build_release=build_release,
-                             lib_name=crate_library_name(info; release = build_release,
-                                                         features = features,
-                                                         default_features = default_features,
-                                                         build_env = build_env_snapshot),
-                             build_options = crate_build_options(
-                                 release = build_release, features = features,
-                                 default_features = default_features,
-                                 kind = crate_has_cdylib(crate_path) ? :direct : :wrapper))
+                             build_release=build_release, lib_name=lib_name,
+                             build_record = _record_named(snapshot, lib_name))
 end
 
 """
@@ -3277,11 +3539,15 @@ compiles it: out (#307 review).
 unresolvable crate); the build then fails on its own terms.
 """
 function _plain_scan_info(crate_path::AbstractString, info::CrateInfo,
-                          features::Vector{String}, default_features::Bool, release::Bool)
+                          features::Vector{String}, default_features::Bool, release::Bool;
+                          env::Union{Nothing, AbstractDict} = nothing)
     path = String(crate_path)
     cfg_text = if crate_has_cdylib(path)
+        # Under the environment the build runs under, when the caller has one
+        # (`_record_build_subprocess_env`).
         _crate_build_cfg_text(path; profile = release ? "release" : "debug",
-                              features = _cargo_feature_args(features, default_features))
+                              features = _cargo_feature_args(features, default_features),
+                              env = env)
     else
         _wrapper_probe_cfg_text(path; features = features, default_features = default_features,
                                 release = release)
@@ -3315,7 +3581,8 @@ Build the crate directly using cargo and return the path to the library.
 """
 function build_crate_directly(info::CrateInfo, release::Bool;
                               features::Vector{String} = String[],
-                              default_features::Bool = true)
+                              default_features::Bool = true,
+                              env::Union{Nothing, AbstractDict} = nothing)
     # Create a CargoProject that points to the original crate
     project = CargoProject(
         info.name,
@@ -3331,7 +3598,7 @@ function build_crate_directly(info::CrateInfo, release::Bool;
     # Built from the crate's directory against its own `Cargo.lock`, but with
     # the output under RustCall's cache, never the crate's `target/` (#445).
     build_cargo_project(project, release=release, policy=crate_direct_policy(),
-                        features=features, default_features=default_features,
+                        features=features, default_features=default_features, env=env,
                         target_directory=_mark_target_used!(crate_target_directory(info.path)))
 end
 
@@ -3394,12 +3661,18 @@ older RustCall produced.
   `_guard_panic(value, channel, name, free_ptr)`, which calls a
   `RustCall.guard_rust_panic_ptr` method an older RustCall does not have, so a
   buffer returned by a call whose callback threw is released instead of leaked.
+- `13` (#474): the file records every input of its build — crate, registry
+  name, profile, features, kind, build environment, Cargo configuration,
+  toolchain — as one `RustCall.CrateBuildRecord` (`_BUILD_RECORD`), which is
+  what a hot reload rebuilds from, and reads `_LIB_NAME` from it. The name does
+  not exist in an older RustCall. Its `__init__` also checks the recorded
+  build environment before loading, as the in-memory module does.
 
 A file emitted by an older version still *works* — it only uses public API that
 still exists — but it does not get the unload, panic or lifetime guarantees.
 Regenerate after upgrading; the marker is what makes that visible.
 """
-const BINDINGS_FORMAT_VERSION = 12
+const BINDINGS_FORMAT_VERSION = 13
 
 """
     crate_library_name(info::CrateInfo; release = true) -> String
@@ -3968,6 +4241,7 @@ function write_bindings_to_file(crate_path::String, output_path::String;
     lib_name = nothing
     wrapper_lib_path = ""
     preload = String[]
+    links_python = false
     if crate_needs_pyo3_wrapper(info)
         plan = pyo3_link_plan(crate_path; features = features,
                               default_features = default_features, release = build_release)
@@ -3982,12 +4256,23 @@ function write_bindings_to_file(crate_path::String, output_path::String;
             lib_name = wrapper.lib_name
             wrapper_lib_path = wrapper.lib_path
             preload = wrapper.plan.runtime_libraries
+            links_python = wrapper.plan.mode === :link_libpython
         end
     end
     # The plain path scans under the configuration it builds, probed with the
     # shape of that build (#307 review), as `generate_bindings` does.
+    # One snapshot of the environment for the probe, the build and the file's
+    # record (#474 review), as in `generate_bindings`.
+    snapshot = nothing
+    build_env = nothing
     if isempty(wrapper_lib_path)
-        info = _plain_scan_info(crate_path, info, features, default_features, build_release)
+        snapshot = crate_build_record(crate_path, "";
+            build_options = crate_build_options(release = build_release, features = features,
+                default_features = default_features,
+                kind = crate_has_cdylib(crate_path) ? :direct : :wrapper))
+        build_env = _record_build_subprocess_env(snapshot)
+        info = _plain_scan_info(crate_path, info, features, default_features, build_release;
+                                env = build_env)
     end
 
     # Build the crate. On the plain path the feature set travels with the
@@ -4002,7 +4287,8 @@ function write_bindings_to_file(crate_path::String, output_path::String;
     elseif crate_has_cdylib(crate_path)
         @info "Building crate directly (already has cdylib crate-type)..."
         build_crate_directly(info, build_release;
-                             features = features, default_features = default_features)
+                             features = features, default_features = default_features,
+                             env = build_env)
     else
         # Create wrapper crate and build
         opts = CrateBindingOptions(
@@ -4025,7 +4311,7 @@ function write_bindings_to_file(crate_path::String, output_path::String;
 
         try
             built = build_cargo_project(wrapper_project, release=build_release,
-                                        policy=crate_wrapper_policy())
+                                        policy=crate_wrapper_policy(), env=build_env)
             # The library must leave the wrapper project before the `finally`
             # deletes it, as in `generate_bindings`: the file's `_LIB_PATH`
             # would otherwise name a file that no longer exists (#461). With a
@@ -4062,9 +4348,11 @@ function write_bindings_to_file(crate_path::String, output_path::String;
         lib_name = lib_name,
         preload = preload,
         pin_library = any(_python_owned_handle, info.julia_structs),
+        python = links_python,
         build_options = crate_build_options(release = build_release, features = features,
                                             default_features = default_features,
                                             kind = build_kind),
+        build_record = snapshot === nothing ? nothing : _record_named(snapshot, lib_name),
     )
 
     # Write to file
@@ -4120,7 +4408,9 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     lib_name::Union{String, Nothing} = nothing,
     preload::Vector{String} = String[],
     pin_library::Bool = false,
-    build_options::NamedTuple = crate_build_options(release = build_release)
+    python::Bool = false,
+    build_options::NamedTuple = crate_build_options(release = build_release),
+    build_record::Union{Nothing, CrateBuildRecord} = nothing
 )
     # Determine module name
     mod_name = if module_name !== nothing
@@ -4163,12 +4453,18 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     else
         push!(lines, "const _LIB_PATH = $(repr(lib_path))")
     end
-    push!(lines, "const _LIB_NAME = $(repr(lib_name === nothing ?
-        crate_library_name(info; release = build_release) : lib_name))")
-    # What a hot reload rebuilds (#461 review). A plain value, read by
-    # `enable_hot_reload_for_crate` only, so the file still loads under a
-    # RustCall that does not know it.
-    push!(lines, "const _BUILD_OPTIONS = $(repr(build_options))")
+    # Every input of this build as one record, the value the expression
+    # emitter splices, from the same call (`crate_build_record`, #474): what a
+    # hot reload rebuilds from, and the registry name.
+    record_name = lib_name === nothing ? crate_library_name(info; release = build_release) :
+                  lib_name
+    build_record = something(build_record,
+        crate_build_record(info.path, record_name; build_options = build_options,
+                           python = python))
+    build_record.lib_name == record_name || throw(ArgumentError(
+        "the build record names `$(build_record.lib_name)`, not `$(record_name)`"))
+    push!(lines, "const _BUILD_RECORD = $(repr(build_record))")
+    push!(lines, "const _LIB_NAME = _BUILD_RECORD.lib_name")
     if !isempty(preload)
         push!(lines, "# Libraries the image imports by name that the loader would not find on")
         push!(lines, "# its own (a PyO3 wrapper's Python DLL on Windows, which has no rpath),")
@@ -4185,8 +4481,12 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     push!(lines, "function __init__()")
     push!(lines, "    # Register before loading, and do not assign afterwards: an assignment")
     push!(lines, "    # after `load_artifact!` would overwrite a newer generation that a")
-    push!(lines, "    # concurrent reload had already published.")
-    push!(lines, "    RustCall.register_handle_mirror!(_LIB_NAME, _LIB_GEN)")
+    push!(lines, "    # concurrent reload had already published. The prologue is the in-memory")
+    push!(lines, "    # module's, statement for statement (`_crate_init_prologue`): the build")
+    push!(lines, "    # environment is checked against `_BUILD_RECORD` first (#474).")
+    for statement in _crate_init_prologue()
+        push!(lines, "    " * string(statement))
+    end
     push!(lines, "    # A private generation copy, never `_LIB_PATH` itself: that file is")
     push!(lines, "    # Cargo's output (or the copy `write_bindings_to_file` made of it), and")
     push!(lines, "    # an image mapped in place cannot be overwritten on Windows -- the next")

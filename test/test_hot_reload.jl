@@ -44,7 +44,9 @@ const SAMPLE_CRATE_PATH = joinpath(@__DIR__, "fixtures", "sample_crate")
             nothing
         )
 
-        @test state.crate_path == "/tmp/test_crate"
+        # The record keeps the crate as an absolute path (`crate_build_record`),
+        # which on Windows is `\\tmp\\test_crate`.
+        @test state.crate_path == abspath("/tmp/test_crate")
         @test state.lib_name == "TestLib"
         @test !state.enabled
     end

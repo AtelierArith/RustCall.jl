@@ -13,7 +13,7 @@ using RustCall
 | Door | Hot reload |
 | --- | --- |
 | `@rust_crate` on a crate whose `[lib]` has `crate-type = ["cdylib"]` | **Supported**: `RustCall.enable_hot_reload_for_crate` |
-| `@rust_crate` on a crate with no `cdylib` target (bound through a generated wrapper crate) | Not supported: the module form refuses it with an `ArgumentError`; the path form fails at the first rebuild |
+| `@rust_crate` on a crate with no `cdylib` target (bound through a generated wrapper crate) | Not supported: both forms refuse it with an `ArgumentError` when hot reload is enabled |
 | `rust"""..."""` with `// cargo-deps: my_crate = { path = "..." }` | **Not supported.** Evaluate the block again instead (see below) |
 | `rust"""..."""`, `@irust`, generics | Not applicable: evaluating the source again builds a new library |
 
@@ -61,8 +61,8 @@ first_step = HotCounter.step()   # 1
 ```
 
 Turn hot reload on by passing the value `@rust_crate` returned. That way the
-reload reuses the module's crate directory, registry name and build options
-(see below). The callback
+reload rebuilds from the module's own record of its build: crate directory,
+registry name, build options and build environment (see below). The callback
 runs after every rebuild attempt; here it reports each result on a channel,
 so the example can wait for the rebuild:
 
@@ -110,106 +110,121 @@ RustCall.is_hot_reload_enabled(state.lib_name)   # false
 
 ## Which library is reloaded, and which build
 
-A reload must reach the module and must rebuild the *same build* the module was
-generated for. Two things identify that build:
+A reload publishes a new library under the module's registry name, so it must
+rebuild exactly the build the module was generated for. Every generated module
+records that build as **one immutable record**, `_BUILD_RECORD` (a
+`RustCall.CrateBuildRecord`). It holds:
 
-- **The registry name.** `@rust_crate` loads a crate under
+- **the crate**: the directory the module was generated from;
+- **the registry name**: `@rust_crate` loads a crate under
   `rust_crate_<name>_<id>`, where the id comes from the crate's content and
-  build options, not from the module's name. The module records it as
-  `_LIB_NAME`.
-- **The build options.** The module records its profile (`release`),
-  `features` and `default_features` as `_BUILD_OPTIONS`. A reload that rebuilt
-  a default release build instead would compile other `#[cfg]`s under a module
-  whose wrappers were generated for these ones.
-- **The crate.** The module records the directory it was generated from as
-  `_CRATE_DIR`.
+  build options, not from the module's name (the module's `_LIB_NAME` is read
+  from the record);
+- **the build options**: the profile (`release`), `features`,
+  `default_features`, and the kind of build (the crate as its own `cdylib`, or
+  a generated wrapper crate). A reload that rebuilt a default release build
+  instead would compile other `#[cfg]`s under a module whose wrappers were
+  generated for these ones;
+- **the build environment**: `RUSTFLAGS` and the other allowlisted variables,
+  the effective Cargo configuration, and the toolchain.
 
-**Pass the module** (or the value `@rust_crate` returned). This form reads
-these records, so a reload rebuilds the module's own crate and keeps the name,
-the profile and the features:
+The in-memory module `@rust_crate` returns and a file written by
+`write_bindings_to_file` record the same record.
+
+**Pass the module** (or the value `@rust_crate` returned). The module form reads
+the record once and rebuilds from it, and from nothing else:
 
 ```julia
 B = @rust_crate "deps/my_crate" release=false features=["simd"]
 RustCall.enable_hot_reload_for_crate(B)   # rebuilds deps/my_crate, debug, with "simd"
 ```
 
-The crate path can be left out. If you pass one, it must name the module's own
-crate directory. The comparison uses `realpath`, so a relative or symlinked
-spelling is fine. A path to a different checkout is refused with an
-`ArgumentError`. A module loaded from a `write_bindings_to_file` file records
-no crate directory, so for that module the path is required.
+Arguments never add to the record; they are only compared with it. The crate
+path can be left out. If you pass one, it must name the module's own crate
+directory. The comparison uses `realpath`, so a relative or symlinked spelling
+is fine. `lib_name`, `release`, `features` and `default_features` can be
+passed too, and each must equal the recorded value. Anything that disagrees
+with the record is refused with an `ArgumentError`:
 
-The other forms don't read the module, so they can't know how it was built:
-
-- `RustCall.enable_hot_reload_for_crate(crate; release, features,
-  default_features)` takes the build as keywords, defaulting to `@rust_crate`'s
-  defaults. It computes the registry name for that build of the crate *as it is
-  now*, so call it before editing the sources. It doesn't guess: a crate loaded
-  with other options is reached only if you pass them, or pass `lib_name`.
-  It has no record of the build environment, so it rebuilds under the current
-  one.
-- `RustCall.enable_hot_reload(lib_name, crate)` is the low-level call. It
-  reloads the given registry name with a default release build.
-
-The module form raises an `ArgumentError` rather than rebuild something else
-in these cases:
-
+- **A crate path, `lib_name`, `release`, `features` or `default_features`**
+  that differs from the recorded one.
 - **A module bound through a generated wrapper crate.** This is a crate with no
   `cdylib` target of its own, and a reload cannot reproduce the wrapper build.
-- **A module with no `_BUILD_OPTIONS`**, for example a bindings file written by
+- **A changed build environment**: a different `RUSTFLAGS` (or any other
+  allowlisted variable), Cargo configuration or toolchain. A rebuild under it
+  would publish a library the module was not generated for.
+- **A module with no `_BUILD_RECORD`**, for example a bindings file written by
   an older RustCall. Regenerate it, or use the path form with the options it
   was built with.
-- **A crate path that is not the module's own crate** (see above).
 
-The path form checks none of this up front. Given a crate with no `cdylib`
-target, it enables hot reload and starts the watcher, and the problem shows up
-only at the first rebuild. That rebuild fails: `trigger_reload` returns
-`false`, the callback receives `(lib_name, false, err)`, and nothing is
-swapped. Prefer the module form.
-
-The module form also refuses a **changed build environment**. A module records
-the environment it was built under: `RUSTFLAGS` and the other allowlisted
-variables, the effective Cargo configuration, and the toolchain. A rebuild
-under a different environment would publish a library the module was not
-generated for. The module form compares that record with the current
-environment at two points:
+The build environment is compared at two points:
 
 - **When hot reload is enabled.** A mismatch raises an `ArgumentError`.
 - **Before every rebuild.** A mismatch fails that reload: the previous library
   stays loaded, `trigger_reload` returns `false`, and the callback receives
   `(lib_name, false, err)` with an `ArgumentError`.
 
+After that check, the rescan and the build take the recorded variables from
+the record, not from the live `ENV`. A task that changes `RUSTFLAGS` (for
+example with `withenv`) while a reload is running therefore cannot change what
+gets built.
+
 To reload again, restore the environment, or load the crate again with
-`@rust_crate` under the new one and enable hot reload on that module. A module
-from `write_bindings_to_file` records no environment and is not checked. See
-also [External Crate Bindings](crate_bindings.md).
+`@rust_crate` under the new one and enable hot reload on that module. See also
+[External Crate Bindings](crate_bindings.md).
+
+The other forms have no module to read, so they build the same kind of record
+themselves:
+
+- `RustCall.enable_hot_reload_for_crate(crate; release, features,
+  default_features)` takes the build as keywords, defaulting to `@rust_crate`'s
+  defaults, and records the current environment. It computes the registry name
+  for that build of the crate *as it is now*, so call it before editing the
+  sources. It doesn't guess: a crate loaded with other options is reached only
+  if you pass them, or pass `lib_name`. A crate with no `cdylib` target is
+  refused with an `ArgumentError` when hot reload is enabled, as in the module
+  form.
+- `RustCall.enable_hot_reload(lib_name, crate)` is the low-level call. It
+  reloads the given registry name with a default release build (or
+  `build_options`), under the environment current when it was enabled.
+
+Prefer the module form.
 
 ## What a reload does
 
 The steps of one reload, in order:
 
-1. The crate is **rescanned** for its `#[julia]` items, under its own build
+1. The current build environment is **compared** with the module's record.
+2. The crate is **rescanned** for its `#[julia]` items, under its own build
    configuration (features, `build.rs` cfgs).
-2. It is **rebuilt** the way `@rust_crate` built it: RustToolChain's `cargo`,
+3. It is **rebuilt** the way `@rust_crate` built it: RustToolChain's `cargo`,
    the module's profile and features, output under RustCall's own target
    directory for the crate (not the crate's `target/`), `--offline` under
    `RUSTCALL_OFFLINE=1`.
-3. The new library is **swapped in** under the same name in one transaction.
+4. The new library is **copied** to a fresh generation path and **loaded**.
+5. It is **swapped in** under the same name in one transaction.
 
-If the **build** fails (a compile error, say) or the new library cannot be
-loaded, the swap never happens. The previous library stays loaded and keeps
-working, and the error is reported once. The same failure repeated on later
-attempts is not printed again. Fixing the source reloads as usual.
+A failure in any of steps 1 to 4 fails the reload the same way, and the swap
+never happens:
 
-The **rescan** (step 1) is different. If it fails, a warning is logged, but
-the build goes ahead and a successful build is still swapped in and reported
-as a success. The new library is then registered without its name-to-symbol
-mappings. The `@rust_crate` module's own functions keep working, because they
-call the exported symbols directly. `@rust f(...)` by name does not find the
-crate's `#[julia]` functions until the next successful reload. The same
-happens when the sources change while the build is running, and in that case
-another reload follows immediately. Making a rescan failure abort the swap is
-tracked in #473.
+- `trigger_reload` returns `false`;
+- the callback receives `(lib_name, false, err)` with the error;
+- the error is logged once, and kept in `state.last_failure`: the same failure
+  repeated on later attempts is not printed again;
+- the previous library stays loaded and keeps working, with its symbol
+  mappings, and `state.lib_path` still names it.
+
+That holds for the rescan too: if the extractor rejects the sources (a
+`#[julia]` item inside a Rust module that is not itself marked `#[julia]`, for
+example), the reload fails even though Cargo would build them. Fixing the
+source reloads as usual.
+
+One case publishes a library without its name-to-symbol mappings: the sources
+change while the build is running. The build is then swapped in, because it
+succeeded, but the scan no longer describes the files on disk, so the library
+is registered without the mappings and another reload follows immediately.
+The `@rust_crate` module's own functions keep working in between, because they
+call the exported symbols directly.
 
 A reload replaces the *code*. It does not regenerate the Julia module:
 the module's functions, their argument and return types, and its struct types

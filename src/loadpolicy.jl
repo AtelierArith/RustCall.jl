@@ -29,7 +29,7 @@
 # door, so a change of policy is one edit in one place.
 #
 # Related issues: #244 (panic containment), #249 (finalizers), #250 (symbol
-# visibility / unload), #252, #255 (failed hot reload empties the registry),
+# visibility / unload), #252, #255 (a failed hot reload used to empty the registry),
 # #269 (follow-up), #251 (registry consolidation).
 
 """
@@ -468,9 +468,14 @@ irust_policy() = LoadPolicy("irust";
 """
     hot_reload_policy() -> LoadPolicy
 
-Hot reload of a `@rust_crate` crate (`src/hot_reload.jl:205`, re-registered at
-`:210`).  The rebuild happens outside `REGISTRY_LOCK`, and a failed rebuild
-currently leaves the registry without the previous entry (#255).
+Hot reload of a `@rust_crate` crate (`_reload_library_once` in
+`src/hot_reload.jl`). Rebuild first, swap last (#255): the environment check,
+the rescan, the build and the `dlopen` of a fresh generation copy all complete
+outside `REGISTRY_LOCK` and before the previous image is touched, so any
+failure leaves the previous entry in place (#473). The swap is one
+`load_artifact!` with `registration_mode = :replace`, which **retires** the
+previous image rather than closing it: a call in flight finishes in it and its
+objects keep their own destructor (#277).
 
 Like `crate_direct_policy`, the panic strategy is `:crate_profile`: `rebuild_crate`
 builds the user's crate as its own Cargo root, exactly as `build_crate_directly`
@@ -485,11 +490,10 @@ hot_reload_policy() = LoadPolicy("hot-reload";
     registration_mode = :replace,
     sets_current_lib = false,
     finalizer_frees = true,
-    call_sites = ["src/hot_reload.jl:205", "src/hot_reload.jl:210",
-                  "src/hot_reload.jl:264"],
-    issues = [244, 250, 255],
-    notes = "Registration is not transactional with the rebuild, so a failed " *
-            "rebuild can leave the registry without the previous entry.")
+    call_sites = ["src/hot_reload.jl (_reload_library_once)"],
+    issues = [244, 250, 255, 277, 473, 474],
+    notes = "Rebuild first, swap last: every step that can fail runs before the " *
+            "swap, and the swap retires the previous image instead of closing it.")
 
 """
     ALL_LOAD_POLICIES
@@ -1108,9 +1112,9 @@ that the loader keeps in sync.
 A generated `@rust_crate` module resolves its symbols through its own
 generation record. The module exposes an owner-qualified StateView and the
 underlying cell is owned by STATE. A raw copy of a handle goes **stale**
-the moment the library is replaced or unloaded: a hot reload closes the previous
-image, and `unload_library` drops it, after which a raw copy of the handle
-would be read against an image nothing points at any more. Registering the
+the moment the library is replaced or unloaded: a hot reload retires the
+previous image, and `unload_library` drops it, after which a raw copy of the
+handle would be read against an image nothing points at any more. Registering the
 module's owned cell here lets the transaction that swaps the handle swap the mirror
 in the same critical section, so a single record read can never
 point at a closed image (#277 Phase B).
