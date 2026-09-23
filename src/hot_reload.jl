@@ -372,9 +372,12 @@ same way: `false`, `last_failure` set, the callback told, and the old library
 still loaded, with its function-pointer cache, its symbol mappings, its
 monomorphizations and `CURRENT_LIB` intact, instead of emptying the registry
 and leaving the user with no library at all (#473). The swap itself is one
-`load_artifact!` under `REGISTRY_LOCK`, which retires the old artifact (so
-objects it produced go inert), purges its rows and `dlclose`s the old handle
-after the lock.
+`load_artifact!` under `REGISTRY_LOCK` that replaces the registry entry and
+**retires** the previous image — it is not closed. A call already running
+inside it finishes there, and objects it allocated keep its destructor and its
+still-true liveness flag, so they are freed by their own allocator whenever
+they are collected (`RETIRED_HANDLES`, #277). Retired images are closed only by
+an explicit `unload_library(name; close = true)`.
 
 # Rescan before the build
 

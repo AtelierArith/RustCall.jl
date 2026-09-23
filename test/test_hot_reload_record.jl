@@ -74,6 +74,30 @@ function _hrr_init_body(ex)
     return only(found)
 end
 
+# The names a module body binds at its root: consts, functions and globals.
+function _hrr_root_names(body)
+    stmts = Any[]
+    flat(x) = x isa Expr && x.head === :block ? foreach(flat, x.args) : push!(stmts, x)
+    flat(body)
+    defname(sig) = sig isa Symbol ? sig :
+                   sig isa Expr && sig.head in (:call, :where, :(::)) ? defname(sig.args[1]) : nothing
+    out = Symbol[]
+    for st in stmts
+        st isa Expr || continue
+        if st.head === :const && st.args[1] isa Expr && st.args[1].head === :(=) &&
+           st.args[1].args[1] isa Symbol
+            push!(out, st.args[1].args[1])
+        elseif st.head === :function ||
+               (st.head === :(=) && st.args[1] isa Expr && st.args[1].head === :call)
+            n = defname(st.args[1])
+            n isa Symbol && push!(out, n)
+        elseif st.head === :(=) && st.args[1] isa Symbol
+            push!(out, st.args[1])
+        end
+    end
+    return unique(out)
+end
+
 function _hrr_stop(name)
     RustCall.is_hot_reload_enabled(name) && RustCall.disable_hot_reload(name)
     delete!(RustCall.HOT_RELOAD_REGISTRY, name)
@@ -157,6 +181,38 @@ _hrr_with(r::RustCall.CrateBuildRecord; kwargs...) =
                          "_TOOLCHAIN", "_RECORDS_PYTHON")
                 @test !occursin("const $(gone) ", code)
                 @test !occursin("const $(gone) ", string(ex))
+            end
+        end
+    end
+
+    # #463 leftover: every root binding either emitter defines is reserved, so a
+    # Rust item cannot take its name.
+    @testset "every root constant the emitters define is reserved" begin
+        info = RustCall.scan_crate(_HRR_SAMPLE_CRATE)
+        reserved = Set{Symbol}((RustCall._CRATE_MODULE_HELPERS...,
+                                RustCall._CRATE_MODULE_ROOT_CONSTANTS...))
+        ex = RustCall.emit_crate_module(info, "/tmp/libhrr463.dylib"; lib_name = "hrr463")
+        code = RustCall.emit_crate_module_code(info, "/tmp/libhrr463.dylib"; lib_name = "hrr463",
+                                               preload = ["/tmp/libpre463.dylib"])
+        body(m) = (m isa Expr && m.head === :module) ? m.args[3] :
+                  body(only(filter(a -> a isa Expr && a.head === :module, m.args)))
+        for mod_body in (body(ex), body(Meta.parseall(code)))
+            names = _hrr_root_names(mod_body)
+            # RustCall's own bindings are the `_`-prefixed ones; call-site
+            # caches are spelled `#TC#...` and cannot collide (#253).
+            own = filter(n -> startswith(String(n), "_"), names)
+            @test :_BUILD_RECORD in own
+            @test isempty(setdiff(own, reserved))
+        end
+        # And the reservation is enforced: a Rust item named like one is refused.
+        mktempdir() do dir
+            for name in RustCall._CRATE_MODULE_ROOT_CONSTANTS
+                crate = _hrr_crate(joinpath(dir, String(name) * "_crate"); package = "hrr_res_463",
+                                   body = "#[allow(non_snake_case)]\n#[julia]\npub fn $(name)() -> i32 { 1 }\n")
+                info = RustCall.scan_crate(crate)
+                err = _hrr_error(() -> RustCall.emit_crate_module(info, "/tmp/x.dylib"; lib_name = "x"))
+                @test err !== nothing
+                err === nothing && @info "not refused" name
             end
         end
     end

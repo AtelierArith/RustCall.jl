@@ -1674,8 +1674,8 @@ function _check_module_names(tree::ModuleNode)
     for name in _CRATE_MODULE_HELPERS
         taken[String(name)] = "a helper every generated module defines"
     end
-    for name in ("_LIB_PATH", "_SYMBOLS", "_PRELOAD_LIBRARIES", "_BUILD_RECORD", "__init__")
-        taken[name] = "a helper every generated module defines"
+    for name in _CRATE_MODULE_ROOT_CONSTANTS
+        taken[String(name)] = "a constant every generated module defines"
     end
     for name in _CRATE_MODULE_PRELUDE
         taken[String(name)] = "a name every generated module imports from RustCall"
@@ -1689,9 +1689,24 @@ function _check_module_names(tree::ModuleNode)
     for base_name in _BASE_EXPORTED_NAMES
         get!(taken, base_name, "a name exported by Base")
     end
+    # A function-like binding may not take a name the module itself defines —
+    # the build record, the library path, a snapshot helper: the wrapper would
+    # redefine a `const` or add a method to RustCall's own helper (#463).
+    reserved = Set{String}(String.((_CRATE_MODULE_HELPERS..., _CRATE_MODULE_ROOT_CONSTANTS...)))
+    refuse_reserved(name, what) = name in reserved && error(
+        "cannot lay out the bindings of $where_: $what binds `$name`, which every " *
+        "generated module defines itself (#463). Rename it.")
     for f in tree.functions
         f.is_generic && continue
+        refuse_reserved(f.name, "the function `$(qualified_name(f.module_path, f.name))`")
         get!(taken, f.name, "the function `$(qualified_name(f.module_path, f.name))`")
+    end
+    for s in tree.structs
+        owner = qualified_name(s.module_path, s.name)
+        for m in s.methods
+            (isempty(m.skip_reason) && !m.is_constructor) || continue
+            refuse_reserved(m.name, "the method `$owner::$(m.name)`")
+        end
     end
     # A method or an accessor is emitted *after* its struct, so it only clashes
     # with a type name a **later** struct of this node defines: `function C(...)`
@@ -1760,6 +1775,19 @@ const _CRATE_MODULE_HELPERS = (:_LIB_NAME, :_LIB_GEN, :_symbol, :_required_symbo
                                :_struct_generation, :_guard_panic,
                                :_CALL_TARGET, :_STRING_TARGET, :_VEC_TARGET, :_CTOR_TARGET,
                                :_FREE_TARGET)
+
+"""
+    _CRATE_MODULE_ROOT_CONSTANTS
+
+The other names a generated crate module binds at its root — the library path,
+the build record, the preload list, the pin flag, the crate's tracked inputs,
+the symbol cache and `__init__` — which a Rust item or module may not take.
+`test/test_hot_reload_record.jl` collects every root binding either emitter
+actually defines and asserts it is reserved here or in `_CRATE_MODULE_HELPERS`,
+so a constant added to an emitter without reserving its name fails (#463).
+"""
+const _CRATE_MODULE_ROOT_CONSTANTS = (:_LIB_PATH, :_BUILD_RECORD, :_PRELOAD_LIBRARIES,
+                                      :_PIN_LIBRARY, :_CRATE_INPUTS, :_SYMBOLS, :__init__)
 
 """
     _target_cache_name(kind, symbol) -> Symbol
