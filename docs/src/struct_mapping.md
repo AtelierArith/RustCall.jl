@@ -278,6 +278,43 @@ calc.reset()
 println(calc.get_value())  # => 0.0
 ```
 
+### Generic methods of a non-generic struct
+
+Each bound method gets an `extern "C"` entry point with a fixed symbol, which
+needs concrete types. A `pub fn` of a non-generic struct that is generic over a
+type or a `const` parameter, or through `impl Trait` in its signature, therefore
+cannot be bound, and the block is refused at that method with a
+`compile_error!` naming it (#471):
+
+```text
+error: `Acc::echo` is generic over `T`: every `pub fn` of a `#[julia]` struct in a
+`rust"""` block gets an `extern "C"` entry point, which needs concrete types, ...
+```
+
+RustCall monomorphizes on demand only [generic free functions](generics.md) and
+[generic structs](#Generic-Structs). Instead:
+
+- make the operation a generic free function, instantiated for the argument
+  types of each call;
+- write one non-generic `pub fn` per type Julia calls, delegating to the
+  generic method; or
+- drop `pub` from the generic method if Julia does not call it — only `pub`
+  methods are bound.
+
+```rust
+impl Acc {
+    fn scaled_by<T: Copy + Into<i64>>(&self, k: T) -> i64 { self.total * k.into() }
+    pub fn scaled_i32(&self, k: i32) -> i64 { self.scaled_by(k) }
+}
+
+#[julia]
+pub fn echo<T: Copy>(x: T) -> T { x }
+```
+
+Lifetime parameters (`pub fn pick<'a>(&'a self, s: &'a str) -> usize`) are not
+generics in this sense and are bound as usual. The `#[julia]` proc macro in a
+crate refuses a generic method the same way (#462).
+
 ## Static Methods
 
 Static methods (methods without `self`) are supported on `#[derive(JuliaStruct)]`

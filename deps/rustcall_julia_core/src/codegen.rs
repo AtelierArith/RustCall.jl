@@ -1608,15 +1608,7 @@ pub fn transform_function(
 /// The caller emits the error **and** the item as written, so the one
 /// diagnostic is not followed by a cascade about a missing item.
 fn generic_item_error(generics: &syn::Generics, what: &str, name: &Ident) -> Option<TokenStream2> {
-    let params: Vec<String> = generics
-        .params
-        .iter()
-        .filter_map(|p| match p {
-            syn::GenericParam::Type(t) => Some(format!("`{}`", t.ident)),
-            syn::GenericParam::Const(c) => Some(format!("`const {}`", c.ident)),
-            syn::GenericParam::Lifetime(_) => None,
-        })
-        .collect();
+    let params = generic_param_list(generics);
     if params.is_empty() {
         return None;
     }
@@ -1628,6 +1620,75 @@ fn generic_item_error(generics: &syn::Generics, what: &str, name: &Ident) -> Opt
         params.join(", ")
     );
     Some(syn::Error::new_spanned(generics, msg).to_compile_error())
+}
+
+/// The type and const parameters of `generics`, spelled for a diagnostic
+/// (`` `T` ``, `` `const N` ``). Lifetimes are left out: they never stop an item
+/// from getting an `extern "C"` entry point.
+fn generic_param_list(generics: &syn::Generics) -> Vec<String> {
+    generics
+        .params
+        .iter()
+        .filter_map(|p| match p {
+            syn::GenericParam::Type(t) => Some(format!("`{}`", t.ident)),
+            syn::GenericParam::Const(c) => Some(format!("`const {}`", c.ident)),
+            syn::GenericParam::Lifetime(_) => None,
+        })
+        .collect()
+}
+
+/// Whether a method of a **non-generic** inline struct is generic — over a type
+/// or a const parameter, or through `impl Trait` — and so gets no wrapper
+/// (#471). The expander leaves such a method out of the manifest, since there
+/// is no entry point for Julia to bind, and [`inline_generic_method_error`]
+/// says why at the method.
+pub fn inline_method_is_generic(m: &MethodModel) -> bool {
+    crate::types::has_type_params(&m.func.sig.generics) || crate::types::has_impl_trait(&m.func.sig)
+}
+
+/// Refuse a generic method of a non-generic inline struct (#471).
+///
+/// `rust"""` wraps every `pub fn` of the struct's inherent impl in an
+/// `extern "C"` entry point with a fixed symbol, which needs concrete types; a
+/// method generic over `T` used to get a wrapper naming the unbound `T`, and
+/// rustc failed inside generated code. Monomorphizing it on demand would need a
+/// generic path the struct's other, fixed-symbol methods do not have (a generic
+/// struct's wrappers are instantiated per struct type, a generic free function
+/// per call; neither binds a parameter only the method has), so the block is
+/// refused at the method, naming what works instead.
+///
+/// The caller gates the error by the method's effective `#[cfg]`, so it fires
+/// only where the method exists.
+fn inline_generic_method_error(struct_name: &Ident, m: &MethodModel) -> Option<TokenStream2> {
+    if !inline_method_is_generic(m) {
+        return None;
+    }
+    let sig = &m.func.sig;
+    let method = &sig.ident;
+    let params = generic_param_list(&sig.generics);
+    let (what, span) = if params.is_empty() {
+        (
+            "uses `impl Trait` in its signature".to_string(),
+            syn::spanned::Spanned::span(sig),
+        )
+    } else {
+        (
+            format!("is generic over {}", params.join(", ")),
+            syn::spanned::Spanned::span(&sig.generics),
+        )
+    };
+    let msg = format!(
+        "`{struct_name}::{method}` {what}: every `pub fn` of a `#[julia]` struct in a \
+         `rust\"\"\"` block gets an `extern \"C\"` entry point, which needs concrete types, and \
+         RustCall monomorphizes on demand only generic free functions and generic structs. \
+         Make it a generic free function, which RustCall instantiates for the argument types \
+         of each call, write one non-generic method per type Julia calls (it may delegate to \
+         the generic one), or drop `pub` if Julia does not call it (#471)."
+    );
+    // A bare `compile_error!`, not `syn::Error::to_compile_error`: that spells
+    // it `::core::compile_error!`, which does not resolve in the edition-2015
+    // crate a `rust"""` block is compiled as (`rustc` with no `--edition`).
+    Some(quote::quote_spanned! {span=> compile_error!(#msg); })
 }
 
 /// A refusal emitted in place of (or beside) an item, gated by that item's
@@ -2271,6 +2332,9 @@ pub fn inline_foreign_method_wrapper(
         .func
         .attrs
         .splice(0..0, m.enclosing_cfg.iter().cloned());
+    if let Some(error) = inline_generic_method_error(struct_name, m) {
+        return gated_error(&cfg_attrs(&gated.func.attrs), error);
+    }
     method_wrapper_at_impl_site(
         self_ty,
         struct_name,
@@ -2399,13 +2463,14 @@ pub fn inline_struct_wrappers(
         .filter(|m| m.is_local_to(module_path))
         .collect();
 
+    // A refused generic method (#471) gets no wrapper, so it makes no buffer
+    // exist either.
+    let wrapped = || local.iter().filter(|m| !inline_method_is_generic(m));
     let needs_owned = accessible.iter().any(|(_, ty)| is_string_type(ty))
-        || local
-            .iter()
+        || wrapped()
             .any(|m| method_needs_owned_string(m) && !inline_method_is_ctor(struct_name, m));
-    let needs_borrowed = local
-        .iter()
-        .any(|m| method_returns_borrowed_str(m) && !inline_method_is_ctor(struct_name, m));
+    let needs_borrowed =
+        wrapped().any(|m| method_returns_borrowed_str(m) && !inline_method_is_ctor(struct_name, m));
 
     let owned_helper = format_ident!("{}_RustCallOwnedString", stem);
     let borrowed_helper = format_ident!("{}_RustCallBorrowedString", stem);
@@ -2508,6 +2573,10 @@ pub fn inline_struct_wrappers(
             .func
             .attrs
             .splice(0..0, cfgs.iter().chain(m.enclosing_cfg.iter()).cloned());
+        if let Some(error) = inline_generic_method_error(struct_name, m) {
+            out.extend(gated_error(&cfg_attrs(&gated.func.attrs), error));
+            continue;
+        }
         out.extend(inline_method_wrapper(
             struct_name,
             &stem,
