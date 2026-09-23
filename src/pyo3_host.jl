@@ -127,6 +127,10 @@ function build_pyo3_extension(crate_path::AbstractString;
                               default_features::Bool = true,
                               release::Bool = true,
                               cache_enabled::Bool = true)
+    # ONE snapshot of the environment for the build (#481): the interpreter
+    # probe, the key, the Cargo build and the interpreter check after it read
+    # it, and nothing below reads `ENV`.
+    snapshot = BuildEnvSnapshot()
     path = abspath(String(crate_path))
     isdir(path) || throw(RustError("Crate path does not exist: $(crate_path)"))
     manifest_path = joinpath(path, "Cargo.toml")
@@ -137,13 +141,13 @@ function build_pyo3_extension(crate_path::AbstractString;
         "that is `PythonCall.python_executable_path()`."))
 
     cargo_toml = parse_cargo_toml(manifest_path)
-    info = scan_crate(path)
+    info = scan_crate(path; cargo_env = snapshot_env(snapshot))
     module_name = _pyo3_extension_module_name(info)
     isempty(module_name) && throw(RustError(
         "No `#[pymodule]` initializer was found in `$(crate_path)`. The host path " *
         "builds the crate as a Python extension and imports it, so a crate without " *
         "one has nothing to import."))
-    ext_suffix, fingerprint = _pyo3_extension_interpreter_probe(python)
+    ext_suffix, fingerprint = _pyo3_extension_interpreter_probe(snapshot, python)
     isempty(ext_suffix) && throw(RustError(
         "The interpreter `$(python)` did not report a sysconfig `EXT_SUFFIX`, so " *
         "the extension module cannot be named. Is it a runnable CPython?"))
@@ -155,16 +159,20 @@ function build_pyo3_extension(crate_path::AbstractString;
                                         ext_suffix, fingerprint;
                                         features = features,
                                         default_features = default_features,
-                                        release = release)
+                                        release = release, snapshot = snapshot)
     if cache_enabled && isfile(artifact.lib_path)
         @debug "Using cached PyO3 extension module" key = artifact_short_id(artifact.key, 8)
         return artifact
     end
 
-    built = _build_pyo3_extension_library(path, cargo_toml, module_name;
+    built = _build_pyo3_extension_library(snapshot, path, cargo_toml, module_name;
                                           python = python, features = features,
                                           default_features = default_features,
                                           release = release)
+    # The key names `python` by what it reported before the build; one
+    # replaced in place since then configured this build for another Python,
+    # so it is not published under that key (#481).
+    _verify_build_interpreter(snapshot, python, fingerprint, module_name)
     # Publish, never overwrite (#394): two sessions may build one key at once.
     published = _publish_cache_file(built, artifact.lib_path)
     return PyO3Extension(module_name, published.path, artifact.dir, ext_suffix,
@@ -187,7 +195,8 @@ function _pyo3_extension_artifact(cache_dir::AbstractString, info::CrateInfo,
                                   ext_suffix::AbstractString, fingerprint::AbstractString;
                                   features::Vector{String} = String[],
                                   default_features::Bool = true,
-                                  release::Bool = true)
+                                  release::Bool = true,
+                                  snapshot::BuildEnvSnapshot = BuildEnvSnapshot())
     # The crate's own content is in the key (`compute_crate_hash` digests the
     # source, the path dependency graph and the Cargo configuration), so an
     # edited crate rebuilds instead of reusing an artifact of its old self; the
@@ -195,7 +204,9 @@ function _pyo3_extension_artifact(cache_dir::AbstractString, info::CrateInfo,
     # wrapper keys them.
     key = compute_crate_hash(info; release = release, kind = "pyo3-host",
                              features = features, default_features = default_features,
-                             build_env = _pyo3_host_build_env(python, fingerprint, module_name))
+                             build_env = _pyo3_host_build_env(snapshot, python, fingerprint,
+                                                              module_name),
+                             snapshot = snapshot)
     # Its own tree, not the Cargo cache: an extension module is not a cached
     # cdylib, and `test_cargo` asserts the Cargo cache holds exactly one entry
     # (#287). Both `clear_cache()` and this directory's owner are one place.
@@ -220,10 +231,15 @@ to `python` itself, which the key records under the same name. Reading only the
 environment and a file, this starts no process, so the precompile workload can
 compute it (#449).
 """
-function _pyo3_host_build_env(python::AbstractString, fingerprint::AbstractString,
-                              module_name::AbstractString)
-    build_env = filter(p -> first(p) != "PYO3_PYTHON", artifact_build_env())
-    digest = _pyo3_config_file_digest()
+_pyo3_host_build_env(python::AbstractString, fingerprint::AbstractString,
+                     module_name::AbstractString) =
+    _pyo3_host_build_env(BuildEnvSnapshot(), python, fingerprint, module_name)
+
+function _pyo3_host_build_env(snapshot::BuildEnvSnapshot, python::AbstractString,
+                              fingerprint::AbstractString, module_name::AbstractString)
+    build_env = filter(p -> first(p) != "PYO3_PYTHON",
+                       artifact_build_env(; env = snapshot_env(snapshot)))
+    digest = _pyo3_config_file_digest(snapshot)
     isempty(digest) || push!(build_env, "pyo3-config-file-digest" => digest)
     append!(build_env, Pair{String, String}[
         "PYO3_PYTHON" => String(python),
@@ -266,13 +282,16 @@ end
 # interpreter cannot run; the fingerprint line uses the same expression as
 # `_python_interpreter_fingerprint`, so the two spellings of one interpreter
 # are equal and the cache key does not depend on which probe filled it.
-function _pyo3_extension_interpreter_probe(python::AbstractString)
+_pyo3_extension_interpreter_probe(python::AbstractString) =
+    _pyo3_extension_interpreter_probe(BuildEnvSnapshot(), python)
+
+function _pyo3_extension_interpreter_probe(snapshot::BuildEnvSnapshot, python::AbstractString)
     isempty(python) && return ("", "")
     code = "import platform, sys, sysconfig; " *
            "print(sysconfig.get_config_var('EXT_SUFFIX') or ''); " *
            "print($(_PYTHON_FINGERPRINT_EXPR))"
     out = try
-        read(`$python -c $code`, String)
+        read(snapshot_cmd(snapshot, `$python -c $code`), String)
     catch
         return ("", "")
     end
@@ -313,13 +332,20 @@ function _pyo3_extension_link_args()
 end
 
 """
-    _build_pyo3_extension_library(crate_path, cargo_toml, module_name; kwargs...) -> String
+    _build_pyo3_extension_library([snapshot,] crate_path, cargo_toml, module_name; kwargs...) -> String
 
 Run `cargo rustc --crate-type cdylib` in the crate's own directory and return
 the built extension file, which is a temporary Cargo output — copy it out
-before the next build replaces it.
+before the next build replaces it. It runs under `snapshot` (the build's, from
+`build_pyo3_extension`); the form without one takes a snapshot of `ENV` now.
 """
-function _build_pyo3_extension_library(crate_path::AbstractString, cargo_toml::AbstractDict,
+_build_pyo3_extension_library(crate_path::AbstractString, cargo_toml::AbstractDict,
+                              module_name::AbstractString; kwargs...) =
+    _build_pyo3_extension_library(BuildEnvSnapshot(), crate_path, cargo_toml, module_name;
+                                  kwargs...)
+
+function _build_pyo3_extension_library(snapshot::BuildEnvSnapshot,
+                                       crate_path::AbstractString, cargo_toml::AbstractDict,
                                        module_name::AbstractString;
                                        python::AbstractString,
                                        features::Vector{String} = String[],
@@ -341,20 +367,20 @@ function _build_pyo3_extension_library(crate_path::AbstractString, cargo_toml::A
     # would send the library somewhere this function never looks (and apart from
     # the user's own builds), so it is pinned as `build_cargo_project` does.
     target_dir = joinpath(crate_path, "target")
-    env = Dict{String, String}(ENV)
+    env = snapshot_env(snapshot)
     env["PYO3_PYTHON"] = String(python)
     env["CARGO_TARGET_DIR"] = target_dir
 
     # `--offline` under `RUSTCALL_OFFLINE`, as every other build (#461).
-    append!(args, _cargo_network_args())
-    cmd = isempty(link_args) ? `$(cargo()) $args` : `$(cargo()) $args -- $link_args`
-    stderr_io = IOBuffer()
-    stdout_io = IOBuffer()
+    append!(args, _cargo_network_args(env))
     # In the crate's directory through the command's `dir`, never a
     # process-wide `cd`, which would move every other task's relative paths
     # for the length of the build (#461).
-    proc = run(pipeline(setenv(cmd, env; dir = String(crate_path)),
-                        stdout = stdout_io, stderr = stderr_io), wait = false)
+    cmd = setenv(isempty(link_args) ? `$(cargo()) $args` : `$(cargo()) $args -- $link_args`,
+                 env; dir = String(crate_path))
+    stderr_io = IOBuffer()
+    stdout_io = IOBuffer()
+    proc = run(pipeline(cmd, stdout = stdout_io, stderr = stderr_io), wait = false)
     wait(proc)
     ok = success(proc)
     if !ok

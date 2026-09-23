@@ -55,8 +55,10 @@ function HotReloadState(crate_path, lib_path, lib_name, source_files, last_modif
                         watch_task, enabled, rebuild_callback;
                         build_options::NamedTuple = crate_build_options(),
                         record::Union{Nothing, CrateBuildRecord} = nothing)
-    record = something(record, crate_build_record(crate_path, lib_name;
-                                                  build_options = build_options))
+    if record === nothing
+        record = crate_build_record(crate_path, lib_name; build_options = build_options,
+                                    snapshot = BuildEnvSnapshot())
+    end
     return HotReloadState(record, lib_path, source_files, last_modified, watch_task,
                           enabled, rebuild_callback, 0, "")
 end
@@ -296,9 +298,9 @@ function _scan_crate_signatures(record::CrateBuildRecord;
         env = env)
     if isempty(cfg_text)
         @debug "Hot reload: no build cfg for $(crate_path); scanning leniently"
-        return scan_crate(crate_path).julia_functions
+        return scan_crate(crate_path; cargo_env = env).julia_functions
     end
-    return scan_crate(crate_path; cfg = :cargo, cfg_text).julia_functions
+    return scan_crate(crate_path; cfg = :cargo, cfg_text, cargo_env = env).julia_functions
 end
 
 _scan_crate_signatures(crate_path::AbstractString;
@@ -414,14 +416,18 @@ function _reload_library_once(state::HotReloadState)
         # previous library stays loaded, reported like any failed rebuild
         # (#461 review).
         record = state.record
-        changed = _build_record_mismatch(record)
+        # ONE snapshot of the environment for the whole reload (#481): the
+        # check against the record, the subprocess environment of the probe
+        # and the build, and the interpreter check after it all read it, and
+        # nothing below reads `ENV`. Another task changing `ENV` meanwhile
+        # changes none of them.
+        snapshot = BuildEnvSnapshot()
+        changed = _build_record_mismatch(record, snapshot)
         isempty(changed) ||
             throw(ArgumentError(_build_env_mismatch_message(record.lib_name, changed)))
-        # ONE subprocess environment, from the record, for the probe and the
-        # build alike: the check above reads `ENV` once, and another task may
-        # change `ENV` while Cargo runs; neither subprocess reads it (#474
-        # review).
-        env = _record_build_subprocess_env(record)
+        # ONE subprocess environment, from the record over that snapshot, for
+        # the probe and the build alike (#474 review).
+        env = _record_build_subprocess_env(record, snapshot)
 
         # Fingerprint the sources by content, then scan them. Scanning runs
         # the extractor and must not hold REGISTRY_LOCK. A failed scan throws
@@ -433,6 +439,9 @@ function _reload_library_once(state::HotReloadState)
         # time and must not block other library operations — and the old
         # library stays loaded and usable throughout.
         built = rebuild_crate(record; env = env)
+        # The interpreter pyo3 was configured for is still the one the record
+        # names — not replaced in place while Cargo ran (#481).
+        _verify_build_interpreter(record, snapshot)
 
         # Open a *copy* under a fresh name, never the file Cargo just wrote
         # (`loadable_library_copy`).
@@ -967,7 +976,8 @@ function enable_hot_reload(lib_name::String, crate_path::String;
     if !isdir(crate_path)
         error("Crate path does not exist: $crate_path")
     end
-    record = crate_build_record(crate_path, lib_name; build_options = build_options)
+    record = crate_build_record(crate_path, lib_name; build_options = build_options,
+                                snapshot = BuildEnvSnapshot())
     return _enable_hot_reload(record; interval, callback, poll)
 end
 
@@ -1193,9 +1203,12 @@ function enable_hot_reload_for_crate(crate_path::String;
     _check_reloadable_crate(crate_path, :direct)
     options = crate_build_options(release = release, features = features,
                                   default_features = default_features, kind = :direct)
-    name = lib_name === nothing ? _crate_hot_reload_name(crate_path, options) : String(lib_name)
-    record = crate_build_record(crate_path, name; build_options = options)
-    return _enable_crate_hot_reload(record; interval, callback, poll)
+    # One snapshot for the name, the record and the check against it (#481).
+    snapshot = BuildEnvSnapshot()
+    name = lib_name === nothing ? _crate_hot_reload_name(crate_path, options, snapshot) :
+           String(lib_name)
+    record = crate_build_record(crate_path, name; build_options = options, snapshot = snapshot)
+    return _enable_crate_hot_reload(record; snapshot, interval, callback, poll)
 end
 
 enable_hot_reload_for_crate(bindings::CrateBindings,
@@ -1291,9 +1304,12 @@ function _check_reloadable_crate(crate_path::AbstractString, kind::Symbol)
     return nothing
 end
 
-function _enable_crate_hot_reload(record::CrateBuildRecord; kwargs...)
+function _enable_crate_hot_reload(record::CrateBuildRecord;
+                                  snapshot::Union{Nothing, BuildEnvSnapshot} = nothing,
+                                  kwargs...)
     _check_reloadable_crate(record.crate_dir, record.kind)
-    changed = _build_record_mismatch(record)
+    snapshot === nothing && (snapshot = BuildEnvSnapshot())
+    changed = _build_record_mismatch(record, snapshot)
     isempty(changed) ||
         throw(ArgumentError(_build_env_mismatch_message(record.lib_name, changed)))
     haskey(RUST_LIBRARIES, record.lib_name) ||
@@ -1305,15 +1321,19 @@ function _enable_crate_hot_reload(record::CrateBuildRecord; kwargs...)
 end
 
 # The registry name `@rust_crate` gives a plain build of `crate_path` with
-# `options`: the name `generate_bindings` computes, from the same scan and the
-# same environment snapshot.
+# `options`: the name `generate_bindings` computes, the way it computes it — a
+# record over `snapshot`, the scan under the record's subprocess environment,
+# and the key from the record and the same snapshot (#481).
 function _crate_hot_reload_name(crate_path::AbstractString,
-                                options::NamedTuple = crate_build_options())
+                                options::NamedTuple = crate_build_options(),
+                                snapshot::BuildEnvSnapshot = BuildEnvSnapshot())
     path = abspath(String(crate_path))
     features = collect(String, options.features)
-    info = _plain_scan_info(path, scan_crate(path), features, options.default_features,
-                            options.release)
+    record = crate_build_record(path, ""; build_options = options, snapshot = snapshot)
+    env = _record_build_subprocess_env(record, snapshot)
+    info = _plain_scan_info(path, scan_crate(path; cargo_env = env), features,
+                            options.default_features, options.release; env = env)
     return crate_library_name(info; release = options.release, features = features,
                               default_features = options.default_features,
-                              build_env = _plain_crate_build_env())
+                              build_env = _plain_crate_build_env(record), snapshot = snapshot)
 end

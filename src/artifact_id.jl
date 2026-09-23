@@ -1104,7 +1104,8 @@ results obtained different ways can never collide.
 A path that does not exist is recorded as such rather than silently ignored, and
 the function never throws.
 """
-function artifact_path_dependency_digest(path::AbstractString)::String
+function artifact_path_dependency_digest(path::AbstractString;
+                                         env::Union{Nothing, AbstractDict} = nothing)::String
     io = IOBuffer()
     root = try
         abspath(String(path))
@@ -1118,7 +1119,7 @@ function artifact_path_dependency_digest(path::AbstractString)::String
         return bytes2hex(sha256(take!(io)))
     end
 
-    graph_strategy, dirs = local_path_dependency_dirs(root)
+    graph_strategy, dirs = local_path_dependency_dirs(root; env = env)
     _netstring!(io, "graph-strategy")
     _netstring!(io, graph_strategy)
 
@@ -1415,7 +1416,8 @@ workspace-inherited `{ workspace = true }` entries — at any depth:
 The strategy name is returned and hashed by callers, so a set found one way can
 never collide with one found the other.
 """
-function local_path_dependency_dirs(root::AbstractString)
+function local_path_dependency_dirs(root::AbstractString;
+                                    env::Union{Nothing, AbstractDict} = nothing)
     root = String(root)
     # Memoized so a warm re-evaluation spawns no `cargo tree` (#278 §8), and
     # validated against the manifests of *every* crate in the cached graph, not
@@ -1428,7 +1430,10 @@ function local_path_dependency_dirs(root::AbstractString)
         stamps == _graph_stamps(result[2]) ? result : nothing
     end
     hit === nothing || return hit
-    result = _local_path_dependency_dirs_uncached(root)
+    # `cargo tree` under the caller's environment when it has one: a crate
+    # build passes its snapshot's, so the strategy the key records is decided
+    # by the environment the build runs under (#481).
+    result = _local_path_dependency_dirs_uncached(root; env = env)
     # Stamped *after* resolution on purpose: resolving may itself write
     # `Cargo.lock` (that is what `cargo tree` without `--locked` does, exactly
     # as the build that follows would), and stamping before would invalidate the
@@ -1439,7 +1444,8 @@ function local_path_dependency_dirs(root::AbstractString)
     return result
 end
 
-function _local_path_dependency_dirs_uncached(root::String)
+function _local_path_dependency_dirs_uncached(root::String;
+                                              env::Union{Nothing, AbstractDict} = nothing)
     manifest = joinpath(root, "Cargo.toml")
     dirs = String[root]
 
@@ -1448,8 +1454,8 @@ function _local_path_dependency_dirs_uncached(root::String)
         # Only if the crate has no usable lockfile do we let Cargo resolve (and
         # therefore write `Cargo.lock`, exactly as any cargo command — including
         # the build that follows — would).
-        listed = _cargo_tree(manifest, true)
-        isempty(listed) && (listed = _cargo_tree(manifest, false))
+        listed = _cargo_tree(manifest, true; env = env)
+        isempty(listed) && (listed = _cargo_tree(manifest, false; env = env))
         found = String[]
         for line in split(listed, '\n')
             d = _crate_dir_from_tree_line(line)
@@ -1480,7 +1486,8 @@ function _local_path_dependency_dirs_uncached(root::String)
     return "manifest-toml", dirs
 end
 
-function _cargo_tree(manifest::AbstractString, locked::Bool)::String
+function _cargo_tree(manifest::AbstractString, locked::Bool;
+                     env::Union{Nothing, AbstractDict} = nothing)::String
     fmt = "{p}"   # a Cmd literal cannot carry braces unquoted
     args = String["tree", "--offline", "--target", "all",
                   "--edges", "normal,build,dev", "--prefix", "none",
@@ -1488,7 +1495,9 @@ function _cargo_tree(manifest::AbstractString, locked::Bool)::String
     locked && push!(args, "--locked")
     CARGO_TREE_INVOCATIONS[] += 1
     return try
-        read(pipeline(`$(cargo()) $(args)`; stderr = devnull), String)
+        cmd = env === nothing ? `$(cargo()) $(args)` :
+              setenv(`$(cargo()) $(args)`, Dict{String, String}(env))
+        read(pipeline(cmd; stderr = devnull), String)
     catch
         ""
     end

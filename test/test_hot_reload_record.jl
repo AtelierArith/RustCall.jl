@@ -327,7 +327,8 @@ _hrr_with(r::RustCall.CrateBuildRecord; kwargs...) =
                       RustCall._crate_hot_reload_name(crate,
                           RustCall.crate_build_options(release = false))
                 @test state.record == RustCall.crate_build_record(crate, state.lib_name;
-                    build_options = RustCall.crate_build_options(release = false))
+                    build_options = RustCall.crate_build_options(release = false),
+                    snapshot = RustCall.BuildEnvSnapshot())
             finally
                 _hrr_stop(state.lib_name)
             end
@@ -411,17 +412,18 @@ _hrr_with(r::RustCall.CrateBuildRecord; kwargs...) =
                 """)
             cargo_home = mkpath(joinpath(dir, "cargo-home"))
             write(joinpath(cargo_home, "config.toml"), "[term]\nverbose = false\n")
-            record = withenv(() -> RustCall.crate_build_record(crate, "hrr_race_lib_474"),
+            record = withenv(() -> RustCall.crate_build_record(crate, "hrr_race_lib_474";
+                                                                snapshot = RustCall.BuildEnvSnapshot()),
                              "RUSTFLAGS" => "--cfg hrr_race474")
             # The reload builds and probes with the one environment it derives
             # from the record; nothing else reaches the two subprocesses.
             src = read(joinpath(pkgdir(RustCall), "src", "hot_reload.jl"), String)
-            @test occursin("env = _record_build_subprocess_env(record)", src)
+            @test occursin("env = _record_build_subprocess_env(record, snapshot)", src)
             @test occursin("_scan_crate_signatures(record; env = env)", src)
             @test occursin("rebuild_crate(record; env = env)", src)
             # `ENV` changed after the check.
             withenv("RUSTFLAGS" => nothing, "CARGO_PROFILE_RELEASE_OPT_LEVEL" => "1") do
-                env = RustCall._record_build_subprocess_env(record)
+                env = RustCall._record_build_subprocess_env(record, RustCall.BuildEnvSnapshot())
                 @test env["RUSTFLAGS"] == "--cfg hrr_race474"
                 @test !haskey(env, "CARGO_PROFILE_RELEASE_OPT_LEVEL")
                 signatures = RustCall._scan_crate_signatures(record; env = env)
@@ -439,7 +441,8 @@ _hrr_with(r::RustCall.CrateBuildRecord; kwargs...) =
             end
             # A `CARGO_HOME` that selects another configuration after the check
             # is refused, not built under.
-            err = withenv(() -> _hrr_error(() -> RustCall._record_build_subprocess_env(record)),
+            err = withenv(() -> _hrr_error(() -> RustCall._record_build_subprocess_env(
+                                                    record, RustCall.BuildEnvSnapshot())),
                           "CARGO_HOME" => cargo_home)
             @test err isa ArgumentError
             @test err !== nothing && occursin("Cargo configuration", sprint(showerror, err))
@@ -451,7 +454,7 @@ _hrr_with(r::RustCall.CrateBuildRecord; kwargs...) =
     # inputs (the interpreter `PATH` selected) are pinned, not re-derived.
     @testset "one snapshot decides the build, its key and the record" begin
         crate = _HRR_SAMPLE_CRATE
-        record = RustCall.crate_build_record(crate, "")
+        record = RustCall.crate_build_record(crate, ""; snapshot = RustCall.BuildEnvSnapshot())
         # The key material read from the record is what the live read gives.
         @test RustCall._plain_crate_build_env(record) == RustCall._plain_crate_build_env()
         # The interpreter `PATH` selected is pinned for the subprocesses.
@@ -459,14 +462,15 @@ _hrr_with(r::RustCall.CrateBuildRecord; kwargs...) =
                                                "<pyo3 build interpreter>" => "/recorded/python3",
                                                "<pyo3 build fingerprint>" => "fp"))
         withenv("PYO3_PYTHON" => nothing, "PATH" => mktempdir()) do
-            env = RustCall._record_build_subprocess_env(pyrec)
+            env = RustCall._record_build_subprocess_env(pyrec, RustCall.BuildEnvSnapshot())
             @test env["PYO3_PYTHON"] == "/recorded/python3"
         end
         # A recorded `PYO3_PYTHON` is kept as recorded.
         pinned = _hrr_with(record; build_env = ("PYO3_PYTHON" => "present:/pinned/python",
                                                 "<pyo3 build interpreter>" => "/pinned/python"))
         withenv("PYO3_PYTHON" => "/other/python") do
-            @test RustCall._record_build_subprocess_env(pinned)["PYO3_PYTHON"] == "/pinned/python"
+            @test RustCall._record_build_subprocess_env(pinned,
+                      RustCall.BuildEnvSnapshot())["PYO3_PYTHON"] == "/pinned/python"
         end
         # An emitter given a record emits that record, and only one named for
         # the module's library.
@@ -482,9 +486,9 @@ _hrr_with(r::RustCall.CrateBuildRecord; kwargs...) =
                              lib_name = "other", build_record = named)) isa ArgumentError
         # Both entry points build under the snapshot they record.
         src = read(joinpath(pkgdir(RustCall), "src", "crate_bindings.jl"), String)
-        @test count("build_env = _record_build_subprocess_env(snapshot)", src) == 2
+        @test count("build_env = _record_build_subprocess_env(record, snapshot)", src) == 2
         @test count("env = build_env)", src) >= 4
-        @test occursin("build_record = _record_named(snapshot, lib_name)", src)
+        @test occursin("build_record = _record_named(record, lib_name)", src)
     end
 
     # #473: extraction refuses a `#[julia]` item in an unmarked inline module,

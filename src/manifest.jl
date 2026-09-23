@@ -615,10 +615,10 @@ end
 # metadata that describes the environment without being a variable.
 const _CARGO_CONFIG_LINE = "#cargo-config="
 
-function _cargo_cfg_env_key()
-    keys = sort!(filter(_is_cargo_env_key, collect(Base.keys(ENV))))
-    lines = String["$k=$(ENV[k])" for k in keys]
-    push!(lines, _CARGO_CONFIG_LINE * _cargo_config_digest())
+function _cargo_cfg_env_key(env::AbstractDict = ENV)
+    keys = sort!(filter(_is_cargo_env_key, collect(String, Base.keys(env))))
+    lines = String["$k=$(env[k])" for k in keys]
+    push!(lines, _CARGO_CONFIG_LINE * _cargo_config_digest(env))
     return join(lines, "\n")
 end
 
@@ -667,10 +667,12 @@ is built once per session (and per Cargo/RUSTFLAGS environment) with
 `panic`, `overflow_checks` and `target_*` match the real Cargo build. Empty
 when cargo is unavailable or the probe fails.
 """
-function _cargo_cfg_text()
+function _cargo_cfg_text(env::AbstractDict = ENV)
     # The pinned panic strategy is part of the key: it is part of the
-    # environment the probe runs under, so it decides the answer.
-    key = _cargo_probe_profile() * "\n" * _cargo_cfg_env_key() * "\n" *
+    # environment the probe runs under, so it decides the answer. `env` is the
+    # environment the probe runs under and is keyed by — a crate build passes
+    # its snapshot's (#481).
+    key = _cargo_probe_profile() * "\n" * _cargo_cfg_env_key(env) * "\n" *
           string(inline_cargo_policy().panic_strategy)
     lock(_EXTRACTOR_LOCK) do
         get!(_CARGO_CFG_TEXT, key) do
@@ -687,10 +689,11 @@ function _cargo_cfg_text()
                     # RustCall pins `unwind` for the builds it drives (#244),
                     # while an inherited `CARGO_PROFILE_RELEASE_PANIC` would
                     # otherwise reach only the probe.
-                    probe_env = _cargo_panic_env(inline_cargo_policy(), nothing, true)
-                    cmd = `$(cargo()) rustc -q --release --lib -- --print cfg`
-                    probe_env === nothing || (cmd = setenv(cmd, probe_env))
-                    out = read(setenv(cmd; dir = dir), String)
+                    probe_env = something(_cargo_panic_env(inline_cargo_policy(), env, true),
+                                          env)
+                    cmd = setenv(`$(cargo()) rustc -q --release --lib -- --print cfg`,
+                                 Dict{String, String}(probe_env); dir = dir)
+                    out = read(cmd, String)
                     # Keep only cfg lines (`name` or `name="value"`).
                     join(filter(l -> occursin(r"^[A-Za-z_][A-Za-z0-9_]*(=\".*\")?$", l), split(out, '\n')), "\n") * "\n"
                 end
@@ -783,7 +786,8 @@ function _crate_build_cfg_text(crate_path::AbstractString; profile::AbstractStri
                 # a hot reload passes the one its record prescribes, so the
                 # cfg set is decided by the recorded build, not by whatever
                 # `ENV` holds at this moment (#474 review).
-                probe_cmd = `$(cargo()) rustc -q $flag $(_cargo_network_args()) $features --lib -- --print cfg`
+                network = env === nothing ? _cargo_network_args() : _cargo_network_args(env)
+                probe_cmd = `$(cargo()) rustc -q $flag $network $features --lib -- --print cfg`
                 cmd = env === nothing ? setenv(probe_cmd; dir = path) :
                       setenv(probe_cmd, Dict{String, String}(env); dir = path)
                 cmd = addenv(cmd, "CARGO_TARGET_DIR" => target)

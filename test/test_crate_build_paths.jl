@@ -174,13 +174,13 @@ const _CBP_MISSING_DEP = "rustcall_nonexistent_crate_461 = \"=0.0.1\""
             return src[first(start):last(stop)]
         end
         probe = body(pyo3_src, "_wrapper_probe_context")
-        @test occursin("network = _cargo_network_args()", probe)
+        @test occursin("network = _cargo_network_args(env)", probe)
         @test occursin("rustc -q \$flag \$network", probe)
         @test occursin("pkgid \$network", probe)
-        @test occursin("_cargo_network_args()", body(pyo3_src, "_cargo_package_metadata"))
-        @test occursin("_cargo_network_args()", body(pyo3_src, "_cargo_resolved_features"))
-        @test occursin("_cargo_network_args()", body(pyo3_src, "_resolved_pyo3_dependency"))
-        @test occursin("_cargo_network_args()", body(manifest_src, "_crate_build_cfg_text"))
+        @test occursin("_cargo_network_args(", body(pyo3_src, "_cargo_package_metadata"))
+        @test occursin("_cargo_network_args(", body(pyo3_src, "_cargo_resolved_features"))
+        @test occursin("_cargo_network_args(", body(pyo3_src, "_resolved_pyo3_dependency"))
+        @test occursin("_cargo_network_args(", body(manifest_src, "_crate_build_cfg_text"))
     end
 
     if !_cbp_cargo_available()

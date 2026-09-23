@@ -282,16 +282,20 @@ plan.mode   # :link_libpython
 ```
 """
 function pyo3_link_plan(crate_path::AbstractString; features::Vector{String} = String[],
-                        default_features::Bool = true, release::Bool = true)
+                        default_features::Bool = true, release::Bool = true,
+                        snapshot::BuildEnvSnapshot = BuildEnvSnapshot())
     manifest_path = joinpath(String(crate_path), "Cargo.toml")
     isfile(manifest_path) ||
         throw(RustError("Cargo.toml not found in: $(crate_path)"))
     flags = _pyo3_feature_flags(features, default_features)
-    plan = _pyo3_resolved_plan(crate_path, flags; release = release,
+    # Every probe of the plan — the feature graph, the interpreter, the cfg —
+    # under the one environment the build that follows uses (#481).
+    plan = _pyo3_resolved_plan(snapshot, crate_path, flags; release = release,
                                features = features, default_features = default_features)
     plan === nothing || return plan
     return _pyo3_conservative_plan(_declaration_manifest(crate_path); flags = flags,
-                                   features = features, default_features = default_features)
+                                   features = features, default_features = default_features,
+                                   snapshot = snapshot)
 end
 
 """
@@ -310,7 +314,8 @@ has no `[features]` table, or when Cargo cannot resolve it — which is not the
 same as "no feature activates pyo3", so check `pyo3_link_plan(...).resolved`
 before reading anything into an empty list.
 """
-function pyo3_feature_candidates(crate_path::AbstractString)
+function pyo3_feature_candidates(crate_path::AbstractString;
+                                 snapshot::BuildEnvSnapshot = BuildEnvSnapshot())
     manifest_path = joinpath(String(crate_path), "Cargo.toml")
     isfile(manifest_path) ||
         throw(RustError("Cargo.toml not found in: $(crate_path)"))
@@ -320,7 +325,7 @@ function pyo3_feature_candidates(crate_path::AbstractString)
     out = NamedTuple[]
     for name in sort(collect(keys(features)))
         name == "default" && continue
-        resolved = _cargo_resolved_features(crate_path;
+        resolved = _cargo_resolved_features(snapshot, crate_path;
                                             features = [String(name)], default_features = false)
         resolved === nothing && continue
         _, pyo3_features, pyo3_active = resolved
@@ -349,10 +354,11 @@ resolve — the caller then falls back to `_pyo3_conservative_plan`. The cfg
 probe runs the crate **as a wrapper's dependency**, under the profile the
 wrapper will be built with (`_wrapper_probe_cfg_text`).
 """
-function _pyo3_resolved_plan(crate_path::AbstractString, flags::Vector{String};
+function _pyo3_resolved_plan(snapshot::BuildEnvSnapshot, crate_path::AbstractString,
+                             flags::Vector{String};
                              release::Bool = true, features::Vector{String} = String[],
                              default_features::Bool = true)
-    resolved = _cargo_resolved_features(crate_path; features = features,
+    resolved = _cargo_resolved_features(snapshot, crate_path; features = features,
                                         default_features = default_features)
     resolved === nothing && return nothing
     crate_features, pyo3_features, pyo3_active = resolved
@@ -364,8 +370,8 @@ function _pyo3_resolved_plan(crate_path::AbstractString, flags::Vector{String};
     links_python = pyo3_active &&
                    !("extension-module" in pyo3_features && !extension_module_is_linkable())
     rpath, interpreter, interpreter_config =
-        links_python ? _python_link_source_or_empty() : ("", "", "")
-    context = _wrapper_probe_context(crate_path; features = features,
+        links_python ? _python_link_source_or_empty(snapshot) : ("", "", "")
+    context = _wrapper_probe_context(crate_path, snapshot_env(snapshot); features = features,
                                        default_features = default_features, release = release,
                                        interpreter = interpreter)
     cfg_text = context.cfg_text
@@ -375,7 +381,7 @@ function _pyo3_resolved_plan(crate_path::AbstractString, flags::Vector{String};
     # `resolved = true` here made `scan_report` fall back to a lenient scan
     # without ever saying so (#294 review).
     if isempty(cfg_text)
-        return _pyo3_unresolved_cfg_plan(crate_path, flags, crate_features,
+        return _pyo3_unresolved_cfg_plan(snapshot, crate_path, flags, crate_features,
                                          pyo3_features, pyo3_active)
     end
 
@@ -420,12 +426,12 @@ function _pyo3_resolved_plan(crate_path::AbstractString, flags::Vector{String};
                         pyo3_features = pyo3_features, crate_features = crate_features,
                         cfg_text = cfg_text, resolved = true, interpreter = interpreter,
                         interpreter_config = interpreter_config,
-                        runtime_libraries = _python_runtime_libraries(interpreter),
+                        runtime_libraries = _python_runtime_libraries(snapshot, interpreter),
                         build_env = context.build_env, build_inputs = context.build_inputs)
 end
 
 """
-    _wrapper_probe_cfg_text(crate_path; features, default_features, release) -> String
+    _wrapper_probe_cfg_text(crate_path, env; features, default_features, release) -> String
 
 `rustc --print cfg` for `crate_path` **as the dependency of a wrapper crate**,
 which is how a Phase-2 wrapper compiles it.
@@ -457,13 +463,24 @@ answer.
 the wrapper build pins it (`_wrapper_probe_env`), so a crate whose build script
 derives `Py_3_x` cfgs through `pyo3-build-config` is probed for the Python the
 wrapper is built against, not the one pyo3 would find on its own.
+
+`env` is the environment of the build the probe describes — a snapshot's
+(`snapshot_env`) or a record's (`_record_build_subprocess_env`) — and every
+Cargo command of the probe runs under it, with the wrapper policy's pins on top
+(#481). The forms without it take a snapshot of `ENV` now.
 """
-function _wrapper_probe_cfg_text(crate_path::AbstractString;
+function _wrapper_probe_cfg_text(crate_path::AbstractString, env::AbstractDict;
                                  kwargs...)
-    _wrapper_probe_context(crate_path; kwargs...).cfg_text
+    _wrapper_probe_context(crate_path, env; kwargs...).cfg_text
 end
 
-function _wrapper_probe_context(crate_path::AbstractString;
+_wrapper_probe_cfg_text(crate_path::AbstractString; kwargs...) =
+    _wrapper_probe_cfg_text(crate_path, snapshot_env(BuildEnvSnapshot()); kwargs...)
+
+_wrapper_probe_context(crate_path::AbstractString; kwargs...) =
+    _wrapper_probe_context(crate_path, snapshot_env(BuildEnvSnapshot()); kwargs...)
+
+function _wrapper_probe_context(crate_path::AbstractString, base_env::AbstractDict;
                                  features::Vector{String} = String[],
                                  default_features::Bool = true, release::Bool = true,
                                  interpreter::AbstractString = "")
@@ -486,12 +503,13 @@ function _wrapper_probe_context(crate_path::AbstractString;
                 # `CARGO_PROFILE_RELEASE_PANIC=abort` must not reach the probe
                 # either — a `#[cfg(panic = "...")]` item would be scanned for
                 # the opposite build (#307 review).
-                env = _wrapper_probe_env(path, release, interpreter)
+                env = _wrapper_probe_env(base_env, path, release, interpreter)
                 # `--offline` under `RUSTCALL_OFFLINE` on every Cargo command
                 # of the probe, as on the build it describes (#461).
-                network = _cargo_network_args()
-                cmd = `$(cargo()) rustc -q $flag $network --message-format=json -p $package --lib -- --print cfg`
-                out = read(setenv(cmd, env; dir = dir), String)
+                network = _cargo_network_args(env)
+                cmd = setenv(`$(cargo()) rustc -q $flag $network --message-format=json -p $package --lib -- --print cfg`,
+                             env; dir = dir)
+                out = read(cmd, String)
                 # `pkgid` requires Cargo.lock. The successful probe first
                 # resolves it, including for a fresh crate without a lockfile.
                 package_id = strip(read(setenv(`$(cargo()) pkgid $network -p $package`, env; dir = dir), String))
@@ -510,9 +528,9 @@ function _wrapper_probe_context(crate_path::AbstractString;
     return probe()
 end
 
-function _cargo_package_metadata(path::AbstractString; env = ENV, dir = path)
+function _cargo_package_metadata(path::AbstractString; env::AbstractDict, dir = path)
     manifest = abspath(joinpath(path, "Cargo.toml"))
-    parse_json(read(setenv(`$(cargo()) metadata $(_cargo_network_args()) --no-deps --format-version=1 --manifest-path $manifest`,
+    parse_json(read(setenv(`$(cargo()) metadata $(_cargo_network_args(env)) --no-deps --format-version=1 --manifest-path $manifest`,
                           env; dir = dir), String))
 end
 
@@ -592,16 +610,22 @@ end
 # the environment instead asked whatever Python `pyo3` would find on its own —
 # the system one, while the plan had chosen CondaPkg's — and scanned the crate
 # for a Python the wrapper is not built against (#307 review).
-function _wrapper_probe_env(path::AbstractString, release::Bool, interpreter::AbstractString)
-    env = _cargo_panic_env(crate_wrapper_policy(), Dict{String, String}(ENV), release)
+function _wrapper_probe_env(base_env::AbstractDict, path::AbstractString, release::Bool,
+                           interpreter::AbstractString)
+    env = _cargo_panic_env(crate_wrapper_policy(), Dict{String, String}(base_env), release)
     env["CARGO_TARGET_DIR"] = joinpath(path, "target", "rustcall-pyo3-probe", "target")
     isempty(interpreter) || (env["PYO3_PYTHON"] = String(interpreter))
     return env
 end
 
+_wrapper_probe_env(path::AbstractString, release::Bool, interpreter::AbstractString) =
+    _wrapper_probe_env(snapshot_env(BuildEnvSnapshot()), path, release, interpreter)
+
 # The digest of the file `PYO3_CONFIG_FILE` names; "" when it is unset.
-function _pyo3_config_file_digest()
-    config = get(ENV, "PYO3_CONFIG_FILE", "")
+_pyo3_config_file_digest() = _pyo3_config_file_digest(BuildEnvSnapshot())
+
+function _pyo3_config_file_digest(snapshot::BuildEnvSnapshot)
+    config = get(snapshot, "PYO3_CONFIG_FILE", "")
     return isempty(config) ? "" : _file_content_digest(config)
 end
 
@@ -669,7 +693,14 @@ decides it — that part *is* known — but `cfg_text` is empty and `resolved` i
 refuses any `#[cfg]`-carrying item (`cfg_undecided`) instead of generating a
 call it cannot justify.
 """
-function _pyo3_unresolved_cfg_plan(crate_path::AbstractString, flags::Vector{String},
+_pyo3_unresolved_cfg_plan(crate_path::AbstractString, flags::Vector{String},
+                          crate_features::Vector{String}, pyo3_features::Vector{String},
+                          pyo3_active::Bool) =
+    _pyo3_unresolved_cfg_plan(BuildEnvSnapshot(), crate_path, flags, crate_features,
+                              pyo3_features, pyo3_active)
+
+function _pyo3_unresolved_cfg_plan(snapshot::BuildEnvSnapshot, crate_path::AbstractString,
+                                   flags::Vector{String},
                                    crate_features::Vector{String},
                                    pyo3_features::Vector{String}, pyo3_active::Bool)
     label = isempty(flags) ? "the crate's default features" : join(flags, " ")
@@ -682,13 +713,13 @@ function _pyo3_unresolved_cfg_plan(crate_path::AbstractString, flags::Vector{Str
     elseif "extension-module" in pyo3_features && !extension_module_is_linkable()
         (:unlinkable, "", "", "")
     else
-        (:link_libpython, _python_link_source_or_empty()...)
+        (:link_libpython, _python_link_source_or_empty(snapshot)...)
     end
     return PyO3LinkPlan(mode, copy(flags), rpath, note, !no_defaults;
                         pyo3_features = pyo3_features, crate_features = crate_features,
                         cfg_text = "", resolved = false, interpreter = interpreter,
                         interpreter_config = interpreter_config,
-                        runtime_libraries = _python_runtime_libraries(interpreter))
+                        runtime_libraries = _python_runtime_libraries(snapshot, interpreter))
 end
 
 """
@@ -717,7 +748,10 @@ activates it.
 `nothing` when the command fails (no cargo, an unresolvable crate, no network
 for a fresh registry).
 """
-function _cargo_resolved_features(crate_path::AbstractString;
+_cargo_resolved_features(crate_path::AbstractString; kwargs...) =
+    _cargo_resolved_features(BuildEnvSnapshot(), crate_path; kwargs...)
+
+function _cargo_resolved_features(snapshot::BuildEnvSnapshot, crate_path::AbstractString;
                                    features::Vector{String} = String[],
                                    default_features::Bool = true)
     path = abspath(String(crate_path))
@@ -731,8 +765,9 @@ function _cargo_resolved_features(crate_path::AbstractString;
                   _root_patch_toml(path))
             args = String["tree", "-e", "features,normal", "--prefix", "none",
                           "--format", "{p}|{f}", "--no-dedupe", "-p", package,
-                          _cargo_network_args()...]
-            read(pipeline(setenv(`$(cargo()) $args`; dir = dir); stderr = devnull), String)
+                          _cargo_network_args(snapshot_env(snapshot))...]
+            read(pipeline(setenv(`$(cargo()) $args`, snapshot_env(snapshot); dir = dir);
+                          stderr = devnull), String)
         end
     catch e
         @debug "Could not resolve features of $(path)" exception = e
@@ -874,7 +909,8 @@ transitive closure.
 function _pyo3_conservative_plan(cargo_toml::AbstractDict; flags::Vector{String} = String[],
                                  features::Vector{String} = String[],
                                  default_features::Bool = true,
-                                 resolution::Symbol = :unavailable)
+                                 resolution::Symbol = :unavailable,
+                                 snapshot::BuildEnvSnapshot = BuildEnvSnapshot())
     found = _pyo3_dependencies(cargo_toml)
     # `:skipped` is a deliberate `scan_report(...; resolve = false)`, not a
     # failed Cargo: the plan is the same declaration-only reading, but the
@@ -904,7 +940,7 @@ function _pyo3_conservative_plan(cargo_toml::AbstractDict; flags::Vector{String}
     # not disagree about one crate.
     extension = any(dep -> "extension-module" in
                         String[String(f) for f in get(dep.spec, "features", String[])], found)
-    rpath, interpreter, interpreter_config = _python_link_source_or_empty()
+    rpath, interpreter, interpreter_config = _python_link_source_or_empty(snapshot)
     return PyO3LinkPlan(:link_libpython, copy(flags), rpath,
                         "the crate declares a pyo3 dependency, so the wrapper cdylib may link " *
                         "libpython" *
@@ -914,7 +950,7 @@ function _pyo3_conservative_plan(cargo_toml::AbstractDict; flags::Vector{String}
                          "not be" : "") * note, default_features;
                         crate_features = copy(features),
                         interpreter = interpreter, interpreter_config = interpreter_config,
-                        runtime_libraries = _python_runtime_libraries(interpreter))
+                        runtime_libraries = _python_runtime_libraries(snapshot, interpreter))
 end
 
 # One pyo3 dependency declaration: the (possibly renamed) key it is declared
@@ -994,9 +1030,10 @@ fails to load — with a message about a missing `Python3.framework`, not about
 the directory that was wrong.
 """
 python_library_dir() = python_link_source()[1]
+python_library_dir(snapshot::BuildEnvSnapshot) = python_link_source(snapshot)[1]
 
 """
-    python_link_source() -> (libdir::String, interpreter::String, config::String)
+    python_link_source([snapshot::BuildEnvSnapshot]) -> (libdir::String, interpreter::String, config::String)
 
 The library directory a `:link_libpython` wrapper links against **and the
 interpreter it pins `PYO3_PYTHON` to**, decided together so the two cannot
@@ -1030,43 +1067,49 @@ In order:
 6. Otherwise the `python3` / `python` on `PATH`: its `sys.executable`, and its
    directory from the framework prefix (macOS), `python3-config --ldflags`, or
    `sysconfig` `LIBDIR`, in that order.
+
+Every variable is read from `snapshot`, and every interpreter and
+`python3-config` is run under it (#481); without one, a snapshot of `ENV` is
+taken now.
 """
-function python_link_source()
-    override = get(ENV, "RUSTCALL_PYTHON_LIBDIR", "")
+python_link_source() = python_link_source(BuildEnvSnapshot())
+
+function python_link_source(snapshot::BuildEnvSnapshot)
+    override = get(snapshot, "RUSTCALL_PYTHON_LIBDIR", "")
     override_dir = isempty(override) ? "" : (isdir(override) ? String(override) : "")
 
-    configured = _pyo3_configured_lib_dir()
+    configured = _pyo3_configured_lib_dir(snapshot)
     if !isempty(configured)
         dir = isempty(override) ? (isdir(configured) ? configured : "") : override_dir
-        return (dir, String(get(ENV, "PYO3_PYTHON", "")), "")
+        return (dir, String(get(snapshot, "PYO3_PYTHON", "")), "")
     end
 
-    pinned = get(ENV, "PYO3_PYTHON", "")
+    pinned = get(snapshot, "PYO3_PYTHON", "")
     if !isempty(pinned)
-        dir = isempty(override) ? _python_library_dir_of(pinned) : override_dir
-        return (dir, String(pinned), _python_interpreter_fingerprint(pinned))
+        dir = isempty(override) ? _python_library_dir_of(snapshot, pinned) : override_dir
+        return (dir, String(pinned), _python_interpreter_fingerprint(snapshot, pinned))
     end
     if !isempty(override)
-        interpreter = _python_executable_on_path()
-        return (override_dir, interpreter, _python_interpreter_fingerprint(interpreter))
+        interpreter = _python_executable_on_path(snapshot)
+        return (override_dir, interpreter, _python_interpreter_fingerprint(snapshot, interpreter))
     end
 
-    conda = _condapkg_link_source()
+    conda = _condapkg_link_source(snapshot)
     conda === nothing || return conda
 
     for exe in ("python3", "python")
-        interpreter = _python_executable(exe)
+        interpreter = _python_executable(snapshot, exe)
         isempty(interpreter) && continue
-        dir = Sys.isapple() ? _python_framework_prefix(exe) : ""
-        isempty(dir) && (dir = _python_config_libdir())
-        isempty(dir) && (dir = _python_sysconfig_libdir(exe))
-        return (dir, interpreter, _python_interpreter_fingerprint(exe))
+        dir = Sys.isapple() ? _python_framework_prefix(snapshot, exe) : ""
+        isempty(dir) && (dir = _python_config_libdir(snapshot))
+        isempty(dir) && (dir = _python_sysconfig_libdir(snapshot, exe))
+        return (dir, interpreter, _python_interpreter_fingerprint(snapshot, exe))
     end
     return ("", "", "")
 end
 
-_python_link_source_or_empty() = try
-    python_link_source()
+_python_link_source_or_empty(snapshot::BuildEnvSnapshot) = try
+    python_link_source(snapshot)
 catch
     ("", "", "")
 end
@@ -1074,10 +1117,12 @@ end
 # The library directory pyo3's own configuration names, when it does:
 # `PYO3_CROSS_LIB_DIR` (a cross-compilation), else the `lib_dir` key of a
 # `PYO3_CONFIG_FILE`. "" when neither is set or the file names none.
-function _pyo3_configured_lib_dir()
-    cross = get(ENV, "PYO3_CROSS_LIB_DIR", "")
+_pyo3_configured_lib_dir() = _pyo3_configured_lib_dir(BuildEnvSnapshot())
+
+function _pyo3_configured_lib_dir(snapshot::BuildEnvSnapshot)
+    cross = get(snapshot, "PYO3_CROSS_LIB_DIR", "")
     isempty(cross) || return String(cross)
-    config = get(ENV, "PYO3_CONFIG_FILE", "")
+    config = get(snapshot, "PYO3_CONFIG_FILE", "")
     isempty(config) && return ""
     try
         for line in eachline(config)
@@ -1109,11 +1154,14 @@ const _PYTHON_FINGERPRINT_EXPR =
     "sysconfig.get_config_var('SOABI') or '', sysconfig.get_config_var('LDLIBRARY') or '', " *
     "sysconfig.get_config_var('LIBDIR') or '', str(sys.maxsize > 2**32), platform.machine()])"
 
-function _python_interpreter_fingerprint(exe::AbstractString)
+_python_interpreter_fingerprint(exe::AbstractString) =
+    _python_interpreter_fingerprint(BuildEnvSnapshot(), exe)
+
+function _python_interpreter_fingerprint(snapshot::BuildEnvSnapshot, exe::AbstractString)
     isempty(exe) && return ""
     code = "import platform, sys, sysconfig; print($(_PYTHON_FINGERPRINT_EXPR))"
     try
-        return String(strip(read(`$exe -c $code`, String)))
+        return String(strip(read(snapshot_cmd(snapshot, `$exe -c $code`), String)))
     catch
         return ""
     end
@@ -1145,33 +1193,40 @@ the rpath does this, when `interpreter` is `""` (a `PYO3_CONFIG_FILE` or
 `PYO3_CROSS_LIB_DIR` configuration names no interpreter — put the DLL directory
 on `PATH` yourself), or when the interpreter cannot answer.
 """
-function _python_runtime_libraries(interpreter::AbstractString)
+_python_runtime_libraries(interpreter::AbstractString) =
+    _python_runtime_libraries(BuildEnvSnapshot(), interpreter)
+
+function _python_runtime_libraries(snapshot::BuildEnvSnapshot, interpreter::AbstractString)
     (Sys.iswindows() && !isempty(interpreter)) || return String[]
     code = "import ctypes, sys; " *
            "buf = ctypes.create_unicode_buffer(32768); " *
            "n = ctypes.windll.kernel32.GetModuleFileNameW(ctypes.c_void_p(sys.dllhandle), buf, 32768); " *
            "print(buf.value if n else '')"
     try
-        path = String(strip(read(`$interpreter -c $code`, String)))
+        path = String(strip(read(snapshot_cmd(snapshot, `$interpreter -c $code`), String)))
         return (!isempty(path) && isfile(path)) ? [path] : String[]
     catch
         return String[]
     end
 end
 
-# `sys.executable` of `exe`; "" when it cannot be run.
-function _python_executable(exe::AbstractString)
+# `sys.executable` of `exe`, run under `snapshot` (a bare name is found on its
+# `PATH`); "" when it cannot be run.
+function _python_executable(snapshot::BuildEnvSnapshot, exe::AbstractString)
     try
-        path = strip(read(`$exe -c "import sys; print(sys.executable)"`, String))
+        path = strip(read(snapshot_cmd(snapshot, `$exe -c "import sys; print(sys.executable)"`),
+                          String))
         return isempty(path) ? "" : String(path)
     catch
         return ""
     end
 end
 
-function _python_executable_on_path()
+_python_executable_on_path() = _python_executable_on_path(BuildEnvSnapshot())
+
+function _python_executable_on_path(snapshot::BuildEnvSnapshot)
     for exe in ("python3", "python")
-        path = _python_executable(exe)
+        path = _python_executable(snapshot, exe)
         isempty(path) || return path
     end
     return ""
@@ -1180,21 +1235,21 @@ end
 # The library directory `exe` itself reports: its framework prefix on macOS
 # (see `python_library_dir` for why that comes first), else its `sysconfig`
 # `LIBDIR`. "" when it reports neither or cannot be run.
-function _python_library_dir_of(exe::AbstractString)
+function _python_library_dir_of(snapshot::BuildEnvSnapshot, exe::AbstractString)
     if Sys.isapple()
-        prefix = _python_framework_prefix(exe)
+        prefix = _python_framework_prefix(snapshot, exe)
         isempty(prefix) || return prefix
     end
-    return _python_sysconfig_libdir(exe)
+    return _python_sysconfig_libdir(snapshot, exe)
 end
 
 # The directory holding `<name>.framework` for a macOS framework build of
 # Python; "" for a non-framework build or when the interpreter cannot be asked.
-function _python_framework_prefix(exe::AbstractString)
+function _python_framework_prefix(snapshot::BuildEnvSnapshot, exe::AbstractString)
     try
         code = "import sysconfig; " *
                "print(sysconfig.get_config_var('PYTHONFRAMEWORKPREFIX') or '')"
-        dir = strip(read(`$exe -c $code`, String))
+        dir = strip(read(snapshot_cmd(snapshot, `$exe -c $code`), String))
         return !isempty(dir) && isdir(dir) ? String(dir) : ""
     catch
         return ""
@@ -1205,7 +1260,7 @@ end
 # session already loaded it (PythonCall), in which case its environment holds
 # the interpreter the wrapper should link against — every part of the answer.
 # `nothing` when CondaPkg is not loaded or its environment has no `lib`.
-function _condapkg_link_source()
+function _condapkg_link_source(snapshot::BuildEnvSnapshot)
     for (id, mod) in Base.loaded_modules
         id.name == "CondaPkg" || continue
         try
@@ -1214,7 +1269,7 @@ function _condapkg_link_source()
             isdir(dir) || break
             exe = Sys.iswindows() ? joinpath(env, "python.exe") : joinpath(env, "bin", "python")
             interpreter = isfile(exe) ? exe : ""
-            return (dir, interpreter, _python_interpreter_fingerprint(interpreter))
+            return (dir, interpreter, _python_interpreter_fingerprint(snapshot, interpreter))
         catch
         end
         break
@@ -1222,10 +1277,10 @@ function _condapkg_link_source()
     return nothing
 end
 
-function _python_config_libdir()
+function _python_config_libdir(snapshot::BuildEnvSnapshot)
     for exe in ("python3-config", "python-config")
         try
-            flags = read(`$exe --ldflags`, String)
+            flags = read(snapshot_cmd(snapshot, `$exe --ldflags`), String)
             for token in split(flags)
                 startswith(token, "-L") || continue
                 dir = String(token[3:end])
@@ -1237,10 +1292,10 @@ function _python_config_libdir()
     return ""
 end
 
-function _python_sysconfig_libdir(exe::AbstractString)
+function _python_sysconfig_libdir(snapshot::BuildEnvSnapshot, exe::AbstractString)
     try
         code = "import sysconfig; print(sysconfig.get_config_var('LIBDIR') or '')"
-        dir = strip(read(`$exe -c $code`, String))
+        dir = strip(read(snapshot_cmd(snapshot, `$exe -c $code`), String))
         return isdir(dir) ? String(dir) : ""
     catch
         return ""
@@ -1403,13 +1458,16 @@ function build_pyo3_wrapper(info::CrateInfo;
                             default_features::Bool = true,
                             release::Bool = true,
                             cache_enabled::Bool = true,
-                            plan::Union{Nothing, PyO3LinkPlan} = nothing)
+                            plan::Union{Nothing, PyO3LinkPlan} = nothing,
+                            snapshot::BuildEnvSnapshot = BuildEnvSnapshot())
     # A caller that already has the plan — `generate_bindings` computes it for
     # the artifact identity and the fallback decision — passes it in rather
-    # than resolving the crate twice.
+    # than resolving the crate twice, together with the snapshot it was
+    # resolved under: the key, the build and the caller's record all read that
+    # one environment (#481).
     if plan === nothing
         plan = pyo3_link_plan(info.path; features = features, default_features = default_features,
-                              release = release)
+                              release = release, snapshot = snapshot)
     end
 
     cargo_toml = parse_cargo_toml(joinpath(info.path, "Cargo.toml"))
@@ -1428,7 +1486,8 @@ function build_pyo3_wrapper(info::CrateInfo;
     source = wrap_crate(tree_files; crate_name = target_identifier,
                         cfg = cfg, cfg_text = cfg_text,
                         crate_root = lib_root,
-                        edition = _crate_rust_edition(info.path, cargo_toml),
+                        edition = _crate_rust_edition(info.path, cargo_toml;
+                                                      env = snapshot_env(snapshot)),
                         skip_unparsable = true, build_env = plan.build_env)
 
     functions, structs, skipped, pyo3_exports = _pyo3_wrapper_items(source.manifest)
@@ -1454,11 +1513,12 @@ function build_pyo3_wrapper(info::CrateInfo;
                              functions, structs, sort!(unique(vcat(info.source_files, source.source_files))),
                              info.pyo3_functions, info.pyo3_structs)
 
-    build_env = _pyo3_wrapper_build_env(plan, rustflags; source_files = source.source_files,
+    build_env = _pyo3_wrapper_build_env(snapshot, plan, rustflags;
+                                        source_files = source.source_files,
                                         crate_root = info.path)
     key = compute_crate_hash(info; release = release, kind = "pyo3-wrapper",
                              features = features, default_features = default_features,
-                             build_env = build_env)
+                             build_env = build_env, snapshot = snapshot)
     lib_name = "rust_crate_$(info.name)_$(artifact_short_id(key))"
 
     cached = cache_enabled ? get_cargo_cached_library(key) : nothing
@@ -1466,7 +1526,8 @@ function build_pyo3_wrapper(info::CrateInfo;
         @debug "Using cached PyO3 wrapper library" key=artifact_short_id(key, 8)
         cached
     else
-        _build_pyo3_wrapper_project(info, plan, source, rustflags, release, key, cache_enabled)
+        _build_pyo3_wrapper_project(snapshot, info, plan, source, rustflags, release, key,
+                                    cache_enabled)
     end
 
     return PyO3Wrapper(wrapper_info, plan, source, lib_path, lib_name, skipped)
@@ -1489,10 +1550,14 @@ and records nothing. pyo3's other build inputs (`PYO3_CONFIG_FILE`,
 `PYO3_CROSS_*`, …) reach the key through the `PYO3_*` prefix of the allowlist,
 and the contents of `PYO3_CONFIG_FILE` are hashed here on top.
 """
-function _pyo3_wrapper_build_env(plan::PyO3LinkPlan, rustflags::Vector{String};
+_pyo3_wrapper_build_env(plan::PyO3LinkPlan, rustflags::Vector{String}; kwargs...) =
+    _pyo3_wrapper_build_env(BuildEnvSnapshot(), plan, rustflags; kwargs...)
+
+function _pyo3_wrapper_build_env(snapshot::BuildEnvSnapshot, plan::PyO3LinkPlan,
+                                 rustflags::Vector{String};
                                  source_files::Vector{String} = String[],
                                  crate_root::AbstractString = "")
-    build_env = artifact_build_env()
+    build_env = artifact_build_env(; env = snapshot_env(snapshot))
     generated_root = plan.build_env === nothing ? "" : get(plan.build_env, "OUT_DIR", "")
     external_roots = plan.build_env === nothing ? Pair{String, String}[] :
         Pair{String, String}[String(name) => String(value)
@@ -1517,7 +1582,7 @@ function _pyo3_wrapper_build_env(plan::PyO3LinkPlan, rustflags::Vector{String};
     # allowlist), but `PYO3_CONFIG_FILE` names a file whose *contents* decide
     # the configuration — version, ABI, library directory — so the contents
     # are hashed the way a path dependency's are (#278), not the path.
-    digest = _pyo3_config_file_digest()
+    digest = _pyo3_config_file_digest(snapshot)
     isempty(digest) || push!(build_env, "pyo3-config-file-digest" => digest)
     return build_env
 end
@@ -1691,7 +1756,14 @@ the library is copied out **before** the cleanup — into the artifact cache und
 Cargo's own output path here left `load_artifact!` opening a file that had
 already been deleted.
 """
-function _build_pyo3_wrapper_project(info::CrateInfo, plan::PyO3LinkPlan,
+_build_pyo3_wrapper_project(info::CrateInfo, plan::PyO3LinkPlan, source::WrapperCrateSource,
+                            rustflags::Vector{String}, release::Bool, key::String,
+                            cache_enabled::Bool) =
+    _build_pyo3_wrapper_project(BuildEnvSnapshot(), info, plan, source, rustflags, release,
+                                key, cache_enabled)
+
+function _build_pyo3_wrapper_project(snapshot::BuildEnvSnapshot, info::CrateInfo,
+                                     plan::PyO3LinkPlan,
                                      source::WrapperCrateSource,
                                      rustflags::Vector{String}, release::Bool,
                                      key::String, cache_enabled::Bool)
@@ -1725,7 +1797,7 @@ function _build_pyo3_wrapper_project(info::CrateInfo, plan::PyO3LinkPlan,
                       info, plan; wrapper_name = wrapper_name,
                       python_dispatch = source.uses_python_dispatch,
                       target_identifier = target_identifier, target_renamed = target_renamed,
-                      pyo3_dependency = _resolved_pyo3_dependency(info.path, plan)) *
+                      pyo3_dependency = _resolved_pyo3_dependency(snapshot, info.path, plan)) *
                   _root_patch_toml(info.path))
             write(joinpath(wrapper_path, "src", "lib.rs"), source.lib_rs)
 
@@ -1740,7 +1812,9 @@ function _build_pyo3_wrapper_project(info::CrateInfo, plan::PyO3LinkPlan,
             script = _pyo3_wrapper_build_script(plan)
             isempty(script) || write(joinpath(wrapper_path, "build.rs"), script)
 
-            env = Dict{String, String}(ENV)
+            # The build's snapshot, not the process's `ENV` now: the key above
+            # was computed from it, and the caller records it (#481).
+            env = snapshot_env(snapshot)
             # Only where pyo3 is actually in the graph: a `:python_free` build
             # has no pyo3 build script to configure, and pinning an interpreter
             # it will never consult would misdescribe the build. The interpreter
@@ -1753,6 +1827,14 @@ function _build_pyo3_wrapper_project(info::CrateInfo, plan::PyO3LinkPlan,
             built = build_cargo_project(project; release = release, env = env,
                                         policy = crate_wrapper_policy(),
                                         target_directory = joinpath(info.path, "target", "rustcall-pyo3-probe", "target"))
+            # The key names the interpreter by what it reported when the plan
+            # was made; an interpreter replaced in place since then configured
+            # this build for another Python. Refused before anything is cached
+            # (#481).
+            if plan.mode === :link_libpython
+                _verify_build_interpreter(snapshot, plan.interpreter, plan.interpreter_config,
+                                          info.name)
+            end
             if cache_enabled
                 try
                     save_cargo_cached_library(key, built)
@@ -2295,7 +2377,11 @@ defaults and inherited classes do not build (#370).
 All-empty when Cargo could not be asked, or when the crate resolves more than
 one pyo3, in which case nothing is claimed.
 """
-function _resolved_pyo3_dependency(crate_path::AbstractString, plan::PyO3LinkPlan)
+_resolved_pyo3_dependency(crate_path::AbstractString, plan::PyO3LinkPlan) =
+    _resolved_pyo3_dependency(BuildEnvSnapshot(), crate_path, plan)
+
+function _resolved_pyo3_dependency(snapshot::BuildEnvSnapshot, crate_path::AbstractString,
+                                   plan::PyO3LinkPlan)
     empty_result = (; version = "", source = "", dir = "")
     manifest = realpath(joinpath(String(crate_path), "Cargo.toml"))
     metadata = try
@@ -2314,12 +2400,13 @@ function _resolved_pyo3_dependency(crate_path::AbstractString, plan::PyO3LinkPla
         # build will use, and either way caught below as "no pyo3" and turned
         # into a refusal of every dispatcher-using wrapper (#392 review).
         #
-        # The environment is the process's, as before. Nothing the probe adds to
-        # it (`CARGO_TARGET_DIR`, the panic profile, `PYO3_PYTHON`) takes part in
-        # resolving a dependency graph; the configuration that does is what the
-        # working directory reaches.
-        parse_json(read(setenv(`$(cargo()) metadata $(_cargo_network_args()) --format-version=1 --manifest-path $manifest --filter-platform $(get_default_target()) $(plan.feature_flags)`,
-                               ENV; dir = dirname(manifest)), String))
+        # The environment is the build's snapshot (#481). Nothing the probe adds
+        # to it (`CARGO_TARGET_DIR`, the panic profile, `PYO3_PYTHON`) takes part
+        # in resolving a dependency graph; the configuration that does is what
+        # the working directory reaches.
+        env = snapshot_env(snapshot)
+        parse_json(read(setenv(`$(cargo()) metadata $(_cargo_network_args(env)) --format-version=1 --manifest-path $manifest --filter-platform $(get_default_target()) $(plan.feature_flags)`,
+                               env; dir = dirname(manifest)), String))
     catch e
         @debug "Could not resolve the target crate's pyo3 package" crate_path exception = e
         return empty_result
@@ -2532,9 +2619,11 @@ function scan_report(crate_path::AbstractString; features::Vector{String} = Stri
                      default_features::Bool = true, release::Bool = true, io::IO = stdout,
                      generate::Bool = true, resolve::Bool = true)
     manifest_path = joinpath(String(crate_path), "Cargo.toml")
+    # One environment for the plan and the candidates it is reported beside.
+    snapshot = BuildEnvSnapshot()
     plan = if resolve
         pyo3_link_plan(crate_path; features = features, default_features = default_features,
-                       release = release)
+                       release = release, snapshot = snapshot)
     else
         # `resolve = false`: no Cargo at all. The plan is the declaration-only
         # conservative reading and the scan stays lenient, as it does whenever
@@ -2544,7 +2633,7 @@ function scan_report(crate_path::AbstractString; features::Vector{String} = Stri
         _pyo3_conservative_plan(_declaration_manifest(crate_path);
                                 flags = _pyo3_feature_flags(features, default_features),
                                 features = features, default_features = default_features,
-                                resolution = :skipped)
+                                resolution = :skipped, snapshot = snapshot)
     end
     # A resolved plan carries the cfg text of its build, so the scan runs in
     # strict mode and the manifest holds exactly that build's items. Without one
@@ -2555,17 +2644,19 @@ function scan_report(crate_path::AbstractString; features::Vector{String} = Stri
     # inherited `edition` / `version` either (#425 review).
     info = if !isempty(plan.cfg_text)
         scan_crate(String(crate_path); cfg = :cargo, cfg_text = plan.cfg_text,
-                   build_env = plan.build_env, allow_cargo = resolve)
+                   build_env = plan.build_env, allow_cargo = resolve,
+                   cargo_env = snapshot_env(snapshot))
     elseif resolve
         # Cargo could not resolve the crate; the dependency-free cfg probe still
         # decides target predicates for the lenient scan.
-        scan_crate(String(crate_path); allow_cargo = true)
+        scan_crate(String(crate_path); allow_cargo = true, cargo_env = snapshot_env(snapshot))
     else
         # `resolve = false`: an explicit empty snapshot keeps the lenient scan
         # from falling back to `_cargo_cfg_text` — `_cfg_file_args` passes no
         # arguments for an empty text, which is the Cargo-unavailable case — so
         # no Cargo runs here either (#425 review).
-        scan_crate(String(crate_path); cfg_text = "", allow_cargo = false)
+        scan_crate(String(crate_path); cfg_text = "", allow_cargo = false,
+                   cargo_env = snapshot_env(snapshot))
     end
 
     julia_items = Any[info.julia_functions...; info.julia_structs...]
@@ -2585,7 +2676,7 @@ function scan_report(crate_path::AbstractString; features::Vector{String} = Stri
     # `resolve = false` there is no Cargo to ask, so the column is empty (#425).
     candidates = if resolve
         try
-            pyo3_feature_candidates(crate_path)
+            pyo3_feature_candidates(crate_path; snapshot = snapshot)
         catch
             NamedTuple[]
         end
@@ -2615,7 +2706,8 @@ function scan_report(crate_path::AbstractString; features::Vector{String} = Stri
                                 cfg = cfg, cfg_text = cfg_text,
                                 crate_root = lib_root,
                                 edition = _crate_rust_edition(crate_path, cargo_toml;
-                                                              allow_cargo = resolve),
+                                                              allow_cargo = resolve,
+                                                              env = snapshot_env(snapshot)),
                                 skip_unparsable = true, build_env = plan.build_env)
             functions, structs, refused, _ = _pyo3_wrapper_items(source.manifest)
             wrapped = Any[]

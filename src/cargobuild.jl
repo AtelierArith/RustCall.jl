@@ -55,11 +55,13 @@ with its own message, on anything the local registry cache does not hold,
 rather than hanging on a download (#256). The flag changes where Cargo looks,
 not what it builds, so it is not part of any artifact identity.
 """
-cargo_offline() = lowercase(strip(get(ENV, "RUSTCALL_OFFLINE", ""))) in ("1", "true", "yes")
+cargo_offline(env::AbstractDict = ENV) =
+    lowercase(strip(get(env, "RUSTCALL_OFFLINE", ""))) in ("1", "true", "yes")
 
 # The network half of a `cargo` argument vector: `--offline` under
-# `RUSTCALL_OFFLINE`, nothing otherwise.
-_cargo_network_args() = cargo_offline() ? ["--offline"] : String[]
+# `RUSTCALL_OFFLINE`, nothing otherwise. A build path passes the environment
+# its Cargo runs under (#481), so the flag and the build agree.
+_cargo_network_args(env::AbstractDict = ENV) = cargo_offline(env) ? ["--offline"] : String[]
 
 """
     _cargo_build_args(release, features, default_features; locked = false) -> Vector{String}
@@ -75,12 +77,12 @@ so the crate is built with the configuration that was asked for and not its
 default one (#307 review).
 """
 function _cargo_build_args(release::Bool, features::Vector{String}, default_features::Bool;
-                           locked::Bool = false)
+                           locked::Bool = false, env::AbstractDict = ENV)
     args = ["build"]
     release && push!(args, "--release")
     append!(args, _cargo_feature_args(features, default_features))
     locked && push!(args, "--locked")
-    append!(args, _cargo_network_args())
+    append!(args, _cargo_network_args(env))
     return args
 end
 
@@ -460,9 +462,7 @@ function build_cargo_project(project::CargoProject; release::Bool = true,
                              default_features::Bool = true,
                              locked::Bool = false,
                              target_directory::AbstractString = joinpath(project.path, "target"))
-    # Build command
     cargo_cmd = cargo()
-    build_args = _cargo_build_args(release, features, default_features; locked = locked)
 
     # The panic strategy is pinned twice: in the generated manifest and here,
     # in the environment Cargo runs under (#244). The manifest key already
@@ -484,6 +484,10 @@ function build_cargo_project(project::CargoProject; release::Bool = true,
     # directory is not part of the artifact (`_is_cargo_env_key`).
     build_env = Dict{String, String}(build_env === nothing ? ENV : build_env)
     build_env["CARGO_TARGET_DIR"] = abspath(target_directory)
+    # `--offline` from the environment the build runs under, not from `ENV`
+    # read at another moment (#481).
+    build_args = _cargo_build_args(release, features, default_features; locked = locked,
+                                   env = build_env)
 
     # Run cargo build — in the project directory through the command's own
     # `dir`, never a process-wide `cd`: the working directory is shared by every

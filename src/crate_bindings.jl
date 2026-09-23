@@ -115,12 +115,19 @@ crate's edition. Shared by `scan_crate` and `boundary_report` (#441).
 function _crate_manifest(crate_path::AbstractString; cfg = :lenient,
                          cfg_text::Union{Nothing, AbstractString} = nothing,
                          build_env::Union{Nothing, AbstractDict} = nothing,
-                         allow_cargo::Bool = true)
+                         allow_cargo::Bool = true,
+                         cargo_env::Union{Nothing, AbstractDict} = nothing)
     crate_path = String(crate_path)
     cargo_toml_path = joinpath(crate_path, "Cargo.toml")
     # Parse Cargo.toml
     cargo_toml = parse_cargo_toml(cargo_toml_path)
-    edition = _crate_rust_edition(crate_path, cargo_toml; allow_cargo = allow_cargo)
+    edition = _crate_rust_edition(crate_path, cargo_toml; allow_cargo = allow_cargo,
+                                  env = something(cargo_env, ENV))
+    # A build passes the environment it runs under (#481): the cfg the scan
+    # decides with is probed under it, not under `ENV` read now.
+    if cfg_text === nothing && cargo_env !== nothing && _cfg_mode(cfg) in (:lenient, :cargo)
+        cfg_text = _cargo_cfg_text(cargo_env)
+    end
 
     # Find all Rust source files
     source_files = sort(find_rust_sources(crate_path))
@@ -168,7 +175,8 @@ println("Found \$(length(info.julia_functions)) Julia functions")
 function scan_crate(crate_path::String; cfg = :lenient,
                     cfg_text::Union{Nothing, AbstractString} = nothing,
                     build_env::Union{Nothing, AbstractDict} = nothing,
-                    allow_cargo::Bool = true)
+                    allow_cargo::Bool = true,
+                    cargo_env::Union{Nothing, AbstractDict} = nothing)
     # Validate path
     if !isdir(crate_path)
         error("Crate path does not exist: $crate_path")
@@ -181,7 +189,8 @@ function scan_crate(crate_path::String; cfg = :lenient,
 
     cargo_toml, source_files, manifest = _crate_manifest(crate_path; cfg = cfg, cfg_text = cfg_text,
                                                          build_env = build_env,
-                                                         allow_cargo = allow_cargo)
+                                                         allow_cargo = allow_cargo,
+                                                         cargo_env = cargo_env)
     all_functions = manifest_function_signatures(manifest)
     all_structs = manifest_struct_infos(manifest)
     # Items the crate marks only for PyO3 (#275 Phase 1). They are reported so
@@ -193,7 +202,7 @@ function scan_crate(crate_path::String; cfg = :lenient,
     # Extract dependencies from Cargo.toml
     dependencies = extract_crate_dependencies(cargo_toml)
     version = _package_field(crate_path, cargo_toml, "version", "0.1.0";
-                             allow_cargo = allow_cargo)
+                             allow_cargo = allow_cargo, env = something(cargo_env, ENV))
 
     # `String(...)::String`: the manifest's values are `Any`, and a constructor
     # called on `Any` is compiled through `convert(String, ::Any)`, which any
@@ -214,14 +223,14 @@ function scan_crate(crate_path::String; cfg = :lenient,
 end
 
 function _crate_rust_edition(crate_path::AbstractString, cargo_toml::AbstractDict;
-                             allow_cargo::Bool = true)
+                             allow_cargo::Bool = true, env::AbstractDict = ENV)
     edition = _package_field(crate_path, cargo_toml, "edition", "2015";
-                             allow_cargo = allow_cargo)
+                             allow_cargo = allow_cargo, env = env)
     return String(edition)
 end
 
 """
-    _package_field(crate_path, cargo_toml, key, fallback; allow_cargo = true)
+    _package_field(crate_path, cargo_toml, key, fallback; allow_cargo = true, env = ENV)
 
 The value of the `[package]` field `key` of `cargo_toml`, with `{ workspace =
 true }` inheritance resolved from the workspace root's `[workspace.package]`
@@ -236,13 +245,14 @@ cannot decide.
 """
 function _package_field(crate_path::AbstractString, cargo_toml::AbstractDict,
                         key::AbstractString, fallback;
-                        allow_cargo::Bool = true)
+                        allow_cargo::Bool = true, env::AbstractDict = ENV)
     value = get(cargo_toml["package"], key, fallback)
     if value isa AbstractDict && get(value, "workspace", false) === true
         inherited = _workspace_inherited_package_field(crate_path, key)
         inherited === nothing || return inherited
         allow_cargo || return fallback
-        metadata = _cargo_package_metadata(crate_path)
+        # Under the caller's environment: a crate build passes its own (#481).
+        metadata = _cargo_package_metadata(crate_path; env = env)
         manifest_path = realpath(joinpath(crate_path, "Cargo.toml"))
         package = only(p for p in metadata["packages"]
                        if realpath(p["manifest_path"]) == manifest_path)
@@ -573,13 +583,16 @@ A path that is not on disk is dropped — `include_dependency` raises on an
 unreadable path, and a missing input already changes the digest through
 `crate_content_digest`.
 """
-function _crate_precompile_dependencies(crate_path::AbstractString)
+_crate_precompile_dependencies(crate_path::AbstractString) =
+    _crate_precompile_dependencies(crate_path, BuildEnvSnapshot())
+
+function _crate_precompile_dependencies(crate_path::AbstractString, snapshot::BuildEnvSnapshot)
     root = abspath(String(crate_path))
     isdir(root) || return String[]
     deps = String[]
     dirs = String[root]
     try
-        _, found = local_path_dependency_dirs(root)
+        _, found = local_path_dependency_dirs(root; env = snapshot_env(snapshot))
         append!(dirs, found)
     catch e
         # Resolving the graph needs Cargo; without it the crate's own files are
@@ -622,7 +635,7 @@ function _crate_precompile_dependencies(crate_path::AbstractString)
     # `.cargo/config.toml` changes the binary without touching a file of the
     # crate, so it belongs here too (#339 review).
     try
-        append!(deps, _cargo_config_files(ENV; dir = root))
+        append!(deps, _cargo_config_files(snapshot_env(snapshot); dir = root))
     catch e
         @debug "Could not list Cargo configuration files for precompile tracking" root exception = e
     end
@@ -670,7 +683,7 @@ function _crate_precompile_dependencies(crate_path::AbstractString)
     # own right and its parent is not — for the crate root that parent is the
     # checkout, whose unrelated siblings must not invalidate the image (#339
     # review).
-    cargo_home = abspath(get(ENV, "CARGO_HOME", joinpath(homedir(), ".cargo")))
+    cargo_home = abspath(get(snapshot, "CARGO_HOME", joinpath(homedir(), ".cargo")))
     for dir in unique(dirname.(filter(isfile, deps)))
         isdir(dir) || continue
         abspath(dir) == cargo_home && continue
@@ -688,7 +701,7 @@ function _crate_precompile_dependencies(crate_path::AbstractString)
     # without it, and the file appearing is then the one event that changes
     # the build — the entry list of the directory is what sees it. Once the
     # file exists, it is the input and the directory is not (#339 review).
-    let config = get(ENV, "PYO3_CONFIG_FILE", "")
+    let config = get(snapshot, "PYO3_CONFIG_FILE", "")
         if !isempty(config)
             if isfile(config)
                 push!(deps, abspath(config))
@@ -717,7 +730,7 @@ function _expand_precompile_inputs(paths::Vector{String})
 end
 
 """
-    _recorded_build_env() -> Vector{Pair{String, String}}
+    _recorded_build_env(snapshot; python = false) -> Vector{Pair{String, String}}
 
 The environment a generated module records and compares at load time: the
 `artifact_build_env` allowlist, plus RustCall's own selectors that decide the
@@ -725,14 +738,22 @@ artifact without being in that allowlist — `RUSTCALL_PYTHON_LIBDIR`, which
 `python_link_source()` gives precedence and `pyo3_link_rustflags()` folds into
 a wrapper's identity and rpath (#339 review). One function for both sides, so
 what is recorded and what is compared cannot drift.
+
+Read from `snapshot` — variables, `PATH` lookups and every interpreter it runs —
+so a record and the build it describes see one environment (#481). The form
+without it takes a snapshot of `ENV` now.
 """
-function _recorded_build_env(; python::Bool = false)
-    env = Pair{String, String}[String(k) => String(v) for (k, v) in artifact_build_env()]
+_recorded_build_env(; python::Bool = false) =
+    _recorded_build_env(BuildEnvSnapshot(); python = python)
+
+function _recorded_build_env(snapshot::BuildEnvSnapshot; python::Bool = false)
+    env = Pair{String, String}[String(k) => String(v)
+                               for (k, v) in artifact_build_env(; env = snapshot_env(snapshot))]
     # The *contents* of `PYO3_CONFIG_FILE`, not only its path: the file is
     # tracked when it exists, but one selected before it exists cannot be —
     # its directory is — and a load after it appeared must still be told.
     # "" when unset, `_file_content_digest`'s marker when absent (#339 review).
-    push!(env, "<PYO3_CONFIG_FILE digest>" => _pyo3_config_file_digest())
+    push!(env, "<PYO3_CONFIG_FILE digest>" => _pyo3_config_file_digest(snapshot))
     if !python
         # A plain build's pyo3 — a `cdylib` with `#[julia]` items that also
         # depends on pyo3 — runs pyo3's build script, which selects an
@@ -741,7 +762,7 @@ function _recorded_build_env(; python::Bool = false)
         # changed `PYO3_PYTHON`, not a `PATH` that now finds another Python or
         # a shim retargeted under the same name; what the interpreter *is* does
         # (#339 review). Recorded the way `_plain_crate_build_env` keys it.
-        interpreter, fingerprint = _pyo3_build_interpreter()
+        interpreter, fingerprint = _pyo3_build_interpreter(snapshot)
         push!(env, "<pyo3 build interpreter>" => interpreter)
         push!(env, "<pyo3 build fingerprint>" => fingerprint)
     end
@@ -751,14 +772,14 @@ function _recorded_build_env(; python::Bool = false)
     # review).
     if python
         for name in ("RUSTCALL_PYTHON_LIBDIR",)
-            value = get(ENV, name, nothing)
+            value = get(snapshot, name, nothing)
             value === nothing || push!(env, name => String(value))
         end
-        selection = _python_selection()
+        selection = _python_selection(snapshot)
         push!(env, "<python selection>" => selection)
         # The plan itself, computed once: `(libdir, interpreter, fingerprint)`
         # exactly as `python_link_source()` decides it for a build.
-        source = _python_link_source_or_empty()
+        source = _python_link_source_or_empty(snapshot)
         # When pyo3's own configuration (`PYO3_CROSS_LIB_DIR`, the `lib_dir`
         # of a `PYO3_CONFIG_FILE`) decides, pyo3 consults no interpreter: the
         # plan's fingerprint is "" and `_pyo3_wrapper_build_env` keys nothing
@@ -766,13 +787,14 @@ function _recorded_build_env(; python::Bool = false)
         # a `PYTHONHOME` or shim change that selects the same artifact (#339
         # review). So the two interpreter records below are empty on that
         # branch, the way the plan's are.
-        configured = !isempty(_pyo3_configured_lib_dir())
+        configured = !isempty(_pyo3_configured_lib_dir(snapshot))
         # What that selection *is*: `PYO3_PYTHON` may be a bare `python3` or a
         # pyenv/asdf shim whose target moves under the same name, and
         # `python_link_source()` runs the command and hashes what it reports.
         # The resolved `sys.executable` is recorded beside the raw selection
         # (one short subprocess, only for a PyO3 wrapper module; #339 review).
-        push!(env, "<python resolved>" => (configured ? "" : _python_resolved(selection)))
+        push!(env, "<python resolved>" =>
+                   (configured ? "" : _python_resolved(snapshot, selection)))
         # And what it *reports*: the same executable can describe a different
         # Python after `PYTHONHOME` or its sysconfig metadata changes, and
         # `_pyo3_wrapper_build_env` hashes exactly that description
@@ -790,8 +812,8 @@ function _recorded_build_env(; python::Bool = false)
         # Nor on macOS when the implicit interpreter is a framework build:
         # `python_link_source()` takes the framework prefix and never asks
         # either command (`_python_config_consulted`).
-        if _python_config_consulted()
-            for (name, path) in _python_config_selections()
+        if _python_config_consulted(snapshot)
+            for (name, path) in _python_config_selections(snapshot)
                 push!(env, "<$name selection>" => path)
             end
         end
@@ -824,13 +846,15 @@ different artifact and a reported change rather than a library configured for
 the previous ABI (#339 review). One short subprocess; "" for both when no
 interpreter can be run.
 """
-function _pyo3_build_interpreter()
-    isempty(_pyo3_configured_lib_dir()) || return ("", "")
-    pinned = get(ENV, "PYO3_PYTHON", "")
-    interpreter = isempty(pinned) ? _python_executable_on_path() : String(pinned)
+_pyo3_build_interpreter() = _pyo3_build_interpreter(BuildEnvSnapshot())
+
+function _pyo3_build_interpreter(snapshot::BuildEnvSnapshot)
+    isempty(_pyo3_configured_lib_dir(snapshot)) || return ("", "")
+    pinned = get(snapshot, "PYO3_PYTHON", "")
+    interpreter = isempty(pinned) ? _python_executable_on_path(snapshot) : String(pinned)
     isempty(interpreter) && return ("", "")
     fingerprint = try
-        String(_python_interpreter_fingerprint(interpreter))
+        String(_python_interpreter_fingerprint(snapshot, interpreter))
     catch
         ""
     end
@@ -845,11 +869,13 @@ Whether `python_link_source()` would reach its last step — the interpreter and
 pyo3's own configuration, `PYO3_PYTHON`, `RUSTCALL_PYTHON_LIBDIR` or CondaPkg.
 Only then are the config commands inputs of the wrapper (#339 review).
 """
-function _python_link_is_implicit()
-    isempty(_pyo3_configured_lib_dir()) || return false
-    isempty(get(ENV, "PYO3_PYTHON", "")) || return false
-    isempty(get(ENV, "RUSTCALL_PYTHON_LIBDIR", "")) || return false
-    return _condapkg_link_source() === nothing
+_python_link_is_implicit() = _python_link_is_implicit(BuildEnvSnapshot())
+
+function _python_link_is_implicit(snapshot::BuildEnvSnapshot)
+    isempty(_pyo3_configured_lib_dir(snapshot)) || return false
+    isempty(get(snapshot, "PYO3_PYTHON", "")) || return false
+    isempty(get(snapshot, "RUSTCALL_PYTHON_LIBDIR", "")) || return false
+    return _condapkg_link_source(snapshot) === nothing
 end
 
 """
@@ -865,11 +891,13 @@ while the wrapper's link directory and identity had not moved (#339 review).
 Mirrors the `python3` / `python` loop of `python_link_source()` step for step,
 and is `false` when no interpreter is found at all — then nothing is consulted.
 """
-function _python_config_consulted()
-    _python_link_is_implicit() || return false
+_python_config_consulted() = _python_config_consulted(BuildEnvSnapshot())
+
+function _python_config_consulted(snapshot::BuildEnvSnapshot)
+    _python_link_is_implicit(snapshot) || return false
     for exe in ("python3", "python")
-        isempty(_python_executable(exe)) && continue
-        return !(Sys.isapple() && !isempty(_python_framework_prefix(exe)))
+        isempty(_python_executable(snapshot, exe)) && continue
+        return !(Sys.isapple() && !isempty(_python_framework_prefix(snapshot, exe)))
     end
     return false
 end
@@ -887,13 +915,14 @@ same. Recording the fallback even when the first command answers is
 deliberate: which one *answers* is only known by running them, and a load
 must not (#339 review).
 """
-function _python_config_selections()
+_python_config_selections() = _python_config_selections(BuildEnvSnapshot())
+
+function _python_config_selections(snapshot::BuildEnvSnapshot)
     # A `Vector`, not a tuple: the wrapper path splices `last.(...)` of this
     # into a `String[...]`, and a tuple there is one element that cannot be
-    # converted, not two strings.
+    # converted, not two strings. Looked up on the snapshot's `PATH` (#481).
     map(["python3-config", "python-config"]) do name
-        found = Sys.which(name)
-        name => (found === nothing ? "" : String(found))
+        name => snapshot_which(snapshot, name)
     end
 end
 
@@ -904,9 +933,11 @@ The `sys.executable` that `command` reports, or `command` itself when it cannot
 be run; "" for "". A bare `python3` or a shim is one path on `PATH` and another
 underneath, and only the interpreter can say which (#339 review).
 """
-function _python_resolved(command::AbstractString)
+_python_resolved(command::AbstractString) = _python_resolved(BuildEnvSnapshot(), command)
+
+function _python_resolved(snapshot::BuildEnvSnapshot, command::AbstractString)
     isempty(command) && return ""
-    resolved = _python_executable(command)
+    resolved = _python_executable(snapshot, command)
     return isempty(resolved) ? String(command) : resolved
 end
 
@@ -927,7 +958,9 @@ path on `PATH` while its project selection moves the real interpreter, and
 only `sys.executable` says which one that is. One short subprocess per load of
 a PyO3 wrapper module; a plain module never runs it.
 """
-function _python_selection()
+_python_selection() = _python_selection(BuildEnvSnapshot())
+
+function _python_selection(snapshot::BuildEnvSnapshot)
     # The same order as `python_link_source()`, step for step — a selector that
     # disagrees with it records the wrong interpreter and then never notices
     # the real one moving (#339 review). The contract test asserts the two
@@ -935,18 +968,19 @@ function _python_selection()
     #
     # 1. pyo3's own configuration (`PYO3_CROSS_LIB_DIR`, `PYO3_CONFIG_FILE`):
     #    the interpreter is `PYO3_PYTHON` if set, else none.
-    isempty(_pyo3_configured_lib_dir()) || return String(get(ENV, "PYO3_PYTHON", ""))
+    isempty(_pyo3_configured_lib_dir(snapshot)) || return String(get(snapshot, "PYO3_PYTHON", ""))
     # 2. an explicit `PYO3_PYTHON`.
-    pinned = get(ENV, "PYO3_PYTHON", "")
+    pinned = get(snapshot, "PYO3_PYTHON", "")
     isempty(pinned) || return String(pinned)
     # 3. `RUSTCALL_PYTHON_LIBDIR` alone leaves the interpreter to `PATH`, and
     #    that comes *before* CondaPkg.
-    isempty(get(ENV, "RUSTCALL_PYTHON_LIBDIR", "")) || return _python_executable_on_path()
+    isempty(get(snapshot, "RUSTCALL_PYTHON_LIBDIR", "")) ||
+        return _python_executable_on_path(snapshot)
     # 4. CondaPkg's environment, when the package is loaded and has one.
-    conda = _condapkg_link_source()
+    conda = _condapkg_link_source(snapshot)
     conda === nothing || return String(conda[2])
     # 5. the first `python3` / `python` on `PATH`, as it reports itself.
-    return _python_executable_on_path()
+    return _python_executable_on_path(snapshot)
 end
 
 """
@@ -968,17 +1002,19 @@ Python preload plan to match (#339 review).
 
 Nothing here can invalidate the image; what it can do is refuse to be silent.
 The module records the values it was generated under and compares them at load
-time, which is cheap — the allowlist is read from `ENV`, no probe, no build.
-The fix it names is the one that works: force the package to be precompiled
-again.
+time, which is cheap — the allowlist is read from one snapshot of `ENV` taken
+here, no probe, no build. The fix it names is the one that works: force the
+package to be precompiled again.
 """
 function _warn_if_build_env_changed(recorded, crate_path::AbstractString, lib_name::AbstractString,
                                     recorded_cargo_config::AbstractString = "",
                                     recorded_toolchain::AbstractString = "";
                                     python::Bool = false,
                                     strict::Bool = false)
+    # A load, not a build: the check takes its own one snapshot (#481).
     changed = _build_env_changes(recorded, crate_path, recorded_cargo_config,
-                                 recorded_toolchain; python = python)
+                                 recorded_toolchain; python = python,
+                                 snapshot = BuildEnvSnapshot())
     (changed === nothing || isempty(changed)) && return nothing
     message = """
     RustCall: the build environment changed since `$(lib_name)` was compiled into this package's
@@ -997,10 +1033,13 @@ end
 
 """
     _build_env_changes(recorded, crate_path, recorded_cargo_config = "",
-                       recorded_toolchain = ""; python = false) -> Union{Nothing, Vector{String}}
+                       recorded_toolchain = ""; python = false,
+                       snapshot) -> Union{Nothing, Vector{String}}
 
 What differs between the build environment a generated module recorded
-(the `build_env`, `cargo_config` and `toolchain` of its `CrateBuildRecord`) and the current one: the names of
+(the `build_env`, `cargo_config` and `toolchain` of its `CrateBuildRecord`) and
+the one `snapshot` holds — every value, the Cargo configuration and every
+interpreter read from it, never from `ENV` (#481): the names of
 the changed allowlisted variables, plus `<effective Cargo configuration>` and
 `<Rust toolchain>` when those moved. `nothing` when the current environment
 cannot be read. The one comparison both a module's `__init__`
@@ -1010,9 +1049,10 @@ cannot be read. The one comparison both a module's `__init__`
 function _build_env_changes(recorded, crate_path::AbstractString,
                             recorded_cargo_config::AbstractString = "",
                             recorded_toolchain::AbstractString = "";
-                            python::Bool = false)
+                            python::Bool = false,
+                            snapshot::BuildEnvSnapshot)
     current = try
-        _recorded_build_env(; python = python)
+        _recorded_build_env(snapshot; python = python)
     catch e
         @debug "Could not read the build environment" exception = e
         return nothing
@@ -1030,7 +1070,7 @@ function _build_env_changes(recorded, crate_path::AbstractString,
     # effective configuration differs.
     if !isempty(recorded_cargo_config)
         now_config = try
-            _cargo_config_digest(ENV; dir = crate_path)
+            _cargo_config_digest(snapshot_env(snapshot); dir = crate_path)
         catch e
             @debug "Could not read the Cargo configuration" exception = e
             recorded_cargo_config
@@ -1146,21 +1186,25 @@ record_build_options(r::CrateBuildRecord) =
                         default_features = r.default_features, kind = r.kind)
 
 """
-    crate_build_record(crate_path, lib_name; build_options, python = false) -> CrateBuildRecord
+    crate_build_record(crate_path, lib_name; build_options, python = false,
+                       snapshot) -> CrateBuildRecord
 
-The record of a build of `crate_path` made **now**: the given build options,
-plus the current build environment, Cargo configuration and toolchain. What both
-crate emitters record (one call, one value), and what the path form of
-`enable_hot_reload_for_crate` constructs for a library it has no module of.
+The record of a build of `crate_path` made under `snapshot`: the given build
+options, plus the build environment, Cargo configuration and toolchain as the
+snapshot has them. What both crate emitters record (one call, one value), and
+what the path form of `enable_hot_reload_for_crate` constructs for a library it
+has no module of. `snapshot` is required: a record read from `ENV` at its own
+moment described a build made under another one (#481).
 """
 function crate_build_record(crate_path::AbstractString, lib_name::AbstractString;
                             build_options::NamedTuple = crate_build_options(),
-                            python::Bool = false)
+                            python::Bool = false,
+                            snapshot::BuildEnvSnapshot)
     crate_dir = abspath(String(crate_path))
     # The part of the artifact identity that is *not* a file, recorded so the
     # module can say so at load time (`_warn_if_build_env_changed`).
     build_env = try
-        _recorded_build_env(; python = python)
+        _recorded_build_env(snapshot; python = python)
     catch e
         @debug "Could not record the build environment" exception = e
         Pair{String, String}[]
@@ -1175,7 +1219,7 @@ function crate_build_record(crate_path::AbstractString, lib_name::AbstractString
     # an allowlisted variable: its digest is what says whether the same build
     # would run under the same flags (#339 review).
     cargo_config = try
-        _cargo_config_digest(ENV; dir = crate_dir)
+        _cargo_config_digest(snapshot_env(snapshot); dir = crate_dir)
     catch e
         @debug "Could not record the Cargo configuration" exception = e
         ""
@@ -1186,16 +1230,18 @@ function crate_build_record(crate_path::AbstractString, lib_name::AbstractString
 end
 
 """
-    _build_record_mismatch(record::CrateBuildRecord) -> Vector{String}
+    _build_record_mismatch(record::CrateBuildRecord, snapshot) -> Vector{String}
 
-What differs between the environment `record` was built under and the current
-one (`_build_env_changes`): the changed variables, `<effective Cargo
-configuration>`, `<Rust toolchain>`. Empty when nothing does, or when the
-current environment cannot be read.
+What differs between the environment `record` was built under and the one
+`snapshot` holds (`_build_env_changes`): the changed variables, `<effective
+Cargo configuration>`, `<Rust toolchain>`. Empty when nothing does, or when the
+environment cannot be read. A rebuild passes the snapshot its subprocesses are
+then derived from (`_record_build_subprocess_env`), so the check and the build
+see one environment (#481).
 """
-function _build_record_mismatch(r::CrateBuildRecord)
+function _build_record_mismatch(r::CrateBuildRecord, snapshot::BuildEnvSnapshot)
     changed = _build_env_changes(r.build_env, r.crate_dir, r.cargo_config, r.toolchain;
-                                 python = r.python)
+                                 python = r.python, snapshot = snapshot)
     return changed === nothing ? String[] : changed
 end
 
@@ -1205,13 +1251,13 @@ _warn_if_build_env_changed(r::CrateBuildRecord; strict::Bool = false) =
                                r.toolchain; python = r.python, strict = strict)
 
 """
-    _record_build_subprocess_env(record::CrateBuildRecord) -> Dict{String, String}
+    _record_build_subprocess_env(record::CrateBuildRecord, snapshot) -> Dict{String, String}
 
 The environment every Cargo subprocess of a build described by `record` runs
 under — the cfg probe and the build of `@rust_crate`, `write_bindings_to_file`
-and a hot reload — derived from the record over one snapshot of `ENV`, so the
-build is the one the record describes even if another task changes `ENV`
-meanwhile (#474 review):
+and a hot reload — derived from the record over `snapshot`, the build's one
+snapshot of `ENV`, so the build is the one the record describes even if another
+task changes `ENV` meanwhile (#474 review, #481):
 
 - every variable `artifact_build_env_captured` accepts is removed from the
   snapshot and the record's own values are put back (`RUSTFLAGS`,
@@ -1226,9 +1272,8 @@ meanwhile (#474 review):
 The rest of the snapshot (`PATH`, `CARGO_HOME`, ...) is what the build needs to
 run. Other `<...>` entries of `record.build_env` are digests, not variables.
 """
-function _record_build_subprocess_env(record::CrateBuildRecord)
-    snapshot = Dict{String, String}(ENV)
-    env = Dict{String, String}(k => v for (k, v) in snapshot
+function _record_build_subprocess_env(record::CrateBuildRecord, snapshot::BuildEnvSnapshot)
+    env = Dict{String, String}(k => v for (k, v) in snapshot_env(snapshot)
                                if !artifact_build_env_captured(k))
     interpreter = ""
     for (k, v) in record.build_env
@@ -1295,6 +1340,48 @@ function _plain_crate_build_env(record::CrateBuildRecord)
     return out
 end
 
+"""
+    _verify_build_interpreter(snapshot, interpreter, fingerprint, what)
+    _verify_build_interpreter(record::CrateBuildRecord, snapshot)
+
+Refuse a build whose Python interpreter was **replaced in place** while it ran
+(#481). A build that configures pyo3 for an interpreter is keyed and recorded
+by that interpreter's path *and* by what it reported about itself
+(`_python_interpreter_fingerprint`), asked before the build. The path is pinned
+in `PYO3_PYTHON`, so `PATH` cannot select another one — but the file behind the
+path can change (an upgrade, a retargeted shim), and the build would then be
+configured for a Python its key and record do not name. So the interpreter is
+asked again, under the same snapshot, once the build is done and before the
+library is cached or published, and a different answer is a `RustError`.
+
+Nothing is checked when `interpreter` or `fingerprint` is `""` — no interpreter
+was consulted, or it could not be run when the build was planned. The record
+form reads `<pyo3 build interpreter>` / `<pyo3 build fingerprint>`: the
+interpreter a plain build's pyo3 configures itself for.
+"""
+function _verify_build_interpreter(snapshot::BuildEnvSnapshot, interpreter::AbstractString,
+                                   fingerprint::AbstractString, what::AbstractString)
+    (isempty(interpreter) || isempty(fingerprint)) && return nothing
+    now = _python_interpreter_fingerprint(snapshot, interpreter)
+    now == fingerprint && return nothing
+    answer = isempty(now) ? "<no answer>" : now
+    throw(RustError(
+        "The Python interpreter `$(interpreter)` changed while `$(what)` was being built: " *
+        "it reported `$(fingerprint)` when the build was planned and `$(answer)` " *
+        "afterwards. The library was configured for a Python its identity does not " *
+        "name, so it is neither cached nor loaded. Build again."))
+end
+
+function _verify_build_interpreter(record::CrateBuildRecord, snapshot::BuildEnvSnapshot)
+    interpreter = fingerprint = ""
+    for (k, v) in record.build_env
+        k == "<pyo3 build interpreter>" && (interpreter = v)
+        k == "<pyo3 build fingerprint>" && (fingerprint = v)
+    end
+    what = isempty(record.lib_name) ? record.crate_dir : record.lib_name
+    return _verify_build_interpreter(snapshot, interpreter, fingerprint, what)
+end
+
 # `record` under another registry name: the name of a plain build is computed
 # from the record's own environment, so the record is taken first and named
 # after.
@@ -1342,7 +1429,11 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
                            python::Bool = false,
                            pin_library::Bool = false,
                            build_options::NamedTuple = crate_build_options(release = build_release),
-                           build_record::Union{Nothing, CrateBuildRecord} = nothing)
+                           build_record::Union{Nothing, CrateBuildRecord} = nothing,
+                           snapshot::Union{Nothing, BuildEnvSnapshot} = nothing)
+    # The build's snapshot when a build passes one (#481); a direct call takes
+    # its own, once.
+    snapshot === nothing && (snapshot = BuildEnvSnapshot())
     # Determine module name
     mod_name = if module_name !== nothing
         Symbol(module_name)
@@ -1362,11 +1453,12 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
     # `unload_all_libraries` and every registry the rest of RustCall keeps
     # (#250). It goes through `load_artifact!` now, so the module's `Ref` and
     # the registry hold the same handle and the same liveness flag.
-    lib_key = lib_name === nothing ? crate_library_name(info; release = build_release) : lib_name
+    lib_key = lib_name === nothing ?
+        crate_library_name(info; release = build_release, snapshot = snapshot) : lib_name
 
     # The files an edit to the crate would touch; see
     # `_crate_precompile_dependencies`.
-    crate_inputs = _crate_precompile_dependencies(info.path)
+    crate_inputs = _crate_precompile_dependencies(info.path, snapshot)
     # Inputs the caller knows about and the crate directory does not — the PyO3
     # wrapper's interpreter and the libraries it preloads. An interpreter
     # upgraded in place keeps its path, so only its *content* says it changed,
@@ -1383,7 +1475,8 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
     # A caller that built the library passes the record it built under
     # (`_record_build_subprocess_env`); otherwise it is taken now.
     build_record = something(build_record,
-        crate_build_record(info.path, lib_key; build_options = build_options, python = python))
+        crate_build_record(info.path, lib_key; build_options = build_options, python = python,
+                           snapshot = snapshot))
     build_record.lib_name == lib_key || throw(ArgumentError(
         "the build record names `$(build_record.lib_name)`, not `$(lib_key)`"))
     @debug "Recording generated crate build" lib_key build_record.toolchain
@@ -3254,16 +3347,18 @@ being in the graph — was a stale library for the crate that read the file
 anyway (#339 review; an earlier round of this PR tried the gate and reverted
 it).
 """
-function _plain_crate_build_env()
-    build_env = artifact_build_env()
-    digest = _pyo3_config_file_digest()
+_plain_crate_build_env() = _plain_crate_build_env(BuildEnvSnapshot())
+
+function _plain_crate_build_env(snapshot::BuildEnvSnapshot)
+    build_env = artifact_build_env(; env = snapshot_env(snapshot))
+    digest = _pyo3_config_file_digest(snapshot)
     isempty(digest) || push!(build_env, "pyo3-config-file-digest" => digest)
     # And the interpreter pyo3's build script would configure the library for
     # — under the names the wrapper's identity uses for its own
     # (`_pyo3_wrapper_build_env`), since it is the same fact about the same
     # Python. Empty, and absent, when pyo3's configuration names the library
     # directory and no interpreter is consulted (#339 review).
-    interpreter, fingerprint = _pyo3_build_interpreter()
+    interpreter, fingerprint = _pyo3_build_interpreter(snapshot)
     if !isempty(interpreter)
         push!(build_env, "rustcall-pyo3-python" => interpreter)
         push!(build_env, "rustcall-pyo3-python-config" => fingerprint)
@@ -3323,6 +3418,13 @@ function generate_bindings(crate_path::String;
                                            release = build_release)
     end
 
+    # ONE snapshot of the environment for the whole build (#481): the PyO3
+    # plan and its probes, the cfg probe, the cache key, the registry name, the
+    # Cargo build, the interpreter check and the module's record all read it,
+    # and nothing below reads `ENV` again. A task changing `ENV` meanwhile
+    # cannot make them describe different builds.
+    snapshot = BuildEnvSnapshot()
+
     opts = CrateBindingOptions(
         output_module_name = output_module_name,
         build_release = build_release,
@@ -3333,7 +3435,7 @@ function generate_bindings(crate_path::String;
 
     # Scan the crate
     @info "Scanning crate at $crate_path"
-    info = scan_crate(crate_path)
+    info = scan_crate(crate_path; cargo_env = snapshot_env(snapshot))
     @info "Found $(length(info.julia_functions)) functions and $(length(info.julia_structs)) structs"
 
     # A crate that carries only PyO3 attributes gets a generated wrapper crate
@@ -3344,11 +3446,12 @@ function generate_bindings(crate_path::String;
     # built as one, as a wrapper's dependency otherwise; #307 review).
     if crate_needs_pyo3_wrapper(info)
         plan = pyo3_link_plan(crate_path; features = features,
-                              default_features = default_features, release = build_release)
+                              default_features = default_features, release = build_release,
+                              snapshot = snapshot)
         wrapper = build_pyo3_wrapper(info; features = features,
                                      default_features = default_features,
                                      release = build_release, cache_enabled = cache_enabled,
-                                     plan = plan)
+                                     plan = plan, snapshot = snapshot)
         if wrapper === nothing
             # Under this build's own configuration the crate exposes nothing to
             # PyO3 (every marker is behind a feature that is off), so there is
@@ -3371,9 +3474,10 @@ function generate_bindings(crate_path::String;
             links_python = wrapper.plan.mode === :link_libpython
             python_inputs = if links_python
                 String[wrapper.plan.interpreter;
-                       _python_resolved(wrapper.plan.interpreter);
+                       _python_resolved(snapshot, wrapper.plan.interpreter);
                        wrapper.plan.runtime_libraries;
-                       (_python_config_consulted() ? last.(_python_config_selections()) : String[])]
+                       (_python_config_consulted(snapshot) ?
+                        last.(_python_config_selections(snapshot)) : String[])]
             else
                 String[]
             end
@@ -3392,19 +3496,21 @@ function generate_bindings(crate_path::String;
                                      build_options = crate_build_options(
                                          release = build_release, features = features,
                                          default_features = default_features,
-                                         kind = :pyo3_wrapper))
+                                         kind = :pyo3_wrapper),
+                                     snapshot = snapshot)
         end
     end
-    # One snapshot of the environment for everything below — the cfg probe,
-    # the cache key, the registry name, the build and the module's record — so
-    # a task changing `ENV` meanwhile cannot make them describe different
-    # builds (#474 review). Named once the name, which it decides, is known.
+    # The record of the build, from the snapshot, for everything below — the
+    # cfg probe, the cache key, the registry name, the build and the module's
+    # record (#474 review, #481). Named once the name, which it decides, is
+    # known.
     plain_kind = crate_has_cdylib(crate_path) ? :direct : :wrapper
-    snapshot = crate_build_record(crate_path, "";
+    record = crate_build_record(crate_path, "";
         build_options = crate_build_options(release = build_release, features = features,
                                             default_features = default_features,
-                                            kind = plain_kind))
-    build_env = _record_build_subprocess_env(snapshot)
+                                            kind = plain_kind),
+        snapshot = snapshot)
+    build_env = _record_build_subprocess_env(record, snapshot)
     info = _plain_scan_info(crate_path, info, features, default_features, build_release;
                             env = build_env)
 
@@ -3420,10 +3526,10 @@ function generate_bindings(crate_path::String;
     # previous library in the cache and handed it back — which also made the
     # load-time warning's advice wrong, since re-precompiling the package
     # rebuilt the bindings around the same stale artifact (#339 review).
-    build_env_snapshot = _plain_crate_build_env(snapshot)
+    build_env_snapshot = _plain_crate_build_env(record)
     cache_key = compute_crate_hash(info; release = build_release,
                                    features = features, default_features = default_features,
-                                   build_env = build_env_snapshot)
+                                   build_env = build_env_snapshot, snapshot = snapshot)
     cached_lib = cache_enabled ? get_cargo_cached_library(cache_key) : nothing
 
     lib_path = if cached_lib !== nothing && isfile(cached_lib)
@@ -3438,6 +3544,9 @@ function generate_bindings(crate_path::String;
                                          features = features,
                                          default_features = default_features,
                                          env = build_env)
+            # Before anything is cached: the interpreter pyo3 was configured
+            # for is still the one the key and the record name (#481).
+            _verify_build_interpreter(record, snapshot)
             # Cargo's own output under the crate's `target/`: durable, but the
             # next `cargo build` of the crate rewrites it, so with caching on
             # the module names the cache copy instead — which is what a module
@@ -3461,6 +3570,7 @@ function generate_bindings(crate_path::String;
             try
                 built = build_cargo_project(wrapper_project, release=build_release,
                                             policy=crate_wrapper_policy(), env=build_env)
+                _verify_build_interpreter(record, snapshot)
                 # The library must leave the wrapper project *here*: the
                 # `finally` below removes the whole project, the build output
                 # included, so anything that names a path inside it afterwards
@@ -3501,10 +3611,11 @@ function generate_bindings(crate_path::String;
     # the environment changed the cfg-selected exports (#339 review).
     lib_name = crate_library_name(info; release = build_release, features = features,
                                   default_features = default_features,
-                                  build_env = build_env_snapshot)
+                                  build_env = build_env_snapshot, snapshot = snapshot)
     return emit_crate_module(info, lib_path; module_name=output_module_name,
                              build_release=build_release, lib_name=lib_name,
-                             build_record = _record_named(snapshot, lib_name))
+                             build_record = _record_named(record, lib_name),
+                             snapshot = snapshot)
 end
 
 """
@@ -3549,11 +3660,16 @@ function _plain_scan_info(crate_path::AbstractString, info::CrateInfo,
                               features = _cargo_feature_args(features, default_features),
                               env = env)
     else
-        _wrapper_probe_cfg_text(path; features = features, default_features = default_features,
-                                release = release)
+        # Under the build's environment too: the wrapper root is probed as it
+        # is built (#481).
+        env === nothing ?
+            _wrapper_probe_cfg_text(path; features = features,
+                                    default_features = default_features, release = release) :
+            _wrapper_probe_cfg_text(path, env; features = features,
+                                    default_features = default_features, release = release)
     end
     isempty(cfg_text) && return info
-    return scan_crate(path; cfg = :cargo, cfg_text = cfg_text)
+    return scan_crate(path; cfg = :cargo, cfg_text = cfg_text, cargo_env = env)
 end
 
 """
@@ -3698,10 +3814,11 @@ different toolchain — do not collide on one entry.
 """
 crate_library_name(info::CrateInfo; release::Bool = true, kind::AbstractString = "crate",
                    features::Vector{String} = String[], default_features::Bool = true,
-                   build_env::Vector{Pair{String, String}} = Pair{String, String}[]) =
+                   build_env::Vector{Pair{String, String}} = Pair{String, String}[],
+                   snapshot::BuildEnvSnapshot = BuildEnvSnapshot()) =
     "rust_crate_$(info.name)_$(artifact_short_id(compute_crate_hash(info; release = release,
         kind = kind, features = features, default_features = default_features,
-        build_env = build_env)))"
+        build_env = build_env, snapshot = snapshot)))"
 
 """
     compute_crate_hash(info::CrateInfo) -> String
@@ -3733,13 +3850,14 @@ function compute_crate_hash(info::CrateInfo; release::Bool = true,
                             kind::AbstractString = "crate",
                             features::Vector{String} = String[],
                             default_features::Bool = true,
-                            build_env::Vector{Pair{String, String}} = Pair{String, String}[])
+                            build_env::Vector{Pair{String, String}} = Pair{String, String}[],
+                            snapshot::BuildEnvSnapshot = BuildEnvSnapshot())
     # The dependency digest first, and deliberately so: resolving the graph
     # lets Cargo write `Cargo.lock` into the crate directory (exactly as the
     # build that follows would), and `Cargo.lock` is one of the files
     # `crate_content_digest` hashes. Computing the content digest first would
     # make the very first call disagree with every later one.
-    deps_digest = artifact_path_dependency_digest(info.path)
+    deps_digest = artifact_path_dependency_digest(info.path; env = snapshot_env(snapshot))
     # `kind` and the feature set are what separates a #275 Phase-2 wrapper
     # build from a plain `@rust_crate` build of the same crate, and one feature
     # set from another: the wrapper's `lib.rs`, its dependency's resolved
@@ -3756,7 +3874,10 @@ function compute_crate_hash(info::CrateInfo; release::Bool = true,
     # `artifact_build_env()` plus its own link flags, because it inherits the
     # ambient `RUSTFLAGS` and the rest of the #282 allowlist — two builds under
     # different ambient flags are different binaries and must not share a key.
-    env = Pair{String, String}["cargo-config" => _cargo_config_digest(ENV; dir = info.path)]
+    # The Cargo configuration `snapshot`'s `CARGO_HOME` selects: a build passes
+    # its own, so the key and the build read one environment (#481).
+    env = Pair{String, String}["cargo-config" =>
+                               _cargo_config_digest(snapshot_env(snapshot); dir = info.path)]
     append!(env, build_env)
     extra = Pair{String, String}["name" => info.name, "version" => info.version]
     # A workspace member's build is decided by files outside its directory:
@@ -4230,9 +4351,12 @@ function write_bindings_to_file(crate_path::String, output_path::String;
     features::Vector{String} = String[],
     default_features::Bool = true
 )
+    # ONE snapshot of the environment for the whole build, as in
+    # `generate_bindings` (#481): nothing below reads `ENV`.
+    snapshot = BuildEnvSnapshot()
     # Scan and build the crate
     @info "Scanning crate at $crate_path"
-    info = scan_crate(crate_path)
+    info = scan_crate(crate_path; cargo_env = snapshot_env(snapshot))
     @info "Found $(length(info.julia_functions)) functions and $(length(info.julia_structs)) structs"
 
     # A PyO3-only crate is bound through a generated wrapper crate, exactly as
@@ -4244,10 +4368,11 @@ function write_bindings_to_file(crate_path::String, output_path::String;
     links_python = false
     if crate_needs_pyo3_wrapper(info)
         plan = pyo3_link_plan(crate_path; features = features,
-                              default_features = default_features, release = build_release)
+                              default_features = default_features, release = build_release,
+                              snapshot = snapshot)
         wrapper = build_pyo3_wrapper(info; features = features,
                                      default_features = default_features,
-                                     release = build_release, plan = plan)
+                                     release = build_release, plan = plan, snapshot = snapshot)
         # `nothing` when this build exposes nothing to PyO3; the plain path
         # then binds the crate under the configuration it builds, like any
         # other crate (`_plain_scan_info` below, #307 review).
@@ -4263,14 +4388,15 @@ function write_bindings_to_file(crate_path::String, output_path::String;
     # shape of that build (#307 review), as `generate_bindings` does.
     # One snapshot of the environment for the probe, the build and the file's
     # record (#474 review), as in `generate_bindings`.
-    snapshot = nothing
+    record = nothing
     build_env = nothing
     if isempty(wrapper_lib_path)
-        snapshot = crate_build_record(crate_path, "";
+        record = crate_build_record(crate_path, "";
             build_options = crate_build_options(release = build_release, features = features,
                 default_features = default_features,
-                kind = crate_has_cdylib(crate_path) ? :direct : :wrapper))
-        build_env = _record_build_subprocess_env(snapshot)
+                kind = crate_has_cdylib(crate_path) ? :direct : :wrapper),
+            snapshot = snapshot)
+        build_env = _record_build_subprocess_env(record, snapshot)
         info = _plain_scan_info(crate_path, info, features, default_features, build_release;
                                 env = build_env)
     end
@@ -4279,16 +4405,19 @@ function write_bindings_to_file(crate_path::String, output_path::String;
     # build and with the registry name, as it does for a wrapper build.
     lib_name === nothing &&
         (lib_name = crate_library_name(info; release = build_release,
-                                       features = features, default_features = default_features))
+                                       features = features, default_features = default_features,
+                                       snapshot = snapshot))
     build_kind = !isempty(wrapper_lib_path) ? :pyo3_wrapper :
                  crate_has_cdylib(crate_path) ? :direct : :wrapper
     lib_path = if !isempty(wrapper_lib_path)
         wrapper_lib_path
     elseif crate_has_cdylib(crate_path)
         @info "Building crate directly (already has cdylib crate-type)..."
-        build_crate_directly(info, build_release;
-                             features = features, default_features = default_features,
-                             env = build_env)
+        built = build_crate_directly(info, build_release;
+                                     features = features, default_features = default_features,
+                                     env = build_env)
+        _verify_build_interpreter(record, snapshot)
+        built
     else
         # Create wrapper crate and build
         opts = CrateBindingOptions(
@@ -4312,6 +4441,7 @@ function write_bindings_to_file(crate_path::String, output_path::String;
         try
             built = build_cargo_project(wrapper_project, release=build_release,
                                         policy=crate_wrapper_policy(), env=build_env)
+            _verify_build_interpreter(record, snapshot)
             # The library must leave the wrapper project before the `finally`
             # deletes it, as in `generate_bindings`: the file's `_LIB_PATH`
             # would otherwise name a file that no longer exists (#461). With a
@@ -4352,7 +4482,8 @@ function write_bindings_to_file(crate_path::String, output_path::String;
         build_options = crate_build_options(release = build_release, features = features,
                                             default_features = default_features,
                                             kind = build_kind),
-        build_record = snapshot === nothing ? nothing : _record_named(snapshot, lib_name),
+        build_record = record === nothing ? nothing : _record_named(record, lib_name),
+        snapshot = snapshot,
     )
 
     # Write to file
@@ -4410,8 +4541,11 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     pin_library::Bool = false,
     python::Bool = false,
     build_options::NamedTuple = crate_build_options(release = build_release),
-    build_record::Union{Nothing, CrateBuildRecord} = nothing
+    build_record::Union{Nothing, CrateBuildRecord} = nothing,
+    snapshot::Union{Nothing, BuildEnvSnapshot} = nothing
 )
+    # As `emit_crate_module`: the build's snapshot, or one of its own (#481).
+    snapshot === nothing && (snapshot = BuildEnvSnapshot())
     # Determine module name
     mod_name = if module_name !== nothing
         module_name
@@ -4456,11 +4590,11 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     # Every input of this build as one record, the value the expression
     # emitter splices, from the same call (`crate_build_record`, #474): what a
     # hot reload rebuilds from, and the registry name.
-    record_name = lib_name === nothing ? crate_library_name(info; release = build_release) :
-                  lib_name
+    record_name = lib_name === nothing ?
+        crate_library_name(info; release = build_release, snapshot = snapshot) : lib_name
     build_record = something(build_record,
         crate_build_record(info.path, record_name; build_options = build_options,
-                           python = python))
+                           python = python, snapshot = snapshot))
     build_record.lib_name == record_name || throw(ArgumentError(
         "the build record names `$(build_record.lib_name)`, not `$(record_name)`"))
     push!(lines, "const _BUILD_RECORD = $(repr(build_record))")

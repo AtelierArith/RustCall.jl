@@ -18,3 +18,14 @@ The explicit-binding runtime contract is:
 Modules = [RustCall]
 Pages = [joinpath("src", "crate_bindings.jl")]
 ```
+
+## One environment per build (`src/build_env_snapshot.jl`)
+
+Every crate build — `@rust_crate`, `write_bindings_to_file`, the PyO3 wrapper
+and host paths, a hot reload — reads the environment through one
+`RustCall.BuildEnvSnapshot` taken at its start (#481).
+
+```@autodocs
+Modules = [RustCall]
+Pages = [joinpath("src", "build_env_snapshot.jl")]
+```

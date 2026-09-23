@@ -279,6 +279,10 @@ include("loadpolicy.jl")
 # toolchain_fingerprint() from manifest.jl is only called at run time.
 include("artifact_id.jl")
 
+# One environment snapshot per crate build (#481): the type every build path
+# reads the environment through. Needs nothing at load time.
+include("build_env_snapshot.jl")
+
 include("memory.jl")
 
 # Phase 3: External library integration

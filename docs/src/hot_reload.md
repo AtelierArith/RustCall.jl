@@ -164,10 +164,16 @@ The build environment is compared at two points:
   stays loaded, `trigger_reload` returns `false`, and the callback receives
   `(lib_name, false, err)` with an `ArgumentError`.
 
-After that check, the rescan and the build take the recorded variables from
-the record, not from the live `ENV`. A task that changes `RUSTFLAGS` (for
-example with `withenv`) while a reload is running therefore cannot change what
-gets built.
+Each reload takes **one snapshot** of the environment when it starts, and the
+check, the rescan and the build all read that snapshot, never the live `ENV`.
+The rescan and the build take the recorded variables from the record, and
+anything else they need, such as `PATH` and `CARGO_HOME`, from the snapshot.
+A task that changes `RUSTFLAGS` or `PATH` (for example with `withenv`) while a
+reload is running therefore cannot change what gets built, and cannot make the
+check and the build disagree. When the crate depends on pyo3, the reload also
+asks the recorded Python interpreter again after the build. If the interpreter
+was replaced in place during the build, the reload fails and the previous
+library stays loaded.
 
 To reload again, restore the environment, or load the crate again with
 `@rust_crate` under the new one and enable hot reload on that module. See also
