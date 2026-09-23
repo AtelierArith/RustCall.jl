@@ -296,6 +296,118 @@ fn arg_pairs(sig: &syn::Signature) -> Vec<(Ident, Type)> {
         .collect()
 }
 
+/// The part of an item's generics its `extern "C"` wrapper declares again
+/// (#477): the lifetime parameters, with their bounds, and the `where` clause.
+///
+/// The wrapper passes a struct-reference argument through as written, so
+/// `fn f<'a>(&self, other: &'a Buf)` gives it `other: &'a Buf`, which names
+/// `'a`; without the declaration the expanded block did not compile. Declaring
+/// rather than erasing keeps the method's own relations (`'b: 'a`) — an erased
+/// pair of independent lifetimes could not satisfy them. Lifetimes are
+/// late-bound on the wrapper exactly as on the method, so the entry point is
+/// still one non-generic `#[no_mangle]` symbol. [`generate_wrapper`] declares
+/// only the ones its own signature names ([`declared_lifetimes`]): a lifetime
+/// only a string-lowered argument or return named (`s: &'a str` becomes a
+/// pointer and a length) is left to inference, as before.
+///
+/// An item with a type or const parameter never gets a wrapper of its own — it
+/// is refused, or monomorphized first — so none is kept here, and neither is
+/// the `where` clause, whose predicates could name one.
+fn lifetime_generics(generics: &syn::Generics) -> syn::Generics {
+    let params: syn::punctuated::Punctuated<syn::GenericParam, syn::Token![,]> = generics
+        .params
+        .iter()
+        .filter(|p| matches!(p, syn::GenericParam::Lifetime(_)))
+        .cloned()
+        .collect();
+    let only_lifetimes = params.len() == generics.params.len();
+    syn::Generics {
+        lt_token: (!params.is_empty()).then(Default::default),
+        gt_token: (!params.is_empty()).then(Default::default),
+        params,
+        where_clause: if only_lifetimes {
+            generics.where_clause.clone()
+        } else {
+            None
+        },
+    }
+}
+
+/// The lifetime names (`a` for `'a`) spelled anywhere in `tokens`.
+fn lifetime_names(tokens: TokenStream2, out: &mut std::collections::BTreeSet<String>) {
+    let mut after_quote = false;
+    for tree in tokens {
+        match tree {
+            proc_macro2::TokenTree::Punct(p) => {
+                after_quote = p.as_char() == '\'' && p.spacing() == proc_macro2::Spacing::Joint;
+                continue;
+            }
+            proc_macro2::TokenTree::Ident(i) if after_quote => {
+                out.insert(i.to_string());
+            }
+            proc_macro2::TokenTree::Group(g) => lifetime_names(g.stream(), out),
+            _ => {}
+        }
+        after_quote = false;
+    }
+}
+
+/// The part of `lifetimes` ([`lifetime_generics`]) a wrapper whose signature is
+/// `signature` declares: the lifetimes that signature names, their bounds
+/// among themselves, and the `where` predicates that name nothing else. A
+/// relation to a lifetime the signature does not name is left to inference at
+/// the call, where it is satisfied or not exactly as it was before (#477).
+fn declared_lifetimes(lifetimes: &syn::Generics, signature: TokenStream2) -> syn::Generics {
+    let mut used = std::collections::BTreeSet::new();
+    lifetime_names(signature, &mut used);
+    let named = |l: &syn::Lifetime| l.ident == "static" || used.contains(&l.ident.to_string());
+    let params: syn::punctuated::Punctuated<syn::GenericParam, syn::Token![,]> = lifetimes
+        .params
+        .iter()
+        .filter_map(|p| match p {
+            syn::GenericParam::Lifetime(lp) if named(&lp.lifetime) => {
+                let mut lp = lp.clone();
+                lp.bounds = lp.bounds.into_iter().filter(|b| named(b)).collect();
+                if lp.bounds.is_empty() {
+                    lp.colon_token = None;
+                }
+                Some(syn::GenericParam::Lifetime(lp))
+            }
+            _ => None,
+        })
+        .collect();
+    let predicates: syn::punctuated::Punctuated<syn::WherePredicate, syn::Token![,]> = lifetimes
+        .where_clause
+        .iter()
+        .flat_map(|w| w.predicates.iter())
+        .filter_map(|p| match p {
+            syn::WherePredicate::Lifetime(pl) if named(&pl.lifetime) => {
+                let mut pl = pl.clone();
+                pl.bounds = pl.bounds.into_iter().filter(|b| named(b)).collect();
+                (!pl.bounds.is_empty()).then_some(syn::WherePredicate::Lifetime(pl))
+            }
+            syn::WherePredicate::Lifetime(_) => None,
+            other => {
+                let mut names = std::collections::BTreeSet::new();
+                lifetime_names(quote! { #other }, &mut names);
+                names
+                    .iter()
+                    .all(|n| n == "static" || used.contains(n))
+                    .then(|| other.clone())
+            }
+        })
+        .collect();
+    syn::Generics {
+        lt_token: (!params.is_empty()).then(Default::default),
+        gt_token: (!params.is_empty()).then(Default::default),
+        params,
+        where_clause: (!predicates.is_empty()).then(|| syn::WhereClause {
+            where_token: Default::default(),
+            predicates,
+        }),
+    }
+}
+
 /// Wrapper-side view of one argument: `String` / `&str` become a
 /// `(ptr, len)` byte pair (`conversion` rebuilds the Rust value under the
 /// argument's own name, lossily for invalid UTF-8, never through
@@ -496,6 +608,13 @@ pub(crate) struct WrapperSpec {
     pub cfg_attrs: Vec<Attribute>,
     pub receiver: Option<WrapperReceiver>,
     pub args: Vec<(Ident, Type)>,
+    /// The named lifetimes the wrapped item declares (`fn f<'a>`), with their
+    /// bounds and lifetime `where` predicates, declared again on the wrapper
+    /// (#477): an argument passed through as written (`other: &'a Buf`) names
+    /// them. Type and const parameters never reach a wrapper — a generic item
+    /// is refused or monomorphized first — so [`lifetime_generics`] keeps only
+    /// lifetimes. Empty where the arguments are spelled from a manifest.
+    pub lifetimes: syn::Generics,
     pub ret: WrapperReturn,
     pub target: CallTarget,
     /// Whether this wrapper may take a boundary guard from the file-level
@@ -924,12 +1043,12 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
         cfg_attrs,
         receiver,
         args,
+        lifetimes,
         ret,
         target,
         call_suffix,
         panic_hook,
     } = spec;
-
     let taken: Vec<String> = args.iter().map(|(n, _)| n.to_string()).collect();
     let ptr = fresh_ident("ptr", &taken);
     let self_obj = fresh_ident("self_obj", &taken);
@@ -952,6 +1071,15 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
         conversions.extend(conversion);
         call_args.push(quote! { #name });
     }
+    // The lifetimes the wrapper's own signature names — a struct reference
+    // passed through as written, a plain return — are declared on it (#477).
+    let signature = match &ret {
+        WrapperReturn::Plain(ty) => quote! { #(#wrapper_args)* #ty },
+        WrapperReturn::Boxed(path) => quote! { #(#wrapper_args)* #path },
+        _ => quote! { #(#wrapper_args)* },
+    };
+    let lifetimes = declared_lifetimes(&lifetimes, signature);
+    let (lifetimes, _, lifetime_where) = lifetimes.split_for_impl();
 
     let self_binding = match &receiver {
         None => quote! {},
@@ -998,7 +1126,7 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
             quote! {
                 #(#cfg_attrs)*
                 #[no_mangle]
-                pub extern "C" fn #symbol(#(#wrapper_args),*) {
+                pub extern "C" fn #symbol #lifetimes (#(#wrapper_args),*) #lifetime_where {
                     #guarded
                 }
             }
@@ -1029,7 +1157,7 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
             quote! {
                 #(#cfg_attrs)*
                 #[no_mangle]
-                pub extern "C" fn #symbol(#(#wrapper_args),*) -> ::std::mem::MaybeUninit<#ty> {
+                pub extern "C" fn #symbol #lifetimes (#(#wrapper_args),*) -> ::std::mem::MaybeUninit<#ty> #lifetime_where {
                     #guarded
                 }
             }
@@ -1051,7 +1179,7 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
             quote! {
                 #(#cfg_attrs)*
                 #[no_mangle]
-                pub extern "C" fn #symbol(#(#wrapper_args),*) -> *mut #ty {
+                pub extern "C" fn #symbol #lifetimes (#(#wrapper_args),*) -> *mut #ty #lifetime_where {
                     #guarded
                 }
             }
@@ -1095,7 +1223,7 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
             quote! {
                 #(#cfg_attrs)*
                 #[no_mangle]
-                pub extern "C" fn #symbol(#(#wrapper_args),*) -> #helper {
+                pub extern "C" fn #symbol #lifetimes (#(#wrapper_args),*) -> #helper #lifetime_where {
                     #guarded
                 }
             }
@@ -1126,7 +1254,7 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
             quote! {
                 #(#cfg_attrs)*
                 #[no_mangle]
-                pub extern "C" fn #symbol(#(#wrapper_args),*) -> #helper {
+                pub extern "C" fn #symbol #lifetimes (#(#wrapper_args),*) -> #helper #lifetime_where {
                     #guarded
                 }
             }
@@ -1172,7 +1300,7 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
             quote! {
                 #(#cfg_attrs)*
                 #[no_mangle]
-                pub extern "C" fn #symbol(#(#wrapper_args),*) -> #name {
+                pub extern "C" fn #symbol #lifetimes (#(#wrapper_args),*) -> #name #lifetime_where {
                     #guarded
                 }
             }
@@ -1210,7 +1338,7 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
             quote! {
                 #(#cfg_attrs)*
                 #[no_mangle]
-                pub extern "C" fn #symbol(#(#wrapper_args),*) -> #name {
+                pub extern "C" fn #symbol #lifetimes (#(#wrapper_args),*) -> #name #lifetime_where {
                     #guarded
                 }
             }
@@ -1441,6 +1569,7 @@ fn free_function_wrapper(
         symbol,
         cfg_attrs: cfgs,
         receiver: None,
+        lifetimes: lifetime_generics(&func.sig.generics),
         args: arg_pairs(&func.sig),
         ret,
         target: CallTarget::Free(name.into()),
@@ -1591,7 +1720,8 @@ pub fn transform_function(
 /// failed inside generated code. Crate extraction already reports such an item
 /// as not exported; this makes the build say why, at the item. Lifetime
 /// parameters are not refused: `fn f<'a>(s: &'a str) -> &'a str` lowers to a
-/// wrapper that names no lifetime at all.
+/// wrapper that names no lifetime at all, and one a passed-through argument
+/// still names (`other: &'a Buf`) is declared on the wrapper (#477).
 ///
 /// The inline flavour never reaches this: `rust"""` emits a generic function
 /// or struct unwrapped and monomorphizes it on demand through `specialize`.
@@ -1628,29 +1758,40 @@ fn generic_param_list(generics: &syn::Generics) -> Vec<String> {
         .collect()
 }
 
-/// Whether a method of a **non-generic** inline struct is generic — over a type
-/// or a const parameter, or through `impl Trait` — and so gets no wrapper
-/// (#471). The expander leaves such a method out of the manifest, since there
-/// is no entry point for Julia to bind, and [`inline_generic_method_error`]
-/// says why at the method.
+/// Whether a method of an inline struct is generic in its own right — over a
+/// type or a const parameter of the method, or through `impl Trait` — and so
+/// gets no wrapper (#471, #477). The expander leaves such a method out of the
+/// manifest, since there is no entry point for Julia to bind, and
+/// [`inline_generic_method_error`] says why at the method.
+///
+/// Only the method's own parameters count: a method of a generic struct that
+/// uses just the struct's parameters (`impl<T> W<T> { fn get(&self) -> T }`)
+/// is instantiated with the struct, and lifetimes never stop a wrapper.
 pub fn inline_method_is_generic(m: &MethodModel) -> bool {
     crate::types::has_type_params(&m.func.sig.generics) || crate::types::has_impl_trait(&m.func.sig)
 }
 
-/// Refuse a generic method of a non-generic inline struct (#471).
+/// Refuse a method of an inline struct that is generic in its own right
+/// (#471, #477).
 ///
-/// `rust"""` wraps every `pub fn` of the struct's inherent impl in an
+/// `rust"""` wraps every `pub fn` of a concrete struct's inherent impl in an
 /// `extern "C"` entry point with a fixed symbol, which needs concrete types; a
 /// method generic over `T` used to get a wrapper naming the unbound `T`, and
-/// rustc failed inside generated code. Monomorphizing it on demand would need a
-/// generic path the struct's other, fixed-symbol methods do not have (a generic
-/// struct's wrappers are instantiated per struct type, a generic free function
-/// per call; neither binds a parameter only the method has), so the block is
+/// rustc failed inside generated code. A generic struct's wrappers are
+/// instantiated per struct type, which binds the struct's parameters and no
+/// others, so a method parameter `U` of `impl<T> W<T> { fn f<U>(..) }` stayed
+/// unbound there in the same way. Monomorphizing either on demand would need a
+/// path that binds a parameter only the method has (a generic free function is
+/// instantiated per call, a generic struct per struct type), so the block is
 /// refused at the method, naming what works instead.
 ///
 /// The caller gates the error by the method's effective `#[cfg]`, so it fires
 /// only where the method exists.
-fn inline_generic_method_error(struct_name: &Ident, m: &MethodModel) -> Option<TokenStream2> {
+fn inline_generic_method_error(
+    struct_name: &Ident,
+    struct_is_generic: bool,
+    m: &MethodModel,
+) -> Option<TokenStream2> {
     if !inline_method_is_generic(m) {
         return None;
     }
@@ -1668,14 +1809,25 @@ fn inline_generic_method_error(struct_name: &Ident, m: &MethodModel) -> Option<T
             syn::spanned::Spanned::span(&sig.generics),
         )
     };
-    let msg = format!(
-        "`{struct_name}::{method}` {what}: every `pub fn` of a `#[julia]` struct in a \
-         `rust\"\"\"` block gets an `extern \"C\"` entry point, which needs concrete types, and \
-         RustCall monomorphizes on demand only generic free functions and generic structs. \
-         Make it a generic free function, which RustCall instantiates for the argument types \
-         of each call, write one non-generic method per type Julia calls (it may delegate to \
-         the generic one), or drop `pub` if Julia does not call it (#471)."
-    );
+    let msg = if struct_is_generic {
+        format!(
+            "`{struct_name}::{method}` {what}: a generic `#[julia]` struct in a `rust\"\"\"` \
+             block has its methods instantiated per struct type, which binds the struct's own \
+             type parameters and no parameter only the method has. Make it a generic free \
+             function, which RustCall instantiates for the argument types of each call, write \
+             one method per type Julia calls using only the struct's parameters (it may \
+             delegate to the generic one), or drop `pub` if Julia does not call it (#477)."
+        )
+    } else {
+        format!(
+            "`{struct_name}::{method}` {what}: every `pub fn` of a `#[julia]` struct in a \
+             `rust\"\"\"` block gets an `extern \"C\"` entry point, which needs concrete types, and \
+             RustCall monomorphizes on demand only generic free functions and generic structs. \
+             Make it a generic free function, which RustCall instantiates for the argument types \
+             of each call, write one non-generic method per type Julia calls (it may delegate to \
+             the generic one), or drop `pub` if Julia does not call it (#471)."
+        )
+    };
     // A bare `compile_error!`, not `syn::Error::to_compile_error`: that spells
     // it `::core::compile_error!`, which does not resolve in the edition-2015
     // crate a `rust"""` block is compiled as (`rustc` with no `--edition`).
@@ -2323,7 +2475,7 @@ pub fn inline_foreign_method_wrapper(
         .func
         .attrs
         .splice(0..0, m.enclosing_cfg.iter().cloned());
-    if let Some(error) = inline_generic_method_error(struct_name, m) {
+    if let Some(error) = inline_generic_method_error(struct_name, false, m) {
         return gated_error(&cfg_attrs(&gated.func.attrs), error);
     }
     method_wrapper_at_impl_site(
@@ -2555,7 +2707,7 @@ pub fn inline_struct_wrappers(
             .func
             .attrs
             .splice(0..0, cfgs.iter().chain(m.enclosing_cfg.iter()).cloned());
-        if let Some(error) = inline_generic_method_error(struct_name, m) {
+        if let Some(error) = inline_generic_method_error(struct_name, false, m) {
             out.extend(gated_error(&cfg_attrs(&gated.func.attrs), error));
             continue;
         }
@@ -2646,6 +2798,7 @@ fn method_spec(
         symbol,
         cfg_attrs: cfg_attrs(&m.func.attrs),
         receiver,
+        lifetimes: lifetime_generics(&m.func.sig.generics),
         args: arg_pairs(&m.func.sig),
         ret,
         target,
@@ -2783,6 +2936,27 @@ pub fn generic_method_wrapper_name(struct_stem: &str, method: &str) -> String {
     format!("{struct_stem}_{method}")
 }
 
+/// The refusals of a generic inline struct's methods that are generic in their
+/// own right (`impl<T> W<T> { pub fn f<U>(..) }`, #477), which
+/// [`inline_generic_wrappers`] leaves unwrapped. Each is gated like the wrapper
+/// it replaces — by the struct's `#[cfg]`, the method's block's and its own —
+/// so it fires only where the method exists. The expander emits them next to
+/// the struct.
+pub fn inline_generic_method_refusals(model: &StructModel) -> TokenStream2 {
+    let struct_name = &model.item.ident;
+    let mut out = TokenStream2::new();
+    for m in &model.methods {
+        let Some(error) = inline_generic_method_error(struct_name, true, m) else {
+            continue;
+        };
+        let mut cfgs = cfg_attrs(&model.item.attrs);
+        cfgs.extend(m.enclosing_cfg.iter().cloned());
+        cfgs.extend(cfg_attrs(&m.func.attrs));
+        out.extend(gated_error(&cfgs, error));
+    }
+    out
+}
+
 /// Generate the generic wrapper functions of a generic inline struct living
 /// under `module_path`. They are not compiled into the main library; Julia
 /// registers them for on-demand monomorphization through `specialize`.
@@ -2813,7 +2987,14 @@ pub fn inline_generic_wrappers(model: &StructModel, module_path: &[String]) -> V
     };
     let mut wrappers = Vec::new();
 
-    for m in &model.methods {
+    // A method generic in its own right gets no wrapper: instantiating the
+    // struct binds only the struct's parameters (#477). The expander emits
+    // [`inline_generic_method_refusals`] for it instead.
+    for m in model
+        .methods
+        .iter()
+        .filter(|m| !inline_method_is_generic(m))
+    {
         let method_name = &m.func.sig.ident;
         let wrapper_name = format_ident!(
             "{}",

@@ -235,6 +235,9 @@ method with a `compile_error!` that names it (#471). Make it a generic free
 function, write a non-generic method per type Julia calls that delegates to it,
 or drop its `pub`; see
 [Struct Mapping](struct_mapping.md#Generic-methods-of-a-non-generic-struct).
+A method of a generic struct with parameters of its own
+(`impl<T> Wrap<T> { pub fn pair<U>(..) }`) is refused the same way (#477):
+instantiating the struct binds only `T`.
 
 ## API Reference
 

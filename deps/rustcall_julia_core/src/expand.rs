@@ -18,8 +18,8 @@ use syn::{Item, Visibility};
 use crate::attrs::{rustcall_attribute, strip_julia_struct_derive, strip_rustcall_attrs};
 use crate::cfg::{predicate_string, CfgSet};
 use crate::codegen::{
-    inline_generic_wrappers, inline_struct_wrappers, panic_hook_items, transform_function,
-    PanicHook,
+    inline_generic_method_refusals, inline_generic_wrappers, inline_struct_wrappers,
+    panic_hook_items, transform_function, PanicHook,
 };
 use crate::extract::{fn_args, function_entry};
 use crate::manifest::{Attribute, Field, Manifest, Method, Mode, Struct};
@@ -216,6 +216,8 @@ fn expand_items(
                         let f: syn::File = syn::parse_str(&w.source)?;
                         out.extend(f.items);
                     }
+                    // A method generic in its own right is refused (#477).
+                    out.extend(items_of(inline_generic_method_refusals(model))?);
                     manifest.structs.push(entry);
                 } else {
                     let (tokens, meta) = inline_struct_wrappers(model, module_path);
@@ -352,10 +354,11 @@ fn methods_of(
     model
         .methods
         .iter()
-        // A generic method of a concrete struct is refused at the method and
-        // gets no wrapper (#471), so there is nothing for Julia to bind. A
-        // generic struct's methods are all instantiated through `specialize`.
-        .filter(|m| !symbols || !crate::codegen::inline_method_is_generic(m))
+        // A method generic in its own right is refused at the method and gets
+        // no wrapper (#471 for a concrete struct, #477 for a generic one, whose
+        // instantiation binds only the struct's parameters), so there is
+        // nothing for Julia to bind.
+        .filter(|m| !crate::codegen::inline_method_is_generic(m))
         .map(|m| {
             let shape = crate::extract::method_return_shape(struct_name, &m.func, symbols);
             let returns_self = matches!(

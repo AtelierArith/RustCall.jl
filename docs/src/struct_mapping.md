@@ -311,9 +311,19 @@ impl Acc {
 pub fn echo<T: Copy>(x: T) -> T { x }
 ```
 
+The same holds for a method of a [generic struct](#Generic-Structs) that has
+parameters of its own: `impl<T> Wrap<T> { pub fn pair<U>(&self, u: U) -> U }`
+is refused at the method (#477), because instantiating `Wrap{Int32}` binds `T`
+and nothing binds `U`. Methods that use only the struct's parameters are
+instantiated with it as before.
+
 Lifetime parameters (`pub fn pick<'a>(&'a self, s: &'a str) -> usize`) are not
-generics in this sense and are bound as usual. The `#[julia]` proc macro in a
-crate refuses a generic method the same way (#462).
+generics in this sense and are bound as usual. A named lifetime on a struct
+reference (`pub fn sum<'a>(&self, other: &'a Buf) -> i32`) is declared on the
+generated wrapper, bounds included (`<'a, 'b: 'a>`, `where 'b: 'a`), so such a
+method compiles (#477); from Julia the reference is passed as the other
+object's pointer, `sum(a, b.ptr)`. The `#[julia]` proc macro in a crate
+refuses a generic method the same way (#462).
 
 ## Static Methods
 
