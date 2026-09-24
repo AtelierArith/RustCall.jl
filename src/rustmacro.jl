@@ -238,8 +238,10 @@ function _resolve_lib(mod::Module, lib_name::String)
             # registered under, so the next `_resolve_lib` does not walk the
             # reload path all over again.
             _alias_reloaded_library(mod, lname, actual)
-            libs[actual] = code
-            delete!(libs, lname)
+            # The key and the block's recorded order move together, in one
+            # transaction: a concurrent first call that saw the new key without
+            # its order ranked the module's newest block last (#520 review).
+            _rebind_module_block!(mod, libs, lname, actual, code)
         end
     end
 
@@ -335,23 +337,98 @@ Call a Rust function with dynamic type dispatch.
 Automatically handles generic functions by monomorphizing them.
 """
 function _rust_call_dynamic(lib_name::String, func_name::String, args...)
-    # Check if this is a generic function
-    if is_generic_function(func_name)
-        # Handle as generic function - monomorphize and call
-        return call_generic_function(func_name, args...)
+    # One resolution order for every `@rust` form (#520): `resolve_rust_call`
+    # decides whether `func_name` is a generic to specialize or a function to
+    # call — here with `lib_name` as the caller's own library. A resolved
+    # target is one snapshot: pointer, panic channel and return type from the
+    # same generation of the same library (#277).
+    resolution = resolve_rust_call(nothing, lib_name, func_name)
+    resolution isa GenericFunctionInfo && return call_generic_function(resolution, args...)
+    _, target = resolution
+    return _dispatch_with_target(target, lib_name, func_name, args...)
+end
+
+"""
+    resolve_rust_call(mod, lib_name, func_name) -> Union{GenericFunctionInfo, Tuple{Int, CallTarget}}
+
+What `@rust func_name(...)` called from `mod` reaches — **the one place that
+decides it**, for every form: typed and untyped, generic and not, `lib::f`
+qualified or not (#520). Returns the generic registration to specialize, or the
+epoch sampled before resolving together with the resolved snapshot.
+
+The order:
+
+1. **The caller's own blocks.** For an unqualified call, every library a
+   `rust\"\"\"` block of `mod` loaded, **most recently recorded first**; for
+   `lib::f`, that library alone (and, with `mod === nothing` — the entry points
+   that take a library name — just `lib_name`). A block defines `func_name`
+   either as a function its library exports — asked of that library alone,
+   `resolve_call_target(...; fallback = false)` — or as a generic it
+   registered (`GENERIC_FUNCTIONS_BY_LIB`), and each block is asked about
+   **both kinds together**: the first block that defines the name answers,
+   with whichever kind it defines. So a later block redefines a name for its
+   module — a function or a generic, over a function or a generic — as the
+   module's active block always did for functions; one block cannot define
+   both (`_check_julia_name_clashes`).
+2. **The documented fallback** (`docs/src/generics.md`), only when none of the
+   caller's own blocks defines the name: a generic registered process-wide
+   under the bare name (`register_generic_function`, or another module's
+   block), then any other loaded library that exports it — the cross-block
+   call, which refuses two different libraries exporting it.
+
+The typed path used to try the symbol tables first and the generic registry
+only on failure, and the untyped path the other way round, both through a
+process-wide registry: an unrelated block's plain `f` shadowed a module's own
+generic `f` under `::T`, and that generic captured another module's untyped
+`@rust f(x)` (#520).
+
+`_resolve_lib` runs **first**, outside anything that could mistake its failure
+for a missing name: it replays a precompiled caller's recorded blocks, which is
+what registers that module's generics at all, and a block that fails to load
+must say so (#390 review). The epoch is sampled after it — restoring loads,
+and a load is a state write — and **before** anything is resolved, so a write
+landing in between leaves a published entry stale rather than current (#253).
+A caller that verifies the snapshot (`::T`) does so before publishing it.
+"""
+@noinline function resolve_rust_call(mod::Union{Module, Nothing}, lib_name::String,
+                                     func_name::String)
+    resolved, own = if mod === nothing
+        lib_name, String[lib_name]
+    else
+        restored = _resolve_lib(mod, lib_name)
+        restored, isempty(lib_name) ? _module_block_libraries(mod) : String[restored]
+    end
+    epoch = artifact_epoch()
+
+    for lib in own
+        # A generic row first only because it is a table read; one block
+        # never defines a function and a generic of one Julia name.
+        generic = get(GENERIC_FUNCTIONS_BY_LIB, (lib, func_name), nothing)
+        generic === nothing || return generic
+        target = resolve_call_target(lib, func_name; fallback = false)
+        target === nothing || return (epoch, target)
     end
 
-    # Regular function - use existing logic
-    # `@rust f(...)` names the Rust function; `#[julia]` exports the additive
-    # wrapper `rustcall_f` next to it (#279). `_resolve_call` resolves that per
-    # library and reports which library the pointer came from, so the return
-    # type is read from that same library and never borrowed from another one
-    # whose `f` has a different ABI.
-    # One snapshot: pointer and panic channel from the same generation of the
-    # same library. Resolving them separately let a reload land in between, so
-    # the call entered the retired image and read the replacement's channel.
-    target = resolve_call_target(lib_name, func_name)
-    return _dispatch_with_target(target, lib_name, func_name, args...)
+    generic = get(GENERIC_FUNCTION_REGISTRY, func_name, nothing)
+    generic === nothing || return generic
+    return (epoch, resolve_call_target(resolved, func_name))
+end
+
+# The libraries `mod`'s own `rust"""` blocks loaded, after `_resolve_lib` has
+# restored them, the most recently recorded first. A block with no recorded
+# order (a legacy caller's) sorts last, by name, so the order never depends on
+# hashing.
+#
+# The names and their order are read in **one** transaction, as
+# `_rebind_module_block!` writes them: two reads could straddle a rebind and
+# pair the old key with the new order, ranking the newest block last (#520
+# review).
+function _module_block_libraries(mod::Module)
+    snapshot = _module_block_snapshot(mod)
+    snapshot === nothing || return snapshot
+    libs = _module_binding(mod, :__RUSTCALL_LIBS)
+    libs === nothing && return String[]
+    return sort!(String[String(first(entry)) for entry in collect(libs)])
 end
 
 """
@@ -440,20 +517,35 @@ end
 Call a Rust function with explicit return type.
 """
 function _rust_call_typed(lib_name::String, func_name::String, ret_type::Type, args...)
-    local target
-    try
-        target = resolve_call_target(lib_name, func_name)
-    catch e
-        # If not found, check if it's a generic function that needs monomorphization
-        if is_generic_function(func_name)
-            @debug "Function not found in library, but is registered as generic" func_name
-            return call_generic_function(func_name, args...)
-        else
-            @debug "Function not found and is not registered as generic" func_name
-            rethrow(e)
-        end
-    end
+    # The same resolution order as every other `@rust` form (#520).
+    resolution = resolve_rust_call(nothing, lib_name, func_name)
+    resolution isa GenericFunctionInfo && return call_generic_function(resolution, args...)
+    _, target = resolution
+    return _call_resolved_typed(target, func_name, ret_type, args...)
+end
 
+"""
+    _rust_call_symbol(lib_name, symbol, ret_type, args...)
+
+Call the exported FFI symbol `symbol` — a generated wrapper such as
+`rustcall_S_scale` — with the return type its generator spliced in.
+
+Not a name `@rust` resolves: a generated wrapper already knows the exact symbol
+it calls, so it never goes through `resolve_rust_call`, whose job is to decide
+what a user-facing *name* means and which consults the generic registries
+first. Routing wrappers through it let a generic free function whose Julia
+name happened to equal a wrapper symbol (`fn rustcall_S_scale<T>` beside
+`S::scale`) capture the method call (#520 review). The symbol is resolved as
+the one snapshot `resolve_call_target` takes, starting at `lib_name`.
+"""
+function _rust_call_symbol(lib_name::String, symbol::String, ret_type::Type, args...)
+    target = resolve_call_target(lib_name, symbol)
+    return _call_resolved_typed(target, symbol, ret_type, args...)
+end
+
+# Call a resolved snapshot with a declared return type: the annotation check,
+# then the call and its panic channel, all from that one snapshot.
+function _call_resolved_typed(target, func_name::String, ret_type::Type, args...)
     # An annotation that contradicts the manifest is an error, not an override
     # (#245). `@rust f(x)::Float64` on a function the manifest records as
     # `-> i32` used to reinterpret the 32-bit result as a `Float64` and return
@@ -537,26 +629,23 @@ end
 
 `@rust f(a, b)` with this call site's snapshot cache (#253).
 
-The generic check stays on the slow path deliberately. A name registered as
-generic is routed to `call_generic_function` before anything is resolved, so it
-never populates the cache — which means a cache hit is by construction a name
-that already answered the generic question with "no", and the per-call
-registry lookup it used to cost is gone for everyone else.
+The generic question stays on the slow path deliberately. A name
+`resolve_rust_call` resolves to a generic is specialized and never populates the
+cache — so a cache hit is by construction a name that already answered it with
+"a function", and the per-call registry lookup is gone for everyone else. A
+generic registered later is a state write, which moves the epoch and sends the
+next call back through `resolve_rust_call`.
 """
 function _rust_call_dynamic_cached(cache::CallTargetCache, mod::Module, lib_name::String,
                                    func_name::String, args::Vararg{Any, N}) where {N}
     hit = cached_target_hit(cache)
     hit === nothing || return _dispatch_with_target(hit, hit.lib_name, func_name, args...)
-    # `_resolve_lib` first, before the generic check. It is what replays a
-    # precompiled caller's recorded blocks, and those blocks are what register
-    # the module's generic functions: asking `is_generic_function` before it has
-    # run answers "no" for every generic in a fresh process, and the symbol
-    # resolution below then fails on a name that only needed monomorphizing
-    # (#390 review). It used to run first by construction — the macro put it in
-    # the argument list, evaluated before the call.
-    resolved = _resolve_lib(mod, lib_name)
-    is_generic_function(func_name) && return call_generic_function(func_name, args...)
-    epoch, target = resolve_macro_call_target(resolved, func_name)
+    # The one resolution order (#520). It restores a precompiled caller's
+    # blocks first — they are what register the module's generics — and
+    # samples the epoch before it resolves anything (#253, #390 review).
+    resolution = resolve_rust_call(mod, lib_name, func_name)
+    resolution isa GenericFunctionInfo && return call_generic_function(resolution, args...)
+    epoch, target = resolution
     publish_call_target!(cache, epoch, target)
     return _dispatch_with_target(target, target.lib_name, func_name, args...)
 end
@@ -585,30 +674,19 @@ function _rust_call_typed_cached(cache::CallTargetCache, mod::Module, lib_name::
                                 target.channel, func_name)
 end
 
-# The `try` lives here rather than in the caller above, and that is the whole
-# reason this is a second function: a variable assigned inside a `try` block is
-# boxed, so keeping the generic-function fallback next to the fast path cost it
-# four allocations and 550 ns — fifty times the call it was making (#253).
+# Out of line: the slow half of the typed call site, which runs only when the
+# epoch moved or the annotation changed (#253).
 @noinline function _rust_call_typed_uncached(cache::CallTargetCache, mod::Module,
                                              lib_name::String, func_name::String,
                                              ::Type{R},
                                              args::Vararg{Any, N}) where {R, N}
-    # Outside the `try`, and before it: restoring a precompiled caller's blocks
-    # is not a symbol resolution, and a block that fails to compile or load must
-    # say so. Inside the `try` below, such a failure was caught and then hidden
-    # by the generic fallback whenever an *earlier* block had already registered
-    # a generic of this name — leaving the module half restored and the real
-    # error swallowed (#390 review).
-    resolved = _resolve_lib(mod, lib_name)
-    local epoch, target
-    try
-        epoch, target = resolve_macro_call_target(resolved, func_name)
-    catch e
-        # Same fallback as the uncached path: a name the libraries do not
-        # export may still be a generic awaiting monomorphization.
-        is_generic_function(func_name) && return call_generic_function(func_name, args...)
-        rethrow(e)
-    end
+    # The same resolution order as the untyped form (#520): the caller's own
+    # blocks — functions and generics together — then the documented fallback.
+    # It restores a precompiled caller's blocks before resolving, outside
+    # anything that could hide a block that fails to load (#390 review).
+    resolution = resolve_rust_call(mod, lib_name, func_name)
+    resolution isa GenericFunctionInfo && return call_generic_function(resolution, args...)
+    epoch, target = resolution
     # Checked here rather than on the fast path, and **before** publishing.
     #
     # Both inputs are fixed for as long as the entry lives — the snapshot is the

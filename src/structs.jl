@@ -1403,13 +1403,16 @@ end
 
 # The return type is a concrete `Type` spliced by the generator, not a Symbol
 # resolved here: the second lookup was a nine-entry table that turned every
-# small integer into `Any` (#276).
+# small integer into `Any` (#276). `func_name` is the method's exported wrapper
+# symbol, so it is resolved as a symbol (`_rust_call_symbol`) and never as a
+# name `@rust` resolves — a generic free function named like the wrapper must
+# not capture the method (#520 review).
 function _call_rust_method(lib_name::String, func_name::String, ptr::Ptr{Cvoid},
                            ret_type::Type, args...)
     if ptr == C_NULL
-        return _rust_call_typed(lib_name, func_name, ret_type, args...)
+        return _rust_call_symbol(lib_name, func_name, ret_type, args...)
     else
-        return _rust_call_typed(lib_name, func_name, ret_type, ptr, args...)
+        return _rust_call_symbol(lib_name, func_name, ret_type, ptr, args...)
     end
 end
 

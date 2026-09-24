@@ -53,6 +53,26 @@ result = @rust identity(Int32(42))::Int32  # => 42
 result = @rust identity(Float64(3.14))::Float64  # => 3.14
 ```
 
+### Which `f` a call reaches
+
+`@rust f(x)` resolves `f` the same way whether it is annotated or not, and
+whether `f` turns out to be generic or not:
+
+1. **The calling module's own `rust"""` blocks**, the most recently run first
+   (for `@rust lib::f(x)`, that library alone). Each block is asked whether it
+   exports a function `f` or registered a generic `f`, both at once, and the
+   first block that defines `f` answers — calling the function or
+   specializing the generic. So a later block of the module redefines `f`,
+   whichever kind either definition is.
+2. **Otherwise**, a generic registered process-wide under that name —
+   `register_generic_function`, or another module's block — and then a
+   function another loaded block exports (refused when two libraries do).
+
+So two modules may each define a generic `f`, or one a generic `f` and the
+other a plain `f`, and each module's `@rust f(x)` reaches its own.
+`call_generic_function("f", ...)` names no module and reads the process-wide
+registration: the one made last.
+
 ### Manual Registration
 
 You can also register a generic function by hand, from source text that is not
@@ -272,7 +292,8 @@ from source text.
 
 ### Registries
 
-- `GENERIC_FUNCTION_REGISTRY` - Maps function names to `GenericFunctionInfo`
+- `GENERIC_FUNCTION_REGISTRY` - Maps function names to `GenericFunctionInfo` (process-wide: the last registration of a name)
+- `GENERIC_FUNCTIONS_BY_LIB` - Maps `(library name, function name)` to the generic a `rust"""` block's library registered; what a call from that block's module resolves through
 - `MONOMORPHIZED_FUNCTIONS` - Maps `(function_name, type_params_tuple)` to `FunctionInfo`
 
 ## Examples

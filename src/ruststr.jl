@@ -214,30 +214,7 @@ end
 end
 
 """
-    resolve_macro_call_target(lib_name, func_name) -> (epoch, CallTarget)
-
-Resolve an `@rust` call site's snapshot **without** publishing it, returning the
-epoch it was resolved at alongside it.
-
-`lib_name` is already resolved: `_resolve_lib` is the caller's job and must run
-**before** this, because it is what replays a precompiled caller's recorded
-blocks — and therefore what registers that module's generic functions and
-reports a block that fails to load. Doing it here, inside the callers' fallback
-`try`, made a generic invisible on its first call in a fresh process and turned a
-block that failed to load into a "missing symbol" (#390 review).
-
-A caller that has something to verify about the snapshot — `@rust f(x)::T`
-checks the annotation against it — must verify *before* publishing, or a
-rejected snapshot would sit in the cache and be reused by later calls without
-the check ever running again.
-"""
-@noinline function resolve_macro_call_target(lib_name::String, func_name::String)
-    epoch = artifact_epoch()
-    return (epoch, resolve_call_target(lib_name, func_name))
-end
-
-"""
-    resolve_call_target(lib_name, func_name; free_symbol = "") -> CallTarget
+    resolve_call_target(lib_name, func_name; free_symbol = "", fallback = true) -> Union{CallTarget, Nothing}
 
 Everything one call needs — the function pointer, its panic channel, and
 optionally the release function for an owned-`String` result — resolved from
@@ -263,7 +240,10 @@ lives in the same image as the buffer it releases — the allocator contract
 (`docs/src/panics.md`).
 
 Resolution starts at `lib_name` and falls back to the other loaded libraries,
-which is what lets one `rust\"\"\"` block call another's functions. Candidates
+which is what lets one `rust\"\"\"` block call another's functions. With
+`fallback = false` it does not: the answer is `lib_name`'s own export or
+`nothing` — how `resolve_rust_call` asks whether one of the caller's own blocks
+defines a name before anything else is consulted (#520). Candidates
 are deduplicated **by pointer**: one handle may sit in `RUST_LIBRARIES` under
 two names (`alias_artifact!`), and finding the same function twice through the
 same handle is not an ambiguity. Genuinely different functions of the same name
@@ -271,6 +251,7 @@ in different libraries are refused rather than guessed.
 """
 function resolve_call_target(lib_name::String, func_name::String;
                              free_symbol::AbstractString = "",
+                             fallback::Bool = true,
                              _lookup = Libdl.dlsym)
     release_symbol = String(free_symbol)
     release_channel_symbol = isempty(release_symbol) ? "" : ffi_panic_symbol(release_symbol)
@@ -309,7 +290,9 @@ function resolve_call_target(lib_name::String, func_name::String;
                               preferred.return_type, preferred.func_info, preferred.generation,
                               preferred.free_channel)
         end
-        others = [capture(owner, entry) for (owner, entry) in RUST_LIBRARIES if owner != lib_name]
+        others = fallback ?
+            [capture(owner, entry) for (owner, entry) in RUST_LIBRARIES if owner != lib_name] :
+            typeof(preferred)[]
         (preferred, others)
     end
     snapshot isa CallTarget && return snapshot
@@ -338,6 +321,7 @@ function resolve_call_target(lib_name::String, func_name::String;
         ptr = resolve_in(preferred, preferred.symbol, preferred.func_ptr)
         ptr == C_NULL || return finish(preferred, ptr)
     end
+    fallback || return nothing
     candidates = [(row, resolve_in(row, row.symbol, row.func_ptr)) for row in others]
     filter!(candidate -> last(candidate) != C_NULL, candidates)
     distinct = unique(last, candidates)
@@ -1031,9 +1015,13 @@ longer in `RUST_LIBRARIES`. Returns `false` when the library turned out to be
 gone and nothing was registered; the caller then falls through to compiling and
 loading it again.
 
-The generic registrations stay outside the lock: `register_generic_function`
-may shell out to the extractor to recover a signature, which must not run with
-the global registry lock held.
+The block's generic functions are *prepared* outside the lock
+(`_prepare_generic_function` may shell out to the extractor to recover a
+signature, which must not run with the global registry lock held) and
+*installed* inside the same transaction as the symbol mappings and return-type
+hints (`install_library_metadata!`, #520), so no caller sees the library
+without its own generics. A generic struct's wrapper group is still published
+after it, process-wide, by its stem-qualified wrapper names.
 """
 function _register_manifest(expanded, lib_name::String; compiler = nothing,
                             cargo_backed::Bool = false,
@@ -1048,23 +1036,13 @@ function _register_manifest(expanded, lib_name::String; compiler = nothing,
     signatures = _registry_signatures(manifest)
     symbols, return_types = _manifest_registry_entries(signatures)
 
-    registered = if load_path !== nothing
-        load_artifact!(policy, load_path; lib_name, symbols, return_types,
-                       snapshot_env, set_current)
-        true
-    elseif handle !== nothing
-        adopt_artifact!(policy, handle; lib_name, symbols, return_types,
-                        snapshot_env, set_current)
-        true
-    else
-        register_artifact_metadata!(policy, lib_name; symbols, return_types,
-                                    require_loaded, set_current)
-    end
-    registered || return false
-
-    for info in manifest_struct_infos(manifest)
-        register_generic_struct_wrappers(info, expanded.source; compiler, cargo = cargo_context)
-    end
+    # The block's generic functions are prepared **before** the transaction and
+    # installed in it, with the symbol mappings and return-type hints (#520):
+    # publishing them afterwards left a window in which a re-registered or
+    # reloaded library was visible without its own generics, and a call from
+    # its module fell through to another module's generic of the same name.
+    # Preparing may run the extractor, which must not happen under the lock.
+    generics = GenericFunctionInfo[]
     for sig in signatures
         # A generic the Rust codegen refuses (#491: an `unsafe fn`) is not
         # registered for specialization: a specialized wrapper would call it
@@ -1084,16 +1062,55 @@ function _register_manifest(expanded, lib_name::String; compiler = nothing,
                 "configuration-dependent code out of the generic body or into a non-generic helper" : ""
             # Registered under the name `@rust` is called with — the Julia
             # binding name (`@rust for_(x)` for `fn r#for`, #514) — while the
-            # path the extractor specializes keeps the Rust spelling.
-            register_generic_function(julia_function_name(sig), expanded.source,
-                                      Symbol.(sig.type_params), sig.constraints, "";
-                                      arg_types = sig.arg_types, return_type = sig.return_type,
-                                      path = qualified_name(sig.module_path, sig.name), compiler, blocked,
-                                      cargo = cargo_context)
-            @debug "Registered generic function: $(sig.name)" type_params = sig.type_params
+            # path the extractor specializes keeps the Rust spelling. Owned by
+            # this library as well as published by bare name, so a call from
+            # the defining module reaches *this* block's generic whatever
+            # another module registers under the same name (#520).
+            push!(generics, _prepare_generic_function(
+                julia_function_name(sig), expanded.source,
+                Symbol.(sig.type_params), sig.constraints, "";
+                arg_types = sig.arg_types, return_type = sig.return_type,
+                path = qualified_name(sig.module_path, sig.name), compiler,
+                blocked, cargo = cargo_context))
         end
     end
+
+    registered = if load_path !== nothing
+        load_artifact!(policy, load_path; lib_name, symbols, return_types, generics,
+                       snapshot_env, set_current)
+        true
+    elseif handle !== nothing
+        adopt_artifact!(policy, handle; lib_name, symbols, return_types, generics,
+                        snapshot_env, set_current)
+        true
+    else
+        register_artifact_metadata!(policy, lib_name; symbols, return_types, generics,
+                                    require_loaded, set_current)
+    end
+    registered || return false
+    _manifest_seam(:registered, lib_name)
+
+    for info in manifest_struct_infos(manifest)
+        register_generic_struct_wrappers(info, expanded.source; compiler, cargo = cargo_context)
+    end
+    for info in generics
+        @debug "Registered generic function: $(info.name)" type_params = info.type_params
+    end
     return true
+end
+
+# A test seam (#520): a function stored in the task-local storage of the
+# calling task under `_AFTER_MANIFEST_REGISTRATION` is called with a stage and
+# the library name, outside STATE. `:registered` runs right after the
+# transaction that published the library's metadata — symbol mappings,
+# return-type hints and generics — so a test can observe what a concurrent
+# caller would see there.
+const _AFTER_MANIFEST_REGISTRATION = :rustcall_after_manifest_registration
+
+function _manifest_seam(stage::Symbol, lib_name::AbstractString)
+    hook = get(task_local_storage(), _AFTER_MANIFEST_REGISTRATION, nothing)
+    hook === nothing || hook(stage, String(lib_name))
+    return nothing
 end
 
 # Every function of an inline manifest `_register_manifest` registers — the
@@ -1110,7 +1127,7 @@ The registry rows a manifest implies: `name => exported symbol` pairs and
 
 Computing them is deliberately separate from installing them. The rows are
 derived here, outside any lock (recovering a return type consults the FFI
-contract and the generic registry), and handed to `load_artifact!` /
+contract and the function registry), and handed to `load_artifact!` /
 `register_artifact_metadata!`, which install them in the same critical section
 that publishes the library handle — so a task which finds the library in
 `RUST_LIBRARIES` also finds how to resolve its names (#279, #277 Phase B).
@@ -1182,9 +1199,12 @@ function _manifest_return_type(sig)
         _boundary_raw_pointer_return!("return", sig.return_type,
                                       ffi_return_contract(sig.return_type; abi = sig.return_abi))
     end
-    if haskey(FUNCTION_REGISTRY, sig.symbol) || is_generic_function(sig.symbol)
-        return nothing
-    end
+    # Not asked of the generic registry: `sig` is this library's own exported
+    # function, and a generic of the same name another block registered
+    # process-wide says nothing about its return slot. Skipping it left a later
+    # block's plain export with no return type whenever any module had defined
+    # a generic of that name (#520).
+    haskey(FUNCTION_REGISTRY, sig.symbol) && return nothing
     ret_type = if sig.return_kind == :unit
         Cvoid
     elseif sig.return_kind == :plain

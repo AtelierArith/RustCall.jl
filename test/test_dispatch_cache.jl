@@ -252,13 +252,18 @@ using RustCall
                 join((line for line in split(body, '\n')
                       if !startswith(strip(line), "#")), '\n')
             end
-            typed = code_of("_rust_call_typed_uncached")
-            @test findfirst("_resolve_lib(", typed)[1] < findfirst("try", typed)[1]
-            # And the dynamic path resolves the library before it asks whether
-            # the name is generic.
-            dynamic = code_of("_rust_call_dynamic_cached")
-            @test findfirst("_resolve_lib(", dynamic)[1] <
-                  findfirst("is_generic_function(", dynamic)[1]
+            # Both call sites go through the one resolver (#520), which
+            # restores the module before it resolves or asks about generics,
+            # and has no `try` for a restore failure to hide in.
+            for entry in ("_rust_call_typed_uncached", "_rust_call_dynamic_cached")
+                @test occursin("resolve_rust_call(", code_of(entry))
+            end
+            resolver = code_of("resolve_rust_call")
+            restore = findfirst("_resolve_lib(", resolver)[1]
+            @test restore < findfirst("resolve_call_target(", resolver)[1]
+            @test restore < findfirst("GENERIC_FUNCTIONS_BY_LIB", resolver)[1]
+            @test restore < findfirst("GENERIC_FUNCTION_REGISTRY", resolver)[1]
+            @test !occursin("try", resolver)
         end
 
         @testset "a call site whose annotation varies is checked every time" begin

@@ -37,19 +37,27 @@ function _ensure_module_state!(mod::Module)
     symbols = symbols isa AbstractDict ? Dict{String, String}(String(k) => String(v) for (k, v) in symbols) :
               Dict{String, String}()
     active = Ref(active isa Ref ? String(active[]) : "")
+    # When each block was last recorded, by library: `resolve_rust_call` asks
+    # the module's blocks most recent first (#520).
+    order = Dict{String, Int}()
     for record in _module_block_records(mod)
         libs[record.lib_name] = record.block
+        order[record.lib_name] = record.order
         for symbol in record.symbols
             symbols[symbol] = record.lib_name
         end
         active[] = record.lib_name
     end
     candidate = Dict{Symbol, Any}(
-        :libs => libs, :symbols => symbols, :active => active,
+        :libs => libs, :symbols => symbols, :active => active, :order => order,
         :crate_generation => CrateGenerationCell(),
         :crate_symbols => Dict{Tuple{Ptr{Cvoid}, String}, Ptr{Cvoid}}())
     return lock(REGISTRY_LOCK) do
         chosen = get!(MODULE_STATES, mod, candidate)
+        # A precompiled caller's records carry the precompiling process's
+        # sequence; a block recorded here from now on must still come later.
+        latest = maximum(values(chosen[:order]); init = 0)
+        latest > MODULE_BLOCK_SEQUENCE[] && (MODULE_BLOCK_SEQUENCE[] = latest)
         isempty(chosen[:active][]) || get!(MODULE_ACTIVE_LIB, mod, chosen[:active][])
         chosen
     end
@@ -110,6 +118,7 @@ function _record_module_block!(mod::Module, lib_name::String,
         data[:active][] = lib_name
         MODULE_ACTIVE_LIB[mod] = lib_name
         MODULE_BLOCK_SEQUENCE[] += 1
+        _state_mutate_storage!(data[:order], :setindex!, MODULE_BLOCK_SEQUENCE[], lib_name)
         ModuleBlockRecord(lib_name, block, names, MODULE_BLOCK_SEQUENCE[])
     end
     result isa ModuleBlockRecord || _throw_module_symbol_conflict(result, nameof(mod))
@@ -142,5 +151,54 @@ function _record_module_symbols_transaction!(table, lib_name, symbols, module_na
         end
     end
     conflict === nothing || _throw_module_symbol_conflict(conflict, module_name)
+    return nothing
+end
+
+"""
+    _module_block_snapshot(mod) -> Union{Vector{String}, Nothing}
+
+The library names of `mod`'s blocks, most recently recorded first, read with
+their order in one STATE transaction; `nothing` for a module with no owned
+state (a legacy caller's raw containers).
+"""
+function _module_block_snapshot(mod::Module)
+    haskey(MODULE_STATES, mod) || return nothing
+    names, order = lock(REGISTRY_LOCK) do
+        data = MODULE_STATES[mod]
+        (String[name for name in keys(data[:libs])], copy(data[:order]))
+    end
+    return sort!(names; by = name -> (-get(order, name, 0), name))
+end
+
+"""
+    _rebind_module_block!(mod, libs, from, to, block)
+
+Rebind one of `mod`'s blocks from the library name a precompiled module stored
+(`from`) to the one the reload derived (`to`): the `__RUSTCALL_LIBS` key and the
+block's recorded order (read by `_module_block_snapshot`) move in **one** state
+transaction. Two steps let a concurrent call see `to` with no order yet, rank
+the module's newest block last and call an older block's `f` (#520 review).
+
+`libs` is what `_module_binding(mod, :__RUSTCALL_LIBS)` returned. A legacy
+caller not adopted into STATE keeps its own raw table and records no order, so
+only its key moves.
+"""
+function _rebind_module_block!(mod::Module, libs, from::String, to::String, block)
+    if !(libs isa StateView) || !haskey(MODULE_STATES, mod)
+        libs[to] = block
+        delete!(libs, from)
+        return nothing
+    end
+    lock(REGISTRY_LOCK) do
+        data = MODULE_STATES[mod]
+        _state_mutate_storage!(data[:libs], :setindex!, block, to)
+        _state_mutate_storage!(data[:libs], :delete!, from)
+        seq = get(data[:order], from, nothing)
+        if seq !== nothing
+            _state_mutate_storage!(data[:order], :setindex!, seq, to)
+            _state_mutate_storage!(data[:order], :delete!, from)
+        end
+        return nothing
+    end
     return nothing
 end
