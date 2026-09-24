@@ -213,7 +213,7 @@ end
         @test err isa ErrorException
         @test occursin("module `a`", err.msg)
         @test occursin("the function `a`", err.msg)
-        @test occursin("Rename the module or the item", err.msg)
+        @test occursin("Rename", err.msg)
         # A struct named like a nested module, one level down.
         st = RustCall.RustStructInfo("deep", String[], RustCall.RustMethod[], "",
                                      Tuple{String, String}[], true, Dict{String, Bool}();
@@ -244,15 +244,16 @@ end
         named_like_struct = RustCall.RustStructInfo("D", String[],
             [RustCall.RustMethod("C", false, false, String[], String[], "i32")], "",
             Tuple{String, String}[], true, Dict{String, Bool}())
-        # A method binds its name where its struct is emitted, so it clashes
-        # only with a type name a *later* struct defines (#341 review):
-        # `function C(self::D)` before `mutable struct C` is a redefinition…
+        # A method is a module-level function, so another struct's method named
+        # like a type is refused in either emission order (#514): before
+        # `mutable struct C`, `function C(self::D)` makes the type a
+        # redefinition; after it, it would silently turn `C(d)` into a
+        # "constructor" of `C` returning an `i32`. (#341 allowed the second
+        # order; the one-namespace check of #514 does not depend on order.)
         @test_throws ErrorException RustCall._check_module_names(
             RustCall._module_tree(RustCall.RustFunctionSignature[], [named_like_struct, plain]))
-        # …the other order is an outer constructor of `C`, which Julia allows.
-        @test RustCall._check_module_names(
-            RustCall._module_tree(RustCall.RustFunctionSignature[],
-                                  [plain, named_like_struct])) === nothing
+        @test_throws ErrorException RustCall._check_module_names(
+            RustCall._module_tree(RustCall.RustFunctionSignature[], [plain, named_like_struct]))
         # A method that repeats its own struct's name is that same overload.
         self_named = RustCall.RustStructInfo("E", String[],
             [RustCall.RustMethod("E", false, false, String[], String[], "i32")], "",

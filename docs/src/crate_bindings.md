@@ -432,15 +432,30 @@ already uses — `fn r#for` beside `fn for_`, a field `r#let` beside `let_`, a
 method `r#end` beside `end_` on the same struct, `struct r#while` beside
 `fn while_`, `mod r#do` beside `mod do_`. The layout is then refused with both
 items named, rather than one binding silently replacing the other; rename one
-of them. The check compares what the generated module actually defines
+of them.
+
+The check compares what the generated module actually defines
 (`RustCall.julia_definitions`): free functions, types and their constructors,
 static methods (typed, and bare unless a free function or another static
 method takes the name), instance methods, properties, the `get_<f>` /
-`set_<f>!` helpers and submodules. So a method `get_x` beside a field `x`,
-whose accessor is also `get_x`, is refused too. The PyO3 host bindings run the
-same check over what they define. Static methods there are free functions,
-because the host passes no type, so `#[staticmethod] fn for_` beside
-`#[pyfunction] fn r#for` is refused.
+`set_<f>!` helpers and submodules. A module has one namespace, and a method of
+any struct is a method of the module's function of that name. Two rules follow:
+
+- Two definitions made by different items under one name and one dispatch
+  key are refused. A method `get_x` beside a field `x`, whose accessor is also
+  `get_x(self)`, is refused this way. Instance methods of two structs overload
+  one function and are fine.
+- A type's or submodule's name may be used by no function other than the
+  type's own constructors and methods. A method of struct `A` bound as `for_`
+  beside `struct for_` is refused.
+
+The PyO3 host bindings run the same check over what they define. Static
+methods there are free functions, because the host passes no type, so
+`#[staticmethod] fn for_` beside `#[pyfunction] fn r#for` is refused.
+
+The check runs on the items of the build that is bound: the scan is made under
+the build's own configuration, so `#[cfg(feature = "x")] fn r#for` beside
+`#[cfg(not(feature = "x"))] fn for_` is one item and is accepted.
 
 ## Property Access Syntax
 

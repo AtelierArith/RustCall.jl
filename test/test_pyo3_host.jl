@@ -190,7 +190,12 @@ end
 
     # The generated module carries a binding for `now` and none for `later`: a
     # binding for the coroutine would look like a value and never run (#424).
-    text = string(RustCall.generate_pyo3_host_bindings(PYO3_ASYNC_CRATE))
+    # From a copy: the bindings come from the scan of the build's own
+    # configuration, and Cargo writes a lockfile beside the manifest it probes.
+    text = mktempdir() do dir
+        cp(PYO3_ASYNC_CRATE, joinpath(dir, "crate"))
+        string(RustCall.generate_pyo3_host_bindings(joinpath(dir, "crate")))
+    end
     @test occursin("now", text)
     @test !occursin("later", text)
 end
@@ -324,6 +329,39 @@ end
             #[pyclass] pub struct T { pub v: i32 }
             #[pymethods] impl T { fn for_(&self) -> i32 { 2 } }
             """) == ""
+        # ... but a class's method bound under another class's name is not:
+        # the method is the module-level function `for_`, the class the type
+        # `for_` (PR #515 review, raised on #517).
+        msg = refusal("""
+            use pyo3::prelude::*;
+            #[pyclass] pub struct A { pub v: i32 }
+            #[pymethods] impl A { fn r#for(&self) -> i32 { 1 } }
+            #[pyclass] pub struct for_ { pub v: i32 }
+            """)
+        @test occursin("method `A::r#for`", msg) && occursin("struct `for_`", msg)
+        # Mutually exclusive `#[cfg]` variants are one item in any build: the
+        # bindings come from the scan of the build's own configuration, so the
+        # check sees one of them (PR #515 review).
+        write(joinpath(dir, "Cargo.toml"),
+              replace(read(joinpath(dir, "Cargo.toml"), String),
+                      "[dependencies]" => "[features]\nx = []\n\n[dependencies]"))
+        @test refusal("""
+            use pyo3::prelude::*;
+            #[cfg(feature = "x")]
+            #[pyfunction] fn r#for(x: i32) -> i32 { x }
+            #[cfg(not(feature = "x"))]
+            #[pyfunction] fn for_(x: i32) -> i32 { x }
+            """) == ""
+        # A property is remapped to its Python attribute only for a field the
+        # host binds: an unexposed raw `r#for` beside an exposed `for_` leaves
+        # `obj.for_` reading `for_` (PR #515 review).
+        write(joinpath(dir, "src", "lib.rs"), """
+            use pyo3::prelude::*;
+            #[pyclass] pub struct H { pub r#for: i32, #[pyo3(get)] pub for_: i32 }
+            """)
+        hidden = string(Base.remove_linenums!(RustCall.generate_pyo3_host_bindings(dir)))
+        @test !occursin("s = :for", hidden)
+        @test occursin("(:for_,)", hidden)
 
         # A raw class name in argument and return position is the class: the
         # class map is keyed by `rust_name`, the key every type spelling is

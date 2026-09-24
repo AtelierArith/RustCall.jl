@@ -76,7 +76,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a constructor, the bare form of a static method, a field accessor and a
   submodule count as definitions like any other. So it also catches a PyO3-host
   static method beside a `#[pyfunction]` of its Julia name, and a crate method
-  `get_x` beside a field `x`.
+  `get_x` beside a field `x`. A module has one namespace: a method of one
+  struct bound under another struct's type name is refused in either emission
+  order. #341 had allowed the order in which it became a method of the type.
+  The PyO3 host bindings are generated from the scan of the build's own
+  configuration, as the `#[julia]` path already was, so `#[cfg]`-exclusive
+  variants of one item are not reported as a clash. A property is remapped to
+  its Python attribute only for a field the host binds.
 - **A raw `#[pyclass]` name is recognised as the class in argument and return
   position** ([#514](https://github.com/AtelierArith/RustCall.jl/issues/514)).
   The PyO3 host keyed its class map by the manifest spelling `r#type`, while a

@@ -850,8 +850,10 @@ function _pyo3_host_property_expr(jname::Symbol, s::RustStructInfo)
     # back before the lookup.
     names = [Symbol(julia_field_name(field)) for (field, _) in s.fields
              if _pyo3_host_field_readable(s, field)]
+    # Only a field the host binds is remapped: an unexposed raw `r#for` beside
+    # an exposed `for_` must leave `obj.for_` alone (PR #515 review).
     renamed = Any[]
-    for (field, _) in s.fields
+    for field in _pyo3_host_bound_fields(s)
         jfield = julia_field_name(field)
         jfield == rust_name(field) && continue
         push!(renamed, :(s === $(QuoteNode(Symbol(jfield))) &&
@@ -915,17 +917,18 @@ function _pyo3_host_struct_exprs(s::RustStructInfo, classes::AbstractDict)
     inner = Expr(:(=), Expr(:call, jname, field),
                  Expr(:call, :new, :_rustcall_py))
     out = Any[Expr(:struct, false, jname, Expr(:block, field, inner))]
-    for m in s.methods
+    # The methods the host binds (`_pyo3_host_bound_methods`, the list its
+    # definitions are read from): constructors first. `#[getter]`/`#[setter]`
+    # methods are Python properties; `getproperty` reaches them, so they are
+    # not bound as functions.
+    methods = _pyo3_host_bound_methods(s)
+    for m in methods
         m.is_constructor || continue
-        _pyo3_host_async(m) && continue
         append!(out, _pyo3_host_method_expr(jname, class_base, m, classes))
     end
-    # `#[getter]`/`#[setter]` methods are Python properties; `getproperty`
-    # above already reaches them, so they are not bound as functions.
     push!(out, _pyo3_host_property_expr(jname, s))
-    for m in s.methods
-        (m.is_constructor || !isempty(m.accessor)) && continue
-        _pyo3_host_async(m) && continue
+    for m in methods
+        m.is_constructor && continue
         append!(out, _pyo3_host_method_expr(jname, class_base, m, classes))
     end
     return out
@@ -937,7 +940,7 @@ end
 # the Julia type the emitter defines (`julia_struct_name`).
 _pyo3_host_classes(info::CrateInfo) =
     Dict{String, Symbol}(rust_name(s.name) => Symbol(julia_struct_name(s))
-                         for s in info.pyo3_structs if s.attribute === :py_class)
+                         for s in _pyo3_host_bound_classes(info))
 
 """
     _pyo3_host_definitions(info::CrateInfo) -> Vector{JuliaDefinition}
@@ -951,49 +954,57 @@ items and `#[getter]` / `#[setter]` methods define nothing.
 """
 function _pyo3_host_definitions(info::CrateInfo)
     defs = JuliaDefinition[]
-    add!(name, scope, owner, what = owner) = push!(defs, JuliaDefinition(name, scope, owner, what))
-    for f in info.pyo3_functions
-        (f.attribute === :py_function && !_pyo3_host_async(f)) || continue
+    add!(name, scope, owner; what = owner, parent = "") =
+        push!(defs, JuliaDefinition(name, scope, owner, what, parent))
+    for f in _pyo3_host_bound_functions(info)
         add!(julia_function_name(f), :free,
              "the function `$(qualified_name(f.module_path, f.name))`")
     end
-    for s in info.pyo3_structs
-        s.attribute === :py_class || continue
+    for s in _pyo3_host_bound_classes(info)
         T = julia_struct_name(s)
         owner = "the struct `$(qualified_name(s.module_path, s.name))`"
         add!(T, :binding, owner)
-        for m in s.methods
-            _pyo3_host_async(m) && continue
+        for m in _pyo3_host_bound_methods(s)
             what = "the method `$(_boundary_label(s, m))`"
             if m.is_constructor
-                add!(T, :free, owner, what)
-            elseif !isempty(m.accessor)
-                continue
+                add!(T, :free, owner; what, parent = T)
             elseif m.is_static || m.is_classmethod
-                add!(julia_method_name(m), :free, what)
+                add!(julia_method_name(m), :free, what; parent = T)
             else
-                add!(julia_method_name(m), (:self, T), what)
+                add!(julia_method_name(m), (:self, T), what; parent = T)
             end
         end
-        for (field, _) in s.fields
-            (_pyo3_host_field_readable(s, field) || _pyo3_host_field_writable(s, field)) || continue
+        for field in _pyo3_host_bound_fields(s)
             add!(julia_field_name(field), (:prop, T),
-                 "the field `$(qualified_name(s.module_path, s.name)).$field`")
+                 "the field `$(qualified_name(s.module_path, s.name)).$field`"; parent = T)
         end
     end
     return defs
 end
 
+# What the host binds, item by item: the one list its emitters iterate and its
+# definitions (`_pyo3_host_definitions`) are read from (#514). `async` items
+# are refused by the extractor (`async_fn`) and bound nowhere; `#[getter]` /
+# `#[setter]` methods are Python properties reached through `getproperty`.
+_pyo3_host_bound_functions(info::CrateInfo) =
+    [f for f in info.pyo3_functions if f.attribute === :py_function && !_pyo3_host_async(f)]
+_pyo3_host_bound_classes(info::CrateInfo) =
+    [s for s in info.pyo3_structs if s.attribute === :py_class]
+_pyo3_host_bound_methods(s::RustStructInfo) =
+    [m for m in s.methods if !_pyo3_host_async(m) && (m.is_constructor || isempty(m.accessor))]
+_pyo3_host_bound_fields(s::RustStructInfo) =
+    [field for (field, _) in s.fields
+     if _pyo3_host_field_readable(s, field) || _pyo3_host_field_writable(s, field)]
+
 """
     _pyo3_host_check_names(info::CrateInfo)
 
 `_check_julia_definitions` over `_pyo3_host_definitions`: the check every
-emitter runs, over what this one defines. Its functions are emitted before its
-types, so a type also refuses a function of its name.
+emitter runs, over what this one defines.
 """
 function _pyo3_host_check_names(info::CrateInfo)
     _check_julia_definitions(_pyo3_host_definitions(info),
-                             "the PyO3 host bindings of `$(info.name)`"; types_first = false)
+                             "the PyO3 host bindings of `$(info.name)`")
     return nothing
 end
 
@@ -1010,7 +1021,16 @@ function generate_pyo3_host_bindings(crate_path::AbstractString;
                                      default_features::Bool = true,
                                      release::Bool = true)
     path = abspath(String(crate_path))
-    info = scan_crate(path)
+    # The items of the build this module imports, not every feature variant:
+    # the lenient scan keeps both of `#[cfg(feature = "x")] fn r#for` and
+    # `#[cfg(not(feature = "x"))] fn for_`, which no one build has, and the
+    # bindings — and the name-clash check over them — would describe a crate
+    # that does not exist (PR #515 review). `_plain_scan_info` rescans under
+    # the configuration the crate is built with, as the `#[julia]` path does;
+    # it returns the lenient scan unchanged when Cargo will not answer.
+    env = snapshot_env(BuildEnvSnapshot())
+    info = _plain_scan_info(path, scan_crate(path; cargo_env = env), features,
+                            default_features, release; env = env)
     mod_name = Symbol(module_name === nothing ? snake_to_pascal(info.name) : module_name)
     body = Expr(:block)
     push!(body.args, :(import RustCall))
@@ -1051,13 +1071,10 @@ function generate_pyo3_host_bindings(crate_path::AbstractString;
     # refused before anything is emitted, by the check every emitter runs,
     # over what this one binds (#514).
     _pyo3_host_check_names(info)
-    for f in info.pyo3_functions
-        f.attribute === :py_function || continue
-        _pyo3_host_async(f) && continue
+    for f in _pyo3_host_bound_functions(info)
         append!(body.args, _pyo3_host_function_expr(f, classes))
     end
-    for s in info.pyo3_structs
-        s.attribute === :py_class || continue
+    for s in _pyo3_host_bound_classes(info)
         append!(body.args, _pyo3_host_struct_exprs(s, classes))
     end
     return Expr(:module, true, mod_name, body)

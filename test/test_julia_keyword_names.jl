@@ -242,9 +242,22 @@ end
     # would replace it, either way round.
     @test_throws ErrorException inline([sig("while_")], [strct("r#while", [ctor()])])
     @test_throws ErrorException inline([sig("r#while")], [strct("while_", [ctor()])])
-    # Types come first in a `rust"""` block, so a free function of a type's
-    # name that has no constructor only adds a method to it: not a clash.
-    @test inline([sig("C")], [strct("C", RustCall.RustMethod[])]) === nothing
+    # A module has one namespace: a type's name is taken whole, by the type
+    # and its own constructors and methods. A free function of that name is
+    # refused whatever the emission order.
+    @test_throws ErrorException inline([sig("C")], [strct("C", RustCall.RustMethod[])])
+    # So is another struct's method bound under a type's name — methods are
+    # module-level generic functions (PR #515 review, raised on #517).
+    m = msg(() -> inline(nofns, [strct("A", [meth("r#for")]),
+                                 strct("for_", RustCall.RustMethod[])]))
+    @test occursin("method `A::r#for`", m) && occursin("struct `for_`", m)
+    @test_throws ErrorException check(nofns, [strct("A", [meth("r#for")]),
+                                              strct("for_", RustCall.RustMethod[])])
+    # A type's own method of its name adds a method to the type: allowed, as
+    # for `<end as Tr>::r#end` bound `end_(self::end_)` in the crate below.
+    @test inline(nofns, [strct("r#end", [meth("r#end")])]) === nothing
+    # Instance methods of two structs share one generic function: overloading.
+    @test inline(nofns, [strct("A", [meth("area")]), strct("B", [meth("area")])]) === nothing
     # A static method is `for_(::Type{S}, x)`; its bare `for_(x)` is withheld
     # when a free function or another static method is bound as `for_`
     # (`_static_method_collisions`), so neither of these defines `for_` twice.
@@ -315,20 +328,20 @@ end
         @test call(get(:if_), w) == 10
 
         # A generic struct's raw method: its generic wrapper is registered
-        # under the unraw name (`Boxed_match`) the extractor gives it, and the
+        # under the unraw name (`KwBoxed514_match`) the extractor gives it, and the
         # Julia method is `match` (PR #515 review).
         g = Module(:KwInlineGeneric)
         Core.eval(g, :(using RustCall))
         Core.eval(g, Meta.parse("""rust\"\"\"
             #[julia]
-            pub struct Boxed<T> { pub v: T }
-            impl<T: Copy> Boxed<T> {
-                pub fn new(v: T) -> Self { Boxed { v } }
+            pub struct KwBoxed514<T> { pub v: T }
+            impl<T: Copy> KwBoxed514<T> {
+                pub fn new(v: T) -> Self { KwBoxed514 { v } }
                 pub fn r#match(&self) -> T { self.v }
                 pub fn r#end(&self) -> T { self.v }
             }
             \"\"\""""))
-        bx = call(call(getfield, g, :Boxed){Int32}, Int32(6))
+        bx = call(call(getfield, g, :KwBoxed514){Int32}, Int32(6))
         @test call(call(getfield, g, :match), bx) == 6
         @test call(call(getfield, g, :end_), bx) == 6
 
@@ -481,6 +494,36 @@ end
                 @test err isa ErrorException
                 msg = sprint(showerror, err)
                 @test occursin("`for_`", msg) && occursin("r#for", msg) && occursin("#514", msg)
+            end
+        end
+
+        @testset "mutually exclusive cfg variants are one item" begin
+            # Bound from the scan of the build's own configuration, so only the
+            # variant this build compiles is checked and bound (PR #515 review).
+            mktempdir() do dir
+                _kw_write_crate(dir, """
+                    use rustcall_julia_macros::julia;
+
+                    #[cfg(feature = "x")]
+                    #[julia]
+                    pub fn r#for(x: i32) -> i32 { x + 1 }
+
+                    #[cfg(not(feature = "x"))]
+                    #[julia]
+                    pub fn for_(x: i32) -> i32 { x + 2 }
+                    """; name = "kw_cfg")
+                toml = joinpath(dir, "Cargo.toml")
+                write(toml, replace(read(toml, String), "[dependencies]" => "[features]\nx = []\n\n[dependencies]"))
+                output_path = joinpath(dir, "KwCfg.jl")
+                RustCall.write_bindings_to_file(dir, output_path; output_module_name = "KwCfgWritten")
+                sandbox = Module(:KwCfgSandbox)
+                Base.include(sandbox, output_path)
+                mod = Base.invokelatest(getfield, sandbox, :KwCfgWritten)
+                @test Base.invokelatest(Base.invokelatest(getfield, mod, :for_), Int32(1)) == 3
+                try
+                    RustCall.unload_library(Base.invokelatest(getfield, mod, :_LIB_NAME); close = true)
+                catch
+                end
             end
         end
     end
