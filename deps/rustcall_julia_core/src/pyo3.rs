@@ -733,7 +733,7 @@ fn mark_julia_surface_collisions_pass(
             } else {
                 "CResult"
             };
-            let owner = crate::codegen::method_string_owner(&s.ffi_name, &m.name);
+            let owner = crate::codegen::method_string_owner(&s.ffi_name, &m.method_stem());
             let defaults = m
                 .args
                 .iter()
@@ -1183,7 +1183,7 @@ fn mark_symbol_collisions(manifest: &mut Manifest, emitted: &Emitted) {
             // a collision (#370, #392 review).
             let strings =
                 declares_string_helpers(&m.return_type, &m.ok_type, &m.err_type, &m.inner_type);
-            let string_owner = format!("{}_{}", class_name, m.name);
+            let string_owner = crate::codegen::method_string_owner(&class_name, &m.method_stem());
             let actual = emitted_arities(emitted, &format!("{method_class}::{}", m.name));
             let mut symbols = Vec::new();
             for omitted in 0..=crate::claims::trailing_default_count(&m.args) {
@@ -1726,7 +1726,12 @@ fn method_entry(
         trait_path: String::new(),
         julia_name: String::new(),
         name: name.clone(),
-        symbol: crate::codegen::method_symbol_of(&struct_stem, &name),
+        // The method stem, as for a `#[julia]` method: a raw name (`r#match`)
+        // loses its `r#`, which no symbol can carry (#514).
+        symbol: crate::codegen::method_symbol_of(
+            &struct_stem,
+            &crate::codegen::method_stem(None, &name),
+        ),
         // `#[staticmethod]` and `#[classmethod]` are both static from the C
         // side: neither takes a `self` receiver. A `#[classmethod]` takes a
         // `&Bound<'_, PyType>` first argument instead, so it is normally

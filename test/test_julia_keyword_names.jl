@@ -441,3 +441,56 @@ end
         end
     end
 end
+
+include(joinpath(@__DIR__, "pyo3_wrapper_helpers.jl"))
+
+@testset "@rust_crate binds a PyO3 crate's raw-named items (#514)" begin
+    # A `#[pymethods] fn r#match` got the symbol `rustcall_Kw_r#match`, which
+    # the wrapper crate cannot spell, so the method was silently dropped (PR
+    # #517 review). Every PyO3 symbol now hangs off the unraw stem.
+    mktempdir() do root
+        mkpath(joinpath(root, "src"))
+        write(joinpath(root, "Cargo.toml"), """
+            [package]
+            name = "kw_pyo3_514"
+            version = "0.1.0"
+            edition = "2021"
+            [dependencies]
+            pyo3 = { version = "0.29", default-features = false, features = ["macros"] }
+            """)
+        write(joinpath(root, "src", "lib.rs"), raw"""
+            use pyo3::prelude::*;
+            #[pyfunction]
+            pub fn r#for(x: i32) -> i32 { x + 1 }
+            #[pyclass]
+            pub struct Kw514 { #[pyo3(get, set)] pub r#let: i32 }
+            #[pymethods]
+            impl Kw514 {
+                #[new] pub fn new(v: i32) -> Self { Kw514 { r#let: v } }
+                pub fn r#match(&self) -> i32 { self.r#let * 2 }
+                pub fn r#end(&self) -> i32 { self.r#let * 3 }
+            }
+            """)
+        info = RustCall.scan_crate(root)
+        kw = only(filter(s -> s.name == "Kw514", info.pyo3_structs))
+        @test Set(m.symbol for m in kw.methods) ==
+              Set(["rustcall_Kw514_new", "rustcall_Kw514_match", "rustcall_Kw514_end"])
+        wrapper = _link_libpython_wrapper(root)
+        if wrapper === nothing
+            @test_skip "no linkable Python here"
+        else
+            mod = (@rust_crate root).module_ref
+            get(name) = Base.invokelatest(getfield, mod, name)
+            call = Base.invokelatest
+            @test call(get(:for_), Int32(2)) == 3
+            k = call(get(:Kw514), Int32(5))
+            @test call(get(:match), k) == 10
+            @test call(get(:end_), k) == 15
+            @test call(getproperty, k, :let_) == 5
+            try
+                RustCall.unload_library(call(getfield, mod, :_LIB_NAME); close = true)
+            catch
+            end
+        end
+    end
+end

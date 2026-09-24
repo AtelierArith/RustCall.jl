@@ -111,4 +111,17 @@ fn a_raw_pyo3_name_is_recorded_as_python_exposes_it() {
     assert_eq!(field.setter, "rustcall_type_set_let");
     let method = class.methods.iter().find(|m| m.name == "r#match").unwrap();
     assert_eq!(method.python_name, "match");
+    // The symbol hangs off the method stem, as a `#[julia]` method's does: the
+    // wrapper crate refused `rustcall_type_r#match` as an identifier and
+    // `@rust_crate` dropped the method (PR #517 review).
+    assert_eq!(method.symbol, "rustcall_type_match");
+    assert!(
+        manifest
+            .structs
+            .iter()
+            .flat_map(|s| s.methods.iter().map(|m| &m.symbol))
+            .chain(manifest.functions.iter().map(|f| &f.symbol))
+            .all(|symbol| !symbol.contains('#')),
+        "{manifest:?}"
+    );
 }

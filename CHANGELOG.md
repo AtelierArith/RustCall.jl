@@ -88,7 +88,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with the `python_name` PyO3 exposes it under (`for`), so the PyO3 host
   bindings and the wrapper crate look up the attribute Python has; a raw
   `#[pyclass]` no longer panics the scan, and a raw field's wrapper-crate
-  accessors are `rustcall_<C>_get_<f>` without the `r#`. The PyO3 host
+  accessors are `rustcall_<C>_get_<f>` without the `r#`. A raw
+  `#[pymethods]` method's symbol hangs off the method stem as a `#[julia]`
+  method's does (`rustcall_<C>_match`, not `rustcall_<C>_r#match`, which the
+  wrapper crate could not spell, so `@rust_crate` dropped the method). The PyO3 host
   bindings run the same Julia-name clash check as every other emitter.
 - **`@rust_crate` binds the `#[julia]` methods of a trait impl**
   ([#506](https://github.com/AtelierArith/RustCall.jl/issues/506)). The crate
