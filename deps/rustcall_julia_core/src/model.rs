@@ -119,6 +119,18 @@ impl MethodModel {
             .unwrap_or_default()
     }
 
+    /// The part of every per-method name after the struct stem
+    /// ([`crate::codegen::method_stem`], #506): the name, preceded by the
+    /// trait's for a method of a trait impl.
+    pub fn method_stem(&self) -> String {
+        let trait_name = self
+            .host
+            .as_ref()
+            .and_then(|h| h.trait_.as_ref())
+            .and_then(crate::codegen::trait_name_of);
+        crate::codegen::method_stem(trait_name.as_deref(), &self.name())
+    }
+
     /// Whether `other` is this method: the same name in the same trait (or
     /// both inherent). Two blocks may define a method of one name only when
     /// one is a trait impl, and then both are distinct methods (#503 review).

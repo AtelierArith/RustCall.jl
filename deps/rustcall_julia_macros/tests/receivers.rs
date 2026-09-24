@@ -93,8 +93,8 @@ fn a_typed_mutable_receiver_mutates_through_its_symbol() {
         assert_eq!(shared_over_mut(&mut b).assume_init(), 8);
 
         // The trait impl's, called through the trait.
-        assert_eq!(rustcall_Buf_grow(&mut b, 1).assume_init(), 108);
+        assert_eq!(rustcall_Buf_4Grow_grow(&mut b, 1).assume_init(), 108);
         assert_eq!(b.n, 108);
-        assert_eq!(rustcall_Buf_peek(&b).assume_init(), 108);
+        assert_eq!(rustcall_Buf_4Grow_peek(&b).assume_init(), 108);
     }
 }

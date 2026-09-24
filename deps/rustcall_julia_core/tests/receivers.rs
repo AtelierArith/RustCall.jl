@@ -93,11 +93,13 @@ fn trait_decl() -> String {
 }
 
 /// `main`: call every form through its symbol and check what it returns and
-/// what it leaves in the object.
-fn calls(prefix: &str) -> String {
+/// what it leaves in the object. `stem` is what the symbol puts between the
+/// struct and the method: nothing for an inherent method, the length-prefixed
+/// trait for a trait impl's (`5Forms_`, #506).
+fn calls(stem: &str, prefix: &str) -> String {
     let mut out = String::from("let mut b = Buf { n: 10 };\n");
     for (name, receiver, mutable) in FORMS {
-        let symbol = format!("rustcall_Buf_{prefix}{name}");
+        let symbol = format!("rustcall_Buf_{stem}{prefix}{name}");
         let pointer = if *mutable { "&mut b" } else { "&b" };
         if mutates(receiver, *mutable) {
             out.push_str(&format!(
@@ -210,9 +212,9 @@ fn every_accepted_receiver_is_callable_in_the_crate_flavour() {
     let main = format!(
         "fn main() {{ {} {} \
          assert_eq!(unsafe {{ rustcall_Buf_make().assume_init() }}, 7); \
-         assert_eq!(unsafe {{ rustcall_Buf_t_make().assume_init() }}, 8); }}",
-        calls(""),
-        calls("t_")
+         assert_eq!(unsafe {{ rustcall_Buf_5Forms_t_make().assume_init() }}, 8); }}",
+        calls("", ""),
+        calls("5Forms_", "t_")
     );
     run("crate", &format!("{expansion}\n{main}"), true);
 }
@@ -238,7 +240,7 @@ fn every_accepted_receiver_is_callable_in_the_inline_flavour() {
     );
     let main = format!(
         "fn main() {{ {} assert_eq!(unsafe {{ rustcall_Buf_make().assume_init() }}, 7); }}",
-        calls("")
+        calls("", "")
     );
     // A `rust"""` block is an edition-2015 crate with its own boundary.
     run("inline", &format!("{}\n{main}", expanded.source), false);
@@ -353,22 +355,32 @@ fn every_refused_receiver_is_in_the_manifest_with_one_error() {
     );
     let inline = expand(&inline_source).unwrap();
     for (label, manifest, expansion, prefixes) in [
-        ("crate", &manifest, expansion, vec!["", "t_"]),
-        ("inline", &inline.manifest, inline.source.clone(), vec![""]),
+        (
+            "crate",
+            &manifest,
+            expansion,
+            vec![("", ""), ("7Refused_", "t_")],
+        ),
+        (
+            "inline",
+            &inline.manifest,
+            inline.source.clone(),
+            vec![("", "")],
+        ),
     ] {
         assert_eq!(
             expansion.matches("compile_error").count(),
             REFUSED.len() * prefixes.len(),
             "{label}: {expansion}"
         );
-        for prefix in prefixes {
+        for (stem, prefix) in prefixes {
             for (name, _, detail) in REFUSED {
                 let (is_static, is_mutable, reason) =
                     method_mutability(manifest, &format!("{prefix}{name}"));
                 assert!(!is_static && !is_mutable, "{label} {name}");
                 assert_eq!(reason, format!("receiver_type:{detail}"), "{label} {name}");
                 assert!(
-                    !expansion.contains(&format!("rustcall_Buf_{prefix}{name}")),
+                    !expansion.contains(&format!("rustcall_Buf_{stem}{prefix}{name}")),
                     "{label}: {name} has a wrapper"
                 );
             }

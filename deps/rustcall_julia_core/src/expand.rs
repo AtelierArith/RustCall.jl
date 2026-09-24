@@ -390,15 +390,16 @@ fn methods_of(
             Method {
                 name: m.name(),
                 trait_path: m.trait_path(),
+                julia_name: String::new(),
                 symbol: if symbols {
-                    crate::codegen::method_symbol_of(stem, &m.name())
+                    crate::codegen::method_symbol_of(stem, &m.method_stem())
                 } else {
                     String::new()
                 },
                 string_owner: match (symbols, m.is_local_to(module_path)) {
                     (false, _) => String::new(),
                     (true, true) => stem.to_string(),
-                    (true, false) => crate::codegen::method_string_owner(stem, &m.name()),
+                    (true, false) => crate::codegen::method_string_owner(stem, &m.method_stem()),
                 },
                 is_static: m.is_static(),
                 is_mutable: m.is_mutable(),

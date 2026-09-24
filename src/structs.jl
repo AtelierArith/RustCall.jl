@@ -93,6 +93,11 @@ struct RustMethod
     # schema 0.7, #503): a refused trait-impl method is listed beside an
     # inherent method of the same name, and the report tells them apart.
     trait_path::String
+    # The name the method is bound under in Julia when it is not `name`
+    # (`Method.julia_name`, additive within schema 0.7, #506): a trait impl's
+    # method sharing its name with another method of the struct is bound as
+    # `<Trait>_<name>`. Empty otherwise; read it through `julia_method_name`.
+    julia_name::String
 end
 
 function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::Vector{String},
@@ -118,7 +123,7 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
                     callback_returns::Vector{String} = fill("", length(arg_names)),
                     is_classmethod::Bool = false,
                     generic_wrapper_name::String = "",
-                    trait_path::String = "")
+                    trait_path::String = "", julia_name::String = "")
     length(python_defaults) == length(arg_names) ||
         throw(ArgumentError("python_defaults must have one entry per argument"))
     length(python_kinds) == length(arg_names) ||
@@ -131,8 +136,18 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
                return_kind, ok_type, err_type, inner_type, ok_abi, err_abi, inner_abi,
                string_owner, attribute, python_defaults, python_kinds,
                callback_args, callback_returns, is_classmethod, generic_wrapper_name,
-               trait_path)
+               trait_path, julia_name)
 end
+
+"""
+    julia_method_name(m::RustMethod) -> String
+
+The name a method is bound under in Julia: the manifest's `julia_name` — a
+trait impl's method that shares its name with another method of the struct,
+`Far_m` (#506) — or the Rust name. The one reader, for both crate emitters
+and the layout checks.
+"""
+julia_method_name(m::RustMethod) = isempty(m.julia_name) ? m.name : m.julia_name
 
 """
     _default_payload_abi(payload_type) -> String
@@ -405,7 +420,8 @@ function _static_method_collisions(functions, structs)
     for s in structs, m in s.methods
         _binds_julia_struct(s) || continue  # no type, no methods (#503)
         (m.is_static && !m.is_constructor && isempty(m.skip_reason)) || continue
-        counts[m.name] = get(counts, m.name, 0) + 1
+        name = julia_method_name(m)
+        counts[name] = get(counts, name, 0) + 1
     end
     return Set{String}(name for (name, n) in counts if n > 1)
 end

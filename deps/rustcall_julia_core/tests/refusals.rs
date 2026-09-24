@@ -1033,12 +1033,15 @@ fn a_refused_trait_method_survives_a_same_named_method() {
             limits.contains(&("tr::Limits", "self_trait_path:tr::Limits")),
             "{label}: the refused trait method is gone: {limits:?}"
         );
-        // A trait impl's wrapped methods are not described (#506).
-        assert!(
-            !limits.iter().any(|(t, _)| *t == "tr::Other"),
+        // Since #506 a trait impl's wrapped methods are described too, each
+        // under its own trait.
+        let others = limits.iter().filter(|(t, _)| *t == "tr::Other").count();
+        assert_eq!(
+            others,
+            blocks.contains(&other) as usize,
             "{label}: {limits:?}"
         );
-        assert_eq!(limits.len(), 2, "{label}: {limits:?}");
+        assert_eq!(limits.len(), 2 + others, "{label}: {limits:?}");
         let expansion = crate_expansion(&source).to_string();
         assert_eq!(
             expansion.matches("compile_error").count(),

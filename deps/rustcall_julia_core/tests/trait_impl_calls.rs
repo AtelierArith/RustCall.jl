@@ -2,8 +2,8 @@
 //! `<Buf as tr::Far>::m(self_obj)`, spelled as the impl header spells the type
 //! and the trait — the wrapper is emitted in the block's module — so it needs no
 //! import and never reaches an inherent method of the same name. An inherent
-//! block's method is called by path as well, `<Buf>::m(self_obj)` (#509), and
-//! every exported symbol is unchanged.
+//! block's method is called by path as well, `<Buf>::m(self_obj)` (#509). A
+//! trait method's symbol carries its trait, `rustcall_Buf_3Far_m` (#506).
 //!
 //! The proc-macro flavour, compiled and called, is
 //! `deps/rustcall_julia_macros/tests/trait_path_methods.rs`.
@@ -43,8 +43,13 @@ fn trait_impl_methods_are_called_through_the_trait() {
     assert!(src.contains("<Buf as tr::Far>::take(*self_obj)"), "{src}");
     assert!(!src.contains("self_obj.m("), "{src}");
     assert!(!src.contains("Buf::make()"), "{src}");
-    // The symbols are the ones an inherent method of the same name gets.
-    for symbol in ["rustcall_Buf_m", "rustcall_Buf_bump", "rustcall_Buf_make"] {
+    // The symbols carry the trait, so an inherent method of the same name,
+    // or another trait's, exports its own (#506).
+    for symbol in [
+        "rustcall_Buf_3Far_m",
+        "rustcall_Buf_3Far_bump",
+        "rustcall_Buf_3Far_make",
+    ] {
         assert!(
             src.contains(&format!("pub extern \"C\" fn {symbol}(")),
             "{symbol}: {src}"
@@ -103,7 +108,7 @@ fn a_foreign_block_spells_both_paths_as_its_header_does() {
         "{src}"
     );
     assert!(
-        src.contains("pub extern \"C\" fn rustcall_Buf_only_near("),
+        src.contains("pub extern \"C\" fn rustcall_Buf_4Near_only_near("),
         "{src}"
     );
 }

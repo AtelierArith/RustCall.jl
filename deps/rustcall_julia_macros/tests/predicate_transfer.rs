@@ -363,10 +363,10 @@ fn every_predicate_shape_is_called_through_its_wrapper() {
         );
         assert_eq!(rustcall_Buf_block_lifetime(p, &o).assume_init(), 102);
         assert_eq!(rustcall_Buf_block_where(p).assume_init(), 205);
-        assert_eq!(rustcall_Buf_scaled(p, 3).assume_init(), 15);
+        assert_eq!(rustcall_Buf_6Scaled_scaled(p, 3).assume_init(), 15);
         // The inherent `N` (2), as in the impl.
-        assert_eq!(rustcall_Buf_limit(p, &[0u8; 2]).assume_init(), 7);
-        assert_eq!(rustcall_Buf_only(p, &[0u8; 7]).assume_init(), 12);
+        assert_eq!(rustcall_Buf_6Limits_limit(p, &[0u8; 2]).assume_init(), 7);
+        assert_eq!(rustcall_Buf_6Limits_only(p, &[0u8; 7]).assume_init(), 12);
         assert_eq!(ops::rustcall_Buf_foreign(p, &OTHER).assume_init(), 7);
         assert_eq!(
             ops::rustcall_Buf_foreign_block_lifetime(p, &o).assume_init(),

@@ -1531,6 +1531,9 @@ function _manifest_method(m)
         is_classmethod = _mbool(m, "is_classmethod"),
         # A trait impl's method, by its trait (additive within schema 0.7, #503).
         trait_path = _mstr(m, "trait_path"),
+        # The Julia name of a trait method whose name another method of the
+        # struct shares (additive within schema 0.7, #506).
+        julia_name = _mstr(m, "julia_name"),
         # A generic struct's method wrapper, by the name the extractor gave it
         # (module-qualified, #462); omitted for every other method.
         generic_wrapper_name = _mstr(m, "generic_wrapper_name"),

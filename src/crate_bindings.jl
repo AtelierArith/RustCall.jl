@@ -1926,7 +1926,7 @@ function _check_module_names(tree::ModuleNode)
         owner = qualified_name(s.module_path, s.name)
         for m in s.methods
             (isempty(m.skip_reason) && !m.is_constructor) || continue
-            refuse_reserved(m.name, "the method `$owner::$(m.name)`")
+            refuse_reserved(julia_method_name(m), "the method `$owner::$(m.name)`")
         end
     end
     # A method or an accessor is emitted *after* its struct, so it only clashes
@@ -1945,8 +1945,8 @@ function _check_module_names(tree::ModuleNode)
         owner = qualified_name(s.module_path, s.name)
         for m in s.methods
             (isempty(m.skip_reason) && !m.is_constructor) || continue
-            later_struct(m.name, i) || continue
-            get!(taken, m.name, "the method `$owner::$(m.name)`")
+            later_struct(julia_method_name(m), i) || continue
+            get!(taken, julia_method_name(m), "the method `$owner::$(m.name)`")
         end
         for (field, _) in s.fields
             if field_is_accessible(s, field) && later_struct("get_$field", i)
@@ -2598,7 +2598,8 @@ function _generate_crate_struct_wrapper(info::RustStructInfo;
 
     # Generate constructor and method wrappers
     for m in info.methods
-        method_wrapper = _generate_crate_method_wrapper(info, m; bare = !(m.name in colliding))
+        method_wrapper = _generate_crate_method_wrapper(info, m;
+                                                        bare = !(julia_method_name(m) in colliding))
         push!(exprs, method_wrapper)
     end
 
@@ -2904,7 +2905,9 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     _rust_refused_item!(method.skip_reason, method.name) && return Expr(:block)
     struct_name = Symbol(info.name)
     struct_name_str = info.name
-    method_name = Symbol(method.name)
+    # The Julia name: the Rust name, or `<Trait>_<name>` for a trait method
+    # another method of the struct shares its name with (#506).
+    method_name = Symbol(julia_method_name(method))
     # Exported symbol of the method wrapper (`rustcall_<Struct>_<method>`, #279)
     # and the owner of the per-method string buffers, both off the struct's
     # FFI name, which carries the module path (#300). The manifest states the
@@ -2965,7 +2968,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
             # A panic returns the `panicked()` sentinel — the Err / None
             # discriminant with an uninitialized payload — so the channel is
             # read *before* anything is decoded (#244).
-            _guard_panic($c_sym, $channel_sym, $("$(struct_name_str)::$(method.name)"), $free_expr)
+            _guard_panic($c_sym, $channel_sym, $("$(struct_name_str)::$(method_name)"), $free_expr)
             $(_payload_decode_expr(plan, c_sym, free_expr))
         end
     end
@@ -2994,7 +2997,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     # borrowed `&str` result points into the Rust object, which the finalizer
     # of a temporary `self` could otherwise free mid-call.
     payload_body === nothing && !method.is_static && pushfirst!(preserved, :self)
-    method_label = "$(struct_name_str)::$(method.name)"
+    method_label = "$(struct_name_str)::$(method_name)"
     body = payload_body !== nothing ? payload_body : quote
         $(bindings...)
         $target
@@ -3081,7 +3084,7 @@ function _method_payload_plan(info::RustStructInfo, method::RustMethod,
                                             position = "Ok payload", strict = strict)
         err_t, err_slot = ffi_payload_symbols(method.err_type, method.err_abi, ctx;
                                               position = "Err payload", strict = strict)
-        name = Symbol("CResult_", info.name, "_", method.name)
+        name = Symbol("CResult_", info.name, "_", julia_method_name(method))
         definition = quote
             # RustCall's own mirror of the extractor's `#[repr(C)]` aggregate,
             # so it carries the by-value layout assertion in its supertype
@@ -3104,7 +3107,7 @@ end"""
     inner_t, inner_slot =
         ffi_payload_symbols(method.inner_type, method.inner_abi, ctx;
                             position = "Some payload", strict = strict)
-    name = Symbol("COption_", info.name, "_", method.name)
+    name = Symbol("COption_", info.name, "_", julia_method_name(method))
     definition = quote
         struct $name <: FFIByValue
             is_some::UInt8
@@ -3159,7 +3162,7 @@ function _generate_py_result_method_wrapper(info::RustStructInfo, method::RustMe
                                             frame::Union{Nothing, Symbol} = nothing)
     struct_name = Symbol(info.name)
     struct_name_str = info.name
-    method_name = Symbol(method.name)
+    method_name = Symbol(julia_method_name(method))
     boxed = method.returns_boxed_struct
     ok_julia_type, ok_slot_type, is_unit = boxed ?
         (struct_name, :(Ptr{Cvoid}), false) :
@@ -3180,7 +3183,7 @@ function _generate_py_result_method_wrapper(info::RustStructInfo, method::RustMe
     method.is_static || push!(all_args, :(getfield(self, :ptr)))
     append!(all_args, converted_args)
     method.is_static || pushfirst!(preserved, :self)
-    method_label = "$(struct_name_str)::$(method.name)"
+    method_label = "$(struct_name_str)::$(method_name)"
     payload_free = _payload_free_symbol(helper_owner, (method.ok_abi,))
     cache_sym = _target_cache_name(:m, wrapper_name)
     target = if boxed
@@ -5212,7 +5215,7 @@ function _emit_struct_code(info::RustStructInfo; strict::Symbol = FFI_STRICT[],
 
     # Method wrappers
     for m in info.methods
-        code = _emit_method_code(info, m; strict = strict, bare = !(m.name in colliding))
+        code = _emit_method_code(info, m; strict = strict, bare = !(julia_method_name(m) in colliding))
         push!(lines, code)
         push!(lines, "")
     end
@@ -5327,13 +5330,13 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
     # A method the Rust codegen refuses gets no wrapper (#491).
     _rust_refused_item!(method.skip_reason, method.name) && return ""
     struct_name = struct_info.name
-    method_name = method.name
+    method_name = julia_method_name(method)
     # Exported symbol (`rustcall_<Struct>_<method>`, #279) and the owner of the
     # per-method string buffers, both off the struct's FFI name (#300). The
     # manifest states the owner (#342); the derivation stands in only for an
     # entry that states none.
     wrapper_name = method_wrapper_symbol(struct_info.ffi_name, method)
-    helper_owner = _method_string_owner(method, "$(struct_info.ffi_name)_$(method_name)")
+    helper_owner = _method_string_owner(method, "$(struct_info.ffi_name)_$(method.name)")
 
     arg_syms = join(method.arg_names, ", ")
 
@@ -5416,7 +5419,7 @@ end
 function _emit_method_definition(struct_name::AbstractString, method::RustMethod,
                                  arg_syms::AbstractString, body::AbstractString;
                                  predef::AbstractString = "", bare::Bool = true)
-    method_name = method.name
+    method_name = julia_method_name(method)
     definition = if method.is_static && method.is_constructor
         """
 function $struct_name($arg_syms)
@@ -5482,7 +5485,7 @@ function _emit_py_result_method_code(info::RustStructInfo, method::RustMethod,
                                      strict::Symbol = FFI_STRICT[], bare::Bool = true,
                                      frame_str::AbstractString = "")
     struct_name = info.name
-    method_name = method.name
+    method_name = julia_method_name(method)
     boxed = method.returns_boxed_struct
     ok_type_str, ok_slot_str, is_unit = boxed ?
         (struct_name, "Ptr{Cvoid}", false) :

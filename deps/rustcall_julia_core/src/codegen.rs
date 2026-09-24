@@ -156,6 +156,35 @@ pub fn method_symbol(module_path: &[String], struct_name: &str, method: &str) ->
     method_symbol_of(&symbol_stem(module_path, struct_name), method)
 }
 
+/// The part of every per-method name after the struct stem (#506): the
+/// method's own name for an inherent method; for a method of a trait impl,
+/// the trait's name, length-prefixed, ahead of it — `3Far_m` for `Far::m`.
+///
+/// The exported symbol (`rustcall_<stem>_<method stem>`), the string buffers
+/// a crate wrapper declares (`<stem>_<method stem>_…`) and the `CResult_` /
+/// `COption_` aggregate all hang off it, so a struct with an inherent `m` and
+/// the `m` of two traits exports `rustcall_Buf_m`, `rustcall_Buf_3Far_m` and
+/// `rustcall_Buf_4Near_m`. An identifier cannot start with a digit, so no
+/// inherent method's name is a trait method's stem, and the length prefix
+/// keeps every `(trait, method)` pair apart. The trait is named by the last
+/// segment of its path as the header writes it (`tr::Far<u8>` → `Far`): two
+/// impls whose traits end in the same name and that both wrap a method of the
+/// same name get one symbol, which the crate scan's duplicate-symbol check
+/// refuses (`crate::claims`).
+pub fn method_stem(trait_name: Option<&str>, method: &str) -> String {
+    let method = method.strip_prefix("r#").unwrap_or(method);
+    match trait_name.map(|t| t.strip_prefix("r#").unwrap_or(t)) {
+        None => method.to_string(),
+        Some(trait_name) => format!("{}{trait_name}_{method}", trait_name.len()),
+    }
+}
+
+/// The name a trait path ends in, `Far` for `tr::Far<u8>`: the trait part of
+/// [`method_stem`]. `None` for an empty (inherent) path.
+pub fn trait_name_of(trait_path: &syn::Path) -> Option<String> {
+    trait_path.segments.last().map(|s| s.ident.to_string())
+}
+
 /// [`method_symbol`] from an already computed struct stem.
 pub fn method_symbol_of(struct_stem: &str, method: &str) -> String {
     format!("{SYMBOL_PREFIX}{struct_stem}_{method}")
@@ -2342,7 +2371,10 @@ pub fn method_wrapper_at_impl_site(
         return refusal.compile_error(&cfg_attrs(&m.func.attrs));
     }
     let stem = struct_stem(struct_module_path, struct_name);
-    let owner = format_ident!("{}", method_string_owner(&stem.to_string(), &m.name()));
+    let owner = format_ident!(
+        "{}",
+        method_string_owner(&stem.to_string(), &m.method_stem())
+    );
     let owned_helper = format_ident!("{}_RustCallOwnedString", owner);
     let owned_free = format_ident!("{}_free_rust_string", owner);
     let borrowed_helper = format_ident!("{}_RustCallBorrowedString", owner);
@@ -2656,8 +2688,10 @@ fn method_spec(
     panic_hook: PanicHook,
 ) -> WrapperSpec {
     let method_name = m.func.sig.ident.clone();
-    let method_name_str = method_name.to_string();
-    let symbol = format_ident!("{}", method_symbol_of(&stem.to_string(), &method_name_str));
+    // Every per-method name hangs off the method stem, which tells an
+    // inherent method from each trait's of the same name (#506).
+    let method_stem = m.method_stem();
+    let symbol = format_ident!("{}", method_symbol_of(&stem.to_string(), &method_stem));
     let shape = m.receiver();
     let receiver = (!shape.is_static()).then(|| WrapperReceiver {
         ty: self_path.clone(),
@@ -2685,13 +2719,13 @@ fn method_spec(
         // `CResult_<Struct>_<method>`, with a `String` payload composed onto
         // the owner's owned-string buffer.
         WrapperReturn::CResult {
-            name: format_ident!("CResult_{}_{}", stem, method_name_str),
+            name: format_ident!("CResult_{}_{}", stem, method_stem),
             ok: payload_of(&r.ok_type, owned_helper, owned_free, declare),
             err: payload_of(&r.err_type, owned_helper, owned_free, declare),
         }
     } else if let Some(o) = method_option_return(m) {
         WrapperReturn::COption {
-            name: format_ident!("COption_{}_{}", stem, method_name_str),
+            name: format_ident!("COption_{}_{}", stem, method_stem),
             inner: payload_of(&o.inner_type, owned_helper, owned_free, declare),
         }
     } else if method_returns_string(m) || method_copies_str(m) {

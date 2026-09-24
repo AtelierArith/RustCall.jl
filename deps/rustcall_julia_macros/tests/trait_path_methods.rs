@@ -204,13 +204,13 @@ impl recv::Forms for Pt {
 fn every_receiver_form_reaches_the_trait_method() {
     let p = rustcall_Pt_new(0);
     unsafe {
-        assert_eq!(rustcall_Pt_by_ref(p).assume_init(), 1);
-        assert_eq!(rustcall_Pt_by_mut(p).assume_init(), 10);
-        assert_eq!(rustcall_Pt_typed_ref(p).assume_init(), 12);
-        assert_eq!(rustcall_Pt_ref_ref(p).assume_init(), 13);
-        assert_eq!(rustcall_Pt_ref_ref_ref(p).assume_init(), 14);
-        assert_eq!(rustcall_Pt_by_value(p).assume_init(), 15);
-        assert_eq!(rustcall_Pt_mut_value(p).assume_init(), 16);
+        assert_eq!(rustcall_Pt_5Forms_by_ref(p).assume_init(), 1);
+        assert_eq!(rustcall_Pt_5Forms_by_mut(p).assume_init(), 10);
+        assert_eq!(rustcall_Pt_5Forms_typed_ref(p).assume_init(), 12);
+        assert_eq!(rustcall_Pt_5Forms_ref_ref(p).assume_init(), 13);
+        assert_eq!(rustcall_Pt_5Forms_ref_ref_ref(p).assume_init(), 14);
+        assert_eq!(rustcall_Pt_5Forms_by_value(p).assume_init(), 15);
+        assert_eq!(rustcall_Pt_5Forms_mut_value(p).assume_init(), 16);
         // By value is a copy: the object behind the pointer is unchanged.
         assert_eq!((*p).n, 10);
         Pt_free(p);
@@ -220,23 +220,24 @@ fn every_receiver_form_reaches_the_trait_method() {
 #[test]
 fn trait_impl_wrappers_reach_the_trait_method() {
     // The exported symbols are the ones the scheme gives the methods: the
-    // calls below name them (#497: "exported symbol names unchanged").
+    // calls below name them. A trait method's carries its trait (`3Far_`),
+    // so the inherent `m` beside it exports its own (#506).
     let p = rustcall_Buf_new(3);
     unsafe {
-        assert_eq!(rustcall_Buf_m(p).assume_init(), 30);
-        assert_eq!(rustcall_Buf_bump(p, 4).assume_init(), 7);
+        assert_eq!(rustcall_Buf_3Far_m(p).assume_init(), 30);
+        assert_eq!(rustcall_Buf_3Far_bump(p, 4).assume_init(), 7);
         assert_eq!((*p).n, 7);
-        assert_eq!(rustcall_Buf_make().assume_init(), 42);
-        assert_eq!(ops::rustcall_Buf_only_near(p).assume_init(), 14);
+        assert_eq!(rustcall_Buf_3Far_make().assume_init(), 42);
+        assert_eq!(ops::rustcall_Buf_4Near_only_near(p).assume_init(), 14);
 
-        let built = rustcall_Buf_build(1);
+        let built = rustcall_Buf_3Far_build(1);
         assert_eq!((*built).n, 101);
         Buf_free(built);
 
-        let s = rustcall_Buf_label(p);
+        let s = rustcall_Buf_3Far_label(p);
         let text = std::str::from_utf8(std::slice::from_raw_parts(s.ptr, s.len)).unwrap();
         assert_eq!(text, "far 7");
-        Buf_label_free_rust_string(s.ptr, s.len, s.cap);
+        Buf_3Far_label_free_rust_string(s.ptr, s.len, s.cap);
 
         Buf_free(p);
     }
