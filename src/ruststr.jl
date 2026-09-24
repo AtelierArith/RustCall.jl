@@ -412,7 +412,11 @@ macro rust_str(code)
     # there (#323).
     # Two items one Julia name would bind (`fn r#for` beside `fn for_`, #514)
     # are refused before anything is defined.
-    _check_julia_name_clashes(julia_func_signatures, struct_infos, "the rust\"\"\" block")
+    # The `@rust` registry is checked in the same pass: a hand-written
+    # `#[no_mangle] fn r#for` beside a `#[julia] fn for_` would share the key
+    # `for_` there.
+    _check_julia_name_clashes(julia_func_signatures, struct_infos, "the rust\"\"\" block";
+                              registry = _registry_signatures(expanded.manifest))
     julia_defs, julia_func_wrappers = _inline_wrapper_exprs(julia_func_signatures, struct_infos)
     # The symbols this block exports, known at macro-expansion time. They are
     # recorded per *module* so that a wrapper resolves through the library its

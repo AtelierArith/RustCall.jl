@@ -137,7 +137,9 @@ and `parent` is the Julia type a method, constructor or accessor belongs to
 - `(:static, T)` — `name(::Type{T}, args...)`;
 - `(:self, T)` — `name(self::T, args...)`: an instance method, a field accessor;
 - `(:prop, T)` — a property of `T` (a `getproperty` / `setproperty!` branch),
-  which lives on the type, not in the module.
+  which lives on the type, not in the module;
+- `:registry` — a key of the `@rust` name table of a `rust\"\"\"` block (the
+  exported functions, hand-written exports included, and the generics).
 
 Every other scope is a method of the module-level generic function `name`, so
 all of them share the module's one namespace with the types and submodules.
@@ -169,7 +171,8 @@ Every name is the one the emitter binds (`julia_function_name`,
 `julia_method_name`, `julia_field_name`, `julia_struct_name`,
 `_julia_module_name`).
 """
-function julia_definitions(functions, structs; modules = String[], accessors::Bool = false)
+function julia_definitions(functions, structs; modules = String[], accessors::Bool = false,
+                           registry = nothing)
     defs = JuliaDefinition[]
     add!(name, scope, owner; what = owner, parent = "") =
         push!(defs, JuliaDefinition(name, scope, owner, what, parent))
@@ -212,6 +215,19 @@ function julia_definitions(functions, structs; modules = String[], accessors::Bo
     end
     for segment in modules
         add!(_julia_module_name(segment), :binding, "the module `$segment`")
+    end
+    # The `@rust` registry of a `rust\"\"\"` block (`_registry_signatures`): every
+    # exported function — hand-written `#[no_mangle] extern "C"` exports
+    # included — and every generic, keyed by the name `@rust` is called with
+    # (`_manifest_registry_entries`, `register_generic_function`). Two
+    # entries under one key would replace one another in the table.
+    if registry !== nothing
+        for f in registry
+            (f.exported || f.is_generic) || continue
+            _rust_refuses(f.skip_reason) && continue
+            add!(julia_function_name(f), :registry,
+                 "the function `$(qualified_name(f.module_path, f.name))`")
+        end
     end
     return defs
 end
@@ -261,7 +277,10 @@ function _check_julia_definitions(defs, where_::AbstractString)
     end
     bindings = Dict(def.name => def for def in defs if def.scope === :binding)
     for def in defs
-        (def.scope === :binding || (def.scope isa Tuple && first(def.scope) === :prop)) && continue
+        # A property lives on its type and a registry key in `@rust`'s table,
+        # neither in the module's namespace.
+        (def.scope === :binding || def.scope === :registry ||
+         (def.scope isa Tuple && first(def.scope) === :prop)) && continue
         binding = get(bindings, def.name, nothing)
         binding === nothing || def.parent == def.name || refuse(binding, def)
     end
@@ -277,5 +296,6 @@ before emitting anything, and the PyO3 host runs the same check over its own
 definitions (`_pyo3_host_definitions`).
 """
 _check_julia_name_clashes(functions, structs, where_::AbstractString;
-                          modules = String[], accessors::Bool = false) =
-    _check_julia_definitions(julia_definitions(functions, structs; modules, accessors), where_)
+                          modules = String[], accessors::Bool = false, registry = nothing) =
+    _check_julia_definitions(julia_definitions(functions, structs; modules, accessors, registry),
+                             where_)

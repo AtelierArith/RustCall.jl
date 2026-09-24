@@ -125,8 +125,29 @@ pub const ESCAPED_UNDERSCORE: &str = "_0";
 /// A crate-root item whose *name* happens to spell an encoding (`fn a__run`
 /// next to `a::run`) is the one coincidence the encoding cannot exclude; crate
 /// extraction reports such a duplicate symbol instead of describing it.
+/// A Rust item's name without a raw identifier's `r#` (`r#match` -> `match`):
+/// the one spelling every symbol, helper identifier and Python attribute is
+/// built from (#514). `r#match` and `match` are one Rust name, `#` cannot occur
+/// in a symbol, and `format_ident!` panics on an `r#` that is not at the start.
+/// The manifest keeps the item's own spelling for the source paths the
+/// wrappers call (`<Buf>::r#match`); nothing else reads it.
+pub fn unraw(name: &str) -> &str {
+    name.strip_prefix("r#").unwrap_or(name)
+}
+
+/// The identifier that spells a Rust item's name in source, as the item wrote
+/// it: `r#type` is a raw identifier, anything else a plain one. The one place a
+/// manifest name becomes a source `Ident` (#514); a symbol or helper name is
+/// built from [`unraw`] instead.
+pub fn source_ident(name: &str, span: proc_macro2::Span) -> Ident {
+    match name.strip_prefix("r#") {
+        Some(bare) => Ident::new_raw(bare, span),
+        None => Ident::new(name, span),
+    }
+}
+
 pub fn symbol_stem(module_path: &[String], name: &str) -> String {
-    let name = name.strip_prefix("r#").unwrap_or(name);
+    let name = unraw(name);
     if module_path.is_empty() {
         return name.to_string();
     }
@@ -134,12 +155,7 @@ pub fn symbol_stem(module_path: &[String], name: &str) -> String {
         .iter()
         .map(|segment| segment.as_str())
         .chain(std::iter::once(name))
-        .map(|segment| {
-            segment
-                .strip_prefix("r#")
-                .unwrap_or(segment)
-                .replace('_', ESCAPED_UNDERSCORE)
-        })
+        .map(|segment| unraw(segment).replace('_', ESCAPED_UNDERSCORE))
         .collect::<Vec<_>>()
         .join(MODULE_SEPARATOR)
 }
@@ -172,8 +188,8 @@ pub fn method_symbol(module_path: &[String], struct_name: &str, method: &str) ->
 /// same name get one symbol, which the crate scan's duplicate-symbol check
 /// refuses (`crate::claims`).
 pub fn method_stem(trait_name: Option<&str>, method: &str) -> String {
-    let method = method.strip_prefix("r#").unwrap_or(method);
-    match trait_name.map(|t| t.strip_prefix("r#").unwrap_or(t)) {
+    let method = unraw(method);
+    match trait_name.map(unraw) {
         None => method.to_string(),
         Some(trait_name) => format!("{}{trait_name}_{method}", trait_name.len()),
     }
@@ -222,12 +238,12 @@ pub fn method_string_owner(struct_stem: &str, method: &str) -> String {
 /// loses its `r#`, as the accessor the proc macro exports does
 /// (`format_ident!` unraws an identifier argument, #514).
 pub fn field_getter_symbol(struct_stem: &str, field: &str) -> String {
-    let field = field.strip_prefix("r#").unwrap_or(field);
+    let field = unraw(field);
     format!("{struct_stem}_get_{field}")
 }
 
 pub fn field_setter_symbol(struct_stem: &str, field: &str) -> String {
-    let field = field.strip_prefix("r#").unwrap_or(field);
+    let field = unraw(field);
     format!("{struct_stem}_set_{field}")
 }
 

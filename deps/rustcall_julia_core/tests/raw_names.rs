@@ -125,3 +125,106 @@ fn a_raw_pyo3_name_is_recorded_as_python_exposes_it() {
         "{manifest:?}"
     );
 }
+
+#[test]
+fn a_python_owned_class_with_raw_members_gets_a_wrapper_crate() {
+    // A class with a defaulted method is Python-owned, so its methods and
+    // fields get `__rustcall_python_<class>_<member>` helpers. Built from the
+    // raw names they read `__rustcall_python_Kw_r#match`, which
+    // `format_ident!` refuses with a panic (PR #515 review).
+    let scanned = extract(
+        r#"
+        #[pyclass] pub struct Kw { #[pyo3(get, set)] pub r#let: i32 }
+        #[pymethods] impl Kw {
+            #[pyo3(signature = (x = 1))]
+            pub fn r#match(&self, x: i32) -> i32 { self.r#let + x }
+        }
+        "#,
+        Mode::Crate,
+    )
+    .unwrap();
+    let wrapped = rustcall_julia_core::wrap::wrapper_crate(&scanned, "user_crate", true);
+    let source = &wrapped.lib_rs;
+    for helper in [
+        "__rustcall_python_Kw_match",
+        "__rustcall_python_Kw_get_let",
+        "__rustcall_python_Kw_set_let",
+    ] {
+        assert!(source.contains(helper), "{helper} missing from {source}");
+    }
+    assert!(!source.contains("_r#"), "{source}");
+    // The Python attributes are the unraw names PyO3 exposes.
+    assert!(
+        source.contains("\"match\"") && source.contains("\"let\""),
+        "{source}"
+    );
+}
+
+#[test]
+fn a_raw_no_mangle_export_records_its_native_symbol() {
+    // `#[no_mangle] pub extern "C" fn r#for` is exported by rustc as `for`;
+    // the manifest's symbol is what Julia `dlsym`s (PR #515 review).
+    let manifest = extract(
+        r#"#[no_mangle] pub extern "C" fn r#for(x: i32) -> i32 { x }"#,
+        Mode::Inline,
+    )
+    .unwrap();
+    let f = &manifest.functions[0];
+    assert_eq!(f.name, "r#for");
+    assert_eq!(f.symbol, "for");
+}
+
+/// The class-level guarantee (#514): every identifier, symbol or helper name
+/// the core builds from a Rust item's name goes through `codegen::unraw`,
+/// directly or through a helper built on it (`symbol_stem`, `method_stem`,
+/// `Method::method_stem`, `source_ident`). A `format_ident!` / `Ident::new`
+/// whose arguments read an item name (`.name`, `ident.to_string()`) without one
+/// of those is what produced `rustcall_r#for_new`, `for_get_r#let` and
+/// `__rustcall_python_Kw_r#match`, each found one at a time; this finds the
+/// next one before a review does. `r#` is stripped in `codegen.rs` only.
+#[test]
+fn no_identifier_is_built_from_a_raw_name() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let helpers = ["unraw(", "symbol_stem(", "method_stem(", "source_ident("];
+    let mut offenders = Vec::new();
+    for entry in std::fs::read_dir(&src).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        for opener in ["format_ident!(", "Ident::new(", "Ident::new_raw("] {
+            let mut from = 0;
+            while let Some(found) = text[from..].find(opener) {
+                let start = from + found;
+                let open = start + opener.len() - 1;
+                let mut depth = 0usize;
+                let mut end = open;
+                for (i, c) in text[open..].char_indices() {
+                    match c {
+                        '(' => depth += 1,
+                        ')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = open + i;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let call = &text[start..=end];
+                let reads_name = call.contains(".name") || call.contains("ident.to_string()");
+                if reads_name && !helpers.iter().any(|h| call.contains(h)) {
+                    let line = text[..start].matches('\n').count() + 1;
+                    offenders.push(format!("{}:{line}: {call}", path.display()));
+                }
+                from = end + 1;
+            }
+        }
+        if path.file_name().unwrap() != "codegen.rs" && text.contains("strip_prefix(\"r#\")") {
+            offenders.push(format!("{}: strips `r#` itself", path.display()));
+        }
+    }
+    assert!(offenders.is_empty(), "{offenders:#?}");
+}

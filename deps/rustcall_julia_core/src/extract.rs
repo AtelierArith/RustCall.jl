@@ -252,10 +252,11 @@ pub fn function_entry(
     // `#[julia]` is additive: the item keeps its name and the exported entry
     // point is the wrapper next to it (#279), qualified by the module path
     // (#300). A plain `#[no_mangle] extern "C"` function is exported under
-    // its own name.
+    // its own name — the native one, without a raw identifier's `r#`: rustc
+    // exports `#[no_mangle] fn r#for` as `for` (#514).
     let symbol = match attribute {
         Attribute::Julia if !is_generic => crate::codegen::function_symbol(module_path, &name),
-        _ => name.clone(),
+        _ => crate::codegen::unraw(&name).to_string(),
     };
     // The wrapper only lowers strings when it is actually generated; a generic
     // item is wrapped per instantiation (see `specialize`), not here.
@@ -1386,9 +1387,7 @@ fn julia_method_names(methods: &mut [Method]) {
     // A raw identifier's `r#` is no part of the name: `r#foo` and `foo` are
     // one Rust name, and `#` would start a comment in a written Julia module
     // (PR #513 review). Names are compared, and bound, without it.
-    fn bare(name: &str) -> &str {
-        name.strip_prefix("r#").unwrap_or(name)
-    }
+    use crate::codegen::unraw as bare;
     let names: Vec<(String, String)> = methods
         .iter()
         .map(|m| (m.trait_path.clone(), bare(&m.name).to_string()))

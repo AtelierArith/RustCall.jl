@@ -99,6 +99,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   described with the accessors `S_get_r#let` / `S_set_r#let`, which nothing
   exports; the manifest now names `S_get_let` / `S_set_let`, the symbols the
   proc macro has always exported.
+- **One unraw rule on the Rust side, one namespace for `@rust`**
+  ([#514](https://github.com/AtelierArith/RustCall.jl/issues/514)).
+  `rustcall_julia_core::codegen::unraw` is the one place a Rust item's name
+  loses its `r#`. Every symbol and helper identifier is built through it
+  (`symbol_stem`, `method_stem`, `source_ident` build on it), and a source test
+  (`tests/raw_names.rs::no_identifier_is_built_from_a_raw_name`) refuses a
+  `format_ident!` / `Ident::new` that reads an item name without it. This
+  fixes a Python-owned PyO3 class with a raw method or field, whose wrapper
+  crate generation panicked. A hand-written `#[no_mangle] extern "C" fn r#for`
+  is recorded with its native symbol `for`. The name-clash check of a
+  `rust"""` block also covers `@rust`'s name table (`_registry_signatures`,
+  hand-written exports included), so a raw export beside a `#[julia] fn` of
+  its Julia name is refused instead of one replacing the other.
 - **A raw name is unrawed wherever it is spelled**
   ([#514](https://github.com/AtelierArith/RustCall.jl/issues/514)). A raw
   method of a generic inline struct (`impl<T> Boxed<T> { fn r#match }`) got a

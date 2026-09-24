@@ -566,14 +566,12 @@ impl Pyo3Scan {
                             )
                         }
                     );
-                    // A raw class name (`r#type`) is rebuilt as a raw
-                    // identifier: `Ident::new` refuses the `r#` (#514).
-                    let class_name = &self.classes[index].entry.name;
-                    let span = imp.header.target.span();
-                    let class_ident = match class_name.strip_prefix("r#") {
-                        Some(bare) => syn::Ident::new_raw(bare, span),
-                        None => syn::Ident::new(class_name, span),
-                    };
+                    // The class's own spelling, a raw identifier included
+                    // (`r#type`): it names the type in the wrapper's source.
+                    let class_ident = crate::codegen::source_ident(
+                        &self.classes[index].entry.name,
+                        imp.header.target.span(),
+                    );
                     let entry = method_entry(
                         &class_ident,
                         &class_path,
@@ -1422,10 +1420,12 @@ fn python_name_of(attrs: &[syn::Attribute], rust_name: &str) -> String {
 /// The Python name of a raw Rust name (`r#for` -> `for`); empty for any other
 /// name, which Python sees as written.
 fn unraw_python_name(rust_name: &str) -> String {
-    rust_name
-        .strip_prefix("r#")
-        .map(str::to_string)
-        .unwrap_or_default()
+    let bare = crate::codegen::unraw(rust_name);
+    if bare == rust_name {
+        String::new()
+    } else {
+        bare.to_string()
+    }
 }
 
 /// Manifest entry of a declarative `#[pymodule] mod name { ... }` (#424). Only

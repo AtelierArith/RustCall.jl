@@ -959,14 +959,18 @@ fn python_field_wrappers(
         ));
     }
     let python_name = if field.python_name.is_empty() {
-        field.name.clone()
+        crate::codegen::unraw(&field.name).to_string()
     } else {
         field.python_name.clone()
     };
     let mut out = TokenStream2::new();
     if !field.getter.is_empty() {
         let symbol = symbol_ident(&field.getter)?;
-        let helper = format_ident!("__rustcall_python_{}_get_{}", class_name, field.name);
+        let helper = format_ident!(
+            "__rustcall_python_{}_get_{}",
+            class_name,
+            crate::codegen::unraw(&field.name)
+        );
         out.extend(quote! {
             fn #helper(ptr: *mut #handle) -> #ty {
                 use ::rustcall_pyo3::types::PyAnyMethods as _;
@@ -1041,7 +1045,11 @@ fn python_field_wrappers(
     }
     if !field.setter.is_empty() {
         let symbol = symbol_ident(&field.setter)?;
-        let helper = format_ident!("__rustcall_python_{}_set_{}", class_name, field.name);
+        let helper = format_ident!(
+            "__rustcall_python_{}_set_{}",
+            class_name,
+            crate::codegen::unraw(&field.name)
+        );
         out.extend(quote! {
             fn #helper(ptr: *mut #handle, value: #ty) {
                 use ::rustcall_pyo3::types::PyAnyMethods as _;
@@ -1115,7 +1123,7 @@ fn python_method_wrapper(
     let helper = format_ident!(
         "__rustcall_python_{}_{}{}",
         class_name,
-        entry.name,
+        entry.method_stem(),
         if entry.args.len() == original.args.len() {
             String::new()
         } else {
@@ -1129,7 +1137,7 @@ fn python_method_wrapper(
     let (call_setup, positional_args, keyword_args) =
         python_call_arguments(&native_args, &original.args);
     let python_name = if original.python_name.is_empty() {
-        original.name.clone()
+        crate::codegen::unraw(&original.name).to_string()
     } else {
         original.python_name.clone()
     };

@@ -415,6 +415,39 @@ end
         @test call(sget(:for_), sget(:Sa), Int32(1)) == 11
         @test call(sget(:for_), sget(:Sb), Int32(1)) == 101
 
+        # A hand-written `#[no_mangle] extern "C"` export is reached by
+        # `@rust` under its Julia name and dlsym'd under its native symbol,
+        # which rustc spells without the `r#` (PR #515 review).
+        ex = Module(:KwInlineExports)
+        Core.eval(ex, :(using RustCall))
+        Core.eval(ex, Meta.parse("""rust\"\"\"
+            #[no_mangle]
+            pub extern "C" fn r#match(x: i32) -> i32 { x + 7 }
+            #[no_mangle]
+            pub extern "C" fn export(x: i32) -> i32 { x + 8 }
+            \"\"\""""))
+        @test call(Core.eval, ex, :(@rust match(Int32(1))::Int32)) == 8
+        @test call(Core.eval, ex, :(@rust export_(Int32(1))::Int32)) == 9
+        # ... and it shares `@rust`'s table with the `#[julia]` functions, so
+        # a raw export beside a `#[julia] fn` of its Julia name is refused
+        # before either is registered (PR #515 review).
+        both = Module(:KwInlineExportClash)
+        Core.eval(both, :(using RustCall))
+        err = try
+            Core.eval(both, Meta.parse("""rust\"\"\"
+                #[no_mangle]
+                pub extern "C" fn r#for(x: i32) -> i32 { x }
+                #[julia]
+                pub fn for_(x: i32) -> i32 { x }
+                \"\"\""""))
+            nothing
+        catch e
+            e isa LoadError ? e.error : e
+        end
+        @test err isa ErrorException
+        @test occursin("function `r#for`", sprint(showerror, err)) &&
+              occursin("function `for_`", sprint(showerror, err))
+
         # ... and so are two struct types one Julia name would bind.
         types = Module(:KwInlineTypeClash)
         Core.eval(types, :(using RustCall))
@@ -588,6 +621,17 @@ include(joinpath(@__DIR__, "pyo3_wrapper_helpers.jl"))
                 pub fn r#match(&self) -> i32 { self.r#let * 2 }
                 pub fn r#end(&self) -> i32 { self.r#let * 3 }
             }
+            // A defaulted method makes a class Python-owned: its members get
+            // `__rustcall_python_<class>_<member>` helpers, which were built
+            // from the raw names and panicked the generator (PR #515 review).
+            #[pyclass]
+            pub struct Owned514 { #[pyo3(get, set)] pub r#let: i32 }
+            #[pymethods]
+            impl Owned514 {
+                #[new] pub fn new(v: i32) -> Self { Owned514 { r#let: v } }
+                #[pyo3(signature = (x = 1))]
+                pub fn r#match(&self, x: i32) -> i32 { self.r#let + x }
+            }
             """)
         info = RustCall.scan_crate(root)
         kw = only(filter(s -> s.name == "Kw514", info.pyo3_structs))
@@ -605,6 +649,9 @@ include(joinpath(@__DIR__, "pyo3_wrapper_helpers.jl"))
             @test call(get(:match), k) == 10
             @test call(get(:end_), k) == 15
             @test call(getproperty, k, :let_) == 5
+            o = call(get(:Owned514), Int32(4))
+            @test call(get(:match), o, Int32(2)) == 6
+            @test call(getproperty, o, :let_) == 4
             try
                 RustCall.unload_library(call(getfield, mod, :_LIB_NAME); close = true)
             catch
