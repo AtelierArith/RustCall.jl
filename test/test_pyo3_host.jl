@@ -437,24 +437,50 @@ end
     # `#[getter(end)] fn last` is `end` (get-only), `fn get_plain` is `plain`.
     @test summary(RustCall._pyo3_host_bound_properties(gate)) ==
           [("for", "for_", true, true), ("end", "end_", true, false),
-           ("plain", "plain", true, false)]
+           ("plain", "plain", true, false), ("anchor", "anchor", true, true),
+           ("samples", "samples", true, true)]
     point = only(filter(s -> s.name == "Point", info.pyo3_structs))
     @test summary(RustCall._pyo3_host_bound_properties(point)) ==
           [("x", "x", true, true), ("y", "y", true, true)]
 
-    text = string(Base.remove_linenums!(RustCall._pyo3_host_property_expr(:Gate, gate)))
+    classes = RustCall._pyo3_host_classes(info)
+    text = string(Base.remove_linenums!(RustCall._pyo3_host_property_expr(:Gate, gate, classes)))
     @test occursin("s === :for_ && (s = :for)", text)
     @test occursin("s === :end_ && (s = :end)", text)
     @test !occursin("s === :plain && (s =", text)
-    @test occursin("(:for_, :end_, :plain)", text)
+    @test occursin("(:for_, :end_, :plain, :anchor, :samples)", text)
     # The getter types the read, as a field's Rust type does.
     @test occursin("s === :for && return PythonCall.pyconvert(Int32, v)", text)
     @test occursin("property `end_` is read-only", text)
     @test !occursin("property `for_` is read-only", text)
 
+    # A property converts exactly as a method does: the read through the
+    # method emitter's return conversion (`_pyo3_host_value_expr`), the write
+    # through its argument plan (`_pyo3_host_arg_plan`) — so a getter
+    # returning another class is wrapped into it, and a setter taking a class
+    # or a numpy array is handed the Python object / `numpy.asarray` (PR #525
+    # review).
+    read_of(rust_type) = string(Base.remove_linenums!(
+        RustCall._pyo3_host_value_expr(:v, rust_type, :Gate, classes)))
+    write_of(rust_type) = string(Base.remove_linenums!(
+        RustCall._pyo3_host_arg_plan(:v, rust_type, classes)[2]))
+    @test read_of("Py<Point>") == "Point(v)"
+    @test occursin("s === :anchor && return Point(v)", text)
+    # Compared without layout: the printer indents a nested `if` differently.
+    squash(x) = filter(!isspace, x)
+    @test occursin(squash("s === :anchor && (w = $(write_of("PyRef<'_, Point>")))"),
+                   squash(text))
+    @test occursin("getfield(v, :_rustcall_py)", write_of("PyRef<'_, Point>"))
+    @test occursin("s === :samples && (w = _pyo3_asarray(v))", text)
+    @test write_of("PyReadonlyArray1<f64>") == "_pyo3_asarray(v)"
+    # A scalar is handed over as it is.
+    @test !occursin("s === :for && (w =", text)
+    # The numpy helper is emitted for a setter's array argument.
+    @test RustCall._pyo3_host_needs_numpy(info)
+
     # One definition per property, under its Julia name.
     props = [d.name for d in RustCall._pyo3_host_definitions(info) if d.scope == (:prop, "Gate")]
-    @test props == ["for_", "end_", "plain"]
+    @test props == ["for_", "end_", "plain", "anchor", "samples"]
 
     mktempdir() do dir
         mkpath(joinpath(dir, "src"))
@@ -664,8 +690,25 @@ end
     @test gate.for_ == 8
     @test gate.end_ == 16
     @test gate.plain == 9
-    @test propertynames(gate) == (:for_, :end_, :plain)
+    @test propertynames(gate) == (:for_, :end_, :plain, :anchor, :samples)
     @test_throws ArgumentError (gate.end_ = Int32(1))
+    # A getter returning another class is wrapped into it, and a setter taking
+    # one is handed the Python object the handle holds (PR #525 review).
+    # Through the generated module: the `CrateBindings` proxy re-wraps objects.
+    GM = bindings.module_ref
+    raw_gate = GM.Gate(Int32(8))
+    anchor = raw_gate.anchor
+    @test anchor isa GM.Point
+    @test anchor.x == 8.0
+    raw_gate.anchor = GM.Point(3.0, 4.0)
+    @test raw_gate.for_ == 3
+    if _numpy_available()
+        # A numpy setter converts the Julia array with `numpy.asarray`.
+        raw_gate.samples = [1.0, 2.0, 4.0]
+        @test raw_gate.samples == 7
+    else
+        @test_skip "the numpy setter needs numpy in the interpreter"
+    end
 
     # `#[staticmethod]` returning `Self`.
     origin = bindings.origin()

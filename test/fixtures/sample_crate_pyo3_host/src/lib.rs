@@ -163,6 +163,38 @@ impl Gate {
     fn get_plain(&self) -> i32 {
         self.level + 1
     }
+
+    /// A getter returning another class: the host wraps it into `Point`, as
+    /// it does a method's class return (PR #525 review).
+    #[getter]
+    fn anchor(&self, py: Python<'_>) -> PyResult<Py<Point>> {
+        Py::new(
+            py,
+            Point {
+                x: self.level as f64,
+                y: 0.0,
+            },
+        )
+    }
+
+    /// A setter taking another class: the host passes the Python object the
+    /// Julia handle holds, as it does a method's class argument.
+    #[setter]
+    fn set_anchor(&mut self, point: PyRef<'_, Point>) {
+        self.level = point.x as i32;
+    }
+
+    /// A numpy setter: the host converts a Julia array with `numpy.asarray`,
+    /// as it does a method's numpy argument.
+    #[getter]
+    fn samples(&self) -> i32 {
+        self.level
+    }
+
+    #[setter]
+    fn set_samples(&mut self, values: PyReadonlyArray1<f64>) {
+        self.level = values.as_array().iter().sum::<f64>() as i32;
+    }
 }
 
 #[pymethods]

@@ -731,35 +731,45 @@ function _pyo3_host_args(arg_names, arg_types, python_defaults, python_kinds,
         kind = i <= length(python_kinds) ? String(python_kinds[i]) : ""
         kind == "keyword_only" && break
         sym = Symbol(name)
-        target = _pyo3_host_struct_arg(type, classes)
-        if _pyo3_host_numpy_arg(type)
-            # pyo3-numpy extracts from a real `numpy.ndarray`, not the
-            # `juliacall.VectorValue` a Julia array becomes by default (#424).
-            push!(sig, :($sym::$(_pyo3_host_arg_type(type))))
-            push!(conv, :(_pyo3_asarray($sym)))
-        elseif target === nothing
-            push!(sig, :($sym::$(_pyo3_host_arg_type(type))))
-            push!(conv, sym)
-        else
-            jname, isvector = target
-            if isvector
-                push!(sig, :($sym::AbstractVector))
-                push!(conv,
-                      :([x isa PythonCall.Py ? x : getfield(x, :_rustcall_py) for x in $sym]))
-            else
-                push!(sig, :($sym))
-                push!(conv,
-                      :($sym isa PythonCall.Py ? $sym : getfield($sym, :_rustcall_py)))
-            end
-        end
+        entry, converted = _pyo3_host_arg_plan(sym, type, classes)
+        push!(sig, entry)
+        push!(conv, converted)
         push!(defaults, i <= length(python_defaults) && !isempty(python_defaults[i]))
         push!(syms, sym)
     end
     return syms, sig, conv, defaults
 end
 
-# The call's result, converted, or wrapped into the class it belongs to.
-function _pyo3_host_value_expr(call::Expr, rust_type::AbstractString,
+"""
+    _pyo3_host_arg_plan(sym, rust_type, classes) -> (signature entry, conversion)
+
+How one value of Rust type `rust_type`, held by the Julia variable `sym`, is
+handed to Python — the one decision for every argument the host passes: a
+function's and a method's (`_pyo3_host_args`) and a property's written value
+(`setproperty!`, `_pyo3_host_property_expr`; PR #525 review). A numpy array is
+converted with `numpy.asarray`, a scanned class (or a `Vec` of them) is passed
+as the Python object its Julia handle holds, anything else as it is.
+"""
+function _pyo3_host_arg_plan(sym::Symbol, rust_type::AbstractString, classes::AbstractDict)
+    target = _pyo3_host_struct_arg(rust_type, classes)
+    if _pyo3_host_numpy_arg(rust_type)
+        # pyo3-numpy extracts from a real `numpy.ndarray`, not the
+        # `juliacall.VectorValue` a Julia array becomes by default (#424).
+        return :($sym::$(_pyo3_host_arg_type(rust_type))), :(_pyo3_asarray($sym))
+    elseif target === nothing
+        return :($sym::$(_pyo3_host_arg_type(rust_type))), sym
+    end
+    _, isvector = target
+    isvector && return :($sym::AbstractVector),
+                       :([x isa PythonCall.Py ? x : getfield(x, :_rustcall_py) for x in $sym])
+    return sym, :($sym isa PythonCall.Py ? $sym : getfield($sym, :_rustcall_py))
+end
+
+# The call's result, converted, or wrapped into the class it belongs to — the
+# one decision for every value the host reads back: a function's or a method's
+# return and a property's read (`getproperty`, PR #525 review). `call` is the
+# expression that produces the Python value.
+function _pyo3_host_value_expr(call, rust_type::AbstractString,
                                jstruct::Union{Symbol, Nothing}, classes::AbstractDict)
     target = _pyo3_host_struct_target(rust_type, classes, jstruct)
     target !== nothing && return :($target($call))
@@ -884,6 +894,10 @@ function _pyo3_host_needs_numpy(info::CrateInfo)
         for m in s.methods
             any(_pyo3_host_numpy_arg, m.arg_types) && return true
         end
+        # A written property is an argument too: a field's value is converted
+        # like a setter's (`_pyo3_host_arg_plan`).
+        any(p -> _pyo3_host_numpy_arg(p.write_type), _pyo3_host_bound_properties(s)) &&
+            return true
     end
     return false
 end
@@ -907,15 +921,19 @@ attribute, merged by that attribute. `python` is the attribute PyO3 exposes (the
 manifest's `python_name`: `#[getter(end)]`, `#[pyo3(get, name = "x")]`, a
 `get_` / `set_` prefix dropped, a raw `r#for` unrawed); `julia` is the name
 Julia reads it under, `julia_binding_name` of that attribute (`for` → `for_`).
-`rust_type` types a read (`""` when nothing reads it); `what` names the Rust
-item in a message.
+`read_type` is the Rust type a read returns and `write_type` the Rust type a
+write takes (`""` when nothing reads / writes it); both are converted by the
+same plans a method's return and argument are (`_pyo3_host_value_expr`,
+`_pyo3_host_arg_plan`, PR #525 review). `what` names the Rust item in a
+message.
 """
 struct PyO3HostProperty
     python::String
     julia::String
     readable::Bool
     writable::Bool
-    rust_type::String
+    read_type::String
+    write_type::String
     what::String
 end
 
@@ -945,16 +963,17 @@ writable. `async` accessors are refused by the extractor and bound nowhere.
 function _pyo3_host_bound_properties(s::RustStructInfo)
     order = String[]
     found = Dict{String, PyO3HostProperty}()
-    add!(python, readable, writable, rust_type, what) = begin
+    add!(python, read_type, write_type, readable, writable, what) = begin
         prior = get(found, python, nothing)
         if prior === nothing
             push!(order, python)
             found[python] = PyO3HostProperty(python, _pyo3_host_property_julia_name(python),
-                                             readable, writable, rust_type, what)
+                                             readable, writable, read_type, write_type, what)
         else
             found[python] = PyO3HostProperty(
                 python, prior.julia, prior.readable || readable, prior.writable || writable,
-                isempty(prior.rust_type) ? rust_type : prior.rust_type, prior.what)
+                isempty(prior.read_type) ? read_type : prior.read_type,
+                isempty(prior.write_type) ? write_type : prior.write_type, prior.what)
         end
     end
     owner = qualified_name(s.module_path, s.name)
@@ -963,15 +982,19 @@ function _pyo3_host_bound_properties(s::RustStructInfo)
         writable = _pyo3_host_field_writable(s, field)
         (readable || writable) || continue
         python = _pyo3_host_python_name(field, get(s.field_python_names, field, ""))
-        add!(python, readable, writable, readable ? rust_type : "",
+        add!(python, readable ? rust_type : "", writable ? rust_type : "", readable, writable,
              "the field `$owner.$field`")
     end
     for m in s.methods
         (isempty(m.accessor) || _pyo3_host_async(m)) && continue
         getter = m.accessor == "getter"
-        rust_type = !getter ? "" : m.return_kind === :py_result ? m.ok_type : m.return_type
-        add!(_pyo3_host_python_name(m.name, m.python_name), getter, !getter, rust_type,
-             "the $(m.accessor) `$(_boundary_label(s, m))`")
+        # A getter's value is its return (a `PyResult`'s `Ok` type), as for any
+        # method; a setter's is its one argument the interpreter does not inject.
+        read_type = !getter ? "" : m.return_kind === :py_result ? m.ok_type : m.return_type
+        written = getter ? nothing : findfirst(t -> !_pyo3_host_injected_arg(t), m.arg_types)
+        write_type = written === nothing ? "" : String(m.arg_types[written])
+        add!(_pyo3_host_python_name(m.name, m.python_name), read_type, write_type,
+             getter, !getter, "the $(m.accessor) `$(_boundary_label(s, m))`")
     end
     return PyO3HostProperty[found[p] for p in order]
 end
@@ -979,17 +1002,27 @@ end
 # `#[pyo3(get)]` / `#[pyo3(set)]` and `#[getter]` / `#[setter]` install a
 # descriptor inside the crate, so the object answers; the manifest types the
 # value and says which directions PyO3 exposed (#424). Every branch comes from
-# `_pyo3_host_bound_properties` (#524).
-function _pyo3_host_property_expr(jname::Symbol, s::RustStructInfo)
+# `_pyo3_host_bound_properties` (#524), and every value crosses through the
+# conversion a method's would: a read through `_pyo3_host_value_expr` (a class
+# is wrapped into its Julia type), a write through `_pyo3_host_arg_plan` (a
+# class handle is unwrapped, a numpy array converted) — PR #525 review.
+function _pyo3_host_property_expr(jname::Symbol, s::RustStructInfo, classes::AbstractDict)
     properties = _pyo3_host_bound_properties(s)
     attr(p) = QuoteNode(Symbol(p.python))
     # After the remapping below `s` is the Python attribute.
     conversions = Any[]
     for p in properties
         p.readable || continue
-        jt = _pyo3_host_value_type(p.rust_type)
-        jt === nothing && continue
-        push!(conversions, :(s === $(attr(p)) && return PythonCall.pyconvert($jt, v)))
+        valued = _pyo3_host_value_expr(:v, p.read_type, jname, classes)
+        valued === :v && continue
+        push!(conversions, :(s === $(attr(p)) && return $valued))
+    end
+    writes = Any[]
+    for p in properties
+        p.writable || continue
+        _, converted = _pyo3_host_arg_plan(:v, p.write_type, classes)
+        converted === :v && continue
+        push!(writes, :(s === $(attr(p)) && (w = $converted)))
     end
     # A property is read under its Julia name (`for_`); the Python attribute
     # (`for`) is looked up. Only a property the host binds is remapped: an
@@ -1021,7 +1054,9 @@ function _pyo3_host_property_expr(jname::Symbol, s::RustStructInfo)
         s === :_rustcall_py && throw(ArgumentError("_rustcall_py is not assignable"))
         $(renamed...)
         $(read_only...)
-        PythonCall.pysetattr(getfield(p, :_rustcall_py), String(s), v)
+        w = v
+        $(writes...)
+        PythonCall.pysetattr(getfield(p, :_rustcall_py), String(s), w)
         return v
     end
     return quote
@@ -1068,7 +1103,7 @@ function _pyo3_host_struct_exprs(s::RustStructInfo, classes::AbstractDict)
         m.is_constructor || continue
         append!(out, _pyo3_host_method_expr(jname, class_base, m, classes))
     end
-    push!(out, _pyo3_host_property_expr(jname, s))
+    push!(out, _pyo3_host_property_expr(jname, s, classes))
     for m in methods
         m.is_constructor && continue
         append!(out, _pyo3_host_method_expr(jname, class_base, m, classes))

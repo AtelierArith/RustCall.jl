@@ -64,6 +64,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or the method's without `r#` and without a `get_` / `set_` prefix, PyO3's
   rule — so the PyO3 wrapper crate's Python-owned accessor helpers look up
   the same attribute (a `#[getter] fn get_x` read `get_x` there, not `x`).
+  A property's value crosses through the same conversion a method's does
+  (PR #525 review): a read through the method return conversion, so a
+  getter returning another `#[pyclass]` (`Py<Child>`, `PyResult<Py<Child>>`)
+  yields the Julia `Child` rather than a raw `PythonCall.Py`; a write through
+  the method argument plan (`RustCall._pyo3_host_arg_plan`, now the one
+  per-argument decision `_pyo3_host_args` also reads), so a setter taking a
+  class is handed the Python object the Julia handle holds and one taking a
+  numpy array gets `numpy.asarray` of the Julia array.
 - **`rustcall_julia_core::codegen::method_symbol` spells a raw method name as
   the exported symbol** (PR #517 review). `method_symbol(&[], "S", "r#match")`
   returned `rustcall_S_r#match`; the wrapper exports `rustcall_S_match`. It
