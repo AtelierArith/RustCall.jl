@@ -605,7 +605,7 @@ function _generate_single_wrapper(sig::RustFunctionSignature)
     _rust_refused_item!(sig.skip_reason, sig.name) && return nothing
     # The Julia wrapper keeps the Rust *name* (`add(1, 2)`); the call goes to
     # the exported *symbol*, which since #279 is `rustcall_add`.
-    func_name = esc(Symbol(sig.name))
+    func_name = esc(Symbol(julia_function_name(sig)))
     symbol_str = sig.symbol
 
     # Build argument list with conversion (string arguments become (ptr, len)

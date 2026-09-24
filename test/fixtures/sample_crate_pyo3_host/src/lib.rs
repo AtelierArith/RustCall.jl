@@ -13,6 +13,13 @@ fn private_add(a: i32, b: i32) -> i32 {
     a + b
 }
 
+/// A raw name Julia reserves (#514): PyO3 exposes it as `for`, and the Julia
+/// binding is `for_`.
+#[pyfunction]
+fn r#for(x: i32) -> i32 {
+    x + 1
+}
+
 /// A `Python<'_>` argument: `pyo3_type:Python<'_>` to the C-ABI scan, an
 /// ordinary parameter here.
 #[pyfunction]
@@ -130,6 +137,12 @@ impl Point {
         (self.x * self.x + self.y * self.y).sqrt()
     }
 
+    /// A raw method name (#514): PyO3 exposes it as `match`, a name Julia
+    /// does not reserve, so the binding is `match`.
+    fn r#match(&self) -> f64 {
+        self.x + self.y
+    }
+
     /// A `#[staticmethod]` returning the class itself.
     #[staticmethod]
     fn origin() -> Self {
@@ -174,6 +187,7 @@ impl Point {
 fn sample_crate_pyo3_host(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(add, m)?)?;
     m.add_function(wrap_pyfunction!(private_add, m)?)?;
+    m.add_function(wrap_pyfunction!(r#for, m)?)?;
     m.add_function(wrap_pyfunction!(interpreter_token, m)?)?;
     m.add_function(wrap_pyfunction!(parse, m)?)?;
     m.add_function(wrap_pyfunction!(add_default, m)?)?;

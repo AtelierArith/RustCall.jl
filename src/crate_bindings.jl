@@ -1849,24 +1849,14 @@ end
 """
     _julia_module_name(segment::AbstractString) -> String
 
-The Julia name of a Rust module segment. A raw identifier (`r#type`) loses its
-prefix — `#` would start a comment in the written file — and what remains
-must be a Julia identifier that is not a keyword: a Rust module called `end`,
-`function` or `macro` has no
-Julia spelling, so the
-layout is refused rather than written into a file that cannot be parsed
-(#300 review).
+The Julia name of a Rust module segment: `julia_binding_name`, the rule every
+item kind follows (#514). A raw identifier (`r#type`) loses its prefix — `#`
+would start a comment in the written file — and a Julia keyword gets a
+trailing underscore (`mod r#do` → `do_`, `mod end` → `end_`), so the
+submodule parses and can be reached by name. The layout checks compare these
+names, so `mod r#do` beside `mod do_` is refused.
 """
-function _julia_module_name(segment::AbstractString)
-    name = startswith(segment, "r#") ? String(segment[3:end]) : String(segment)
-    # `Base.isidentifier` accepts keywords; parsing the bare name as an
-    # expression yields a `Symbol` exactly when it is a usable identifier.
-    (Base.isidentifier(name) && Meta.parse(name; raise = false) isa Symbol) ||
-        error("cannot lay out the bindings of Rust module `$segment`: `$name` is not a " *
-              "valid Julia module name (a Julia keyword, or not an identifier). Rename the " *
-              "module (#300).")
-    return name
-end
+_julia_module_name(segment::AbstractString) = julia_binding_name(segment)
 
 """
     _check_module_names(tree::ModuleNode)
@@ -1916,10 +1906,18 @@ function _check_module_names(tree::ModuleNode)
     refuse_reserved(name, what) = name in reserved && error(
         "cannot lay out the bindings of $where_: $what binds `$name`, which every " *
         "generated module defines itself (#463). Rename it.")
+    # Two items of this node the emitters would define under one Julia name
+    # and scope — a Rust name Julia reserves meeting the name it is renamed
+    # to, a method meeting a field accessor, two submodules (#514). The
+    # expression emitter's `get_<f>` / `set_<f>!` helpers are counted.
+    _check_julia_name_clashes(tree.functions, tree.structs, where_;
+                              modules = [last(child.path) for child in tree.children],
+                              accessors = true)
     for f in tree.functions
         _binds_julia_wrapper(f) || continue  # no binding, no name (#491)
-        refuse_reserved(f.name, "the function `$(qualified_name(f.module_path, f.name))`")
-        get!(taken, f.name, "the function `$(qualified_name(f.module_path, f.name))`")
+        name = julia_function_name(f)
+        refuse_reserved(name, "the function `$(qualified_name(f.module_path, f.name))`")
+        get!(taken, name, "the function `$(qualified_name(f.module_path, f.name))`")
     end
     for s in tree.structs
         _binds_julia_struct(s) || continue  # no type, no name (#503)
@@ -1937,7 +1935,7 @@ function _check_module_names(tree::ModuleNode)
     # method to it (#341 review).
     struct_position = Dict{String, Int}()
     for (i, s) in enumerate(tree.structs)
-        get!(struct_position, s.name, i)
+        get!(struct_position, julia_struct_name(s), i)
     end
     later_struct(name, i) = get(struct_position, name, typemax(Int)) > i
     for (i, s) in enumerate(tree.structs)
@@ -1949,11 +1947,12 @@ function _check_module_names(tree::ModuleNode)
             get!(taken, julia_method_name(m), "the method `$owner::$(m.name)`")
         end
         for (field, _) in s.fields
-            if field_is_accessible(s, field) && later_struct("get_$field", i)
-                get!(taken, "get_$field", "the accessor of `$owner.$field`")
+            jfield = julia_field_name(field)
+            if field_is_accessible(s, field) && later_struct("get_$jfield", i)
+                get!(taken, "get_$jfield", "the accessor of `$owner.$field`")
             end
-            if field_is_writable(s, field) && later_struct("set_$(field)!", i)
-                get!(taken, "set_$(field)!", "the accessor of `$owner.$field`")
+            if field_is_writable(s, field) && later_struct("set_$(jfield)!", i)
+                get!(taken, "set_$(jfield)!", "the accessor of `$owner.$field`")
             end
         end
     end
@@ -1964,12 +1963,13 @@ function _check_module_names(tree::ModuleNode)
     for s in tree.structs
         _binds_julia_struct(s) || continue  # no type, no name (#503)
         owner = qualified_name(s.module_path, s.name)
-        if haskey(taken, s.name)
+        name = julia_struct_name(s)
+        if haskey(taken, name)
             error("cannot lay out the bindings of $where_: the struct `$owner` and " *
-                  "$(taken[s.name]) both bind `$(s.name)`, and Julia keeps functions and types " *
+                  "$(taken[name]) both bind `$name`, and Julia keeps functions and types " *
                   "in one namespace. Rename one of them (#300).")
         end
-        taken[s.name] = "the struct `$owner`"
+        taken[name] = "the struct `$owner`"
     end
     for child in tree.children
         name = _julia_module_name(last(child.path))
@@ -1979,6 +1979,8 @@ function _check_module_names(tree::ModuleNode)
                   "functions, types and modules in one namespace, so the submodule " *
                   "`$name` would redefine it. Rename the module or the item (#300).")
         end
+        # A sibling module of the same Julia name: `mod r#for` beside `mod for_` (#514).
+        taken[name] = "the module `$(join(child.path, "::"))`"
         _check_module_names(child)
     end
     return nothing
@@ -2184,8 +2186,8 @@ function _generate_crate_function_wrapper(func::RustFunctionSignature)
     _boundary_item!(_boundary_label(func))
     # An item the Rust codegen refuses gets no wrapper (#491).
     _rust_refused_item!(func.skip_reason, func.name) && return Expr(:block)
-    func_name = Symbol(func.name)
-    func_name_str = func.name
+    func_name = Symbol(julia_function_name(func))
+    func_name_str = String(func_name)
     # The Julia wrapper keeps the Rust name; the exported symbol it calls is
     # `rustcall_<name>` since #279 (the helper types stay name-derived).
     symbol_str = func.symbol
@@ -2237,8 +2239,8 @@ Wrapper for a `#[julia]` function with `String` / `&str` arguments or return
 `<fn>_free_rust_string`, a `&str` return is copied out of the borrowed view.
 """
 function _generate_string_function_wrapper(func::RustFunctionSignature, arg_syms::Vector{Symbol})
-    func_name = Symbol(func.name)
-    func_name_str = func.name
+    func_name = Symbol(julia_function_name(func))
+    func_name_str = String(func_name)
     # The Julia wrapper keeps the Rust name; the exported symbol it calls is
     # `rustcall_<name>` since #279 (the helper types stay name-derived).
     symbol_str = func.symbol
@@ -2291,8 +2293,8 @@ The wrapper will return RustResult{T, E}.
 function _generate_result_function_wrapper(func::RustFunctionSignature, arg_syms::Vector{Symbol},
                                            bindings::Vector, preserved::Vector, converted_args::Vector,
                                            frame::Union{Nothing, Symbol} = nothing)
-    func_name = Symbol(func.name)
-    func_name_str = func.name
+    func_name = Symbol(julia_function_name(func))
+    func_name_str = String(func_name)
     # The Julia wrapper keeps the Rust name; the exported symbol it calls is
     # `rustcall_<name>` since #279 (the helper types stay name-derived).
     symbol_str = func.symbol
@@ -2395,8 +2397,8 @@ function _generate_py_result_function_wrapper(func::RustFunctionSignature, arg_s
                                               bindings::Vector, preserved::Vector,
                                               converted_args::Vector,
                                               frame::Union{Nothing, Symbol} = nothing)
-    func_name = Symbol(func.name)
-    func_name_str = func.name
+    func_name = Symbol(julia_function_name(func))
+    func_name_str = String(func_name)
     symbol_str = func.symbol
     ok_julia_type, ok_slot_type, is_unit =
         _py_result_types(func.ok_type, func.ok_abi, _ffi_context(func))
@@ -2454,8 +2456,8 @@ The wrapper will return RustOption{T}.
 function _generate_option_function_wrapper(func::RustFunctionSignature, arg_syms::Vector{Symbol},
                                            bindings::Vector, preserved::Vector, converted_args::Vector,
                                            frame::Union{Nothing, Symbol} = nothing)
-    func_name = Symbol(func.name)
-    func_name_str = func.name
+    func_name = Symbol(julia_function_name(func))
+    func_name_str = String(func_name)
     # The Julia wrapper keeps the Rust name; the exported symbol it calls is
     # `rustcall_<name>` since #279 (the helper types stay name-derived).
     symbol_str = func.symbol
@@ -2546,8 +2548,8 @@ function _generate_crate_struct_wrapper(info::RustStructInfo;
         _rust_refused_item!(info.skip_reason, info.name)
         return Expr(:block)
     end
-    struct_name = Symbol(info.name)
-    struct_name_str = info.name
+    struct_name_str = julia_struct_name(info)
+    struct_name = Symbol(struct_name_str)
     release_alive = _python_owned_handle(info) ? :(Ref(true)) : :alive
 
     # Start with struct definition
@@ -2797,8 +2799,8 @@ Generate Base.getproperty and Base.setproperty! methods for natural field access
 This allows `obj.field` and `obj.field = value` syntax.
 """
 function _generate_property_accessors(info::RustStructInfo)
-    struct_name = Symbol(info.name)
-    struct_name_str = info.name
+    struct_name_str = julia_struct_name(info)
+    struct_name = Symbol(struct_name_str)
 
     # A field is a property when the manifest names an accessor for it: a
     # getter, a setter, or both. `#[julia]` structs carry both; a `#[pyclass]`
@@ -2820,7 +2822,7 @@ function _generate_property_accessors(info::RustStructInfo)
     caches = Expr[]
     getprop_branches = Expr[]
     for (field_name, field_type) in readable_fields
-        field_sym = QuoteNode(Symbol(field_name))
+        field_sym = QuoteNode(Symbol(julia_field_name(field_name)))
         getter_fn = info.field_getters[field_name]
         push!(caches, _target_cache_const(:prop, getter_fn))
         # A `String` field getter hands back an owned buffer, on the crate path
@@ -2837,7 +2839,7 @@ function _generate_property_accessors(info::RustStructInfo)
     # Build setproperty! branches
     setprop_branches = Expr[]
     for (field_name, field_type) in writable_fields
-        field_sym = QuoteNode(Symbol(field_name))
+        field_sym = QuoteNode(Symbol(julia_field_name(field_name)))
         setter_fn = info.field_setters[field_name]
         push!(caches, _target_cache_const(:prop, setter_fn))
 
@@ -2853,7 +2855,7 @@ function _generate_property_accessors(info::RustStructInfo)
     end
 
     # Generate the field names tuple for propertynames
-    field_symbols = [QuoteNode(Symbol(name)) for (name, _) in property_fields]
+    field_symbols = [QuoteNode(Symbol(julia_field_name(name))) for (name, _) in property_fields]
 
     quote
         $(caches...)
@@ -2903,8 +2905,8 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     _boundary_item!(_boundary_label(info, method))
     # A method the Rust codegen refuses gets no wrapper (#491).
     _rust_refused_item!(method.skip_reason, method.name) && return Expr(:block)
-    struct_name = Symbol(info.name)
-    struct_name_str = info.name
+    struct_name_str = julia_struct_name(info)
+    struct_name = Symbol(struct_name_str)
     # The Julia name: the Rust name, or `<Trait>_<name>` for a trait method
     # another method of the struct shares its name with (#506).
     method_name = Symbol(julia_method_name(method))
@@ -2913,7 +2915,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     # FFI name, which carries the module path (#300). The manifest states the
     # owner (#342); the derivation stands in only for an entry that states none.
     wrapper_name = method_wrapper_symbol(info.ffi_name, method)
-    helper_owner = _method_string_owner(method, "$(info.ffi_name)_$(method.name)")
+    helper_owner = _method_string_owner(method, "$(info.ffi_name)_$(rust_name(method.name))")
 
     arg_syms = [Symbol(name) for name in method.arg_names]
 
@@ -3084,7 +3086,7 @@ function _method_payload_plan(info::RustStructInfo, method::RustMethod,
                                             position = "Ok payload", strict = strict)
         err_t, err_slot = ffi_payload_symbols(method.err_type, method.err_abi, ctx;
                                               position = "Err payload", strict = strict)
-        name = Symbol("CResult_", info.name, "_", julia_method_name(method))
+        name = Symbol("CResult_", julia_struct_name(info), "_", julia_method_name(method))
         definition = quote
             # RustCall's own mirror of the extractor's `#[repr(C)]` aggregate,
             # so it carries the by-value layout assertion in its supertype
@@ -3107,7 +3109,7 @@ end"""
     inner_t, inner_slot =
         ffi_payload_symbols(method.inner_type, method.inner_abi, ctx;
                             position = "Some payload", strict = strict)
-    name = Symbol("COption_", info.name, "_", julia_method_name(method))
+    name = Symbol("COption_", julia_struct_name(info), "_", julia_method_name(method))
     definition = quote
         struct $name <: FFIByValue
             is_some::UInt8
@@ -3160,8 +3162,8 @@ function _generate_py_result_method_wrapper(info::RustStructInfo, method::RustMe
                                             preserved::Vector, converted_args::Vector,
                                             wrapper_name::String; bare::Bool = true,
                                             frame::Union{Nothing, Symbol} = nothing)
-    struct_name = Symbol(info.name)
-    struct_name_str = info.name
+    struct_name_str = julia_struct_name(info)
+    struct_name = Symbol(struct_name_str)
     method_name = Symbol(julia_method_name(method))
     boxed = method.returns_boxed_struct
     ok_julia_type, ok_slot_type, is_unit = boxed ?
@@ -3169,7 +3171,7 @@ function _generate_py_result_method_wrapper(info::RustStructInfo, method::RustMe
         _py_result_types(method.ok_type, method.ok_abi,
                          _ffi_context(method, struct_name_str))
 
-    helper_owner = _method_string_owner(method, "$(info.ffi_name)_$(method.name)")
+    helper_owner = _method_string_owner(method, "$(info.ffi_name)_$(rust_name(method.name))")
     c_result_struct_name = Symbol("CResult_", helper_owner)
     ptr_sym = _generated_local("func_ptr", method.arg_names)
     c_sym = _generated_local("c_result", method.arg_names)
@@ -3267,7 +3269,7 @@ function _generate_py_result_method_wrapper(info::RustStructInfo, method::RustMe
 end
 
 function _generate_crate_field_accessor(info::RustStructInfo, field_name::String, field_type::String)
-    struct_name = Symbol(info.name)
+    struct_name = Symbol(julia_struct_name(info))
     exprs = Expr[]
 
     # `get_<field>` and `set_<field>!`, each only when the manifest names the
@@ -3278,14 +3280,14 @@ function _generate_crate_field_accessor(info::RustStructInfo, field_name::String
     # explicit `finalize(obj)` the pointer is `C_NULL`, and handing that to the
     # Rust accessor is a crash where the others raise a `RustError` (#307
     # review).
-    struct_name_str = info.name
+    struct_name_str = String(struct_name)
     if field_is_accessible(info, field_name)
         getter_name = info.field_getters[field_name]
         read = _crate_field_read(info, field_name, field_type, getter_name,
                                  :(self.ptr), _target_cache_name(:acc, getter_name))
         push!(exprs, quote
             $(_target_cache_const(:acc, getter_name))
-            function $(Symbol("get_$field_name"))(self::$struct_name)
+            function $(Symbol("get_", julia_field_name(field_name)))(self::$struct_name)
                 _check_not_freed(self, $struct_name_str)
                 $read
             end
@@ -3297,7 +3299,7 @@ function _generate_crate_field_accessor(info::RustStructInfo, field_name::String
                                    _target_cache_name(:acc, setter_name))
         push!(exprs, quote
             $(_target_cache_const(:acc, setter_name))
-            function $(Symbol("set_$(field_name)!"))(self::$struct_name, value)
+            function $(Symbol("set_", julia_field_name(field_name), "!"))(self::$struct_name, value)
                 _check_not_freed(self, $struct_name_str)
                 $write
                 value
@@ -4960,7 +4962,7 @@ function _emit_function_code(func::RustFunctionSignature; strict::Symbol = FFI_S
     _boundary_item!(_boundary_label(func))
     # An item the Rust codegen refuses gets no wrapper (#491).
     _rust_refused_item!(func.skip_reason, func.name) && return ""
-    func_name = func.name
+    func_name = julia_function_name(func)
     # The generated Julia function keeps the Rust name; the symbol it looks up
     # is the additive wrapper `rustcall_<name>` (#279).
     sym = func.symbol
@@ -5022,7 +5024,7 @@ end
 function _emit_result_function_code(func::RustFunctionSignature, arg_syms::String, converted_args_str::String;
                                     prologue::String = "", preserve_str::String = "",
                                     strict::Symbol = FFI_STRICT[], frame_str::String = "")
-    func_name = func.name
+    func_name = julia_function_name(func)
     ctx = _ffi_context(func)
     # The payload fields carry the C slot; see `_generate_result_function_wrapper`.
     ok_surface, ok_slot = ffi_payload_symbols(func.ok_type, func.ok_abi, ctx;
@@ -5077,7 +5079,7 @@ function _emit_py_result_function_code(func::RustFunctionSignature, arg_syms::St
                                        converted_args_str::String;
                                        prologue::String = "", preserve_str::String = "",
                                        strict::Symbol = FFI_STRICT[], frame_str::String = "")
-    func_name = func.name
+    func_name = julia_function_name(func)
     ok_type_str, ok_slot_str, is_unit =
         _py_result_types(func.ok_type, func.ok_abi, _ffi_context(func); strict = strict)
     sym = func.symbol
@@ -5120,7 +5122,7 @@ end
 function _emit_option_function_code(func::RustFunctionSignature, arg_syms::String, converted_args_str::String;
                                     prologue::String = "", preserve_str::String = "",
                                     strict::Symbol = FFI_STRICT[], frame_str::String = "")
-    func_name = func.name
+    func_name = julia_function_name(func)
     inner_surface, inner_slot =
         ffi_payload_symbols(func.inner_type, func.inner_abi, _ffi_context(func);
                             position = "Some payload", strict = strict)
@@ -5173,7 +5175,7 @@ function _emit_struct_code(info::RustStructInfo; strict::Symbol = FFI_STRICT[],
         _rust_refused_item!(info.skip_reason, info.name)
         return ""
     end
-    struct_name = info.name
+    struct_name = julia_struct_name(info)
     release_alive = _python_owned_handle(info) ? "Ref(true)" : "alive"
     free_symbol = ffi_struct_free_symbol(info.ffi_name)
     free_cache = _target_cache_ref(:free, free_symbol)
@@ -5250,7 +5252,7 @@ function _emit_struct_code(info::RustStructInfo; strict::Symbol = FFI_STRICT[],
             read = _crate_field_read_source(info, field_name, field_type, getter_fn,
                                             "getfield(self, :ptr)",
                                             _target_cache_ref(:prop, getter_fn); strict = strict)
-            push!(lines, "    if field === :$field_name")
+            push!(lines, "    if field === $(repr(Symbol(julia_field_name(field_name))))")
             push!(lines, "        return $read")
             push!(lines, "    end")
         end
@@ -5269,7 +5271,7 @@ function _emit_struct_code(info::RustStructInfo; strict::Symbol = FFI_STRICT[],
             write = _crate_field_write_source(info, field_name, field_type, setter_fn,
                                               "getfield(self, :ptr)", "value",
                                               _target_cache_ref(:prop, setter_fn); strict = strict)
-            push!(lines, "    if field === :$field_name")
+            push!(lines, "    if field === $(repr(Symbol(julia_field_name(field_name))))")
             push!(lines, "        $write")
             push!(lines, "        return value")
             push!(lines, "    end")
@@ -5279,7 +5281,7 @@ function _emit_struct_code(info::RustStructInfo; strict::Symbol = FFI_STRICT[],
         push!(lines, "")
 
         # propertynames
-        field_syms = join([":$name" for (name, _) in property_fields], ", ")
+        field_syms = join([repr(Symbol(julia_field_name(name))) for (name, _) in property_fields], ", ")
         push!(lines, "function Base.propertynames(self::$struct_name)")
         push!(lines, "    ($field_syms,)")
         push!(lines, "end")
@@ -5329,14 +5331,14 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
     _boundary_item!(_boundary_label(struct_info, method))
     # A method the Rust codegen refuses gets no wrapper (#491).
     _rust_refused_item!(method.skip_reason, method.name) && return ""
-    struct_name = struct_info.name
+    struct_name = julia_struct_name(struct_info)
     method_name = julia_method_name(method)
     # Exported symbol (`rustcall_<Struct>_<method>`, #279) and the owner of the
     # per-method string buffers, both off the struct's FFI name (#300). The
     # manifest states the owner (#342); the derivation stands in only for an
     # entry that states none.
     wrapper_name = method_wrapper_symbol(struct_info.ffi_name, method)
-    helper_owner = _method_string_owner(method, "$(struct_info.ffi_name)_$(method.name)")
+    helper_owner = _method_string_owner(method, "$(struct_info.ffi_name)_$(rust_name(method.name))")
 
     arg_syms = join(method.arg_names, ", ")
 
@@ -5484,14 +5486,14 @@ function _emit_py_result_method_code(info::RustStructInfo, method::RustMethod,
                                      preserve_str::AbstractString = "",
                                      strict::Symbol = FFI_STRICT[], bare::Bool = true,
                                      frame_str::AbstractString = "")
-    struct_name = info.name
+    struct_name = julia_struct_name(info)
     method_name = julia_method_name(method)
     boxed = method.returns_boxed_struct
     ok_type_str, ok_slot_str, is_unit = boxed ?
         (struct_name, "Ptr{Cvoid}", false) :
         _py_result_types(method.ok_type, method.ok_abi,
                          _ffi_context(method, struct_name); strict = strict)
-    helper_owner = _method_string_owner(method, "$(info.ffi_name)_$(method.name)")
+    helper_owner = _method_string_owner(method, "$(info.ffi_name)_$(rust_name(method.name))")
     c_result_struct_name = "CResult_$helper_owner"
     ptr_var = _generated_local("func_ptr", method.arg_names)
     c_var = _generated_local("c_result", method.arg_names)

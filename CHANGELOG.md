@@ -25,6 +25,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The proc macro exports different symbols, and `rustcall_julia_core` gains
   public API (`codegen::method_stem`, `Method.julia_name`), so the next
   publish of the Rust crates is a minor bump, to 0.4.0.
+- **An item whose Rust name Julia reserves is bound with a trailing
+  underscore** ([#514](https://github.com/AtelierArith/RustCall.jl/issues/514)).
+  A `#[julia]` function, method, field, struct or module named `function`,
+  `end`, `quote`, `begin`, ... — or any Rust keyword as a raw identifier
+  (`r#for`, `r#let`) — was bound under that name: `rust"""` and `@rust_crate`
+  defined a binding reachable only as `var"function"` (a raw name kept its
+  `r#`, so `var"r#for"`), a file written by `write_bindings_to_file` did not
+  parse, and a module of such a name was refused. One function,
+  `RustCall.julia_binding_name`, now decides the Julia name of every item
+  kind in every emitter: the `r#` is dropped and a name Julia reserves gets a
+  `_` (`for_`, `end_`, `let_`; a field's accessors are `get_let_` /
+  `set_let_!`). The set of reserved names is Julia's own (a name
+  `Meta.parse` does not read as a plain identifier). `@rust` finds a function
+  under the same name: the generic registry and the name → symbol table are
+  keyed by it (`@rust for_(x)` for a generic `fn r#for<T>`), while
+  specialization keeps the Rust path. Code that reached such a binding through
+  `var"..."` must use the new name. Exported symbols do not change.
 
 ### Fixed
 - **A return type that only ends in the impl header's name is not the struct**
@@ -49,6 +66,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`MethodModel::returns_own_type_resolved`,
   `StructModel::attach_impl_resolving`, `paths::names_struct`) and
   `types::is_self_type` no longer matches a path that only ends in the name.
+- **A keyword renamed onto a taken name is refused, not bound twice**
+  ([#514](https://github.com/AtelierArith/RustCall.jl/issues/514)). `fn r#for`
+  beside `fn for_`, a field `r#let` beside `let_`, a method `r#end` beside
+  `end_`, `struct r#while` beside `fn while_` or `mod r#do` beside `mod do_`
+  would be bound under one Julia name; the layout checks (`rust"""`,
+  `@rust_crate`, `write_bindings_to_file`) compare the names
+  `julia_binding_name` returns and refuse the block or crate with both items
+  named. The check runs over what each emitter defines at the top level of a
+  module (`julia_definitions`, and `_pyo3_host_definitions` for the PyO3 host):
+  a constructor, the bare form of a static method, a field accessor and a
+  submodule count as definitions like any other. So it also catches a PyO3-host
+  static method beside a `#[pyfunction]` of its Julia name, and a crate method
+  `get_x` beside a field `x`. A module has one namespace: a method of one
+  struct bound under another struct's type name is refused in either emission
+  order. #341 had allowed the order in which it became a method of the type.
+  The PyO3 host bindings are generated from the scan of the build's own
+  configuration, as the `#[julia]` path already was, so `#[cfg]`-exclusive
+  variants of one item are not reported as a clash. A property is remapped to
+  its Python attribute only for a field the host binds.
+- **A raw `#[pyclass]` name is recognised as the class in argument and return
+  position** ([#514](https://github.com/AtelierArith/RustCall.jl/issues/514)).
+  The PyO3 host keyed its class map by the manifest spelling `r#type`, while a
+  type spelling (`PyRef<'_, r#type>`) was looked up by `type`. Every
+  Julia-side lookup, key or composed name of a manifest name now goes through
+  `rust_name`, and a source test keeps emitters from keying or binding a raw
+  name.
+- **A raw struct or field name no longer breaks the crate scan**
+  ([#514](https://github.com/AtelierArith/RustCall.jl/issues/514)).
+  `#[julia] pub struct r#for` made `rustcall-extract` panic (it built
+  `rustcall_r#for_new` as an identifier), and a raw field `r#let` was
+  described with the accessors `S_get_r#let` / `S_set_r#let`, which nothing
+  exports; the manifest now names `S_get_let` / `S_set_let`, the symbols the
+  proc macro has always exported.
+- **One unraw rule on the Rust side, one namespace for `@rust`**
+  ([#514](https://github.com/AtelierArith/RustCall.jl/issues/514)).
+  `rustcall_julia_core::codegen::unraw` is the one place a Rust item's name
+  loses its `r#`. Every symbol and helper identifier is built through it
+  (`symbol_stem`, `method_stem`, `source_ident` build on it), and a source test
+  (`tests/raw_names.rs::no_identifier_is_built_from_a_raw_name`) refuses a
+  `format_ident!` / `Ident::new` that reads an item name without it. This
+  fixes a Python-owned PyO3 class with a raw method or field, whose wrapper
+  crate generation panicked. A hand-written `#[no_mangle] extern "C" fn r#for`
+  is recorded with its native symbol `for`. The name-clash check of a
+  `rust"""` block also covers `@rust`'s name table (`_registry_signatures`,
+  hand-written exports included), so a raw export beside a `#[julia] fn` of
+  its Julia name is refused instead of one replacing the other.
+- **A raw name is unrawed wherever it is spelled**
+  ([#514](https://github.com/AtelierArith/RustCall.jl/issues/514)). A raw
+  method of a generic inline struct (`impl<T> Boxed<T> { fn r#match }`) got a
+  generic wrapper named `Boxed_r#match`, which is not an identifier, so the
+  block failed to expand; it is now `Boxed_match`. A PyO3 item with a raw name
+  (`#[pyfunction] fn r#for`, a raw `#[pyclass]`, method or field) is recorded
+  with the `python_name` PyO3 exposes it under (`for`), so the PyO3 host
+  bindings and the wrapper crate look up the attribute Python has; a raw
+  `#[pyclass]` no longer panics the scan, and a raw field's wrapper-crate
+  accessors are `rustcall_<C>_get_<f>` without the `r#`. A raw
+  `#[pymethods]` method's symbol hangs off the method stem as a `#[julia]`
+  method's does (`rustcall_<C>_match`, not `rustcall_<C>_r#match`, which the
+  wrapper crate could not spell, so `@rust_crate` dropped the method). The PyO3 host
+  bindings run the same Julia-name clash check as every other emitter.
 - **`@rust_crate` binds the `#[julia]` methods of a trait impl**
   ([#506](https://github.com/AtelierArith/RustCall.jl/issues/506)). The crate
   scan skipped trait impls, so the methods the proc macro wrapped were neither

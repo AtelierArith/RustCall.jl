@@ -447,6 +447,35 @@ applies to `@rust_crate` bindings.
     Unit struct support is still planned for a future release, so the example
     above uses a regular struct.
 
+## Names Julia reserves
+
+A struct, field or method whose name Julia reserves — `end`, `begin`,
+`quote`, or any Rust keyword written as a raw identifier (`r#for`, `r#let`) —
+is bound with a trailing underscore, and a raw identifier loses its `r#`
+(#514). Free functions follow the same rule, and so do `@rust_crate`
+bindings (see [External Crate Bindings](crate_bindings.md)):
+
+```julia
+rust"""
+#[julia]
+pub struct end { pub r#let: i32, pub begin: i32 }
+
+#[julia]
+impl end {
+    pub fn new(a: i32, b: i32) -> Self { end { r#let: a, begin: b } }
+    pub fn quote(&self) -> i32 { self.r#let + self.begin }
+}
+"""
+
+e = end_(Int32(2), Int32(3))
+e.let_, e.begin_   # (2, 3)
+quote_(e)          # 5
+```
+
+The exported Rust symbols keep their spelling. A block where the underscore
+lands on a name it already binds (`fn r#for` beside `fn for_`, a field
+`r#let` beside `let_`) is refused with both items named.
+
 ## `Result` and `Option` Returning Methods
 
 A method that returns `Result<T, E>` or `Option<T>` is lowered **exactly like a

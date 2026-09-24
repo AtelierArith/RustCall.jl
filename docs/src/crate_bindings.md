@@ -383,6 +383,80 @@ Three things to know:
   with both locations instead of describing a library that cannot be built.
   Wrap the items in a `#[julia] pub mod` block inside the file, or rename one.
 
+### Names Julia reserves
+
+Rust and Julia reserve different words. `fn function`, `struct end`,
+`fn quote(&self)` and a field `begin` are plain Rust, and a raw identifier
+(`r#for`, `r#let`, `mod r#do`) makes every Rust keyword available as a name.
+Julia reserves all of these, so each item is bound under a name Julia can
+parse (#514), decided in one place (`RustCall.julia_binding_name`) for every
+item kind — free function, method (inherent or a trait's), field, struct and
+module — in `@rust_crate`, in a file `write_bindings_to_file` writes, and in
+`rust"""`:
+
+- a raw identifier loses its `r#` (`r#match` → `match`);
+- a name Julia reserves gets a trailing underscore (`r#for` → `for_`,
+  `end` → `end_`, `r#true` → `true_`). The set is Julia's own: a name that
+  `Meta.parse` does not read as a plain identifier by itself.
+
+```rust
+#[julia]
+pub fn r#for(x: i32) -> i32 { x + 1 }          // rustcall_for
+
+#[julia]
+pub struct end { pub r#let: i32 }               // end_free, end_get_let
+
+#[julia]
+impl end {
+    #[julia]
+    pub fn new(v: i32) -> Self { end { r#let: v } }
+    #[julia]
+    pub fn quote(&self) -> i32 { self.r#let }   // rustcall_end_quote
+}
+
+#[julia]
+pub mod r#do { /* #[julia] pub fn r#try ... */ }
+```
+
+```julia
+bindings.for_(1)          # 2
+e = bindings.end_(3)
+bindings.quote_(e)        # 3
+e.let_                    # 3; the accessors are get_let_ / set_let_!
+bindings.do_.try_(4)
+```
+
+The exported symbols do not change: they keep the Rust side's spelling
+without `r#`, as before. A trailing underscore can land on a name the crate
+already uses — `fn r#for` beside `fn for_`, a field `r#let` beside `let_`, a
+method `r#end` beside `end_` on the same struct, `struct r#while` beside
+`fn while_`, `mod r#do` beside `mod do_`. The layout is then refused with both
+items named, rather than one binding silently replacing the other; rename one
+of them.
+
+The check compares what the generated module actually defines
+(`RustCall.julia_definitions`): free functions, types and their constructors,
+static methods (typed, and bare unless a free function or another static
+method takes the name), instance methods, properties, the `get_<f>` /
+`set_<f>!` helpers and submodules. A module has one namespace, and a method of
+any struct is a method of the module's function of that name. Two rules follow:
+
+- Two definitions made by different items under one name and one dispatch
+  key are refused. A method `get_x` beside a field `x`, whose accessor is also
+  `get_x(self)`, is refused this way. Instance methods of two structs overload
+  one function and are fine.
+- A type's or submodule's name may be used by no function other than the
+  type's own constructors and methods. A method of struct `A` bound as `for_`
+  beside `struct for_` is refused.
+
+The PyO3 host bindings run the same check over what they define. Static
+methods there are free functions, because the host passes no type, so
+`#[staticmethod] fn for_` beside `#[pyfunction] fn r#for` is refused.
+
+The check runs on the items of the build that is bound: the scan is made under
+the build's own configuration, so `#[cfg(feature = "x")] fn r#for` beside
+`#[cfg(not(feature = "x"))] fn for_` is one item and is accepted.
+
 ## Property Access Syntax
 
 Generated struct wrappers support Julia's property access syntax for natural field access:

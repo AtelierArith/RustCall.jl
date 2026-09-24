@@ -190,9 +190,240 @@ end
 
     # The generated module carries a binding for `now` and none for `later`: a
     # binding for the coroutine would look like a value and never run (#424).
-    text = string(RustCall.generate_pyo3_host_bindings(PYO3_ASYNC_CRATE))
+    # From a copy: the bindings come from the scan of the build's own
+    # configuration, and Cargo writes a lockfile beside the manifest it probes.
+    text = mktempdir() do dir
+        cp(PYO3_ASYNC_CRATE, joinpath(dir, "crate"))
+        string(RustCall.generate_pyo3_host_bindings(joinpath(dir, "crate")))
+    end
     @test occursin("now", text)
     @test !occursin("later", text)
+end
+
+@testset "a raw PyO3 name is looked up as Python exposes it (#514)" begin
+    # `#[pyfunction] fn r#for` is the Python attribute `for`, bound in Julia as
+    # `for_`; the manifest's `python_name` says so (PR #515 review).
+    info = RustCall.scan_crate(PYO3_HOST_CRATE)
+    raw = only(filter(f -> f.name == "r#for", info.pyo3_functions))
+    @test raw.python_name == "for"
+    @test RustCall.julia_function_name(raw) == "for_"
+    point = only(filter(s -> s.name == "Point", info.pyo3_structs))
+    matched = only(filter(m -> m.name == "r#match", point.methods))
+    @test matched.python_name == "match"
+    classes = Dict{String, Symbol}("Point" => :Point)
+    text = string(Base.remove_linenums!(Expr(:block,
+        RustCall._pyo3_host_function_expr(raw, classes)...)))
+    @test occursin("function for_(", text)
+    # The Python attribute is `for` (spelled `var"for"` in a Julia expression).
+    @test occursin(".var\"for\"(", text)
+    @test !occursin("r#", text)
+    text = string(RustCall.generate_pyo3_host_bindings(PYO3_HOST_CRATE))
+    @test !occursin("r#", text)
+    # A hand-built signature without a `python_name` is unrawed too.
+    sig = RustCall.RustFunctionSignature("r#in", String[], String[], "i32", false, String[])
+    @test RustCall._pyo3_host_python_name(sig.name, sig.python_name) == "in"
+
+    # `fn r#for` beside `fn for_` is refused before anything is emitted, by the
+    # clash check every emitter runs (PR #515 review).
+    mktempdir() do dir
+        mkpath(joinpath(dir, "src"))
+        write(joinpath(dir, "Cargo.toml"), """
+            [package]
+            name = "pyo3_host_clash"
+            version = "0.1.0"
+            edition = "2021"
+
+            [lib]
+            crate-type = ["cdylib"]
+
+            [dependencies]
+            pyo3 = { version = "0.29", default-features = false, features = ["macros"] }
+            """)
+        write(joinpath(dir, "src", "lib.rs"), """
+            use pyo3::prelude::*;
+            #[pyfunction]
+            fn r#for(x: i32) -> i32 { x }
+            #[pyfunction]
+            fn for_(x: i32) -> i32 { x }
+            #[pymodule]
+            fn pyo3_host_clash(m: &Bound<'_, PyModule>) -> PyResult<()> {
+                m.add_function(wrap_pyfunction!(r#for, m)?)?;
+                m.add_function(wrap_pyfunction!(for_, m)?)?;
+                Ok(())
+            }
+            """)
+        err = try
+            RustCall.generate_pyo3_host_bindings(dir)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ErrorException
+        msg = err === nothing ? "" : sprint(showerror, err)
+        @test occursin("`for_`", msg) && occursin("r#for", msg) && occursin("#514", msg)
+
+        # Two `#[pyclass]`es one Julia type name would bind (PR #515 review).
+        write(joinpath(dir, "src", "lib.rs"), """
+            use pyo3::prelude::*;
+            #[pyclass]
+            pub struct r#for { pub x: i32 }
+            #[pyclass]
+            pub struct for_ { pub y: i32 }
+            #[pymodule]
+            fn pyo3_host_clash(m: &Bound<'_, PyModule>) -> PyResult<()> {
+                m.add_class::<r#for>()?;
+                m.add_class::<for_>()?;
+                Ok(())
+            }
+            """)
+        err = try
+            RustCall.generate_pyo3_host_bindings(dir)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ErrorException
+        msg = err === nothing ? "" : sprint(showerror, err)
+        @test occursin("struct `r#for`", msg) && occursin("struct `for_`", msg)
+
+        # The host binds a static method without its type, so it is a free
+        # function: it meets a `#[pyfunction]` of its Julia name, and another
+        # class's static method (PR #515 review, raised on #517).
+        refusal(lib) = begin
+            write(joinpath(dir, "src", "lib.rs"), lib)
+            try
+                RustCall.generate_pyo3_host_bindings(dir)
+                ""
+            catch e
+                sprint(showerror, e)
+            end
+        end
+        msg = refusal("""
+            use pyo3::prelude::*;
+            #[pyfunction] fn r#for(x: i32) -> i32 { x }
+            #[pyclass] pub struct S { pub v: i32 }
+            #[pymethods] impl S { #[staticmethod] fn for_(x: i32) -> i32 { x } }
+            """)
+        @test occursin("function `r#for`", msg) && occursin("method `S::for_`", msg)
+        msg = refusal("""
+            use pyo3::prelude::*;
+            #[pyclass] pub struct S { pub v: i32 }
+            #[pymethods] impl S { #[staticmethod] fn r#for(x: i32) -> i32 { x } }
+            #[pyclass] pub struct T { pub v: i32 }
+            #[pymethods] impl T { #[staticmethod] fn for_(x: i32) -> i32 { x } }
+            """)
+        @test occursin("method `S::r#for`", msg) && occursin("method `T::for_`", msg)
+        # The host defines its functions before its types: a function of a
+        # class's Julia name is refused too.
+        msg = refusal("""
+            use pyo3::prelude::*;
+            #[pyfunction] fn while_(x: i32) -> i32 { x }
+            #[pyclass] pub struct r#while { pub v: i32 }
+            """)
+        @test occursin("function `while_`", msg) && occursin("struct `r#while`", msg)
+        # Instance methods of two classes are dispatch, not a clash.
+        @test refusal("""
+            use pyo3::prelude::*;
+            #[pyclass] pub struct S { pub v: i32 }
+            #[pymethods] impl S { fn r#for(&self) -> i32 { 1 } }
+            #[pyclass] pub struct T { pub v: i32 }
+            #[pymethods] impl T { fn for_(&self) -> i32 { 2 } }
+            """) == ""
+        # ... but a class's method bound under another class's name is not:
+        # the method is the module-level function `for_`, the class the type
+        # `for_` (PR #515 review, raised on #517).
+        msg = refusal("""
+            use pyo3::prelude::*;
+            #[pyclass] pub struct A { pub v: i32 }
+            #[pymethods] impl A { fn r#for(&self) -> i32 { 1 } }
+            #[pyclass] pub struct for_ { pub v: i32 }
+            """)
+        @test occursin("method `A::r#for`", msg) && occursin("struct `for_`", msg)
+        # Mutually exclusive `#[cfg]` variants are one item in any build: the
+        # bindings come from the scan of the build's own configuration, so the
+        # check sees one of them (PR #515 review).
+        write(joinpath(dir, "Cargo.toml"),
+              replace(read(joinpath(dir, "Cargo.toml"), String),
+                      "[dependencies]" => "[features]\nx = []\n\n[dependencies]"))
+        @test refusal("""
+            use pyo3::prelude::*;
+            #[cfg(feature = "x")]
+            #[pyfunction] fn r#for(x: i32) -> i32 { x }
+            #[cfg(not(feature = "x"))]
+            #[pyfunction] fn for_(x: i32) -> i32 { x }
+            """) == ""
+        # A property is remapped to its Python attribute only for a field the
+        # host binds: an unexposed raw `r#for` beside an exposed `for_` leaves
+        # `obj.for_` reading `for_` (PR #515 review).
+        write(joinpath(dir, "src", "lib.rs"), """
+            use pyo3::prelude::*;
+            #[pyclass] pub struct H { pub r#for: i32, #[pyo3(get)] pub for_: i32 }
+            """)
+        hidden = string(Base.remove_linenums!(RustCall.generate_pyo3_host_bindings(dir)))
+        @test !occursin("s = :for", hidden)
+        @test occursin("(:for_,)", hidden)
+
+        # The scan the bindings come from is configured as the build is: the
+        # probe is the build's own `cargo rustc --crate-type cdylib` command
+        # (`_pyo3_host_cargo_cmd`) with `--print cfg`, under the build's
+        # profile and `PYO3_PYTHON` (PR #515 review, raised on #521). This
+        # crate has no `cdylib` target, so the `#[julia]` path's probe would
+        # have been the wrapper-shaped one; the host builds it as its own root.
+        python = Sys.which("python3")
+        if python === nothing
+            @test_skip "no python3 on PATH for pyo3's build script"
+        else
+            write(joinpath(dir, "Cargo.toml"),
+                  replace(read(joinpath(dir, "Cargo.toml"), String),
+                          "crate-type = [\"cdylib\"]" => "crate-type = [\"rlib\"]"))
+            write(joinpath(dir, "src", "lib.rs"), """
+                use pyo3::prelude::*;
+                #[cfg(debug_assertions)]
+                #[pyfunction] fn debug_only(x: i32) -> i32 { x }
+                #[cfg(not(debug_assertions))]
+                #[pyfunction] fn release_only(x: i32) -> i32 { x }
+                """)
+            release_text = string(RustCall.generate_pyo3_host_bindings(dir; release = true,
+                                                                        python = python))
+            debug_text = string(RustCall.generate_pyo3_host_bindings(dir; release = false,
+                                                                      python = python))
+            @test occursin("release_only", release_text) && !occursin("debug_only", release_text)
+            @test occursin("debug_only", debug_text) && !occursin("release_only", debug_text)
+            cmd, _, _ = RustCall._pyo3_host_cargo_cmd(
+                RustCall.BuildEnvSnapshot(), dir,
+                RustCall.parse_cargo_toml(joinpath(dir, "Cargo.toml"));
+                python = python, release = false, rustc_args = ["--print", "cfg"])
+            @test "rustc" in cmd.exec && "--crate-type" in cmd.exec
+            @test "cdylib" in cmd.exec && !("--release" in cmd.exec)
+            @test "PYO3_PYTHON=$python" in cmd.env
+        end
+
+        # A raw class name in argument and return position is the class: the
+        # class map is keyed by `rust_name`, the key every type spelling is
+        # looked up by (PR #515 review, raised on #517).
+        write(joinpath(dir, "src", "lib.rs"), """
+            use pyo3::prelude::*;
+            #[pyclass] pub struct r#type { pub v: i32 }
+            #[pyfunction] fn make() -> r#type { r#type { v: 1 } }
+            #[pyfunction] fn wrapped(py: Python<'_>) -> PyResult<Py<r#type>> { Py::new(py, r#type { v: 2 }) }
+            #[pyfunction] fn read(t: PyRef<'_, r#type>) -> i32 { t.v }
+            #[pyfunction] fn read_ref(t: &r#type) -> i32 { t.v }
+            #[pyfunction] fn read_all(ts: Vec<PyRef<'_, r#type>>) -> usize { ts.len() }
+            """)
+        info = RustCall.scan_crate(dir)
+        classes = RustCall._pyo3_host_classes(info)
+        @test classes == Dict("type" => :type)
+        for spelling in ("r#type", "&r#type", "PyRef<'_, r#type>", "Py<r#type>",
+                         "Bound<'_, r#type>")
+            @test RustCall._pyo3_host_struct_target(spelling, classes) === :type
+            @test RustCall._pyo3_host_struct_arg(spelling, classes) == (:type, false)
+        end
+        @test RustCall._pyo3_host_struct_arg("Vec<PyRef<'_, r#type>>", classes) == (:type, true)
+        text = string(Base.remove_linenums!(RustCall.generate_pyo3_host_bindings(dir)))
+        @test occursin("type((_pyo3_module()).make())", text)
+        # Every class argument is passed as the Python object the handle holds.
+        @test count("isa PythonCall.Py", text) >= 3
+    end
 end
 
 @testset "a one-argument #[new] cannot overwrite the default constructor (#433)" begin
@@ -318,6 +549,8 @@ end
     bindings = RustCall.load_crate_bindings(PYO3_HOST_CRATE; pyo3_host = true)
 
     @test bindings.add(Int32(2), Int32(3)) == 5
+    # A raw Rust name, exposed by PyO3 without its `r#` (#514).
+    @test bindings.for_(Int32(2)) == 3
     # `not_public` to the C-ABI scan; registered by the crate's own `#[pymodule]`.
     @test bindings.private_add(4, 5) == 9
     # `pyo3_type:Python<'_>` to the C-ABI scan; the injected token is dropped
@@ -326,6 +559,7 @@ end
 
     point = bindings.Point(3.0, 4.0)
     @test bindings.norm(point) == 5.0
+    @test bindings.match(point) == 7.0
     # `#[pyo3(get, set)]` on a private field of a private struct: the descriptor
     # lives inside the crate, so the Python object answers.
     @test point.x == 3.0

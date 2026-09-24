@@ -410,6 +410,13 @@ macro rust_str(code)
     # runs as well (#454). A static method whose name a free function of this
     # block (or another struct's static method) also has gets no bare form
     # there (#323).
+    # Two items one Julia name would bind (`fn r#for` beside `fn for_`, #514)
+    # are refused before anything is defined.
+    # The `@rust` registry is checked in the same pass: a hand-written
+    # `#[no_mangle] fn r#for` beside a `#[julia] fn for_` would share the key
+    # `for_` there.
+    _check_julia_name_clashes(julia_func_signatures, struct_infos, "the rust\"\"\" block";
+                              registry = _registry_signatures(expanded.manifest))
     julia_defs, julia_func_wrappers = _inline_wrapper_exprs(julia_func_signatures, struct_infos)
     # The symbols this block exports, known at macro-expansion time. They are
     # recorded per *module* so that a wrapper resolves through the library its
@@ -1075,7 +1082,11 @@ function _register_manifest(expanded, lib_name::String; compiler = nothing,
                 "contains `#[cfg]` or `cfg!`, which the lazy specialization (a direct rustc build) " *
                 "would evaluate under a different configuration than the Cargo build; move the " *
                 "configuration-dependent code out of the generic body or into a non-generic helper" : ""
-            register_generic_function(sig.name, expanded.source, Symbol.(sig.type_params), sig.constraints, "";
+            # Registered under the name `@rust` is called with — the Julia
+            # binding name (`@rust for_(x)` for `fn r#for`, #514) — while the
+            # path the extractor specializes keeps the Rust spelling.
+            register_generic_function(julia_function_name(sig), expanded.source,
+                                      Symbol.(sig.type_params), sig.constraints, "";
                                       arg_types = sig.arg_types, return_type = sig.return_type,
                                       path = qualified_name(sig.module_path, sig.name), compiler, blocked,
                                       cargo = cargo_context)
@@ -1134,7 +1145,10 @@ function _manifest_registry_entries(signatures)
             _boundary_item!(_boundary_label(sig))
             _boundary_unguarded_export!(string("extern \"C\" fn ", sig.name))
         end
-        isempty(sig.symbol) || push!(symbols, String(sig.name) => String(sig.symbol))
+        # Keyed by the name `@rust` is called with: the Julia binding name
+        # (`@rust function_(x)` for `fn function`, #514).
+        name = julia_function_name(sig)
+        isempty(sig.symbol) || push!(symbols, name => String(sig.symbol))
         if occurrences[sig.symbol] > 1
             @debug "Ambiguous manifest entry: not registering a return type" symbol = sig.symbol
             continue
@@ -1145,7 +1159,7 @@ function _manifest_registry_entries(signatures)
         # f(...)` names the function, while a caller that already resolved the
         # symbol (or a generated wrapper) asks for `rustcall_f`. Both keys are
         # library-scoped — a name-only hint would outlive this library (#279).
-        for key in unique((sig.name, sig.symbol))
+        for key in unique((name, sig.symbol))
             push!(return_types, String(key) => ret_type)
         end
     end

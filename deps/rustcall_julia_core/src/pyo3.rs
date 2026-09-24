@@ -30,6 +30,7 @@
 //! recorded as [`ReturnKind::PyResult`] with the `Ok` type, so Phase 2 can lower
 //! it to an opaque error flag.
 
+use syn::ext::IdentExt;
 use syn::spanned::Spanned;
 use syn::{FnArg, ImplItem, ImplItemFn, Item, ItemFn, ItemStruct, ReturnType, Type};
 
@@ -565,8 +566,12 @@ impl Pyo3Scan {
                             )
                         }
                     );
-                    let class_ident =
-                        syn::Ident::new(&self.classes[index].entry.name, imp.header.target.span());
+                    // The class's own spelling, a raw identifier included
+                    // (`r#type`): it names the type in the wrapper's source.
+                    let class_ident = crate::codegen::source_ident(
+                        &self.classes[index].entry.name,
+                        imp.header.target.span(),
+                    );
                     let entry = method_entry(
                         &class_ident,
                         &class_path,
@@ -726,7 +731,7 @@ fn mark_julia_surface_collisions_pass(
             } else {
                 "CResult"
             };
-            let owner = crate::codegen::method_string_owner(&s.ffi_name, &m.name);
+            let owner = crate::codegen::method_string_owner(&s.ffi_name, &m.method_stem());
             let defaults = m
                 .args
                 .iter()
@@ -1176,7 +1181,7 @@ fn mark_symbol_collisions(manifest: &mut Manifest, emitted: &Emitted) {
             // a collision (#370, #392 review).
             let strings =
                 declares_string_helpers(&m.return_type, &m.ok_type, &m.err_type, &m.inner_type);
-            let string_owner = format!("{}_{}", class_name, m.name);
+            let string_owner = crate::codegen::method_string_owner(&class_name, &m.method_stem());
             let actual = emitted_arities(emitted, &format!("{method_class}::{}", m.name));
             let mut symbols = Vec::new();
             for omitted in 0..=crate::claims::trailing_default_count(&m.args) {
@@ -1392,9 +1397,34 @@ fn path_attribute(attrs: &[syn::Attribute]) -> Option<String> {
 fn _pyo3_module_python_name(attrs: &[syn::Attribute], ident: &syn::Ident) -> String {
     let named = pyo3_name(attrs);
     if named.is_empty() {
-        ident.to_string()
+        ident.unraw().to_string()
     } else {
         named
+    }
+}
+
+/// The name an item is exposed under in Python, for the manifest's
+/// `python_name`: `#[pyo3(name = "...")]` when given; otherwise empty, except
+/// for a raw Rust name (`r#for`), which PyO3 exposes without its `r#` (`for`)
+/// -- so the one name every consumer (the wrapper crate, the PyO3 host
+/// bindings) looks up is decided here (#514).
+fn python_name_of(attrs: &[syn::Attribute], rust_name: &str) -> String {
+    let named = pyo3_name(attrs);
+    if named.is_empty() {
+        unraw_python_name(rust_name)
+    } else {
+        named
+    }
+}
+
+/// The Python name of a raw Rust name (`r#for` -> `for`); empty for any other
+/// name, which Python sees as written.
+fn unraw_python_name(rust_name: &str) -> String {
+    let bare = crate::codegen::unraw(rust_name);
+    if bare == rust_name {
+        String::new()
+    } else {
+        bare.to_string()
     }
 }
 
@@ -1416,7 +1446,7 @@ fn module_entry(
         attribute: Attribute::PyModule,
         vis: visibility_string(&item.vis),
         skip_reason: skip_reason::PYMODULE.to_string(),
-        python_name: pyo3_name(&item.attrs),
+        python_name: python_name_of(&item.attrs, &name),
         python_path: Vec::new(),
         exported: false,
         cfg: predicate_string(&effective_cfg),
@@ -1474,7 +1504,7 @@ fn function_entry(
         attribute,
         vis: visibility_string(&func.vis),
         skip_reason: reason,
-        python_name: pyo3_name(&func.attrs),
+        python_name: python_name_of(&func.attrs, &name),
         python_path: python_path.to_vec(),
         exported: false,
         cfg: predicate_string(&effective_cfg),
@@ -1568,7 +1598,7 @@ fn class_entry(
                     || is_string_type(&f.ty)
                     || vec_element.is_some());
             let getter = if usable && access.get {
-                crate::codegen::method_symbol_of(&stem, &format!("get_{ident}"))
+                crate::codegen::method_symbol_of(&stem, &format!("get_{}", ident.unraw()))
             } else {
                 String::new()
             };
@@ -1590,11 +1620,15 @@ fn class_entry(
                 ffi_compatible: usable,
                 getter,
                 setter: if usable && access.set {
-                    crate::codegen::method_symbol_of(&stem, &format!("set_{ident}"))
+                    crate::codegen::method_symbol_of(&stem, &format!("set_{}", ident.unraw()))
                 } else {
                     String::new()
                 },
-                python_name: access.python_name,
+                python_name: if access.python_name.is_empty() {
+                    unraw_python_name(&ident.to_string())
+                } else {
+                    access.python_name
+                },
                 vis: visibility_string(&f.vis),
                 // What PyO3 exposes through the object, independent of the
                 // `ffi_compatible` decision a wrapper crate needs (#424).
@@ -1615,7 +1649,7 @@ fn class_entry(
         attribute: Attribute::PyClass,
         vis: visibility_string(&item.vis),
         skip_reason: reason,
-        python_name: pyo3_name(&item.attrs),
+        python_name: python_name_of(&item.attrs, &name),
         python_path: python_path.to_vec(),
         pyo3_extends: options.extends,
         pyo3_options,
@@ -1692,7 +1726,12 @@ fn method_entry(
         trait_path: String::new(),
         julia_name: String::new(),
         name: name.clone(),
-        symbol: crate::codegen::method_symbol_of(&struct_stem, &name),
+        // The method stem, as for a `#[julia]` method: a raw name (`r#match`)
+        // loses its `r#`, which no symbol can carry (#514).
+        symbol: crate::codegen::method_symbol_of(
+            &struct_stem,
+            &crate::codegen::method_stem(None, &name),
+        ),
         // `#[staticmethod]` and `#[classmethod]` are both static from the C
         // side: neither takes a `self` receiver. A `#[classmethod]` takes a
         // `&Bound<'_, PyType>` first argument instead, so it is normally
@@ -1703,7 +1742,7 @@ fn method_entry(
         is_classmethod: has(Pyo3MethodMarker::ClassMethod),
         vis: visibility_string(&func.vis),
         skip_reason: reason,
-        python_name: pyo3_name(&func.attrs),
+        python_name: python_name_of(&func.attrs, &func.sig.ident.to_string()),
         accessor: accessor.to_string(),
         attribute: Attribute::PyMethods,
         // A scanned `#[pymethods]` method has no wrapper and so no string

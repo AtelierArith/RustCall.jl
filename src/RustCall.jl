@@ -306,6 +306,8 @@ include("structs.jl")
 
 # Phase 5: #[julia] attribute support
 include("julia_functions.jl")
+# The Julia name of every Rust item — function, method, field, struct, module (#514)
+include("julia_names.jl")
 
 # FFI manifest consumption (rustcall-extract CLI); depends on the types above
 include("manifest.jl")

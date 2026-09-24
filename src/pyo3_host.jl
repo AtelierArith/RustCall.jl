@@ -88,6 +88,21 @@ Whether a Python host for PyO3 crates is loaded — i.e. whether
 pyo3_host_available() = hasmethod(pyo3_host_import, Tuple{AbstractString})
 
 """
+    pyo3_host_python() -> String
+
+The interpreter the PyO3 host path builds a crate for and imports it into —
+`PythonCall.python_executable_path()`, supplied by `RustCallPyO3HostExt`. The
+build (`pyo3_host_import`) and the scan the bindings are generated from
+(`generate_pyo3_host_bindings`) both ask this, so both configure the crate for
+the same Python (#514 review). Without the extension it has no method, and
+`_pyo3_host_default_python` answers `""`.
+"""
+function pyo3_host_python end
+
+_pyo3_host_default_python() =
+    hasmethod(pyo3_host_python, Tuple{}) ? String(pyo3_host_python()) : ""
+
+"""
     build_pyo3_extension(crate_path; python, features, default_features, release, cache_enabled) -> PyO3Extension
 
 Build the PyO3 crate at `crate_path` as a Python extension module, without
@@ -348,6 +363,81 @@ function _pyo3_extension_link_args()
 end
 
 """
+    _pyo3_host_cargo_cmd(snapshot, crate_path, cargo_toml; python, features,
+                         default_features, release, rustc_args) -> (Cmd, target_dir, package)
+
+The one Cargo invocation of the PyO3 host path: `cargo rustc --crate-type
+cdylib` of the crate as its own root, under the requested profile and features,
+in RustCall's target directory for it, under `snapshot` with `PYO3_PYTHON` set
+to the interpreter the module is built for. `rustc_args` follow `--`. The build
+(`_build_pyo3_extension_library`, with the link arguments) and the cfg probe
+the bindings are scanned under (`_pyo3_host_cfg_text`, with `--print cfg`) are
+both this command, so the scan sees the `#[cfg]`s the build compiles — the
+profile's `debug_assertions`, the interpreter's Python-version cfgs — and the
+two cannot drift (#514 review). An empty `python` leaves `PYO3_PYTHON` as the
+snapshot has it (a scan outside the host extension).
+"""
+function _pyo3_host_cargo_cmd(snapshot::BuildEnvSnapshot, crate_path::AbstractString,
+                              cargo_toml::AbstractDict; python::AbstractString,
+                              features::Vector{String} = String[],
+                              default_features::Bool = true, release::Bool = true,
+                              rustc_args::Vector{String} = String[])
+    package = String(get(get(cargo_toml, "package", Dict{String, Any}()), "name", ""))
+    isempty(package) && throw(RustError(
+        "`$(crate_path)` has no `[package] name`, so Cargo cannot select it."))
+
+    args = String["rustc"]
+    release && push!(args, "--release")
+    push!(args, "-p", package, "--crate-type", "cdylib")
+    default_features || push!(args, "--no-default-features")
+    isempty(features) || push!(args, "--features", join(features, ","))
+
+    # Under RustCall's cache, never the crate's own `target/`: an installed
+    # package is read-only, and every `@rust_crate` flavour builds where
+    # `crate_target_directory` says (#486). An ambient `CARGO_TARGET_DIR`
+    # would send the library somewhere this function never looks, so it is
+    # pinned as `build_cargo_project` does.
+    target_dir = _crate_target!(crate_path, :pyo3_host)
+    env = snapshot_env(snapshot)
+    isempty(python) || (env["PYO3_PYTHON"] = String(python))
+    env["CARGO_TARGET_DIR"] = target_dir
+
+    # `--offline` under `RUSTCALL_OFFLINE`, as every other build (#461).
+    append!(args, _cargo_network_args(env))
+    # In the crate's directory through the command's `dir`, never a
+    # process-wide `cd`, which would move every other task's relative paths
+    # for the length of the build (#461).
+    cmd = setenv(isempty(rustc_args) ? `$(cargo()) $args` : `$(cargo()) $args -- $rustc_args`,
+                 env; dir = String(crate_path))
+    return cmd, target_dir, package
+end
+
+"""
+    _pyo3_host_cfg_text(snapshot, crate_path, cargo_toml; python, features,
+                        default_features, release) -> String
+
+`rustc --print cfg` of the host build (`_pyo3_host_cargo_cmd`), for the scan the
+host bindings are generated from; `""` when Cargo does not answer, and the
+lenient scan is used instead.
+"""
+function _pyo3_host_cfg_text(snapshot::BuildEnvSnapshot, crate_path::AbstractString,
+                             cargo_toml::AbstractDict; python::AbstractString,
+                             features::Vector{String} = String[],
+                             default_features::Bool = true, release::Bool = true)
+    try
+        cmd, _, _ = _pyo3_host_cargo_cmd(snapshot, crate_path, cargo_toml; python = python,
+                                         features = features,
+                                         default_features = default_features,
+                                         release = release,
+                                         rustc_args = ["--print", "cfg"])
+        return _printed_cfg_lines(read(pipeline(cmd; stderr = devnull), String))
+    catch e
+        @debug "Could not probe the host build cfg of $(crate_path)" exception = e
+        return ""
+    end
+end
+
+"""
     _build_pyo3_extension_library([snapshot,] crate_path, cargo_toml, module_name; kwargs...) -> String
 
 Run `cargo rustc --crate-type cdylib` in the crate's own directory, with the
@@ -368,34 +458,10 @@ function _build_pyo3_extension_library(snapshot::BuildEnvSnapshot,
                                        features::Vector{String} = String[],
                                        default_features::Bool = true,
                                        release::Bool = true)
-    package = String(get(get(cargo_toml, "package", Dict{String, Any}()), "name", ""))
-    isempty(package) && throw(RustError(
-        "`$(crate_path)` has no `[package] name`, so Cargo cannot select it."))
-
-    args = String["rustc"]
-    release && push!(args, "--release")
-    push!(args, "-p", package, "--crate-type", "cdylib")
-    default_features || push!(args, "--no-default-features")
-    isempty(features) || push!(args, "--features", join(features, ","))
-    link_args = _pyo3_extension_link_args()
-
-    # Under RustCall's cache, never the crate's own `target/`: an installed
-    # package is read-only, and every `@rust_crate` flavour builds where
-    # `crate_target_directory` says (#486). An ambient `CARGO_TARGET_DIR`
-    # would send the library somewhere this function never looks, so it is
-    # pinned as `build_cargo_project` does.
-    target_dir = _crate_target!(crate_path, :pyo3_host)
-    env = snapshot_env(snapshot)
-    env["PYO3_PYTHON"] = String(python)
-    env["CARGO_TARGET_DIR"] = target_dir
-
-    # `--offline` under `RUSTCALL_OFFLINE`, as every other build (#461).
-    append!(args, _cargo_network_args(env))
-    # In the crate's directory through the command's `dir`, never a
-    # process-wide `cd`, which would move every other task's relative paths
-    # for the length of the build (#461).
-    cmd = setenv(isempty(link_args) ? `$(cargo()) $args` : `$(cargo()) $args -- $link_args`,
-                 env; dir = String(crate_path))
+    cmd, target_dir, package = _pyo3_host_cargo_cmd(
+        snapshot, crate_path, cargo_toml; python = python, features = features,
+        default_features = default_features, release = release,
+        rustc_args = _pyo3_extension_link_args())
     stderr_io = IOBuffer()
     stdout_io = IOBuffer()
     proc = run(pipeline(cmd, stdout = stdout_io, stderr = stderr_io), wait = false)
@@ -602,8 +668,11 @@ _pyo3_host_injected_arg(rust_type::AbstractString) =
 
 _pyo3_host_attr(base, name::AbstractString) = Expr(:., base, QuoteNode(Symbol(name)))
 
+# The Python attribute of an item: the manifest's `python_name` — which the
+# extractor also fills for a raw Rust name, `r#for` being exposed as `for`
+# (#514) — or the Rust name (`rust_name`: PyO3 drops a raw identifier's `r#`).
 _pyo3_host_python_name(name, python_name) =
-    isempty(python_name) ? String(name) : String(python_name)
+    isempty(python_name) ? rust_name(name) : String(python_name)
 
 # The last identifier of a type spelling: `Py` in `Py<T>`, `T` in
 # `Bound<'_, T>`, `PyIndex` in `PyRef<'_, PyIndex>`.
@@ -618,7 +687,7 @@ end
 # class and is left alone.
 function _pyo3_host_struct_target(rust_type::AbstractString, classes::AbstractDict,
                                   jstruct::Union{Symbol, Nothing} = nothing)
-    t = strip(rust_type)
+    t = rust_name(strip(rust_type))
     t == "Self" && return jstruct
     haskey(classes, t) && return classes[t]
     (startswith(t, "Vec<") || startswith(t, "Option<")) && return nothing
@@ -631,7 +700,7 @@ end
 # direct reference or a `Vec` of them), otherwise `nothing`. A class argument is
 # passed as the Python object the Julia handle holds, not as the handle.
 function _pyo3_host_struct_arg(rust_type::AbstractString, classes::AbstractDict)
-    t = strip(rust_type)
+    t = rust_name(strip(rust_type))
     if startswith(t, "Vec<") && endswith(t, ">")
         inner = strip(t[nextind(t, 5):prevind(t, lastindex(t))])
         name = _pyo3_host_last_ident(inner)
@@ -768,7 +837,7 @@ function _pyo3_host_function_expr(f::RustFunctionSignature, classes::AbstractDic
     base = _pyo3_host_python_attr(:(_pyo3_module()), f.python_path, python)
     callof = convs -> Expr(:call, base, convs...)
     rust_type = f.return_kind === :py_result ? f.ok_type : f.return_type
-    return _pyo3_host_defs(Symbol(f.name), Any[], sig, conv, defaults, callof,
+    return _pyo3_host_defs(Symbol(julia_function_name(f)), Any[], sig, conv, defaults, callof,
                            f.return_kind, rust_type, nothing, classes)
 end
 
@@ -792,7 +861,7 @@ function _pyo3_host_method_expr(jname::Symbol, class_base::Expr, m::RustMethod,
         # descriptor supplies it (#424).
         base = _pyo3_host_attr(class_base, python)
         callof = convs -> Expr(:call, base, convs...)
-        return _pyo3_host_defs(Symbol(m.name), Any[], sig, conv, defaults, callof,
+        return _pyo3_host_defs(Symbol(julia_method_name(m)), Any[], sig, conv, defaults, callof,
                                m.return_kind, rust_type, jname, classes)
     else
         # An instance method: the object is the first Julia argument, and the
@@ -800,7 +869,7 @@ function _pyo3_host_method_expr(jname::Symbol, class_base::Expr, m::RustMethod,
         # that same object, so no extra step is needed.
         receiver = _pyo3_host_attr(:(getfield(obj, :_rustcall_py)), python)
         callof = convs -> Expr(:call, receiver, convs...)
-        return _pyo3_host_defs(Symbol(m.name), Any[:(obj::$jname)], sig, conv, defaults,
+        return _pyo3_host_defs(Symbol(julia_method_name(m)), Any[:(obj::$jname)], sig, conv, defaults,
                                callof, m.return_kind, rust_type, jname, classes)
     end
 end
@@ -839,26 +908,42 @@ function _pyo3_host_property_expr(jname::Symbol, s::RustStructInfo)
         jt = _pyo3_host_value_type(rust_type)
         jt === nothing && continue
         push!(conversions,
-              :(s === $(QuoteNode(Symbol(field))) && return PythonCall.pyconvert($jt, v)))
+              :(s === $(QuoteNode(Symbol(rust_name(field)))) &&
+                return PythonCall.pyconvert($jt, v)))
     end
-    names = [Symbol(field) for (field, _) in s.fields if _pyo3_host_field_readable(s, field)]
+    # A field is a property under its Julia name (`julia_field_name`, #514);
+    # the Python attribute keeps the Rust spelling, so a renamed one is mapped
+    # back before the lookup.
+    names = [Symbol(julia_field_name(field)) for (field, _) in s.fields
+             if _pyo3_host_field_readable(s, field)]
+    # Only a field the host binds is remapped: an unexposed raw `r#for` beside
+    # an exposed `for_` must leave `obj.for_` alone (PR #515 review).
+    renamed = Any[]
+    for field in _pyo3_host_bound_fields(s)
+        jfield = julia_field_name(field)
+        jfield == rust_name(field) && continue
+        push!(renamed, :(s === $(QuoteNode(Symbol(jfield))) &&
+                         (s = $(QuoteNode(Symbol(rust_name(field)))))))
+    end
     # A read-only field raises a Julia error naming it instead of the raw
     # Python `AttributeError` a descriptor would.
     read_only = Any[]
     for (field, _) in s.fields
         _pyo3_host_field_writable(s, field) && continue
         push!(read_only,
-              :(s === $(QuoteNode(Symbol(field))) &&
-                throw(ArgumentError($(string("field `", field, "` is read-only"))))))
+              :(s === $(QuoteNode(Symbol(rust_name(field)))) &&
+                throw(ArgumentError($(string("field `", julia_field_name(field), "` is read-only"))))))
     end
     getbody = quote
         s === :_rustcall_py && return getfield(p, :_rustcall_py)
+        $(renamed...)
         v = PythonCall.pygetattr(getfield(p, :_rustcall_py), String(s))
         $(conversions...)
         return v
     end
     setbody = quote
         s === :_rustcall_py && throw(ArgumentError("_rustcall_py is not assignable"))
+        $(renamed...)
         $(read_only...)
         PythonCall.pysetattr(getfield(p, :_rustcall_py), String(s), v)
         return v
@@ -883,7 +968,7 @@ _pyo3_host_async(f::RustFunctionSignature) =
 _pyo3_host_async(m::RustMethod) = partition_skip_reason(m.skip_reason)[1] == "async_fn"
 
 function _pyo3_host_struct_exprs(s::RustStructInfo, classes::AbstractDict)
-    jname = Symbol(s.name)
+    jname = Symbol(julia_struct_name(s))
     pyclass = _pyo3_host_python_name(s.name, s.python_name)
     class_base = _pyo3_host_python_attr(:(_pyo3_module()), s.python_path, pyclass)
     # An explicit inner constructor suppresses the constructors Julia would
@@ -898,20 +983,95 @@ function _pyo3_host_struct_exprs(s::RustStructInfo, classes::AbstractDict)
     inner = Expr(:(=), Expr(:call, jname, field),
                  Expr(:call, :new, :_rustcall_py))
     out = Any[Expr(:struct, false, jname, Expr(:block, field, inner))]
-    for m in s.methods
+    # The methods the host binds (`_pyo3_host_bound_methods`, the list its
+    # definitions are read from): constructors first. `#[getter]`/`#[setter]`
+    # methods are Python properties; `getproperty` reaches them, so they are
+    # not bound as functions.
+    methods = _pyo3_host_bound_methods(s)
+    for m in methods
         m.is_constructor || continue
-        _pyo3_host_async(m) && continue
         append!(out, _pyo3_host_method_expr(jname, class_base, m, classes))
     end
-    # `#[getter]`/`#[setter]` methods are Python properties; `getproperty`
-    # above already reaches them, so they are not bound as functions.
     push!(out, _pyo3_host_property_expr(jname, s))
-    for m in s.methods
-        (m.is_constructor || !isempty(m.accessor)) && continue
-        _pyo3_host_async(m) && continue
+    for m in methods
+        m.is_constructor && continue
         append!(out, _pyo3_host_method_expr(jname, class_base, m, classes))
     end
     return out
+end
+
+# The scanned classes, keyed by `rust_name` — the key every type spelling is
+# looked up by (`_pyo3_host_struct_target`, `_pyo3_host_struct_arg`), so
+# `r#type`, `&r#type` and `PyRef<'_, r#type>` all find the class (#514) — to
+# the Julia type the emitter defines (`julia_struct_name`).
+_pyo3_host_classes(info::CrateInfo) =
+    Dict{String, Symbol}(rust_name(s.name) => Symbol(julia_struct_name(s))
+                         for s in _pyo3_host_bound_classes(info))
+
+"""
+    _pyo3_host_definitions(info::CrateInfo) -> Vector{JuliaDefinition}
+
+What `generate_pyo3_host_bindings` defines at the top level of its module,
+item by item as its emitters define it (#514): a `#[pyfunction]` and a static
+or class method are free functions of untyped arguments (the host passes no
+type), a class is a type whose `#[new]` is its constructor, an instance method
+dispatches on its class, a readable or writable field is a property. `async`
+items and `#[getter]` / `#[setter]` methods define nothing.
+"""
+function _pyo3_host_definitions(info::CrateInfo)
+    defs = JuliaDefinition[]
+    add!(name, scope, owner; what = owner, parent = "") =
+        push!(defs, JuliaDefinition(name, scope, owner, what, parent))
+    for f in _pyo3_host_bound_functions(info)
+        add!(julia_function_name(f), :free,
+             "the function `$(qualified_name(f.module_path, f.name))`")
+    end
+    for s in _pyo3_host_bound_classes(info)
+        T = julia_struct_name(s)
+        owner = "the struct `$(qualified_name(s.module_path, s.name))`"
+        add!(T, :binding, owner)
+        for m in _pyo3_host_bound_methods(s)
+            what = "the method `$(_boundary_label(s, m))`"
+            if m.is_constructor
+                add!(T, :free, owner; what, parent = T)
+            elseif m.is_static || m.is_classmethod
+                add!(julia_method_name(m), :free, what; parent = T)
+            else
+                add!(julia_method_name(m), (:self, T), what; parent = T)
+            end
+        end
+        for field in _pyo3_host_bound_fields(s)
+            add!(julia_field_name(field), (:prop, T),
+                 "the field `$(qualified_name(s.module_path, s.name)).$field`"; parent = T)
+        end
+    end
+    return defs
+end
+
+# What the host binds, item by item: the one list its emitters iterate and its
+# definitions (`_pyo3_host_definitions`) are read from (#514). `async` items
+# are refused by the extractor (`async_fn`) and bound nowhere; `#[getter]` /
+# `#[setter]` methods are Python properties reached through `getproperty`.
+_pyo3_host_bound_functions(info::CrateInfo) =
+    [f for f in info.pyo3_functions if f.attribute === :py_function && !_pyo3_host_async(f)]
+_pyo3_host_bound_classes(info::CrateInfo) =
+    [s for s in info.pyo3_structs if s.attribute === :py_class]
+_pyo3_host_bound_methods(s::RustStructInfo) =
+    [m for m in s.methods if !_pyo3_host_async(m) && (m.is_constructor || isempty(m.accessor))]
+_pyo3_host_bound_fields(s::RustStructInfo) =
+    [field for (field, _) in s.fields
+     if _pyo3_host_field_readable(s, field) || _pyo3_host_field_writable(s, field)]
+
+"""
+    _pyo3_host_check_names(info::CrateInfo)
+
+`_check_julia_definitions` over `_pyo3_host_definitions`: the check every
+emitter runs, over what this one defines.
+"""
+function _pyo3_host_check_names(info::CrateInfo)
+    _check_julia_definitions(_pyo3_host_definitions(info),
+                             "the PyO3 host bindings of `$(info.name)`")
+    return nothing
 end
 
 """
@@ -925,9 +1085,27 @@ function generate_pyo3_host_bindings(crate_path::AbstractString;
                                      module_name::Union{String, Nothing} = nothing,
                                      features::Vector{String} = String[],
                                      default_features::Bool = true,
-                                     release::Bool = true)
+                                     release::Bool = true,
+                                     python::AbstractString = _pyo3_host_default_python())
     path = abspath(String(crate_path))
-    info = scan_crate(path)
+    # The items of the build this module imports, not every feature variant:
+    # the lenient scan keeps both of `#[cfg(feature = "x")] fn r#for` and
+    # `#[cfg(not(feature = "x"))] fn for_`, which no one build has, and the
+    # bindings — and the name-clash check over them — would describe a crate
+    # that does not exist (PR #515 review). The crate is rescanned under the
+    # `--print cfg` of the very command `build_pyo3_extension` builds it with
+    # (`_pyo3_host_cargo_cmd`: the crate as its own cdylib root, this profile
+    # and these features, `PYO3_PYTHON` the importing interpreter), so a
+    # `#[cfg(debug_assertions)]` or Python-version item is scanned as it is
+    # built. When Cargo does not answer, the lenient scan stands.
+    snapshot = BuildEnvSnapshot()
+    lenient = scan_crate(path; cargo_env = snapshot_env(snapshot))
+    cfg_text = _pyo3_host_cfg_text(snapshot, path, parse_cargo_toml(joinpath(path, "Cargo.toml"));
+                                   python = python, features = features,
+                                   default_features = default_features, release = release)
+    info = isempty(cfg_text) ? lenient :
+           scan_crate(path; cfg = :cargo, cfg_text = cfg_text,
+                      cargo_env = snapshot_env(snapshot))
     mod_name = Symbol(module_name === nothing ? snake_to_pascal(info.name) : module_name)
     body = Expr(:block)
     push!(body.args, :(import RustCall))
@@ -958,19 +1136,20 @@ function generate_pyo3_host_bindings(crate_path::AbstractString;
             end
         end)
     end
-    # The scanned classes, by their Rust name: a return or argument spelling them
+    # The scanned classes, by their `rust_name` (a type spelling carries no `r#`,
+    # #514): a return or argument spelling them
     # (or `Py<T>` / `Bound<'_, T>` around one) is that Julia struct, not a
     # `Py`. Local, not module-level: `test_state.jl`'s guard forbids a mutable
     # registry in `RustCall` (#251).
-    classes = Dict{String, Symbol}(s.name => Symbol(s.name)
-                                   for s in info.pyo3_structs if s.attribute === :py_class)
-    for f in info.pyo3_functions
-        f.attribute === :py_function || continue
-        _pyo3_host_async(f) && continue
+    classes = _pyo3_host_classes(info)
+    # Two items one Julia name would bind (`fn r#for` beside `fn for_`) are
+    # refused before anything is emitted, by the check every emitter runs,
+    # over what this one binds (#514).
+    _pyo3_host_check_names(info)
+    for f in _pyo3_host_bound_functions(info)
         append!(body.args, _pyo3_host_function_expr(f, classes))
     end
-    for s in info.pyo3_structs
-        s.attribute === :py_class || continue
+    for s in _pyo3_host_bound_classes(info)
         append!(body.args, _pyo3_host_struct_exprs(s, classes))
     end
     return Expr(:module, true, mod_name, body)

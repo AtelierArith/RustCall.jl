@@ -18,13 +18,17 @@ Build `crate_path` as a Python extension module with PythonCall's interpreter,
 import it, and return the Python module object. See the hook's documentation in
 RustCall for the contract.
 """
+# The interpreter the host path builds for and imports into; the bindings'
+# scan asks the same (`RustCall.pyo3_host_python`).
+RustCall.pyo3_host_python() = PythonCall.python_executable_path()
+
 function RustCall.pyo3_host_import(crate_path::AbstractString;
                                    features::Vector{String} = String[],
                                    default_features::Bool = true,
                                    release::Bool = true,
                                    cache_enabled::Bool = true)
     artifact = RustCall.build_pyo3_extension(String(crate_path);
-                                             python = PythonCall.python_executable_path(),
+                                             python = RustCall.pyo3_host_python(),
                                              features = features,
                                              default_features = default_features,
                                              release = release,
