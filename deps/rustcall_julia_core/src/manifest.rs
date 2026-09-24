@@ -284,6 +284,12 @@ pub mod skip_reason {
     /// by path (`<S>::m(..)`, `<S as Trait>::m(..)`), which passes the
     /// receiver exactly as declared. The receiver type follows the colon.
     pub const RECEIVER_TYPE: &str = "receiver_type";
+    /// The name v0.7.1 gave [`RECEIVER_TYPE`] (#497), for trait-impl methods
+    /// only. No longer emitted, but kept a codegen refusal: schema 0.7 is
+    /// additive, so a manifest written by a v0.7.1 extractor still carries
+    /// it, and a consumer must go on treating it as refused (PR #511
+    /// review).
+    pub const TRAIT_RECEIVER: &str = "trait_receiver";
 
     /// Every reason the `#[julia]` codegen itself refuses an item for, with a
     /// `compile_error!` at the item ([`crate::refusal`], #503). An item
@@ -299,7 +305,13 @@ pub mod skip_reason {
         LOWERED_STR_BORROW,
         LOWERED_STR_LIFETIME,
         RECEIVER_TYPE,
+        TRAIT_RECEIVER,
     ];
+
+    /// The kinds of [`CODEGEN_REFUSALS`] no current codegen emits, kept only
+    /// so a manifest of an earlier release within the schema is still read
+    /// as refusing the item.
+    pub const LEGACY_CODEGEN_REFUSALS: &[&str] = &[TRAIT_RECEIVER];
 
     /// Whether `reason` is one of [`CODEGEN_REFUSALS`], its detail aside.
     pub fn is_codegen_refusal(reason: &str) -> bool {

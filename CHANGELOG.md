@@ -26,7 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the receiver for an **inherent** method too, in both flavours (it failed
   inside generated code before, except an alias of `&Self`, which happened to
   compile), and the refusal kind is now `receiver_type` (was
-  `trait_receiver`, trait impls only). `mut self` (a copy) is no longer
+  `trait_receiver`, trait impls only; a v0.7.1 manifest carrying
+  `trait_receiver` is still read as refused). `mut self` (a copy) is no longer
   reported as `is_mutable`. Exported symbols are unchanged. A PyO3 method with
   a receiver other than `&self` / `&mut self` is skipped as `receiver_type`,
   since a wrapper spelled from the manifest can express only those.

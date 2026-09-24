@@ -76,6 +76,10 @@ const PYO3_SKIP_REASONS = Base.ImmutableDict(Base.ImmutableDict{String, String}(
                        "header); its wrapper calls it by path, which passes the receiver " *
                        "exactly as declared; write `self`, `&self`, `&mut self` or reference " *
                        "layers over `Self` (#509)",
+    # The name v0.7.1 gave the same refusal, for trait-impl methods (#497).
+    "trait_receiver" => "a trait-impl method whose receiver type does not show its shape; " *
+                        "its wrapper calls it through the trait, which passes the receiver " *
+                        "exactly as declared (#497)",
 )
 
 """

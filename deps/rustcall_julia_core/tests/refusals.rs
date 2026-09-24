@@ -706,7 +706,10 @@ fn the_corpus_covers_every_refusal_and_position() {
             // A trait impl is wrapped by the proc macro alone, and a non-FFI
             // payload refused for a free function only (a method returns
             // such a `Result` as written).
-            if *kind == skip_reason::SELF_TRAIT_PATH && mode == Mode::Inline {
+            // A legacy kind is read, never emitted, so no case produces it.
+            if (*kind == skip_reason::SELF_TRAIT_PATH && mode == Mode::Inline)
+                || skip_reason::LEGACY_CODEGEN_REFUSALS.contains(kind)
+            {
                 continue;
             }
             assert!(

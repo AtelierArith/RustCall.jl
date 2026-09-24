@@ -124,6 +124,25 @@ const CR_INLINE_CASES = [
     end
 end
 
+@testset "a v0.7.1 manifest's trait_receiver still reads as refused (PR #511 review)" begin
+    # v0.7.1 wrote `trait_receiver` for what is now `receiver_type`; schema 0.7
+    # is additive, so its manifests must still bind nothing for such a method.
+    @test RustCall._rust_refuses("trait_receiver:Box<Self>")
+    @test RustCall.pyo3_skip_explanation("trait_receiver") != "trait_receiver"
+    take = RustCall.RustMethod("take", false, false, String[], String[], "i32";
+                               symbol = "rustcall_Buf_take", is_constructor = false,
+                               skip_reason = "trait_receiver:Box<Self>", trait_path = "Take")
+    info = RustCall.RustStructInfo("Buf", String[], [take], "", Tuple{String, String}[],
+                                   true, Dict{String, Bool}())
+    report = RustCall._collect_boundary() do
+        RustCall._generate_crate_struct_wrapper(info)
+    end
+    @test any(p -> p.item == "<Buf as Take>::take" && p.position == "entry point" &&
+                   p.reason !== nothing, report.positions)
+    exprs = string(RustCall._generate_crate_struct_wrapper(info))
+    @test !occursin("rustcall_Buf_take", exprs)
+end
+
 @testset "inline_boundary_report lists every codegen refusal (#503)" begin
     seen = Set{String}()
     for (label, source, item, kind) in CR_INLINE_CASES
@@ -157,7 +176,7 @@ end
     # Every kind the inline flavour can produce is covered; a trait impl, the
     # one place `self_trait_path` arises, is wrapped only by the proc macro.
     @test seen == setdiff(Set(keys(RustCall.RUST_CODEGEN_REFUSALS)),
-                          Set(["self_trait_path"]))
+                          Set(["self_trait_path", "trait_receiver"]))
 end
 
 @testset "a refused item gets no binding and takes no name (#503)" begin
