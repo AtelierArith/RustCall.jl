@@ -7,25 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- **A `#[julia]` method of a trait impl is called through the trait**
-  ([#497](https://github.com/AtelierArith/RustCall.jl/issues/497)). The
-  proc-macro wrapper of `#[julia] impl tr::Far for Buf { #[julia] fn m(&self) }`
-  called `self_obj.m()`, which failed with E0599 inside generated code when
-  the trait was not in scope under a bare name, and silently called an
-  inherent `Buf::m` instead of the trait's when one existed. It now calls
-  `<Buf as tr::Far>::m(self_obj)` (static methods `<Buf as tr::Far>::m()`),
-  spelled as the impl header spells the type and the trait. The receiver
-  argument follows the receiver's declared type (`self: &&Self` is passed
-  `&self_obj`), since a path call applies no autoref. A typed receiver whose
-  shape is not literal reference layers over `Self` — a type alias, `Box<Self>`,
-  `Rc<Self>`, `Pin<&mut Self>`, the type's own name — and `self: &mut Self`
-  (#509) are refused at the receiver with a `compile_error!`; none of them
-  compiled before either. Exported symbols
-  are unchanged. The inline `rust"""` flavour wraps no trait-impl method and is
-  unaffected. A wrapper now lowers such a method differently, so the published
-  Rust crates (0.2.0 on crates.io) take a minor bump before they are next
-  published; the bump itself is a separate change.
+## [0.7.1] - 2026-09-24
 
 ### Changed
 - **Every refusal of the `#[julia]` codegen reaches the boundary report**
@@ -37,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now `generic_signature`, `impl_trait`, `non_ffi_payload`,
   `self_trait_path`, `unspellable_self`, `lowered_str_borrow`,
   `lowered_str_lifetime`, and `trait_receiver` for the trait-impl receiver
-  refusal of #497 above (additive within manifest schema 0.7, as is
+  refusal of #497 below (additive within manifest schema 0.7, as is
   `Method.trait_path`, which keeps a refused trait-impl method apart from a
   same-named inherent one). A generic
   method of an inline struct, a crate's generic `#[julia]` function, struct or
@@ -55,8 +37,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   public API changed (`extract::function_entry` takes a `Mode`;
   `codegen::unsafe_function_error`, `method_skip_reason`,
   `inline_method_is_generic`, `inline_method_is_wrapped` and
-  `method_is_unsafe` are replaced by `refusal::*`), so the next publish of the
-  Rust crates is a minor bump.
+  `method_is_unsafe` are replaced by `refusal::*`), so the Rust crates take a
+  minor bump to 0.3.0 (see Rust crates below).
+
+### Fixed
+- **A `#[julia]` method of a trait impl is called through the trait**
+  ([#497](https://github.com/AtelierArith/RustCall.jl/issues/497)). The
+  proc-macro wrapper of `#[julia] impl tr::Far for Buf { #[julia] fn m(&self) }`
+  called `self_obj.m()`, which failed with E0599 inside generated code when
+  the trait was not in scope under a bare name, and silently called an
+  inherent `Buf::m` instead of the trait's when one existed. It now calls
+  `<Buf as tr::Far>::m(self_obj)` (static methods `<Buf as tr::Far>::m()`),
+  spelled as the impl header spells the type and the trait. The receiver
+  argument follows the receiver's declared type (`self: &&Self` is passed
+  `&self_obj`), since a path call applies no autoref. A typed receiver whose
+  shape is not literal reference layers over `Self` — a type alias, `Box<Self>`,
+  `Rc<Self>`, `Pin<&mut Self>`, the type's own name — and `self: &mut Self`
+  (#509) are refused at the receiver with a `compile_error!`; none of them
+  compiled before either. Exported symbols
+  are unchanged. The inline `rust"""` flavour wraps no trait-impl method and is
+  unaffected. A wrapper now lowers such a method differently, so the published
+  Rust crates take a minor bump to 0.3.0 (see Rust crates below).
+- **Two artifacts whose short ids collide never share an output location**
+  ([#504](https://github.com/AtelierArith/RustCall.jl/issues/504),
+  [#507](https://github.com/AtelierArith/RustCall.jl/pull/507)). Since #495
+  (#486) Windows' path limit makes a 16-hex short id name some locations: a
+  crate's Cargo target directory, the PyO3 wrapper's Cargo package, the PyO3
+  host extension's cache directory and a debug build's files. Two full keys
+  sharing that prefix could reach the same location, and two concurrent PyO3
+  wrapper builds could copy out each other's library and cache it under the
+  wrong key. Each such name is now spelled and owned in one place
+  (`src/short_name.jl`): a persistent location is claimed for good by an
+  `O_EXCL` owner record holding the full key and a colliding key is refused,
+  a build holds the name's lock from build start through copy-out, and a
+  location with contents but no owner record (for example a `pyo3-host/<short>`
+  directory written by an earlier RustCall) is emptied when it is RustCall's
+  own rebuildable output, or refused, and never adopted. On a file system
+  without locking, emptying is refused too and the error names the path to
+  remove. `scripts/lint_artifact_identity.sh` rejects any other use of a short
+  id as a path. Cache keys are unchanged.
+
+### Rust crates
+- **`rustcall_julia_core`, `rustcall_julia_macros_impl` and
+  `rustcall_julia_macros` are `0.3.0`**. The published `0.2.0` (#500) exports
+  items that #503 removed or changed, and #497 lowers a trait-impl method
+  differently, so for a `0.x` crate set this is a minor bump; each crate still
+  pins the one below it exactly (`version = "=0.3.0"`), and a `#[julia]` crate
+  depending on the release writes `rustcall_julia_macros = "0.3"`. The bump
+  moves no cache key: the crates' `[package] version` and the exact
+  requirements stay out of every artifact identity, and the extractor's source
+  digest and `toolchain_fingerprint()` are the same before and after it.
+  - Removed from `rustcall_julia_core` (#503):
+    `codegen::unsafe_function_error`, `codegen::method_skip_reason`,
+    `codegen::method_is_unsafe`, `codegen::inline_method_is_generic`,
+    `codegen::inline_method_is_wrapped`; their decisions are made by
+    `refusal::function_refusal` / `refusal::method_refusal`, and a
+    `Refusal`'s `skip_reason()` / `compile_error()` replace the strings and
+    tokens they returned.
+  - Changed in `rustcall_julia_core` (#503): `extract::function_entry` takes
+    the extraction `Mode` in place of `wrapped: bool`;
+    `manifest::Method` has a new public field `trait_path: String`, so a
+    struct literal of it no longer compiles without the field;
+    `codegen::payload_is_representable` is now a re-export of
+    `refusal::payload_is_representable` (same signature).
+  - Added to `rustcall_julia_core` (#503): the `refusal` module (`Refusal`
+    with public fields `kind`, `detail`, `span`, `end`, `message` and methods
+    `skip_reason`, `compile_error`; `MethodSite`; `function_refusal`,
+    `method_refusal`, `struct_refusal`, `impl_refusal`,
+    `impl_header_refusal`, `module_refusal`, `item_kind_refusal`,
+    `julia_item_refusal`, `attribute_target_refusal`,
+    `unsupported_item_kind`, `item_attrs`, `without_julia_attr`,
+    `payload_is_representable`; the kinds `IMPL_NOT_A_PATH`, `FILE_MODULE`,
+    `UNSUPPORTED_ITEM`), `codegen::transform_unsupported_item`,
+    `manifest::skip_reason::{GENERIC_SIGNATURE, IMPL_TRAIT, NON_FFI_PAYLOAD,
+    SELF_TRAIT_PATH, UNSPELLABLE_SELF, LOWERED_STR_BORROW,
+    LOWERED_STR_LIFETIME, TRAIT_RECEIVER, CODEGEN_REFUSALS,
+    is_codegen_refusal}`, `model::MethodModel::{trait_path, is_same_method}`,
+    `paths::ImplHeader::of_any`.
+  - Changed in what `#[julia]` generates: a `#[julia]` method of a trait impl
+    is called through the trait (`<Buf as tr::Far>::m(self_obj)`), and a
+    typed receiver that is not literal reference layers over `Self`, or
+    `self: &mut Self`, is refused with a spanned compile error (#497, #509);
+    `#[julia]` on a file module, on an impl whose header is not a type path,
+    or on any other item kind (enum, `macro_rules!`, `use`, ...) is refused
+    with the refusal's own message, and a non-FFI payload's diagnostic points
+    at the payload type (#503). Exported symbols are unchanged.
 
 ## [0.7.0] - 2026-09-24
 
@@ -2525,7 +2590,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration tests for Rust helpers library
 - Documentation examples tests
 
-[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/atelierarith/RustCall.jl/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.6...v0.7.0
 [0.6.6]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.5...v0.6.6
 [0.6.5]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.4...v0.6.5
