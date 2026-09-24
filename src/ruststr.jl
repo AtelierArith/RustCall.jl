@@ -1078,7 +1078,11 @@ function _register_manifest(expanded, lib_name::String; compiler = nothing,
                 "contains `#[cfg]` or `cfg!`, which the lazy specialization (a direct rustc build) " *
                 "would evaluate under a different configuration than the Cargo build; move the " *
                 "configuration-dependent code out of the generic body or into a non-generic helper" : ""
-            register_generic_function(sig.name, expanded.source, Symbol.(sig.type_params), sig.constraints, "";
+            # Registered under the name `@rust` is called with — the Julia
+            # binding name (`@rust for_(x)` for `fn r#for`, #514) — while the
+            # path the extractor specializes keeps the Rust spelling.
+            register_generic_function(julia_function_name(sig), expanded.source,
+                                      Symbol.(sig.type_params), sig.constraints, "";
                                       arg_types = sig.arg_types, return_type = sig.return_type,
                                       path = qualified_name(sig.module_path, sig.name), compiler, blocked,
                                       cargo = cargo_context)
@@ -1137,7 +1141,10 @@ function _manifest_registry_entries(signatures)
             _boundary_item!(_boundary_label(sig))
             _boundary_unguarded_export!(string("extern \"C\" fn ", sig.name))
         end
-        isempty(sig.symbol) || push!(symbols, String(sig.name) => String(sig.symbol))
+        # Keyed by the name `@rust` is called with: the Julia binding name
+        # (`@rust function_(x)` for `fn function`, #514).
+        name = julia_function_name(sig)
+        isempty(sig.symbol) || push!(symbols, name => String(sig.symbol))
         if occurrences[sig.symbol] > 1
             @debug "Ambiguous manifest entry: not registering a return type" symbol = sig.symbol
             continue
@@ -1148,7 +1155,7 @@ function _manifest_registry_entries(signatures)
         # f(...)` names the function, while a caller that already resolved the
         # symbol (or a generated wrapper) asks for `rustcall_f`. Both keys are
         # library-scoped — a name-only hint would outlive this library (#279).
-        for key in unique((sig.name, sig.symbol))
+        for key in unique((name, sig.symbol))
             push!(return_types, String(key) => ret_type)
         end
     end

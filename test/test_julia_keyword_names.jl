@@ -372,6 +372,27 @@ end
         @test err isa ErrorException
         @test occursin("`for_`", sprint(showerror, err))
 
+        # `@rust` reaches a generic function, and a plain one, by its Julia
+        # name: the generic registry and the name → symbol table are keyed by
+        # `julia_function_name`, the specialization keeps the Rust path (PR
+        # #515 review).
+        gen = Module(:KwInlineGenericFns)
+        Core.eval(gen, :(using RustCall))
+        Core.eval(gen, Meta.parse("""rust\"\"\"
+            #[julia]
+            pub fn r#break<T: Copy>(x: T) -> T { x }
+            #[julia]
+            pub fn local<T: Copy>(x: T) -> T { x }
+            #[julia]
+            pub fn r#const(x: i32) -> i32 { x + 5 }
+            \"\"\""""))
+        @test RustCall.is_generic_function("break_")
+        @test RustCall.is_generic_function("local_")
+        @test !RustCall.is_generic_function("r#break")
+        @test call(Core.eval, gen, :(@rust break_(Int32(3))::Int32)) == 3
+        @test call(Core.eval, gen, :(@rust local_(Int64(4))::Int64)) == 4
+        @test call(Core.eval, gen, :(@rust const_(Int32(1))::Int32)) == 6
+
         # A free `fn r#for` beside static methods bound as `for_` on two
         # structs: each static method keeps its typed form and none takes the
         # bare name, so all three stay callable (#323, #514).

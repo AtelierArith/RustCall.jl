@@ -37,9 +37,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   kind in every emitter: the `r#` is dropped and a name Julia reserves gets a
   `_` (`for_`, `end_`, `let_`; a field's accessors are `get_let_` /
   `set_let_!`). The set of reserved names is Julia's own (a name
-  `Meta.parse` does not read as a plain identifier). Code that reached such a
-  binding through `var"..."` must use the new name. Exported symbols do not
-  change.
+  `Meta.parse` does not read as a plain identifier). `@rust` finds a function
+  under the same name: the generic registry and the name → symbol table are
+  keyed by it (`@rust for_(x)` for a generic `fn r#for<T>`), while
+  specialization keeps the Rust path. Code that reached such a binding through
+  `var"..."` must use the new name. Exported symbols do not change.
 
 ### Fixed
 - **A return type that only ends in the impl header's name is not the struct**
