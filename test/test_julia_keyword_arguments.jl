@@ -271,3 +271,39 @@ end
         end
     end
 end
+
+@testset "the PyO3 host binds keyword-named arguments (#516)" begin
+    # Scanned and emitted without Python: the host reads the same names.
+    mktempdir() do dir
+        mkpath(joinpath(dir, "src"))
+        write(joinpath(dir, "Cargo.toml"), """
+            [package]
+            name = "pyo3_host_kwargs"
+            version = "0.1.0"
+            edition = "2021"
+
+            [lib]
+            crate-type = ["cdylib"]
+
+            [dependencies]
+            pyo3 = { version = "0.29", default-features = false, features = ["macros"] }
+            """)
+        write(joinpath(dir, "src", "lib.rs"), """
+            use pyo3::prelude::*;
+            #[pyfunction]
+            fn both(end: i32, end_: i32, r#for: i32) -> i32 { end + end_ + r#for }
+            #[pymodule]
+            fn pyo3_host_kwargs(m: &Bound<'_, PyModule>) -> PyResult<()> {
+                m.add_function(wrap_pyfunction!(both, m)?)?;
+                Ok(())
+            }
+            """)
+        info = RustCall.scan_crate(dir)
+        f = only(filter(f -> f.name == "both", info.pyo3_functions))
+        @test f.arg_names == ["end__", "end_", "for_"]
+        text = string(Base.remove_linenums!(Expr(:block,
+            RustCall._pyo3_host_function_expr(f, Dict{String, Symbol}())...)))
+        @test occursin("function both(end__::", text)
+        @test !occursin("var\"end\"", text) && !occursin("r#", text)
+    end
+end
