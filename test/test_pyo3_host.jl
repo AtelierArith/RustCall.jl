@@ -256,6 +256,30 @@ end
         @test err isa ErrorException
         msg = err === nothing ? "" : sprint(showerror, err)
         @test occursin("`for_`", msg) && occursin("r#for", msg) && occursin("#514", msg)
+
+        # Two `#[pyclass]`es one Julia type name would bind (PR #515 review).
+        write(joinpath(dir, "src", "lib.rs"), """
+            use pyo3::prelude::*;
+            #[pyclass]
+            pub struct r#for { pub x: i32 }
+            #[pyclass]
+            pub struct for_ { pub y: i32 }
+            #[pymodule]
+            fn pyo3_host_clash(m: &Bound<'_, PyModule>) -> PyResult<()> {
+                m.add_class::<r#for>()?;
+                m.add_class::<for_>()?;
+                Ok(())
+            }
+            """)
+        err = try
+            RustCall.generate_pyo3_host_bindings(dir)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ErrorException
+        msg = err === nothing ? "" : sprint(showerror, err)
+        @test occursin("struct `r#for`", msg) && occursin("struct `for_`", msg)
     end
 end
 

@@ -227,6 +227,21 @@ end
     # The inline flavour runs the same check over a block's items.
     @test_throws ErrorException RustCall._check_julia_name_clashes(
         [sig("r#for"), sig("for_")], none, "the block")
+    # Struct types, which the inline and PyO3-host callers check only here
+    # (PR #515 review): `struct r#for` beside `struct for_`, and a renamed type
+    # beside a free function of its Julia name, either way round.
+    nofns = RustCall.RustFunctionSignature[]
+    m = msg(() -> RustCall._check_julia_name_clashes(
+        nofns, [strct("r#for", RustCall.RustMethod[]), strct("for_", RustCall.RustMethod[])],
+        "the block"))
+    @test occursin("`for_`", m) && occursin("struct `r#for`", m) && occursin("struct `for_`", m)
+    @test_throws ErrorException RustCall._check_julia_name_clashes(
+        [sig("while_")], [strct("r#while", RustCall.RustMethod[])], "the block")
+    @test_throws ErrorException RustCall._check_julia_name_clashes(
+        [sig("r#while")], [strct("while_", RustCall.RustMethod[])], "the block")
+    # A plain `fn C` beside `struct C` is not this rule's to refuse.
+    @test RustCall._check_julia_name_clashes(
+        [sig("C")], [strct("C", RustCall.RustMethod[])], "the block") === nothing
 end
 
 @testset "rust\"\"\" binds keyword-named items (#514)" begin
@@ -311,6 +326,23 @@ end
         end
         @test err isa ErrorException
         @test occursin("`for_`", sprint(showerror, err))
+
+        # ... and so are two struct types one Julia name would bind.
+        types = Module(:KwInlineTypeClash)
+        Core.eval(types, :(using RustCall))
+        err = try
+            Core.eval(types, Meta.parse("""rust\"\"\"
+                #[julia]
+                pub struct r#for { pub x: i32 }
+                #[julia]
+                pub struct for_ { pub y: i32 }
+                \"\"\""""))
+            nothing
+        catch e
+            e isa LoadError ? e.error : e
+        end
+        @test err isa ErrorException
+        @test occursin("struct `r#for`", sprint(showerror, err))
     end
 end
 

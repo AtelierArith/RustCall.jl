@@ -116,7 +116,8 @@ meeting the name it is renamed to — `fn r#for` beside `fn for_`, a method
 field `let_`. The later definition would silently replace the earlier (or add
 a method to it), so the layout is refused with both items named. Items are
 compared within the scope Julia binds them in: free functions of the module,
-methods of one struct, fields of one struct. Two entries for one Rust item
+methods of one struct, fields of one struct, and the struct types of the module
+(with a free function when either name was renamed). Two entries for one Rust item
 (`#[cfg]` variants) are one item. Struct types and submodules are checked
 against every other name of the module by `_check_module_names`.
 
@@ -143,10 +144,28 @@ function _check_julia_name_clashes(functions, structs, where_::AbstractString;
         return nothing
     end
     bound_functions = Dict{String, String}()
+    renamed_functions = Set{String}()
     for f in functions
         binds_function(f) || continue  # no binding, no name (#491)
-        claim!(bound_functions, julia_function_name(f),
-               "the function `$(qualified_name(f.module_path, f.name))`")
+        name = julia_function_name(f)
+        claim!(bound_functions, name, "the function `$(qualified_name(f.module_path, f.name))`")
+        name == f.name || push!(renamed_functions, name)
+    end
+    # Struct types share one namespace: `struct r#for` beside `struct for_`
+    # would define the type `for_` twice (PR #515 review). A type also meets a
+    # free function of its Julia name; when either was renamed, that meeting
+    # is this rule's doing and is refused here. (A plain `fn C` beside
+    # `struct C` is the older layout question `_check_module_names` answers
+    # for a crate.)
+    bound_types = Dict{String, String}()
+    for s in structs
+        binds_struct(s) || continue
+        name = julia_struct_name(s)
+        what = "the struct `$(qualified_name(s.module_path, s.name))`"
+        claim!(bound_types, name, what)
+        if haskey(bound_functions, name) && (name != s.name || name in renamed_functions)
+            claim!(Dict(name => bound_functions[name]), name, what)
+        end
     end
     for s in structs
         binds_struct(s) || continue  # no type, no name (#503)
