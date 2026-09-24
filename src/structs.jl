@@ -1530,20 +1530,49 @@ restored and found under whatever name it now has — and the member is read
 from that library's own rows, `GENERIC_FUNCTIONS_BY_LIB[(owner, name)]`.
 This is not name resolution: another block of the module exporting an
 ordinary function of the same name (`#[no_mangle] fn Boxed_new`), or another
-module's struct of the same name, has no say in it. Only when the owner has no
-row (a registration made without a block) is the bare-name registration read,
-which is also all a call without `caller` or `block` has.
+module's struct of the same name, has no say in it.
+
+The bare-name registration is read **only when no owner is known**: a call
+without `caller` or `block`, or a module that records no such block. Once the
+owner is known its row is the only answer. A row can vanish between finding
+the owner and reading it — another task unloaded the library, dropping its
+rows — so the lookup is retried, each attempt restoring the module's blocks
+again; if the row is still missing, this raises a `RustError` rather than
+reading the bare name, which may be another module's same-named struct with
+another layout (PR #523 review).
 """
 function _generic_struct_member(caller::Union{Module, Nothing}, name::AbstractString;
                                 block::Union{Nothing, RustBlockSnapshot} = nothing)
     key = String(name)  # converted before STATE is taken
-    owner = (caller === nothing || block === nothing) ? nothing :
-            _generic_struct_owner(caller, block)
-    return lock(REGISTRY_LOCK) do
-        row = owner === nothing ? nothing : get(GENERIC_FUNCTIONS_BY_LIB, (owner, key), nothing)
-        row === nothing ? get(GENERIC_FUNCTION_REGISTRY, key, nothing) : row
+    if caller === nothing || block === nothing
+        return lock(REGISTRY_LOCK) do
+            get(GENERIC_FUNCTION_REGISTRY, key, nothing)
+        end
     end
+    owner = nothing
+    for _ in 1:_GENERIC_OWNER_ATTEMPTS
+        owner = _generic_struct_owner(caller, block)
+        if owner === nothing
+            # The module records no such block: nothing owns the name here.
+            return lock(REGISTRY_LOCK) do
+                get(GENERIC_FUNCTION_REGISTRY, key, nothing)
+            end
+        end
+        row = lock(REGISTRY_LOCK) do
+            get(GENERIC_FUNCTIONS_BY_LIB, (owner, key), nothing)
+        end
+        row === nothing || return row
+        yield()
+    end
+    throw(RustError("the generic struct member '$key' of library '$owner' is not " *
+                    "registered: its defining block's library was unloaded or replaced " *
+                    "while it was being looked up, and restoring it did not register it again"))
 end
+
+# How many times `_generic_struct_member` restores the defining block when the
+# owner's row is missing before it gives up. A row goes missing only while an
+# unload races the lookup; the restore that follows registers it again.
+const _GENERIC_OWNER_ATTEMPTS = 3
 
 """
     _generic_struct_owner(mod, block) -> Union{String, Nothing}

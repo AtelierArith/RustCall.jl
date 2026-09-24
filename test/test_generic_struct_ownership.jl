@@ -220,4 +220,38 @@ _own_row(lib, member) = RustCall.GENERIC_FUNCTIONS_BY_LIB[(lib, member)]
             finalize(z)
         end
     end
+
+    # A known owner whose row is gone — what an unload racing the lookup
+    # leaves — is an error, never the bare name: that is another module's
+    # struct of the same name, here B's, with another layout (PR #523 review).
+    @testset "a known owner's missing row is not answered by the bare name" begin
+        e = _own_module(:GenericOwnerE)
+        lib_e = _own_block(e, _boxed_source(5))
+        f = _own_module(:GenericOwnerF)
+        lib_f = _own_block(f, _boxed_source(6; pad = true))  # the bare name is now F's
+        @test RustCall.GENERIC_FUNCTION_REGISTRY["Boxed_new"].owner == lib_f
+        x = _boxed(e, Int32, 1)
+        @test _tag(e, x) == 5
+        finalize(x)
+        row = _own_row(lib_e, "Boxed_new")
+        # The library stays loaded, so restoring the block does not register
+        # the row again: every attempt finds the owner and no row.
+        delete!(RustCall.GENERIC_FUNCTIONS_BY_LIB, (lib_e, "Boxed_new"))
+        try
+            err = try
+                _boxed(e, Int32, 2)
+                nothing
+            catch caught
+                caught
+            end
+            @test err isa RustCall.RustError
+            @test occursin("Boxed_new", sprint(showerror, err))
+            @test occursin(lib_e, sprint(showerror, err))
+        finally
+            RustCall.GENERIC_FUNCTIONS_BY_LIB[(lib_e, "Boxed_new")] = row
+        end
+        y = _boxed(e, Int32, 3)
+        @test _tag(e, y) == 5
+        finalize(y)
+    end
 end
