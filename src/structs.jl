@@ -396,6 +396,7 @@ function _static_method_collisions(functions, structs)
         counts[func.name] = get(counts, func.name, 0) + 1
     end
     for s in structs, m in s.methods
+        _binds_julia_struct(s) || continue  # no type, no methods (#503)
         (m.is_static && !m.is_constructor && isempty(m.skip_reason)) || continue
         counts[m.name] = get(counts, m.name, 0) + 1
     end
@@ -415,6 +416,13 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
     # This is set when #[julia] attribute is used (transformed to #[derive(JuliaStruct)])
     if !info.has_derive_julia_struct
         return :()  # Return empty expression - no Julia wrapper generated
+    end
+    # A struct the Rust codegen refuses (a generic crate struct, #462) gets no
+    # Julia type; the report names it at its entry point (#503).
+    if !_binds_julia_struct(info)
+        _boundary_item!(_boundary_label(info))
+        _rust_refused_item!(info.skip_reason, info.name)
+        return :()
     end
 
     struct_name_str = info.name

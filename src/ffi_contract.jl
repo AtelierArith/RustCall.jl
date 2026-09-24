@@ -1241,21 +1241,47 @@ function _boundary_refuse(position::AbstractString, rust_type::AbstractString,
 end
 
 """
+    RUST_CODEGEN_REFUSALS
+
+Every `skip_reason` kind with which the Rust codegen refuses a `#[julia]` item
+outright — a `compile_error!` at the item — mapped to how the boundary report
+spells the refused item (`"unsafe fn danger"`). The kinds are
+`rustcall_julia_core::manifest::skip_reason::CODEGEN_REFUSALS`, decided in one
+place on the Rust side (`rustcall_julia_core::refusal`, #503);
+`test/test_boundary_report.jl` checks that the extractor produces each of them
+and that the report lists it.
+"""
+const RUST_CODEGEN_REFUSALS = Base.ImmutableDict(Base.ImmutableDict{String, String}(),
+    "unsafe_fn" => "unsafe fn",                      # #491
+    "generic_signature" => "generic",                # #462, #471, #477
+    "impl_trait" => "impl Trait in",                 # #462, #471
+    "non_ffi_payload" => "non-FFI payload of",       # #159
+    "self_trait_path" => "trait-path `Self::` in",   # #482
+    "unspellable_self" => "unspellable `Self` in",   # #482
+    "lowered_str_borrow" => "borrowed `&str` return of", # #484
+    "lowered_str_lifetime" => "`&str` lifetime of",  # #482
+)
+
+"""
     _rust_refuses(skip_reason) -> Bool
 
 Whether a manifest `skip_reason` says the Rust codegen refuses the item
-outright (#491: `"unsafe_fn"`), so it gets no Julia binding. Pure: the
-recording form is `_rust_refused_item!`.
+outright (a kind of `RUST_CODEGEN_REFUSALS`: an `unsafe fn`, a generic or
+`impl Trait` signature the flavour cannot bind, a payload or a `Self` or a
+lowered `&str` the wrapper cannot express — #491, #503), so it gets no Julia
+binding. Pure: the recording form is `_rust_refused_item!`.
 """
-_rust_refuses(skip_reason::AbstractString) = partition_skip_reason(skip_reason)[1] == "unsafe_fn"
+_rust_refuses(skip_reason::AbstractString) =
+    haskey(RUST_CODEGEN_REFUSALS, partition_skip_reason(skip_reason)[1])
 
 """
     _rust_refused_item!(skip_reason, name) -> Bool
 
 Whether the Rust codegen refuses the current item outright, as the manifest's
-`skip_reason` says — today a `#[julia]` function or method that is an
-`unsafe fn` (`"unsafe_fn"`, #491). A wrapper generator asks at its entry
-point, after `_boundary_item!`, and emits no wrapper for such an item.
+`skip_reason` says (`_rust_refuses`) — a `#[julia]` function, method or struct
+the codegen refuses with a `compile_error!` (#491, #503). A wrapper generator
+asks at its entry point, after `_boundary_item!`, and emits no wrapper for such
+an item.
 
 In collecting mode the refusal is a finding, recorded through
 `_boundary_refuse` at the item's `"entry point"`; the item's argument and
@@ -1267,8 +1293,9 @@ leniently, and raising would refuse a build that configures the item away.
 function _rust_refused_item!(skip_reason::AbstractString, name::AbstractString)
     _rust_refuses(skip_reason) || return false
     _boundary_collecting() &&
-        _boundary_refuse("entry point", "unsafe fn $(name)", "",
-                         pyo3_skip_explanation(skip_reason))
+        _boundary_refuse("entry point",
+                         "$(RUST_CODEGEN_REFUSALS[partition_skip_reason(skip_reason)[1]]) $(name)",
+                         "", pyo3_skip_explanation(skip_reason))
     return true
 end
 

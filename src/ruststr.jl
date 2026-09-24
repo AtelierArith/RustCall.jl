@@ -424,7 +424,9 @@ macro rust_str(code)
     for info in struct_infos
         (info.has_derive_julia_struct && isempty(info.type_params)) || continue
         for m in info.methods
-            m.is_static && push!(block_symbols, method_wrapper_symbol(info.ffi_name, m))
+            # A method the Rust codegen refuses has no wrapper (#491, #503).
+            (m.is_static && !_rust_refuses(m.skip_reason)) || continue
+            push!(block_symbols, method_wrapper_symbol(info.ffi_name, m))
         end
     end
 

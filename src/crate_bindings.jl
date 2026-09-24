@@ -1922,6 +1922,7 @@ function _check_module_names(tree::ModuleNode)
         get!(taken, f.name, "the function `$(qualified_name(f.module_path, f.name))`")
     end
     for s in tree.structs
+        _binds_julia_struct(s) || continue  # no type, no name (#503)
         owner = qualified_name(s.module_path, s.name)
         for m in s.methods
             (isempty(m.skip_reason) && !m.is_constructor) || continue
@@ -1940,6 +1941,7 @@ function _check_module_names(tree::ModuleNode)
     end
     later_struct(name, i) = get(struct_position, name, typemax(Int)) > i
     for (i, s) in enumerate(tree.structs)
+        _binds_julia_struct(s) || continue  # no type, no name (#503)
         owner = qualified_name(s.module_path, s.name)
         for m in s.methods
             (isempty(m.skip_reason) && !m.is_constructor) || continue
@@ -1960,6 +1962,7 @@ function _check_module_names(tree::ModuleNode)
     # by `mutable struct C` is a constant redefinition (#300 review). Two
     # methods of one name on different structs are fine — that is dispatch.
     for s in tree.structs
+        _binds_julia_struct(s) || continue  # no type, no name (#503)
         owner = qualified_name(s.module_path, s.name)
         if haskey(taken, s.name)
             error("cannot lay out the bindings of $where_: the struct `$owner` and " *
@@ -2536,6 +2539,13 @@ _static_method_collisions(info::CrateInfo) =
 
 function _generate_crate_struct_wrapper(info::RustStructInfo;
                                         colliding::Set{String} = Set{String}())
+    # A struct the Rust codegen refuses (a generic crate struct, #462) gets no
+    # Julia type; the report names it at its entry point (#503).
+    if !_binds_julia_struct(info)
+        _boundary_item!(_boundary_label(info))
+        _rust_refused_item!(info.skip_reason, info.name)
+        return Expr(:block)
+    end
     struct_name = Symbol(info.name)
     struct_name_str = info.name
     release_alive = _python_owned_handle(info) ? :(Ref(true)) : :alive
@@ -5147,6 +5157,13 @@ Generate Julia code for a struct wrapper as a string.
 """
 function _emit_struct_code(info::RustStructInfo; strict::Symbol = FFI_STRICT[],
                            colliding::Set{String} = Set{String}())
+    # A struct the Rust codegen refuses (a generic crate struct, #462) gets no
+    # Julia type; the report names it at its entry point (#503).
+    if !_binds_julia_struct(info)
+        _boundary_item!(_boundary_label(info))
+        _rust_refused_item!(info.skip_reason, info.name)
+        return ""
+    end
     struct_name = info.name
     release_alive = _python_owned_handle(info) ? "Ref(true)" : "alive"
     free_symbol = ffi_struct_free_symbol(info.ffi_name)
