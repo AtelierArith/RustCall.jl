@@ -131,6 +131,69 @@ _ro_block(m::Module, rust::AbstractString) =
         @test _ro_eval(c, :(@rust ro520_fallback_fn(Int32(4)))) === Int32(12)
     end
 
+    @testset "one block defining a generic and a function of one @rust name is refused" begin
+        # A generic binds no Julia wrapper, so the one-namespace check of #514
+        # did not see it: `fn r#for<T>` beside `fn for_` loaded, both were
+        # published under `for_`, and `@rust for_(...)` silently reached the
+        # generic. Every name the `@rust` registries publish is checked now
+        # (`r#try` / `try_` here: a name no other testset defines),
+        # in either order, and against a hand-written export too (PR #521
+        # review).
+        blocks = (
+            "generic first" => """
+                #[julia]
+                pub fn r#try<T: Copy>(x: T) -> T { x }
+                #[julia]
+                pub fn try_(x: i32) -> i32 { x + 100 }
+                """,
+            "function first" => """
+                #[julia]
+                pub fn try_(x: i32) -> i32 { x + 100 }
+                #[julia]
+                pub fn r#try<T: Copy>(x: T) -> T { x }
+                """,
+            "hand-written export" => """
+                #[julia]
+                pub fn r#try<T: Copy>(x: T) -> T { x }
+                #[no_mangle]
+                pub extern "C" fn try_(x: i32) -> i32 { x + 100 }
+                """,
+        )
+        for (i, (label, rust)) in enumerate(blocks)
+            @testset "$label" begin
+                m = _ro_module(Symbol("ResolutionOrderClash", i))
+                err = try
+                    _ro_block(m, rust)
+                    nothing
+                catch e
+                    e isa LoadError ? e.error : e
+                end
+                @test err isa ErrorException
+                msg = err === nothing ? "" : sprint(showerror, err)
+                @test occursin("`try_`", msg)
+                @test occursin("r#try", msg)
+                # Refused before anything is published: the module has no
+                # block, and no other block defines `try_`, so neither form of
+                # `@rust try_` reaches anything.
+                @test !isdefined(m, :__RUSTCALL_LIBS) ||
+                      isempty(RustCall._module_block_libraries(m))
+                @test_throws Exception _ro_eval(m, :(@rust try_(Int32(1))::Int32))
+                @test_throws Exception _ro_eval(m, :(@rust try_(Int32(1))))
+            end
+        end
+        # The check reads the same predicate as the publishers: a refused
+        # generic publishes nothing and claims no name.
+        sig(name; generic = false, skip = "") = RustCall.RustFunctionSignature(
+            name, String["x"], String[generic ? "T" : "i32"], generic ? "T" : "i32",
+            generic, generic ? String["T"] : String[]; skip_reason = skip,
+            symbol = generic ? "" : "rustcall_" * name, exported = !generic)
+        check(fs) = RustCall._check_julia_name_clashes(fs, RustCall.RustStructInfo[],
+                                                       "the block"; registry = fs)
+        @test_throws ErrorException check([sig("r#for"; generic = true), sig("for_")])
+        @test check([sig("r#for"; generic = true, skip = "unsafe_fn"), sig("for_")]) === nothing
+        @test check([sig("r#for"; generic = true)]) === nothing
+    end
+
     @testset "a later block of one module redefines a name, whatever its kind" begin
         m = _ro_module(:ResolutionOrderLater)
         _ro_block(m, """
