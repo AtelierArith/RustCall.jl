@@ -14,6 +14,19 @@ Modules = [RustCall]
 Pages = [joinpath("src", "artifact_id.jl")]
 ```
 
+## Short names owned by the full key (`src/short_name.jl`)
+
+Where Windows' path limit makes a short id a location — a crate's Cargo target
+directory, the PyO3 wrapper's Cargo package, the PyO3 host extension's cache
+directory, a debug build's files — the name is spelled and owned here: a
+persistent name is claimed for good by the full key, and a build holds the
+name's lock from build start through copy-out (#504).
+
+```@autodocs
+Modules = [RustCall]
+Pages = [joinpath("src", "short_name.jl")]
+```
+
 ## Cache (`src/cache.jl`)
 
 ```@autodocs

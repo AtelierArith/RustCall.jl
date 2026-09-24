@@ -7,7 +7,8 @@
 # monomorphization key that lost parameter order), #252 (a `rustc` in the key
 # that is not the `rustc` that compiles) and the repeated Cargo cache patches.
 #
-# Three rules, all scoped to `src/` and all allowlisting only `src/artifact_id.jl`:
+# Four rules, all scoped to `src/`; the first three allowlist only
+# `src/artifact_id.jl`, the fourth also `src/short_name.jl`:
 #
 #   1. No hand-rolled digest of concatenated key material
 #      (`sha256("$(a)_$(b)")`). Concatenation is not injective; the netstring
@@ -17,6 +18,20 @@
 #   3. No session-randomized `hash()` for an identifier. Julia's `hash` is
 #      randomized per process, so a name derived from it can never be matched
 #      again — see the rule at the top of src/cache.jl.
+#   4. No short id naming a path or a Cargo package outside `src/short_name.jl`
+#      (#504). A short id that is a location must be owned by the full key it
+#      came from (a claim record, and a lock from build start through
+#      copy-out), and `short_name` / `short_name_path` / `with_short_name` /
+#      `with_owned_short_name` are where that happens. Any other
+#      `artifact_short_id(` call must carry one of two markers on its line:
+#        `# short-id: label` — a name that is never a location: an in-process
+#          registry name (`RUST_LIBRARIES`), a Rust symbol inside its own
+#          library, a Cargo package in a fresh private project, a log field;
+#        `# short-id: lease` — a token that is not derived from an artifact key
+#          and whose path is owned by a lease of its own (the host / instance
+#          tags of a generation copy, src/loadpolicy.jl).
+#      A marked line may not itself build a path (`joinpath`, `mkpath`,
+#      `mktempdir`, `CargoProject`, `CARGO_TARGET_DIR`).
 #
 # Usage: bash scripts/lint_artifact_identity.sh [src]
 
@@ -70,8 +85,29 @@ if [[ -n "$hits" ]]; then
            "$hits"
 fi
 
+# Rule 4: a short id outside the ownership helper, unless marked as a label or
+# a lease-owned token — and a marked line may not build a path itself.
+short_allow='(^|/)(artifact_id|short_name)\.jl:'
+hits=$(grep -rnE --include='*.jl' 'artifact_short_id\(' "$dir" \
+       | grep -viE '^[^:]*:[0-9]+: *#' \
+       | grep -vE "$short_allow" \
+       | grep -vE '# short-id: (label|lease)' || true)
+if [[ -n "$hits" ]]; then
+    report "A short id may name a path or a Cargo package only through src/short_name.jl (issue #504)." \
+           "Use short_name / short_name_path with claim_short_name! / with_short_name / with_owned_short_name, or mark a pure label with '# short-id: label'." \
+           "$hits"
+fi
+hits=$(grep -rnE --include='*.jl' 'artifact_short_id\(.*# short-id: (label|lease)' "$dir" \
+       | grep -vE "$short_allow" \
+       | grep -E 'joinpath|mkpath|mktempdir|CargoProject|CARGO_TARGET_DIR' || true)
+if [[ -n "$hits" ]]; then
+    report "A line marked '# short-id: label' / 'lease' builds a path (issue #504)." \
+           "A short id that is a location goes through src/short_name.jl, which owns it by the full key." \
+           "$hits"
+fi
+
 if [[ $status -ne 0 ]]; then
     exit 1
 fi
 
-echo "OK: artifact identity goes through src/artifact_id.jl in $dir"
+echo "OK: artifact identity goes through src/artifact_id.jl, short names through src/short_name.jl, in $dir"

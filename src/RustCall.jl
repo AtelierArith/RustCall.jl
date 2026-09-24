@@ -288,6 +288,9 @@ include("memory.jl")
 # Phase 3: External library integration
 include("dependencies.jl")
 include("dependency_resolution.jl")
+# Short on-disk names for full artifact keys, owned by the full key (#504).
+# Before the Cargo files, whose constants name its owner record.
+include("short_name.jl")
 include("cargoproject.jl")
 include("cargobuild.jl")
 

@@ -624,7 +624,8 @@ end
 function _wrapper_probe_env(base_env::AbstractDict, path::AbstractString, release::Bool,
                            interpreter::AbstractString)
     env = _cargo_panic_env(crate_wrapper_policy(), Dict{String, String}(base_env), release)
-    env["CARGO_TARGET_DIR"] = crate_target_directory(path, :pyo3_wrapper)
+    # Claimed for the crate's full key before Cargo writes there (#504).
+    env["CARGO_TARGET_DIR"] = _crate_target!(path, :pyo3_wrapper)
     isempty(interpreter) || (env["PYO3_PYTHON"] = String(interpreter))
     return env
 end
@@ -1533,11 +1534,11 @@ function build_pyo3_wrapper(info::CrateInfo;
     key = compute_crate_hash(info; release = release, kind = "pyo3-wrapper",
                              features = features, default_features = default_features,
                              build_env = build_env, snapshot = snapshot)
-    lib_name = "rust_crate_$(info.name)_$(artifact_short_id(key))"
+    lib_name = _crate_library_label(info, key)
 
     cached = cache_enabled ? get_cargo_cached_library(key) : nothing
     lib_path = if cached !== nothing && isfile(cached)
-        @debug "Using cached PyO3 wrapper library" key=artifact_short_id(key, 8)
+        @debug "Using cached PyO3 wrapper library" key=artifact_short_id(key, 8) # short-id: label
         cached
     else
         _build_pyo3_wrapper_project(snapshot, info, plan, source, rustflags, release, key,
@@ -1814,71 +1815,66 @@ function _build_pyo3_wrapper_project(snapshot::BuildEnvSnapshot, info::CrateInfo
     # directory, so the wrapper resolves as the crate does (`_with_shaped_project`), and
     # with a lease the sweep in another process can see (#425).
     return _with_shaped_project(info.path, "rustcall-pyo3-wrapper") do wrapper_path
-        # Dependency outputs are shared with the probe. Distinct wrapper
-        # artifacts must not overwrite one shared cdylib between Cargo exiting
-        # and our copy.
-        # Named by the key's short id, not the full key: Cargo nests
+        # Named by a short name of the key, not the full key: Cargo nests
         # `build/<package>-<hash>/build_script_build-<hash>.exe` under the
         # target directory, and a 64-hex package name put that past Windows'
-        # 260-character path limit (#486). The name only keeps two concurrent
-        # wrapper builds from writing one output file; the library is copied
-        # out under the full key.
-        wrapper_name = "rustcall_wrapper_$(artifact_short_id(key))"
-        project = CargoProject(wrapper_name, "0.1.0", DependencySpec[],
-                               "2021", wrapper_path)
-        # The cleanup scope opens here, at the directory that already exists,
-        # not at the build. Writing the manifest can *refuse* — a pyo3 older
-        # than the dispatcher needs, or one from a registry the alias cannot
-        # name — and those are expected outcomes, not crashes. Entering the
-        # `try` only at `build_cargo_project` left a project tree behind for
-        # every refused attempt, for the life of the process (#392 review).
-        try
-            # The same choice `wrap_crate` was given, from the same function:
-            # the dependency table has to be keyed on the identifier the
-            # generated `lib.rs` names the crate by, or the two disagree about
-            # what `use <crate>::*` means.
-            target_identifier, target_renamed =
-                wrapper_target_identifier(info.name,
-                                          parse_cargo_toml(joinpath(info.path, "Cargo.toml")))
-            write(joinpath(wrapper_path, "Cargo.toml"),
-                  generate_pyo3_wrapper_cargo_toml(
-                      info, plan; wrapper_name = wrapper_name,
-                      python_dispatch = source.uses_python_dispatch,
-                      target_identifier = target_identifier, target_renamed = target_renamed,
-                      pyo3_dependency = _resolved_pyo3_dependency(snapshot, info.path, plan)) *
-                  _root_patch_toml(info.path))
-            write(joinpath(wrapper_path, "src", "lib.rs"), source.lib_rs)
+        # 260-character path limit (#486). Dependency outputs are shared with
+        # the probe, so two builds whose full keys share the short id name one
+        # package and write one `<profile>/librustcall_wrapper_<short>.*`.
+        # Cargo's own lock ends when Cargo exits, before the file is copied
+        # out, so the name is held under its lock from before the build until
+        # the copy (`with_short_name`, #495 review, #504): the copy is always
+        # of this build's output, and the library is kept under the full key.
+        target = _crate_target!(info.path, :pyo3_wrapper)
+        return with_short_name(target, key; prefix = "rustcall_wrapper_") do wrapper_name
+            project = CargoProject(wrapper_name, "0.1.0", DependencySpec[],
+                                   "2021", wrapper_path)
+            # The cleanup scope opens here, at the directory that already exists,
+            # not at the build. Writing the manifest can *refuse* — a pyo3 older
+            # than the dispatcher needs, or one from a registry the alias cannot
+            # name — and those are expected outcomes, not crashes. Entering the
+            # `try` only at `build_cargo_project` left a project tree behind for
+            # every refused attempt, for the life of the process (#392 review).
+            try
+                # The same choice `wrap_crate` was given, from the same function:
+                # the dependency table has to be keyed on the identifier the
+                # generated `lib.rs` names the crate by, or the two disagree about
+                # what `use <crate>::*` means.
+                target_identifier, target_renamed =
+                    wrapper_target_identifier(info.name,
+                                              parse_cargo_toml(joinpath(info.path, "Cargo.toml")))
+                write(joinpath(wrapper_path, "Cargo.toml"),
+                      generate_pyo3_wrapper_cargo_toml(
+                          info, plan; wrapper_name = wrapper_name,
+                          python_dispatch = source.uses_python_dispatch,
+                          target_identifier = target_identifier, target_renamed = target_renamed,
+                          pyo3_dependency = _resolved_pyo3_dependency(snapshot, info.path, plan)) *
+                      _root_patch_toml(info.path))
+                write(joinpath(wrapper_path, "src", "lib.rs"), source.lib_rs)
 
-            # The link options travel in the wrapper's own build script, not in
-            # `RUSTFLAGS`: an environment `RUSTFLAGS` replaces the crate's
-            # `[build] rustflags` from config, and is itself ignored whenever
-            # `CARGO_ENCODED_RUSTFLAGS` is set — either way the flags reach the
-            # wrong place or none. `cargo:rustc-link-search` /
-            # `cargo:rustc-link-arg` from `build.rs` apply to exactly this
-            # cdylib's link step and to nothing else (#307 review). `rustflags`
-            # stays the identity input it always was.
-            script = _pyo3_wrapper_build_script(plan)
-            isempty(script) || write(joinpath(wrapper_path, "build.rs"), script)
+                # The link options travel in the wrapper's own build script, not in
+                # `RUSTFLAGS`: an environment `RUSTFLAGS` replaces the crate's
+                # `[build] rustflags` from config, and is itself ignored whenever
+                # `CARGO_ENCODED_RUSTFLAGS` is set — either way the flags reach the
+                # wrong place or none. `cargo:rustc-link-search` /
+                # `cargo:rustc-link-arg` from `build.rs` apply to exactly this
+                # cdylib's link step and to nothing else (#307 review). `rustflags`
+                # stays the identity input it always was.
+                script = _pyo3_wrapper_build_script(plan)
+                isempty(script) || write(joinpath(wrapper_path, "build.rs"), script)
 
-            # The build's snapshot, not the process's `ENV` now: the key above
-            # was computed from it, and the caller records it (#481).
-            env = snapshot_env(snapshot)
-            # Only where pyo3 is actually in the graph: a `:python_free` build
-            # has no pyo3 build script to configure, and pinning an interpreter
-            # it will never consult would misdescribe the build. The interpreter
-            # is the plan's — it honours a caller's own `PYO3_PYTHON`, was chosen
-            # next to `plan.rpath`, and is already in the artifact key
-            # (`_pyo3_wrapper_build_env`).
-            if plan.mode === :link_libpython && !isempty(plan.interpreter)
-                env["PYO3_PYTHON"] = plan.interpreter
-            end
-            target = _crate_target!(info.path, :pyo3_wrapper)
-            # Two builds whose full keys share the short id name one package
-            # and write one `<profile>/librustcall_wrapper_<short>.*`. Cargo's
-            # own lock ends when Cargo exits, before the file is copied out, so
-            # the build, the check and the copy hold one lock of that name
-            # together: the copy is always of this build's output (#495 review).
-            return _with_wrapper_output_lock(joinpath(target, wrapper_name * ".lock")) do
+                # The build's snapshot, not the process's `ENV` now: the key above
+                # was computed from it, and the caller records it (#481).
+                env = snapshot_env(snapshot)
+                # Only where pyo3 is actually in the graph: a `:python_free` build
+                # has no pyo3 build script to configure, and pinning an interpreter
+                # it will never consult would misdescribe the build. The interpreter
+                # is the plan's — it honours a caller's own `PYO3_PYTHON`, was chosen
+                # next to `plan.rpath`, and is already in the artifact key
+                # (`_pyo3_wrapper_build_env`).
+                if plan.mode === :link_libpython && !isempty(plan.interpreter)
+                    env["PYO3_PYTHON"] = plan.interpreter
+                end
                 built = build_cargo_project(project; release = release, env = env,
                                             policy = crate_wrapper_policy(),
                                             target_directory = target,
@@ -1904,36 +1900,10 @@ function _build_pyo3_wrapper_project(snapshot::BuildEnvSnapshot, info::CrateInfo
                 # reach — and that outlives this process, since the module that
                 # records the path may be loaded by a later one (#339 review).
                 return _uncached_library_home(built)
+            finally
+                cleanup_cargo_project(project)
             end
-        finally
-            cleanup_cargo_project(project)
         end
-    end
-end
-
-"""
-    _with_wrapper_output_lock(f, lock_path; poll = 0.05)
-
-Run `f()` holding an exclusive lock on `lock_path`, waiting for it while
-another holder has it — another process, or another task of this one (the lock
-belongs to the open file description, `_try_lock_lease`). A PyO3 wrapper build
-holds it from the Cargo build until its output is copied out, keyed by the
-output's name, so two builds that write the same file take turns (#495
-review). The lock is released when the file is closed, and a holder that dies
-releases it with the process; the file itself is left in place, since removing
-it would let a waiter lock a file a newcomer no longer opens. Where the file
-system has no locking at all, `f` runs unlocked.
-"""
-function _with_wrapper_output_lock(f::Function, lock_path::AbstractString; poll::Real = 0.05)
-    mkpath(dirname(String(lock_path)))
-    io = open(String(lock_path), "a")
-    try
-        while _try_lock_lease(io) === false
-            sleep(poll)
-        end
-        return f()
-    finally
-        close(io)
     end
 end
 
