@@ -254,4 +254,107 @@ _own_row(lib, member) = RustCall.GENERIC_FUNCTIONS_BY_LIB[(lib, member)]
         @test _tag(e, y) == 5
         finalize(y)
     end
+
+    # The member and its whole group are one snapshot, read in one transaction;
+    # the instantiation uses only that. So rows dropped *after* the read — an
+    # unload racing the constructor — cannot leave a constructor-only group
+    # without methods or destructor (PR #523 review).
+    @testset "the group is read with the member, once" begin
+        g = _own_module(:GenericOwnerG)
+        lib_g = _own_block(g, _boxed_source(9))
+        # Another module's `Boxed` registered last: the bare names are its, so
+        # a second read of G's group after its rows went would find only the
+        # member itself — the constructor-only group of the review.
+        h = _own_module(:GenericOwnerH)
+        lib_h = _own_block(h, _boxed_source(10; pad = true))
+        @test RustCall.GENERIC_FUNCTION_REGISTRY["Boxed_tag"].owner == lib_h
+        dropped = Pair{Tuple{String, String}, RustCall.GenericFunctionInfo}[]
+        seen = Ref{Any}(nothing)
+        hook = function (snapshot)
+            seen[] = snapshot
+            # Every sibling row of the owner goes, as an unload would take them.
+            for (key, info) in collect(RustCall.GENERIC_FUNCTIONS_BY_LIB)
+                if first(key) == lib_g && info.name != snapshot.member.name
+                    push!(dropped, key => info)
+                    delete!(RustCall.GENERIC_FUNCTIONS_BY_LIB, key)
+                end
+            end
+        end
+        x = try
+            task_local_storage(RustCall._AFTER_GENERIC_STRUCT_SNAPSHOT, hook) do
+                _boxed(g, Int64, 21)  # a cold instantiation: new source, new type
+            end
+        finally
+            for (key, info) in dropped
+                RustCall.GENERIC_FUNCTIONS_BY_LIB[key] = info
+            end
+        end
+        @test seen[] isa RustCall.GenericStructSnapshot
+        @test seen[].member.name == "Boxed_new"
+        @test Set(info.name for info in seen[].members) ⊇
+              Set(["Boxed_new", "Boxed_tag", "Boxed_twice", "Boxed_free"])
+        @test all(info -> info.owner == lib_g, seen[].members)
+        @test !isempty(dropped)
+        # The whole group was instantiated from the snapshot: methods and the
+        # destructor are in the object's own image.
+        artifact = RustCall.GENERIC_STRUCT_ARTIFACTS[(x.lib_name, getfield(x, :alive))]
+        @test all(name -> haskey(artifact, name), ("Boxed_new", "Boxed_tag", "Boxed_twice", "Boxed_free"))
+        @test getfield(x, :free_ptr) == artifact["Boxed_free"].func_ptr
+        @test _tag(g, x) == 9
+        @test _twice(g, x) == 42
+        before = RustCall.finalizer_failure_count()
+        finalize(x)
+        @test RustCall.finalizer_failure_count() == before
+    end
+end
+
+# Source level: on the generic struct path, the generic registrations are read
+# in one place, in one transaction, and the instantiation reads none (#522).
+# Parsed rather than grepped, so docstrings that name the tables do not count.
+function _own_functions(path)
+    defs = Dict{Symbol, Any}()
+    walk(ex) = if ex isa Expr
+        if ex.head === :function || (ex.head === :(=) && ex.args[1] isa Expr && ex.args[1].head === :call)
+            sig = ex.args[1]
+            while sig isa Expr && sig.head in (:where, :(::))
+                sig = sig.args[1]
+            end
+            if sig isa Expr && sig.head === :call && sig.args[1] isa Symbol
+                defs[sig.args[1]] = push!(get(defs, sig.args[1], Any[]), ex)
+            end
+        end
+        foreach(walk, ex.args)
+    end
+    walk(Meta.parseall(read(path, String)))
+    return defs
+end
+_own_symbols(ex) = ex isa Symbol ? Set([ex]) :
+                   ex isa Expr ? union(Set{Symbol}(), (_own_symbols(a) for a in ex.args)...) :
+                   ex isa QuoteNode ? _own_symbols(ex.value) : Set{Symbol}()
+function _own_count_locks(ex)
+    ex isa Expr || return 0
+    here = ex.head === :call && ex.args[1] === :lock && length(ex.args) >= 2 &&
+           ex.args[2] === :REGISTRY_LOCK ? 1 : 0
+    # `lock(REGISTRY_LOCK) do ... end` is a `:do` around this very `:call`,
+    # so the call alone is counted.
+    return here + sum(_own_count_locks, ex.args; init = 0)
+end
+
+@testset "the generic struct path reads the generic registrations once (#522)" begin
+    src = joinpath(pkgdir(RustCall), "src")
+    tables = Set([:GENERIC_FUNCTIONS_BY_LIB, :GENERIC_FUNCTION_REGISTRY, :_generic_group_members])
+    structs = _own_functions(joinpath(src, "structs.jl"))
+    readers = Set(name for (name, exs) in structs
+                  if any(ex -> !isempty(intersect(_own_symbols(ex), tables)), exs))
+    # One function of structs.jl touches the generic registrations...
+    @test readers == Set([:_read_generic_struct_snapshot])
+    # ...in exactly one locked transaction.
+    reader = only(structs[:_read_generic_struct_snapshot])
+    @test _own_count_locks(reader) == 1
+    # The group instantiation reads no generic registration at all: which
+    # members it builds is decided by its caller's one read.
+    generics = _own_functions(joinpath(src, "generics.jl"))
+    body = only(generics[:_instantiate_generic_struct_group])
+    @test isempty(intersect(_own_symbols(body), tables))
+    @test !(:_generic_group_member in _own_symbols(body))
 end

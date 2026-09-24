@@ -82,7 +82,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   destructor read them from the library of the block that emitted the struct
   (found by the block's recorded content, so a reload that renames the
   library is followed) — not by `@rust` name resolution, so a later block's
-  ordinary export of a member's name does not take them either. An instantiation's cache key is unchanged (the source,
+  ordinary export of a member's name does not take them either. A member and
+  its whole group are read as one snapshot in one transaction
+  (`RustCall.GenericStructSnapshot`) and the instantiation uses only that, so
+  an unload racing a call can never leave a constructor-only group; a known
+  owner whose rows are gone is retried and then refused, never answered by
+  another module's registration of the name. An instantiation's cache key is unchanged (the source,
   the bindings, the compiler and the struct's name, never the owner), so two
   same-named structs share an instantiation only when their sources are the
   same.

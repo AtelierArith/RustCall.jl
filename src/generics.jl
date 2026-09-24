@@ -362,6 +362,33 @@ const GENERIC_FUNCTIONS_BY_LIB = _state_view(:generic_functions_by_lib,
     Dict{Tuple{String, String}, GenericFunctionInfo}())
 
 """
+    GenericStructSnapshot
+
+One generic struct member **and every member of its group**, as one locked
+read of the registries saw them (`_read_generic_struct_snapshot`, #522). An
+instantiation of the group uses only this: the members are never read again
+by name, so an unload that drops the owner's rows between the lookup and the
+instantiation cannot leave a constructor-only group (PR #523 review). `members`
+is sorted by name and includes `member`. Immutable, so it cannot be half
+updated.
+"""
+struct GenericStructSnapshot
+    member::GenericFunctionInfo
+    members::Tuple{Vararg{GenericFunctionInfo}}
+end
+
+"""
+    _generic_snapshot_member(snapshot, name) -> Union{GenericStructSnapshot, Nothing}
+
+The member `name` of the group `snapshot` holds, as a snapshot of the same
+group — no registry read.
+"""
+function _generic_snapshot_member(snapshot::GenericStructSnapshot, name::AbstractString)
+    i = findfirst(info -> info.name == name, snapshot.members)
+    return i === nothing ? nothing : GenericStructSnapshot(snapshot.members[i], snapshot.members)
+end
+
+"""
 Registry for monomorphized function instances.
 
 Keyed by `artifact_key` of the monomorphization `ArtifactId`
@@ -663,8 +690,15 @@ monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Type}) =
 monomorphize_function(info::GenericFunctionInfo, type_params::Dict{Symbol, <:Type}) =
     _monomorphize_function(info.name, type_params, info)
 
+# A generic struct member together with its whole group, read in one
+# transaction (#522): the group is instantiated from exactly these members.
+monomorphize_function(snapshot::GenericStructSnapshot, type_params::Dict{Symbol, <:Type}) =
+    _monomorphize_function(snapshot.member.name, type_params, snapshot.member;
+                           members = snapshot.members)
+
 function _monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Type},
-                                registered::Union{Nothing, GenericFunctionInfo})
+                                registered::Union{Nothing, GenericFunctionInfo};
+                                members::Union{Nothing, Tuple{Vararg{GenericFunctionInfo}}} = nothing)
     # An attempt publishes nothing when the image it resolved against was
     # released between its `load_artifact!` and its publication (#397 review):
     # two tasks racing on one instantiation both end on the winner's handle,
@@ -687,7 +721,7 @@ function _monomorphize_function(func_name::String, type_params::Dict{Symbol, <:T
     deadline = Inf
     backoff = 0.001
     while true
-        info = _monomorphize_function_once(func_name, type_params; registered)
+        info = _monomorphize_function_once(func_name, type_params; registered, members)
         info === nothing || return info
         deadline = min(deadline, time() + _MONOMORPHIZE_SETTLE_SECONDS)
         time() < deadline ||
@@ -776,7 +810,8 @@ end
 # between the restore and the load (`_batch_copy_is_current`).
 function _monomorphize_function_once(func_name::String, type_params::Dict{Symbol, <:Type};
                                      restored_override = nothing,
-                                     registered::Union{Nothing, GenericFunctionInfo} = nothing)
+                                     registered::Union{Nothing, GenericFunctionInfo} = nothing,
+                                     members::Union{Nothing, Tuple{Vararg{GenericFunctionInfo}}} = nothing)
     if registered === nothing
         registered = lock(REGISTRY_LOCK) do
             get(GENERIC_FUNCTION_REGISTRY, func_name, nothing)
@@ -784,7 +819,7 @@ function _monomorphize_function_once(func_name::String, type_params::Dict{Symbol
     end
     registered === nothing && error("Function '$func_name' is not registered as a generic function")
     registered.group === nothing ||
-        return _monomorphize_generic_struct_group(registered, func_name, type_params)
+        return _monomorphize_generic_struct_group(registered, func_name, type_params; members)
 
     begin
         # Retain the registration snapshot, but do not hold STATE while
@@ -973,11 +1008,30 @@ unchanged struct keeps its cache key, and two same-named structs share an
 instantiation only when their sources are the same.
 """
 function _monomorphize_generic_struct_group(registered::GenericFunctionInfo, func_name::String,
-                                             type_params::Dict{Symbol, <:Type})
-    group = registered.group
-    members = lock(REGISTRY_LOCK) do
-        _generic_group_members(registered)
+                                             type_params::Dict{Symbol, <:Type};
+                                             members::Union{Nothing, Tuple{Vararg{GenericFunctionInfo}}} = nothing)
+    # A snapshot's members are used as they are (#522); only a caller that
+    # holds a bare registration — the public `monomorphize_function(name, ...)`
+    # — reads its group here, once.
+    if members === nothing
+        members = lock(REGISTRY_LOCK) do
+            Tuple(_generic_group_members(registered))
+        end
     end
+    return _instantiate_generic_struct_group(registered.group, collect(members), func_name,
+                                             type_params)
+end
+
+"""
+    _instantiate_generic_struct_group(group, members, func_name, type_params)
+
+Build (or reuse) the instantiation of `members` — one owner's whole group, as
+the caller read it — and return `func_name`'s `FunctionInfo`. Reads no
+generic registration (#522): which members are in the group is decided by the
+caller's one read, never again here.
+"""
+function _instantiate_generic_struct_group(group::Symbol, members::Vector{GenericFunctionInfo},
+                                           func_name::String, type_params::Dict{Symbol, <:Type})
     begin
         isempty(members) && error("Generic struct group '$group' is not registered")
         target = findfirst(info -> info.name == func_name, members)
@@ -1788,22 +1842,7 @@ function _generic_group_members(registered::GenericFunctionInfo)
     return sort!(collect(values(found)); by = info -> info.name)
 end
 
-"""
-    _generic_group_member(registered, name) -> Union{GenericFunctionInfo, Nothing}
 
-The member `name` of the group `registered` belongs to (`_generic_group_members`),
-or, for a hand-registered generic outside any group, the bare-name registration.
-"""
-function _generic_group_member(registered::GenericFunctionInfo, name::AbstractString)
-    key = String(name)  # converted before STATE is taken
-    return lock(REGISTRY_LOCK) do
-        registered.group === nothing &&
-            return get(GENERIC_FUNCTION_REGISTRY, key, nothing)
-        members = _generic_group_members(registered)
-        i = findfirst(info -> info.name == key, members)
-        i === nothing ? nothing : members[i]
-    end
-end
 
 # Backward compatibility: accept `Dict{Symbol, String}` bounds such as
 # `Dict(:T => "Copy + Add<Output = T>")`. The strings are parsed by the Rust-side
