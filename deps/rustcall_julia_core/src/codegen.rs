@@ -362,6 +362,86 @@ pub(crate) enum CallTarget {
     Assoc { ty: syn::Path, method: Ident },
     /// `self_obj.m(args)`
     Instance(Ident),
+    /// `<Buf as tr::Far>::m(self_obj, args)` / `<Buf as tr::Far>::m(args)`:
+    /// a method of a trait impl, called through the trait (#497). Method-call
+    /// syntax would need the trait in scope where the wrapper is emitted and
+    /// would reach an inherent method of the same name first. `ty` is the
+    /// receiver type as the wrapper spells it, for the panic message.
+    TraitItem {
+        ty: syn::Path,
+        path: syn::TypePath,
+        receiver: TraitReceiver,
+    },
+}
+
+/// How a trait method's receiver is passed as the first argument of its
+/// qualified call (#497). A path call applies no autoref or autoderef, so the
+/// argument is built from the receiver's declared type rather than from the
+/// wrapper's `self_obj` (`&Buf` / `&mut Buf`): the method-call syntax it
+/// replaces adjusted that reference for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TraitReceiver {
+    /// A static method: no receiver argument.
+    None,
+    /// A receiver taken by value (`self`, `mut self`, `self: Box<Self>`, ...):
+    /// the value behind `self_obj`, `*self_obj`.
+    Value,
+    /// A reference receiver (`&self`, `&mut self`, `self: &&Self`, ...):
+    /// `self_obj` is its innermost reference, and each further layer, listed
+    /// outermost first (`true` for `&mut`), is taken again —
+    /// `self: &&Self` passes `&self_obj`.
+    Ref(Vec<bool>),
+}
+
+impl TraitReceiver {
+    /// The receiver's shape, when it is written as literal reference layers
+    /// over exactly `Self` (`self`, `mut self`, `&self`, `&mut self`,
+    /// `self: Self`, `self: &&Self`, ...); `Err` with the receiver type's span
+    /// otherwise. A type alias (`self: Ref<'_, Self>`), a smart pointer
+    /// (`Box<Self>`, `Rc<Self>`, `Pin<&mut Self>`) or the struct spelled by
+    /// name hides the shape from a syntactic reading, and the qualified call
+    /// has no receiver adjustment to make up for a wrong guess (PR #505
+    /// review; classifying from the resolved type is #509).
+    fn of(receiver: Option<&syn::Receiver>) -> Result<Self, proc_macro2::Span> {
+        let Some(receiver) = receiver else {
+            return Ok(TraitReceiver::None);
+        };
+        let mut layers = Vec::new();
+        let mut ty = unparen(&receiver.ty);
+        while let Type::Reference(r) = ty {
+            layers.push(r.mutability.is_some());
+            ty = unparen(&r.elem);
+        }
+        let is_self = matches!(
+            ty,
+            Type::Path(tp) if tp.qself.is_none() && tp.path.is_ident("Self")
+        );
+        if !is_self {
+            return Err(syn::spanned::Spanned::span(&receiver.ty));
+        }
+        Ok(match layers.pop() {
+            None => TraitReceiver::Value,
+            Some(_) => TraitReceiver::Ref(layers),
+        })
+    }
+
+    /// The first argument of the call, `None` for a static method.
+    fn argument(&self, self_obj: &Ident) -> Option<TokenStream2> {
+        match self {
+            TraitReceiver::None => None,
+            TraitReceiver::Value => Some(quote! { *#self_obj }),
+            TraitReceiver::Ref(outer) => {
+                let borrows = outer.iter().map(|mutable| {
+                    if *mutable {
+                        quote! { &mut }
+                    } else {
+                        quote! { & }
+                    }
+                });
+                Some(quote! { #(#borrows)* #self_obj })
+            }
+        }
+    }
 }
 
 /// The last segment of a path, which is the name a human reads: the panic
@@ -1004,6 +1084,9 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
             Some(r) => format!("{}::{}", path_tail(&r.ty), method),
             None => method.to_string(),
         },
+        CallTarget::TraitItem { ty, path, .. } => {
+            format!("{}::{}", path_tail(ty), path_tail(&path.path))
+        }
     };
 
     // The wrapper's environment is the item's, verbatim, with `Self` spelled
@@ -1106,6 +1189,11 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
         CallTarget::Free(name) => quote! { #name(#(#call_args),*) },
         CallTarget::Assoc { ty, method } => quote! { #ty::#method(#(#call_args),*) },
         CallTarget::Instance(method) => quote! { #self_obj.#method(#(#call_args),*) },
+        CallTarget::TraitItem { path, receiver, .. } => {
+            let self_arg = receiver.argument(&self_obj);
+            let args = self_arg.into_iter().chain(call_args.iter().cloned());
+            quote! { #path(#(#args),*) }
+        }
     };
     let call = quote! { #call #call_suffix };
     let prologue = quote! { #(#conversions)* #self_binding };
@@ -1902,6 +1990,45 @@ fn unsafe_method_error(struct_name: &Ident, m: &MethodModel) -> Option<TokenStre
     Some(quote::quote_spanned! {span=> compile_error!(#msg); })
 }
 
+/// The refusal of a trait method whose typed receiver is not literal
+/// reference layers over `Self` ([`TraitReceiver::of`]): its wrapper calls
+/// `<Buf as Tr>::m(..)`, whose first argument must match the receiver exactly,
+/// and the written type does not say what that is. `None` for a method of an
+/// inherent block, which keeps method-call syntax.
+fn trait_receiver_error(struct_name: &Ident, m: &MethodModel) -> Option<TokenStream2> {
+    m.host.as_ref()?.trait_.as_ref()?;
+    let receiver = m.func.sig.receiver()?;
+    let method = &m.func.sig.ident;
+    let span = match TraitReceiver::of(Some(receiver)) {
+        Err(span) => span,
+        // `self: &mut Self` binds `self_obj` as `&Buf`: `MethodModel::is_mutable`
+        // reads only the `&mut self` shorthand (#509), so the call would not
+        // compile either.
+        Ok(_)
+            if receiver.reference.is_none()
+                && !m.is_mutable
+                && matches!(unparen(&receiver.ty), Type::Reference(r) if r.mutability.is_some()) =>
+        {
+            let span = syn::spanned::Spanned::span(&receiver.ty);
+            let msg = format!(
+                "`{struct_name}::{method}`: a `self: &mut Self` receiver is not yet wrapped \
+                 (#509). Write it as `&mut self`."
+            );
+            return Some(quote::quote_spanned! {span=> compile_error!(#msg); });
+        }
+        Ok(_) => return None,
+    };
+    let msg = format!(
+        "`{struct_name}::{method}`: the wrapper calls this trait method through the trait, \
+         which passes the receiver exactly as declared, and this receiver type does not show \
+         its shape. Write it as `self`, `&self`, `&mut self` or reference layers over `Self` \
+         (`self: &&Self`) — not a type alias, a smart pointer or the type's own name — or \
+         expose an inherent method that calls this one (#509)."
+    );
+    // A bare `compile_error!`, as in [`unsafe_method_error`].
+    Some(quote::quote_spanned! {span=> compile_error!(#msg); })
+}
+
 /// A refusal emitted in place of (or beside) an item, gated by that item's
 /// effective `#[cfg]` set so it fires only where the item exists.
 ///
@@ -2522,7 +2649,9 @@ pub fn method_wrapper_at_impl_site(
     // Both flavours reach Rust through here for a block's method: the
     // proc-macro's `#[julia] impl`, and an inline block beside another
     // module's struct (#491).
-    if let Some(error) = unsafe_method_error(struct_name, m) {
+    if let Some(error) =
+        unsafe_method_error(struct_name, m).or_else(|| trait_receiver_error(struct_name, m))
+    {
         return gated_error(&cfg_attrs(&m.func.attrs), error);
     }
     let stem = struct_stem(struct_module_path, struct_name);
@@ -2851,13 +2980,25 @@ fn method_spec(
             .map(crate::environment::SelfBorrow::of)
             .unwrap_or(crate::environment::SelfBorrow::None),
     });
-    let target = if m.is_static {
-        CallTarget::Assoc {
+    // A trait impl's method is called through the trait, spelled as the
+    // header spells it: the wrapper is emitted in the block's module (#497).
+    let trait_item = m
+        .host
+        .as_ref()
+        .and_then(|host| crate::environment::trait_item_path(host, &method_name));
+    let target = match trait_item {
+        Some(path) => CallTarget::TraitItem {
+            ty: self_path.clone(),
+            path,
+            // `trait_receiver_error` has refused every other shape before a
+            // spec is built.
+            receiver: TraitReceiver::of(m.func.sig.receiver()).unwrap_or(TraitReceiver::Value),
+        },
+        None if m.is_static => CallTarget::Assoc {
             ty: self_path.clone(),
             method: method_name,
-        }
-    } else {
-        CallTarget::Instance(method_name)
+        },
+        None => CallTarget::Instance(method_name),
     };
     let ret = if inline_method_is_ctor(struct_name, m) {
         // `new`, or any method returning `Self` / the struct type, hands Julia

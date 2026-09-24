@@ -147,6 +147,24 @@ struct SelfAlias<'h> {
     out_of_scope: Option<Span>,
 }
 
+/// `<Buf as tr::Far>::rest`: an item of the trait a trait impl implements,
+/// spelled from where the wrapper is emitted — the block's module, where the
+/// header's type and trait paths mean what they mean in the header. `None`
+/// for an inherent block.
+///
+/// The one spelling of a trait item: an associated type in a signature
+/// ([`SelfAlias`]) and the call of a trait method (`codegen::method_spec`,
+/// #497), which method-call syntax cannot make — `self_obj.m()` needs the
+/// trait in scope and reaches an inherent `m` first.
+pub(crate) fn trait_item_path<R>(host: &ImplHost, rest: R) -> Option<syn::TypePath>
+where
+    R: quote::ToTokens,
+{
+    let self_ty = &host.self_ty;
+    let trait_path = host.trait_.as_ref()?;
+    Some(syn::parse_quote!(<#self_ty as #trait_path>::#rest))
+}
+
 /// Whether a path without a `<..>` qualifier starts with a bare `Self`.
 fn starts_with_self(qself: &Option<syn::QSelf>, path: &syn::Path) -> bool {
     qself.is_none()
@@ -179,9 +197,7 @@ impl<'h> SelfAlias<'h> {
         }
         let self_ty = &self.host.self_ty;
         match &self.host.trait_ {
-            Some(trait_path) if !expression => {
-                Some(syn::parse_quote!(<#self_ty as #trait_path>::#rest))
-            }
+            Some(_) if !expression => trait_item_path(self.host, rest),
             Some(trait_path)
                 if trait_path.leading_colon.is_some() || trait_path.segments.len() > 1 =>
             {
@@ -292,6 +308,11 @@ pub(crate) fn expand_self(host: &ImplHost, generics: &mut syn::Generics) -> Opti
 /// trait the header names by a path: `<Buf>::X` — the lookup `Self::X` has in
 /// the block, inherent first — finds the trait's `X` only where the trait is in
 /// scope, which the wrapper cannot see (PR #492 review).
+///
+/// The trait's *methods* are called as `<Buf as tr::Far>::m` ([`trait_item_path`],
+/// #497), which resolves wherever the header's paths do; a constant cannot be,
+/// because `<Buf as tr::Far>::X` would bypass an inherent `X` that `Self::X`
+/// reaches first. So this refusal stays.
 pub(crate) fn out_of_scope_error(span: Span, host: &ImplHost, julia_name: &str) -> TokenStream2 {
     let trait_path = host.trait_.as_ref().map(readable_path).unwrap_or_default();
     let self_ty = &host.self_ty;
