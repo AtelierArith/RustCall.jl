@@ -438,7 +438,7 @@ end
     @test summary(RustCall._pyo3_host_bound_properties(gate)) ==
           [("for", "for_", true, true), ("end", "end_", true, false),
            ("plain", "plain", true, false), ("anchor", "anchor", true, true),
-           ("samples", "samples", true, true)]
+           ("samples", "samples", true, true), ("twin", "twin", true, true)]
     point = only(filter(s -> s.name == "Point", info.pyo3_structs))
     @test summary(RustCall._pyo3_host_bound_properties(point)) ==
           [("x", "x", true, true), ("y", "y", true, true)]
@@ -448,7 +448,7 @@ end
     @test occursin("s === :for_ && (s = :for)", text)
     @test occursin("s === :end_ && (s = :end)", text)
     @test !occursin("s === :plain && (s =", text)
-    @test occursin("(:for_, :end_, :plain, :anchor, :samples)", text)
+    @test occursin("(:for_, :end_, :plain, :anchor, :samples, :twin)", text)
     # The getter types the read, as a field's Rust type does.
     @test occursin("s === :for && return PythonCall.pyconvert(Int32, v)", text)
     @test occursin("property `end_` is read-only", text)
@@ -478,9 +478,26 @@ end
     # The numpy helper is emitted for a setter's array argument.
     @test RustCall._pyo3_host_needs_numpy(info)
 
-    # One definition per property, under its Julia name.
+    # `Self` is the enclosing class however it is wrapped — `Py<Self>`,
+    # `PyResult<Py<Self>>`, `PyRef<'_, Self>` — for a property and a method
+    # alike (PR #525 review).
+    @test occursin("s === :twin && return Gate(v)", text)
+    @test occursin(squash("s === :twin && (w = if v isa PythonCall.Py v else getfield(v, :_rustcall_py) end)"),
+                   squash(text))
+    @test read_of("Py<Self>") == "Gate(v)"
+    @test read_of("Bound<'_, Self>") == "Gate(v)"
+    class_base = :(_pyo3_module().Gate)
+    method_text(name) = string(Base.remove_linenums!(Expr(:block,
+        RustCall._pyo3_host_method_expr(:Gate, class_base,
+                                        only(filter(m -> m.name == name, gate.methods)),
+                                        classes)...)))
+    @test occursin("Gate((getfield(obj, :_rustcall_py)).copied())", method_text("copied"))
+    @test occursin("getfield(other, :_rustcall_py)", method_text("level_of"))
+
+    # One definition per property, under its Julia name — after the handle
+    # field the generated type itself defines (PR #525 review).
     props = [d.name for d in RustCall._pyo3_host_definitions(info) if d.scope == (:prop, "Gate")]
-    @test props == ["for_", "end_", "plain", "anchor", "samples"]
+    @test props == ["_rustcall_py", "for_", "end_", "plain", "anchor", "samples", "twin"]
 
     mktempdir() do dir
         mkpath(joinpath(dir, "src"))
@@ -539,6 +556,51 @@ end
             """)
         c = only(RustCall.scan_crate(dir).pyo3_structs)
         @test summary(RustCall._pyo3_host_bound_properties(c)) == [("end", "end_", true, false)]
+
+        # A name the generated module or type defines for itself is taken:
+        # an item bound under it is refused with both named, by the same
+        # one-namespace check (PR #525 review), rather than shadowing the
+        # handle field or redefining the module's own import function.
+        checked(lib) = begin
+            write(joinpath(dir, "src", "lib.rs"), lib)
+            try
+                RustCall._pyo3_host_check_names(RustCall.scan_crate(dir))
+                ""
+            catch e
+                sprint(showerror, e)
+            end
+        end
+        msg = checked("""
+            use pyo3::prelude::*;
+            #[pyclass] pub struct C { v: i32 }
+            #[pymethods] impl C { #[getter] fn _rustcall_py(&self) -> i32 { self.v } }
+            """)
+        @test occursin("getter `C::_rustcall_py`", msg) && occursin("`_rustcall_py`", msg)
+        @test occursin("handle", msg)
+        msg = checked("""
+            use pyo3::prelude::*;
+            #[pyclass] pub struct C { #[pyo3(set)] pub _rustcall_py: i32 }
+            """)
+        @test occursin("field `C._rustcall_py`", msg)
+        msg = checked("""
+            use pyo3::prelude::*;
+            #[pyfunction] fn _pyo3_module() -> i32 { 1 }
+            """)
+        @test occursin("function `_pyo3_module`", msg) && occursin("generated", msg)
+        msg = checked("""
+            use pyo3::prelude::*;
+            #[pyclass] pub struct C { v: i32 }
+            #[pymethods] impl C { fn _PYO3_MODULE(&self) -> i32 { self.v } }
+            """)
+        @test occursin("method `C::_PYO3_MODULE`", msg)
+        # The reserved names are read off what the emitter defines, not listed:
+        # every module-level name of the prelude, and the type's handle field.
+        reserved = [d.name for d in RustCall._pyo3_host_definitions(RustCall.scan_crate(dir))
+                    if occursin("generated", d.owner)]
+        prelude = RustCall._pyo3_host_prelude_exprs("", String[], true, true, true)
+        @test Set(reserved) ⊇ Set(RustCall._pyo3_host_defined_names(prelude))
+        @test "_pyo3_module" in reserved && "_pyo3_asarray" in reserved
+        @test "_rustcall_py" in reserved
     end
 end
 
@@ -690,7 +752,7 @@ end
     @test gate.for_ == 8
     @test gate.end_ == 16
     @test gate.plain == 9
-    @test propertynames(gate) == (:for_, :end_, :plain, :anchor, :samples)
+    @test propertynames(gate) == (:for_, :end_, :plain, :anchor, :samples, :twin)
     @test_throws ArgumentError (gate.end_ = Int32(1))
     # A getter returning another class is wrapped into it, and a setter taking
     # one is handed the Python object the handle holds (PR #525 review).
@@ -702,6 +764,14 @@ end
     @test anchor.x == 8.0
     raw_gate.anchor = GM.Point(3.0, 4.0)
     @test raw_gate.for_ == 3
+    # `Self` behind a wrapper is the class too, for a property and a method.
+    twin = raw_gate.twin
+    @test twin isa GM.Gate
+    @test twin.for_ == 3
+    raw_gate.twin = GM.Gate(Int32(11))
+    @test raw_gate.for_ == 11
+    @test GM.copied(raw_gate) isa GM.Gate
+    @test GM.level_of(raw_gate, GM.Gate(Int32(6))) == 6
     if _numpy_available()
         # A numpy setter converts the Julia array with `numpy.asarray`.
         raw_gate.samples = [1.0, 2.0, 4.0]

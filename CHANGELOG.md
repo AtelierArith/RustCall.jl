@@ -71,7 +71,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the method argument plan (`RustCall._pyo3_host_arg_plan`, now the one
   per-argument decision `_pyo3_host_args` also reads), so a setter taking a
   class is handed the Python object the Julia handle holds and one taking a
-  numpy array gets `numpy.asarray` of the Julia array.
+  numpy array gets `numpy.asarray` of the Julia array. `Self` is the enclosing
+  class wherever a spelling puts it — `Py<Self>`, `PyResult<Py<Self>>`,
+  `PyRef<'_, Self>`, `Bound<'_, Self>`, a `Vec` element — for methods and
+  properties alike: every class lookup goes through one function
+  (`_pyo3_host_class_of`), where only a bare `Self` was the class before. And
+  a name the generated module or type defines for itself — the handle field
+  `_rustcall_py`, `_pyo3_module`, `_PYO3_MODULE`, `_pyo3_asarray`, the
+  imports — is part of the one-namespace clash check: a crate item bound under
+  one (a `#[getter] fn _rustcall_py`, a `#[pyfunction] fn _pyo3_module`) is
+  refused with both named instead of shadowing the handle or redefining the
+  module's import function. The reserved names are read off the prelude the
+  emitter emits (`_pyo3_host_prelude_exprs`), not listed.
 - **`rustcall_julia_core::codegen::method_symbol` spells a raw method name as
   the exported symbol** (PR #517 review). `method_symbol(&[], "S", "r#match")`
   returned `rustcall_S_r#match`; the wrapper exports `rustcall_S_match`. It

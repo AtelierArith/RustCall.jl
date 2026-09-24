@@ -195,6 +195,29 @@ impl Gate {
     fn set_samples(&mut self, values: PyReadonlyArray1<f64>) {
         self.level = values.as_array().iter().sum::<f64>() as i32;
     }
+
+    /// A getter returning the class through `Self` behind a wrapper: `Self`
+    /// is the enclosing class however it is wrapped (PR #525 review).
+    #[getter]
+    fn twin(&self, py: Python<'_>) -> PyResult<Py<Self>> {
+        Py::new(py, Gate { level: self.level })
+    }
+
+    /// A setter taking the class through `Self` behind a wrapper.
+    #[setter]
+    fn set_twin(&mut self, other: PyRef<'_, Self>) {
+        self.level = other.level;
+    }
+
+    /// A method returning and taking `Self` behind wrappers, like the
+    /// accessors above.
+    fn copied(&self, py: Python<'_>) -> Py<Self> {
+        Py::new(py, Gate { level: self.level }).unwrap()
+    }
+
+    fn level_of(&self, other: PyRef<'_, Self>) -> i32 {
+        other.level
+    }
 }
 
 #[pymethods]
