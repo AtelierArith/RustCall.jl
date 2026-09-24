@@ -2279,16 +2279,25 @@ fn expand_marked_item(item: Item, module_path: &[String]) -> TokenStream2 {
                 quote! { #m }
             }
         }
-        other => quote! { #other },
+        // Any other kind carrying `#[julia]` is refused here, as the
+        // item-level macro would refuse it (#503 review).
+        other => match crate::refusal::julia_item_refusal(&other) {
+            Some(refusal) => {
+                let error = refusal.compile_error(&cfg_attrs(&crate::refusal::item_attrs(&other)));
+                let kept = crate::refusal::without_julia_attr(other);
+                quote! { #error #kept }
+            }
+            None => quote! { #other },
+        },
     }
 }
 
 /// `#[julia]` on an item that is none of a function, a struct, an impl block
 /// or an inline module: the item as written, with the refusal
-/// ([`crate::refusal::item_kind_refusal`]) before it.
+/// ([`crate::refusal::attribute_target_refusal`], the decision the scans take
+/// through [`crate::refusal::julia_item_refusal`]) before it.
 pub fn transform_unsupported_item(item: TokenStream2) -> TokenStream2 {
-    let error =
-        crate::refusal::item_kind_refusal(proc_macro2::Span::call_site()).compile_error(&[]);
+    let error = crate::refusal::attribute_target_refusal(&item).compile_error(&[]);
     quote! {
         #error
         #item

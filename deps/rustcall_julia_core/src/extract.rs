@@ -589,25 +589,6 @@ fn refused_container(
     ))
 }
 
-/// `(kind, name)` of an item carrying `#[julia]` that is none of a function,
-/// a struct, an impl block or a module.
-fn unsupported_julia_item(item: &Item) -> Option<(&'static str, String)> {
-    let (attrs, what, name) = match item {
-        Item::Const(i) => (&i.attrs, "const", i.ident.to_string()),
-        Item::Enum(i) => (&i.attrs, "enum", i.ident.to_string()),
-        Item::Static(i) => (&i.attrs, "static", i.ident.to_string()),
-        Item::Trait(i) => (&i.attrs, "trait", i.ident.to_string()),
-        Item::TraitAlias(i) => (&i.attrs, "trait alias", i.ident.to_string()),
-        Item::Type(i) => (&i.attrs, "type alias", i.ident.to_string()),
-        Item::Union(i) => (&i.attrs, "union", i.ident.to_string()),
-        _ => return None,
-    };
-    attrs
-        .iter()
-        .any(crate::attrs::is_julia_attr)
-        .then_some((what, name))
-}
-
 /// `crate::a::b` for a module path, `crate` for the root.
 fn crate_path(path: &[String]) -> String {
     if path.is_empty() {
@@ -841,12 +822,9 @@ impl CrateScan {
         for item in items {
             // `#[julia]` on an item the attribute cannot expand: the proc
             // macro refuses it, and the manifest has no entry to mark (#503).
-            if let Some((what, name)) = unsupported_julia_item(item) {
-                return Err(refused_container(
-                    crate::refusal::item_kind_refusal(item.span()),
-                    &format!("{what} `{name}`"),
-                    module_path,
-                ));
+            if let Some(refusal) = crate::refusal::julia_item_refusal(item) {
+                let what = refusal.detail.clone();
+                return Err(refused_container(refusal, &what, module_path));
             }
             match item {
                 Item::Fn(f) => {

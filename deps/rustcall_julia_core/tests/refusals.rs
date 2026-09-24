@@ -521,14 +521,29 @@ fn crate_expansion(source: &str) -> TokenStream {
                 strip(&mut m.attrs);
                 transform_module(m, &[])
             }
-            Item::Enum(mut e) if marked(&e.attrs) => {
-                strip(&mut e.attrs);
-                transform_unsupported_item(quote!(#e))
+            // Any other kind: the proc macro is handed the item without its
+            // `#[julia]` and cannot parse it as one of the four it expands.
+            other if julia_attributed(&other) => {
+                transform_unsupported_item(proc_macro_input(other))
             }
             other => quote!(#other),
         });
     }
     out
+}
+
+/// Whether any item — a `Verbatim` one included — carries `#[julia]`, read
+/// the way the compiler does: from its tokens.
+fn julia_attributed(item: &Item) -> bool {
+    flat(&quote!(#item).to_string()).starts_with("# [julia]")
+        || flat(&quote!(#item).to_string()).contains("] # [julia]")
+}
+
+/// The tokens the `#[julia]` proc macro is handed for `item`: the item with
+/// that attribute removed.
+fn proc_macro_input(item: Item) -> TokenStream {
+    let text = quote!(#item).to_string().replacen("# [julia]", "", 1);
+    text.parse().unwrap()
 }
 
 /// The manifest entry's `skip_reason` for `item`.
@@ -689,18 +704,19 @@ fn a_refused_item_claims_no_symbol() {
 /// own message, and the proc macro emits that refusal once.
 #[test]
 fn a_refused_container_fails_the_crate_scan() {
-    for (label, source, message) in [
+    for (label, source, message) in [(
+        "file module",
+        "#[julia] pub mod a;",
+        "#[julia] on a file module (`mod name;`) is not supported",
+    )]
+    .into_iter()
+    .chain(unsupported_kinds().into_iter().map(|(label, source, _)| {
         (
-            "file module",
-            "#[julia] pub mod a;",
-            "#[julia] on a file module (`mod name;`) is not supported",
-        ),
-        (
-            "enum",
-            "#[julia] pub enum E { A }",
+            label,
+            source,
             "#[julia] can only be applied to functions, structs, impl blocks, or inline modules",
-        ),
-    ] {
+        )
+    })) {
         let err = extract(source, Mode::Crate).unwrap_err();
         assert!(matches!(err, ExtractError::Unsupported(_)), "{label}");
         assert!(err.to_string().contains(message), "{label}: {err}");
@@ -721,6 +737,109 @@ fn a_refused_container_fails_the_crate_scan() {
     );
     let expansion = crate_expansion(source).to_string();
     assert_eq!(expansion.matches("compile_error").count(), 1, "{expansion}");
+}
+
+/// `#[julia]` on every item kind it does not expand — each `syn::Item`
+/// variant other than a function, a struct, an impl block and a module, and
+/// tokens syn keeps as `Item::Verbatim` — with the description the refusal
+/// names it by (#503 review).
+fn unsupported_kinds() -> Vec<(&'static str, &'static str, &'static str)> {
+    vec![
+        ("const", "#[julia] pub const K: i32 = 1;", "const `K`"),
+        ("enum", "#[julia] pub enum E { A }", "enum `E`"),
+        (
+            "extern crate",
+            "#[julia] extern crate core;",
+            "extern crate `core`",
+        ),
+        (
+            "extern block",
+            "#[julia] extern \"C\" { fn abs(x: i32) -> i32; }",
+            "an `extern` block",
+        ),
+        (
+            "macro_rules!",
+            "#[julia] macro_rules! foo { () => {}; }",
+            "macro_rules! `foo`",
+        ),
+        (
+            "macro invocation",
+            "#[julia] thread_local! { static X: i32 = 1; }",
+            "a macro invocation",
+        ),
+        ("static", "#[julia] pub static S: i32 = 1;", "static `S`"),
+        (
+            "trait",
+            "#[julia] pub trait T { fn f(&self); }",
+            "trait `T`",
+        ),
+        (
+            "trait alias",
+            "#[julia] pub trait A = Clone;",
+            "trait alias `A`",
+        ),
+        (
+            "type alias",
+            "#[julia] pub type Id = i32;",
+            "type alias `Id`",
+        ),
+        (
+            "union",
+            "#[julia] pub union U { a: u32, b: f32 }",
+            "union `U`",
+        ),
+        ("use", "#[julia] pub use std::mem;", "a `use` declaration"),
+        // A free function with no body is an item syn does not parse into a
+        // kind (`Item::Verbatim`).
+        ("verbatim", "#[julia] pub fn declared();", "an item"),
+    ]
+}
+
+/// Every unsupported kind is refused by one predicate in every place that
+/// meets it: the crate scan fails, the proc macro emits one refusal, a
+/// `#[julia] mod` body emits one, and a `rust"""` block fails to expand.
+#[test]
+fn every_unsupported_item_kind_is_refused_everywhere() {
+    use rustcall_julia_core::refusal::{julia_item_refusal, unsupported_item_kind};
+    let message =
+        "#[julia] can only be applied to functions, structs, impl blocks, or inline modules";
+    for (label, source, what) in unsupported_kinds() {
+        let item: Item = syn::parse_str(source).unwrap();
+        assert_eq!(
+            unsupported_item_kind(&item).as_deref(),
+            Some(what),
+            "{label}"
+        );
+        assert!(julia_item_refusal(&item).is_some(), "{label}");
+
+        let err = extract(source, Mode::Crate).unwrap_err().to_string();
+        assert!(
+            err.contains(message) && err.contains(what),
+            "{label}: {err}"
+        );
+
+        let marked = format!("#[julia] pub mod m {{ {source} }}");
+        let err = extract(&marked, Mode::Crate).unwrap_err().to_string();
+        assert!(err.contains(what), "{label}: {err}");
+        let module: syn::ItemMod = syn::parse_str(&marked.replacen("#[julia] ", "", 1)).unwrap();
+        let expansion = transform_module(module, &[]).to_string();
+        assert_eq!(
+            expansion.matches("compile_error").count(),
+            1,
+            "{label}: {expansion}"
+        );
+
+        let err = expand(source)
+            .err()
+            .unwrap_or_else(|| panic!("{label}: expanded"));
+        assert!(err.to_string().contains(what), "{label}: {err}");
+    }
+    // The same kinds without `#[julia]` are ordinary code.
+    for (label, source, _) in unsupported_kinds() {
+        let plain = source.replacen("#[julia] ", "", 1);
+        let item: Item = syn::parse_str(&plain).unwrap();
+        assert!(julia_item_refusal(&item).is_none(), "{label}");
+    }
 }
 
 /// Refusals are cfg-gated like the item: a configured-away item compiles.

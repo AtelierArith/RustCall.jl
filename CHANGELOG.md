@@ -46,8 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no symbol. A refused item is now kept as written next to its refusal (an
   `unsafe fn` and a function with a non-FFI payload used to be dropped), and a
   non-FFI payload's diagnostic points at the payload type. `#[julia]` on a
-  file module, on an impl header that is not a type path, or on an enum now
-  fails the crate scan with the refusal's own message. `rustcall_julia_core`'s
+  file module, on an impl header that is not a type path, or on any other item
+  kind (enum, `macro_rules!`, `use`, ... — decided exhaustively over `syn::Item`) now
+  fails the crate scan and a `rust"""` expansion with the refusal's own message. `rustcall_julia_core`'s
   public API changed (`extract::function_entry` takes a `Mode`;
   `codegen::unsafe_function_error`, `method_skip_reason`,
   `inline_method_is_generic`, `inline_method_is_wrapped` and

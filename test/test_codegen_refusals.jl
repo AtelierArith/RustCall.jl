@@ -289,3 +289,21 @@ end
         @test occursin("mutable struct Buf", exprs)
     end
 end
+
+# `#[julia]` on a kind it does not expand — a `macro_rules!`, an enum, a
+# `use`, ... — has no manifest entry to carry the refusal, so the report fails
+# with the refusal's message instead of passing silently (#503 review).
+@testset "an unsupported #[julia] item kind fails the report (#503 review)" begin
+    for source in ("#[julia] macro_rules! foo { () => {}; }",
+                   "#[julia] pub enum E { A }",
+                   "#[julia] pub use std::mem;")
+        message = try
+            RustCall.inline_boundary_report(source; io = devnull)
+            ""
+        catch err
+            sprint(showerror, err)
+        end
+        @test occursin("#[julia] can only be applied to functions, structs, impl blocks, " *
+                       "or inline modules", message)
+    end
+end

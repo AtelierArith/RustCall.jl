@@ -42,7 +42,7 @@ use proc_macro2::{
 };
 use quote::{quote, ToTokens};
 use syn::spanned::Spanned;
-use syn::{Attribute, Ident, ItemFn, ItemImpl, ItemMod, ItemStruct, ReturnType, Type};
+use syn::{Attribute, Ident, Item, ItemFn, ItemImpl, ItemMod, ItemStruct, ReturnType, Type};
 
 use crate::manifest::{skip_reason, Mode};
 use crate::model::{ImplHost, MethodModel};
@@ -632,13 +632,141 @@ pub fn module_refusal(item: &ItemMod) -> Option<Refusal> {
     ))
 }
 
-/// Refuse `#[julia]` on an item that is not a function, a struct, an impl
-/// block or an inline module.
-pub fn item_kind_refusal(span: Span) -> Refusal {
-    Refusal::new(
+/// The one diagnostic of [`item_kind_refusal`].
+const UNSUPPORTED_ITEM_MESSAGE: &str =
+    "#[julia] can only be applied to functions, structs, impl blocks, or inline modules";
+
+/// What an item is, for a diagnostic, when `#[julia]` does not support its
+/// kind — `None` for the four kinds it does support (a function, a struct, an
+/// impl block, a module).
+///
+/// Exhaustive over `syn::Item` (#503 review): every kind that is not one of
+/// the four is refused, so a kind added here later cannot slip past the scan
+/// while the proc macro refuses it. `Item::Verbatim` is tokens syn did not
+/// parse into a kind; it is refused like any other, and its attributes are
+/// read from the tokens ([`item_attrs`]). `syn::Item` is non-exhaustive, so a
+/// kind a future syn adds is refused as well.
+pub fn unsupported_item_kind(item: &Item) -> Option<String> {
+    let named = |what: &str, ident: &Ident| format!("{what} `{ident}`");
+    Some(match item {
+        Item::Fn(_) | Item::Struct(_) | Item::Impl(_) | Item::Mod(_) => return None,
+        Item::Const(i) => named("const", &i.ident),
+        Item::Enum(i) => named("enum", &i.ident),
+        Item::ExternCrate(i) => named("extern crate", &i.ident),
+        Item::ForeignMod(_) => "an `extern` block".to_string(),
+        Item::Macro(i) => match &i.ident {
+            Some(ident) => named("macro_rules!", ident),
+            None => "a macro invocation".to_string(),
+        },
+        Item::Static(i) => named("static", &i.ident),
+        Item::Trait(i) => named("trait", &i.ident),
+        Item::TraitAlias(i) => named("trait alias", &i.ident),
+        Item::Type(i) => named("type alias", &i.ident),
+        Item::Union(i) => named("union", &i.ident),
+        Item::Use(_) => "a `use` declaration".to_string(),
+        Item::Verbatim(_) => "an item".to_string(),
+        _ => "an item".to_string(),
+    })
+}
+
+/// The outer attributes of any item: its attribute list, or for
+/// `Item::Verbatim` the attributes its tokens begin with.
+pub fn item_attrs(item: &Item) -> Vec<Attribute> {
+    match item {
+        Item::Const(i) => i.attrs.clone(),
+        Item::Enum(i) => i.attrs.clone(),
+        Item::ExternCrate(i) => i.attrs.clone(),
+        Item::Fn(i) => i.attrs.clone(),
+        Item::ForeignMod(i) => i.attrs.clone(),
+        Item::Impl(i) => i.attrs.clone(),
+        Item::Macro(i) => i.attrs.clone(),
+        Item::Mod(i) => i.attrs.clone(),
+        Item::Static(i) => i.attrs.clone(),
+        Item::Struct(i) => i.attrs.clone(),
+        Item::Trait(i) => i.attrs.clone(),
+        Item::TraitAlias(i) => i.attrs.clone(),
+        Item::Type(i) => i.attrs.clone(),
+        Item::Union(i) => i.attrs.clone(),
+        Item::Use(i) => i.attrs.clone(),
+        Item::Verbatim(tokens) => leading_attrs(tokens.clone()),
+        _ => leading_attrs(item.to_token_stream()),
+    }
+}
+
+/// The outer attributes `tokens` begin with.
+fn leading_attrs(tokens: TokenStream2) -> Vec<Attribute> {
+    struct Leading(Vec<Attribute>);
+    impl syn::parse::Parse for Leading {
+        fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+            let attrs = input.call(Attribute::parse_outer)?;
+            input.parse::<TokenStream2>()?;
+            Ok(Leading(attrs))
+        }
+    }
+    syn::parse2::<Leading>(tokens)
+        .map(|l| l.0)
+        .unwrap_or_default()
+}
+
+/// Refuse `#[julia]` on `item` when its kind is not a function, a struct, an
+/// impl block or an inline module ([`unsupported_item_kind`]). The item's
+/// `#[julia]` is not looked at: the proc macro calls this for the item it was
+/// handed, the attribute already consumed; the scans ask
+/// [`julia_item_refusal`], which checks the attribute first.
+pub fn item_kind_refusal(item: &Item) -> Option<Refusal> {
+    let what = unsupported_item_kind(item)?;
+    Some(Refusal::over(
         UNSUPPORTED_ITEM,
-        "",
-        span,
-        "#[julia] can only be applied to functions, structs, impl blocks, or inline modules",
-    )
+        what,
+        item,
+        UNSUPPORTED_ITEM_MESSAGE,
+    ))
+}
+
+/// [`item_kind_refusal`] for an item that carries `#[julia]` — the one
+/// predicate the crate scan, the `#[julia] mod` expansion and the `rust"""`
+/// expander share with the proc macro (#503 review), so they cannot disagree
+/// about which items are refused.
+pub fn julia_item_refusal(item: &Item) -> Option<Refusal> {
+    if !item_attrs(item).iter().any(crate::attrs::is_julia_attr) {
+        return None;
+    }
+    item_kind_refusal(item)
+}
+
+/// `item` without its `#[julia]` attribute, kept as written next to its
+/// refusal. A `Verbatim` item keeps its tokens: nothing expands the attribute
+/// there, rustc reports it after the refusal.
+pub fn without_julia_attr(mut item: Item) -> Item {
+    let strip = |attrs: &mut Vec<Attribute>| attrs.retain(|a| !crate::attrs::is_julia_attr(a));
+    match &mut item {
+        Item::Const(i) => strip(&mut i.attrs),
+        Item::Enum(i) => strip(&mut i.attrs),
+        Item::ExternCrate(i) => strip(&mut i.attrs),
+        Item::Fn(i) => strip(&mut i.attrs),
+        Item::ForeignMod(i) => strip(&mut i.attrs),
+        Item::Impl(i) => strip(&mut i.attrs),
+        Item::Macro(i) => strip(&mut i.attrs),
+        Item::Mod(i) => strip(&mut i.attrs),
+        Item::Static(i) => strip(&mut i.attrs),
+        Item::Struct(i) => strip(&mut i.attrs),
+        Item::Trait(i) => strip(&mut i.attrs),
+        Item::TraitAlias(i) => strip(&mut i.attrs),
+        Item::Type(i) => strip(&mut i.attrs),
+        Item::Union(i) => strip(&mut i.attrs),
+        Item::Use(i) => strip(&mut i.attrs),
+        _ => {}
+    }
+    item
+}
+
+/// The refusal of the tokens the `#[julia]` proc macro was handed when they
+/// are none of the supported kinds: [`item_kind_refusal`] of the item they
+/// parse as, or — tokens that are no item at all — the same refusal over the
+/// tokens.
+pub fn attribute_target_refusal(tokens: &TokenStream2) -> Refusal {
+    syn::parse2::<Item>(tokens.clone())
+        .ok()
+        .and_then(|item| item_kind_refusal(&item))
+        .unwrap_or_else(|| Refusal::over(UNSUPPORTED_ITEM, "", tokens, UNSUPPORTED_ITEM_MESSAGE))
 }

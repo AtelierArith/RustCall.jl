@@ -138,6 +138,16 @@ fn expand_items(
     };
 
     for item in items {
+        // `#[julia]` on a kind it does not support: refused before anything
+        // is built, as the crate scan refuses it (#503 review). There is no
+        // manifest entry to carry it, so the expansion fails with the
+        // refusal's message at the item.
+        if let Some(refusal) = crate::refusal::julia_item_refusal(item) {
+            return Err(syn::Error::new(
+                refusal.span,
+                format!("{} ({})", refusal.message, refusal.detail),
+            ));
+        }
         match item {
             Item::Fn(f) => {
                 let attribute = rustcall_attribute(&f.attrs);
