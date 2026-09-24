@@ -898,41 +898,117 @@ _pyo3_host_field_readable(s::RustStructInfo, field::AbstractString) =
 _pyo3_host_field_writable(s::RustStructInfo, field::AbstractString) =
     isempty(s.field_pyo3_set) || get(s.field_pyo3_set, String(field), false)
 
-# `#[pyo3(get)]` / `#[pyo3(set)]` install the descriptor inside the crate, so
-# the object answers; the manifest types the value and says which directions
-# PyO3 exposed (#424).
-function _pyo3_host_property_expr(jname::Symbol, s::RustStructInfo)
-    conversions = Any[]
+"""
+    PyO3HostProperty
+
+One property the PyO3 host binds on a class (#524): a `#[pyo3(get)]` /
+`#[pyo3(set)]` field, or the `#[getter]` / `#[setter]` methods of one Python
+attribute, merged by that attribute. `python` is the attribute PyO3 exposes (the
+manifest's `python_name`: `#[getter(end)]`, `#[pyo3(get, name = "x")]`, a
+`get_` / `set_` prefix dropped, a raw `r#for` unrawed); `julia` is the name
+Julia reads it under, `julia_binding_name` of that attribute (`for` → `for_`).
+`rust_type` types a read (`""` when nothing reads it); `what` names the Rust
+item in a message.
+"""
+struct PyO3HostProperty
+    python::String
+    julia::String
+    readable::Bool
+    writable::Bool
+    rust_type::String
+    what::String
+end
+
+# The Julia name of a property. A Python attribute that is no Julia identifier
+# at all (`#[getter(name = "a-b")]`) is kept as it is — reachable as
+# `getproperty(obj, Symbol("a-b"))`, as the attribute itself was before #524 —
+# rather than refusing the crate over a name Julia never has to spell.
+function _pyo3_host_property_julia_name(python::AbstractString)
+    return try
+        julia_binding_name(python)
+    catch err
+        err isa ErrorException || rethrow()
+        String(python)
+    end
+end
+
+"""
+    _pyo3_host_bound_properties(s::RustStructInfo) -> Vector{PyO3HostProperty}
+
+The properties the host binds on `s`, the one list its property emitter
+(`getproperty`, `setproperty!`, `propertynames`) and its definitions
+(`_pyo3_host_definitions`) are read from (#524): every field PyO3 exposes, then
+every `#[getter]` / `#[setter]` method, merged by the Python attribute they
+expose — a getter and a setter of one attribute are one property, readable and
+writable. `async` accessors are refused by the extractor and bound nowhere.
+"""
+function _pyo3_host_bound_properties(s::RustStructInfo)
+    order = String[]
+    found = Dict{String, PyO3HostProperty}()
+    add!(python, readable, writable, rust_type, what) = begin
+        prior = get(found, python, nothing)
+        if prior === nothing
+            push!(order, python)
+            found[python] = PyO3HostProperty(python, _pyo3_host_property_julia_name(python),
+                                             readable, writable, rust_type, what)
+        else
+            found[python] = PyO3HostProperty(
+                python, prior.julia, prior.readable || readable, prior.writable || writable,
+                isempty(prior.rust_type) ? rust_type : prior.rust_type, prior.what)
+        end
+    end
+    owner = qualified_name(s.module_path, s.name)
     for (field, rust_type) in s.fields
-        _pyo3_host_field_readable(s, field) || continue
-        jt = _pyo3_host_value_type(rust_type)
+        readable = _pyo3_host_field_readable(s, field)
+        writable = _pyo3_host_field_writable(s, field)
+        (readable || writable) || continue
+        python = _pyo3_host_python_name(field, get(s.field_python_names, field, ""))
+        add!(python, readable, writable, readable ? rust_type : "",
+             "the field `$owner.$field`")
+    end
+    for m in s.methods
+        (isempty(m.accessor) || _pyo3_host_async(m)) && continue
+        getter = m.accessor == "getter"
+        rust_type = !getter ? "" : m.return_kind === :py_result ? m.ok_type : m.return_type
+        add!(_pyo3_host_python_name(m.name, m.python_name), getter, !getter, rust_type,
+             "the $(m.accessor) `$(_boundary_label(s, m))`")
+    end
+    return PyO3HostProperty[found[p] for p in order]
+end
+
+# `#[pyo3(get)]` / `#[pyo3(set)]` and `#[getter]` / `#[setter]` install a
+# descriptor inside the crate, so the object answers; the manifest types the
+# value and says which directions PyO3 exposed (#424). Every branch comes from
+# `_pyo3_host_bound_properties` (#524).
+function _pyo3_host_property_expr(jname::Symbol, s::RustStructInfo)
+    properties = _pyo3_host_bound_properties(s)
+    attr(p) = QuoteNode(Symbol(p.python))
+    # After the remapping below `s` is the Python attribute.
+    conversions = Any[]
+    for p in properties
+        p.readable || continue
+        jt = _pyo3_host_value_type(p.rust_type)
         jt === nothing && continue
-        push!(conversions,
-              :(s === $(QuoteNode(Symbol(rust_name(field)))) &&
-                return PythonCall.pyconvert($jt, v)))
+        push!(conversions, :(s === $(attr(p)) && return PythonCall.pyconvert($jt, v)))
     end
-    # A field is a property under its Julia name (`julia_field_name`, #514);
-    # the Python attribute keeps the Rust spelling, so a renamed one is mapped
-    # back before the lookup.
-    names = [Symbol(julia_field_name(field)) for (field, _) in s.fields
-             if _pyo3_host_field_readable(s, field)]
-    # Only a field the host binds is remapped: an unexposed raw `r#for` beside
-    # an exposed `for_` must leave `obj.for_` alone (PR #515 review).
+    # A property is read under its Julia name (`for_`); the Python attribute
+    # (`for`) is looked up. Only a property the host binds is remapped: an
+    # unexposed raw `r#for` beside an exposed `for_` must leave `obj.for_`
+    # alone (PR #515 review).
+    names = Tuple(Symbol(p.julia) for p in properties if p.readable)
     renamed = Any[]
-    for field in _pyo3_host_bound_fields(s)
-        jfield = julia_field_name(field)
-        jfield == rust_name(field) && continue
-        push!(renamed, :(s === $(QuoteNode(Symbol(jfield))) &&
-                         (s = $(QuoteNode(Symbol(rust_name(field)))))))
+    for p in properties
+        p.julia == p.python && continue
+        push!(renamed, :(s === $(QuoteNode(Symbol(p.julia))) && (s = $(attr(p)))))
     end
-    # A read-only field raises a Julia error naming it instead of the raw
+    # A read-only property raises a Julia error naming it instead of the raw
     # Python `AttributeError` a descriptor would.
     read_only = Any[]
-    for (field, _) in s.fields
-        _pyo3_host_field_writable(s, field) && continue
+    for p in properties
+        p.writable && continue
         push!(read_only,
-              :(s === $(QuoteNode(Symbol(rust_name(field)))) &&
-                throw(ArgumentError($(string("field `", julia_field_name(field), "` is read-only"))))))
+              :(s === $(attr(p)) &&
+                throw(ArgumentError($(string("property `", p.julia, "` is read-only"))))))
     end
     getbody = quote
         s === :_rustcall_py && return getfield(p, :_rustcall_py)
@@ -955,7 +1031,7 @@ function _pyo3_host_property_expr(jname::Symbol, s::RustStructInfo)
         function Base.setproperty!(p::$jname, s::Symbol, v)
             $setbody
         end
-        Base.propertynames(::$jname) = $(Tuple(names))
+        Base.propertynames(::$jname) = $names
     end
 end
 
@@ -985,8 +1061,8 @@ function _pyo3_host_struct_exprs(s::RustStructInfo, classes::AbstractDict)
     out = Any[Expr(:struct, false, jname, Expr(:block, field, inner))]
     # The methods the host binds (`_pyo3_host_bound_methods`, the list its
     # definitions are read from): constructors first. `#[getter]`/`#[setter]`
-    # methods are Python properties; `getproperty` reaches them, so they are
-    # not bound as functions.
+    # methods are Python properties (`_pyo3_host_bound_properties`), so they
+    # are not bound as functions.
     methods = _pyo3_host_bound_methods(s)
     for m in methods
         m.is_constructor || continue
@@ -1015,8 +1091,9 @@ What `generate_pyo3_host_bindings` defines at the top level of its module,
 item by item as its emitters define it (#514): a `#[pyfunction]` and a static
 or class method are free functions of untyped arguments (the host passes no
 type), a class is a type whose `#[new]` is its constructor, an instance method
-dispatches on its class, a readable or writable field is a property. `async`
-items and `#[getter]` / `#[setter]` methods define nothing.
+dispatches on its class, and each of `_pyo3_host_bound_properties` — an exposed
+field or the `#[getter]` / `#[setter]` methods of one attribute — is a property
+under its Julia name (#524). `async` items define nothing.
 """
 function _pyo3_host_definitions(info::CrateInfo)
     defs = JuliaDefinition[]
@@ -1040,9 +1117,11 @@ function _pyo3_host_definitions(info::CrateInfo)
                 add!(julia_method_name(m), (:self, T), what; parent = T)
             end
         end
-        for field in _pyo3_host_bound_fields(s)
-            add!(julia_field_name(field), (:prop, T),
-                 "the field `$(qualified_name(s.module_path, s.name)).$field`"; parent = T)
+        # One definition per property, whatever items make it up: a getter and
+        # a setter of one attribute are one owner; two attributes one Julia
+        # name would read (`for` and `for_`) are refused (#524).
+        for p in _pyo3_host_bound_properties(s)
+            add!(p.julia, (:prop, T), p.what; parent = T)
         end
     end
     return defs
@@ -1051,16 +1130,14 @@ end
 # What the host binds, item by item: the one list its emitters iterate and its
 # definitions (`_pyo3_host_definitions`) are read from (#514). `async` items
 # are refused by the extractor (`async_fn`) and bound nowhere; `#[getter]` /
-# `#[setter]` methods are Python properties reached through `getproperty`.
+# `#[setter]` methods are Python properties, bound with the fields in
+# `_pyo3_host_bound_properties`.
 _pyo3_host_bound_functions(info::CrateInfo) =
     [f for f in info.pyo3_functions if f.attribute === :py_function && !_pyo3_host_async(f)]
 _pyo3_host_bound_classes(info::CrateInfo) =
     [s for s in info.pyo3_structs if s.attribute === :py_class]
 _pyo3_host_bound_methods(s::RustStructInfo) =
     [m for m in s.methods if !_pyo3_host_async(m) && (m.is_constructor || isempty(m.accessor))]
-_pyo3_host_bound_fields(s::RustStructInfo) =
-    [field for (field, _) in s.fields
-     if _pyo3_host_field_readable(s, field) || _pyo3_host_field_writable(s, field)]
 
 """
     _pyo3_host_check_names(info::CrateInfo)

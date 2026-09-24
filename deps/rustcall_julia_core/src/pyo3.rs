@@ -1417,6 +1417,32 @@ fn python_name_of(attrs: &[syn::Attribute], rust_name: &str) -> String {
     }
 }
 
+/// The property a `#[getter]` / `#[setter]` method is exposed as, for the
+/// manifest's `python_name` (#524): the name the attribute gives
+/// (`#[getter(end)]`, `#[setter(name = "x")]`, `#[pyo3(name = "x")]`),
+/// otherwise the method's name without its `r#` and without a `get_` (getter)
+/// or `set_` (setter) prefix -- PyO3's own rule, so `fn get_x` and `fn set_x`
+/// are the property `x` and `fn r#for` is `for`. Empty when that is the
+/// method's name as written, so every consumer -- the wrapper crate's
+/// descriptor lookup and the PyO3 host's property table -- reads one decision.
+fn accessor_python_name(attrs: &[syn::Attribute], rust_name: &str, accessor: &str) -> String {
+    let named = pyo3_name(attrs);
+    if !named.is_empty() {
+        return named;
+    }
+    let bare = crate::codegen::unraw(rust_name);
+    let prefix = if accessor == "getter" { "get_" } else { "set_" };
+    let property = bare
+        .strip_prefix(prefix)
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or(bare);
+    if property == rust_name {
+        String::new()
+    } else {
+        property.to_string()
+    }
+}
+
 /// The Python name of a raw Rust name (`r#for` -> `for`); empty for any other
 /// name, which Python sees as written.
 fn unraw_python_name(rust_name: &str) -> String {
@@ -1742,7 +1768,11 @@ fn method_entry(
         is_classmethod: has(Pyo3MethodMarker::ClassMethod),
         vis: visibility_string(&func.vis),
         skip_reason: reason,
-        python_name: python_name_of(&func.attrs, &func.sig.ident.to_string()),
+        python_name: if accessor.is_empty() {
+            python_name_of(&func.attrs, &name)
+        } else {
+            accessor_python_name(&func.attrs, &name, accessor)
+        },
         accessor: accessor.to_string(),
         attribute: Attribute::PyMethods,
         // A scanned `#[pymethods]` method has no wrapper and so no string

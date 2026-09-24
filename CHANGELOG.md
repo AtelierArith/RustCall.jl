@@ -44,6 +44,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `var"..."` must use the new name. Exported symbols do not change.
 
 ### Fixed
+- **A PyO3 host property declared through `#[getter]` / `#[setter]` methods is
+  read under its Julia name** ([#524](https://github.com/AtelierArith/RustCall.jl/issues/524)).
+  `#[getter] fn r#for(&self)` is the Python attribute `for`, but
+  `pyo3_host = true` bindings remapped only declared fields, so `obj.for_`
+  was sent to Python as `for_` and raised `AttributeError`; such a property
+  was also missing from `propertynames` and from the name-clash check. The
+  host now reads one list of bound properties
+  (`RustCall._pyo3_host_bound_properties`): every exposed field and every
+  accessor method, merged by the Python attribute, each under
+  `julia_binding_name` of that attribute (`for_`, `end_`). That one list
+  drives the remapping, `propertynames`, `getproperty` / `setproperty!` (a
+  getter types the read as a field's Rust type does; a property with no
+  setter raises `ArgumentError`) and the clash definitions, so a
+  `#[getter] fn r#for` beside a `#[pyo3(get)] for_` field is refused with
+  both items named. A field renamed with `#[pyo3(get, name = "...")]` is now
+  a property under that name too. The extractor records a getter's or
+  setter's property in the manifest's `python_name` — the attribute's name,
+  or the method's without `r#` and without a `get_` / `set_` prefix, PyO3's
+  rule — so the PyO3 wrapper crate's Python-owned accessor helpers look up
+  the same attribute (a `#[getter] fn get_x` read `get_x` there, not `x`).
+- **`rustcall_julia_core::codegen::method_symbol` spells a raw method name as
+  the exported symbol** (PR #517 review). `method_symbol(&[], "S", "r#match")`
+  returned `rustcall_S_r#match`; the wrapper exports `rustcall_S_match`. It
+  now goes through `method_stem`, and every public name helper of `codegen`
+  (`method_symbol_of`, `struct_free_symbol`, `method_string_owner`, the field
+  accessor symbols, `panic_symbol`, `generic_method_wrapper_name`) drops an
+  `r#` it is handed. A core test calls each with raw names and checks that
+  the list it calls is every such helper in `codegen.rs`. No symbol the
+  generators emit changes.
 - **A return type that only ends in the impl header's name is not the struct**
   ([#518](https://github.com/AtelierArith/RustCall.jl/issues/518)). Whether
   a method returns its own type (and so is boxed as `*mut Struct`, and may be

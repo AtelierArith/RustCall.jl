@@ -104,6 +104,12 @@ PyO3 crate actually uses are handled rather than reported as skips:
   a Julia argument.
 * **Field direction.** A get-only `#[pyo3(get)]` field is readable and not
   assignable; `setproperty!` raises a Julia `ArgumentError` naming it.
+* **Properties.** An exposed field and the `#[getter]` / `#[setter]` methods of
+  one Python attribute are one property, under `julia_binding_name` of the
+  attribute PyO3 exposes (#524): `#[getter] fn r#for` with `#[setter] fn
+  set_for` is `obj.for_`, readable and writable; `#[getter(end)]` is
+  `obj.end_`; `#[getter] fn get_x` is `obj.x`. Two attributes one Julia name
+  would read (`for` and a field `for_`) are refused.
 * **`async fn` is refused.** The host path has no event loop to drive the
   coroutine, so the extractor's `async_fn` refusal is honoured and no binding is
   emitted, rather than handing Julia an awaitable that never runs.
@@ -479,7 +485,7 @@ Manifest schema 5 adds, for every function, struct and method:
 | `attribute` | the *origin* of the entry: `julia` for a RustCall attribute, `py_function` / `py_class` / `py_methods` / `py_module` for the PyO3 scan. On a **method** it is the attribute of the impl block the method came from (`julia`, `py_methods`; omitted for an inline-mode impl), which need not be the struct's own |
 | `vis` | visibility as written: `pub`, `pub(crate)`, `pub(super)`, `pub(in path)`, or empty for a private item |
 | `skip_reason` | why the item cannot be wrapped, empty when it can |
-| `python_name` | the name PyO3 exposes it under, when `#[pyo3(name = "...")]` renames it |
+| `python_name` | the name PyO3 exposes it under, when it is not the Rust name as written: `#[pyo3(name = "...")]`, a raw `r#for` as `for`, and for a `#[getter]` / `#[setter]` method the property (`#[getter(x)]`, or the name without a `get_` / `set_` prefix) |
 | `accessor` | `getter` / `setter` for a `#[getter]` / `#[setter]` method |
 | `return_kind` + `ok_type` / `err_type` / `inner_type` | on methods too, not just free functions: a `#[pymethods]` method returning `PyResult<T>` is `py_result` with `T`, so Phase 2 never re-reads the Rust type spelling |
 | field `abi = "vec"` + `vec_element` + `free_symbol` | schema 10's owned-vector contract: the exact Julia element layout and the export that must release this getter's `(ptr, len, cap)` buffer |

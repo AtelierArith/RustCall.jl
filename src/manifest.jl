@@ -1570,6 +1570,7 @@ function manifest_struct_infos(manifest::Dict; origins = nothing)
         setters = Dict{String, String}()
         pyo3_get = Dict{String, Bool}()
         pyo3_set = Dict{String, Bool}()
+        python_names = Dict{String, String}()
         # The extractor omits the column when it is false, so an all-read-only
         # struct and a legacy manifest both look "empty"; the presence of the
         # key anywhere says the column exists and every field gets an explicit
@@ -1590,6 +1591,10 @@ function manifest_struct_infos(manifest::Dict; origins = nothing)
                 pyo3_get[name] = _mbool(f, "pyo3_get")
                 pyo3_set[name] = _mbool(f, "pyo3_set")
             end
+            # The attribute PyO3 exposes the field as (`#[pyo3(get, name =
+            # "...")]`, or a raw `r#let` as `let`); the host's property (#524).
+            isempty(_mstr(f, "python_name")) ||
+                (python_names[name] = _mstr(f, "python_name"))
             # Each accessor on its own: a `#[julia]` struct carries both, a
             # `#[pyclass]` field carries what `#[pyo3(get)]` / `#[pyo3(set)]`
             # declared, and a `set`-only field is a setter with no getter
@@ -1619,6 +1624,7 @@ function manifest_struct_infos(manifest::Dict; origins = nothing)
             field_setters = setters,
             field_pyo3_get = pyo3_get,
             field_pyo3_set = pyo3_set,
+            field_python_names = python_names,
             has_clone = _mbool(s, "has_clone"),
             has_owned_string_helper = _mbool(s, "has_owned_string_helper"),
             has_borrowed_string_helper = _mbool(s, "has_borrowed_string_helper"),

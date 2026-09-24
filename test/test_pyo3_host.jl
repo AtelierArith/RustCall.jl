@@ -426,6 +426,96 @@ end
     end
 end
 
+@testset "a #[getter] / #[setter] method is a property under its Julia name (#524)" begin
+    # One list of bound properties — exposed fields and accessor methods,
+    # merged by the Python attribute — drives the remapping, `propertynames`,
+    # `getproperty` / `setproperty!` and the clash definitions. No Python here.
+    info = RustCall.scan_crate(PYO3_HOST_CRATE)
+    gate = only(filter(s -> s.name == "Gate", info.pyo3_structs))
+    summary(props) = [(p.python, p.julia, p.readable, p.writable) for p in props]
+    # `#[getter] fn r#for` + `#[setter] fn set_for` are one property `for`,
+    # `#[getter(end)] fn last` is `end` (get-only), `fn get_plain` is `plain`.
+    @test summary(RustCall._pyo3_host_bound_properties(gate)) ==
+          [("for", "for_", true, true), ("end", "end_", true, false),
+           ("plain", "plain", true, false)]
+    point = only(filter(s -> s.name == "Point", info.pyo3_structs))
+    @test summary(RustCall._pyo3_host_bound_properties(point)) ==
+          [("x", "x", true, true), ("y", "y", true, true)]
+
+    text = string(Base.remove_linenums!(RustCall._pyo3_host_property_expr(:Gate, gate)))
+    @test occursin("s === :for_ && (s = :for)", text)
+    @test occursin("s === :end_ && (s = :end)", text)
+    @test !occursin("s === :plain && (s =", text)
+    @test occursin("(:for_, :end_, :plain)", text)
+    # The getter types the read, as a field's Rust type does.
+    @test occursin("s === :for && return PythonCall.pyconvert(Int32, v)", text)
+    @test occursin("property `end_` is read-only", text)
+    @test !occursin("property `for_` is read-only", text)
+
+    # One definition per property, under its Julia name.
+    props = [d.name for d in RustCall._pyo3_host_definitions(info) if d.scope == (:prop, "Gate")]
+    @test props == ["for_", "end_", "plain"]
+
+    mktempdir() do dir
+        mkpath(joinpath(dir, "src"))
+        write(joinpath(dir, "Cargo.toml"), """
+            [package]
+            name = "pyo3_host_props"
+            version = "0.1.0"
+            edition = "2021"
+
+            [lib]
+            crate-type = ["cdylib"]
+
+            [dependencies]
+            pyo3 = { version = "0.29", default-features = false, features = ["macros"] }
+            """)
+        refusal(lib) = begin
+            write(joinpath(dir, "src", "lib.rs"), lib)
+            try
+                RustCall.generate_pyo3_host_bindings(dir)
+                ""
+            catch e
+                sprint(showerror, e)
+            end
+        end
+        # A keyword-named getter meets a field of its Julia name: `obj.for_`
+        # would have to read two attributes.
+        msg = refusal("""
+            use pyo3::prelude::*;
+            #[pyclass] pub struct C { #[pyo3(get)] pub for_: i32 }
+            #[pymethods] impl C { #[getter] fn r#for(&self) -> i32 { 1 } }
+            """)
+        @test occursin("field `C.for_`", msg) && occursin("getter `C::r#for`", msg)
+        @test occursin("`for_`", msg) && occursin("#514", msg)
+        # The same through an explicit getter name.
+        msg = refusal("""
+            use pyo3::prelude::*;
+            #[pyclass] pub struct C { #[pyo3(get)] pub end_: i32 }
+            #[pymethods] impl C { #[getter(end)] fn last(&self) -> i32 { 1 } }
+            """)
+        @test occursin("field `C.end_`", msg) && occursin("getter `C::last`", msg)
+        # A getter and a setter of one attribute are one property, not a clash;
+        # neither is an instance method of the property's name.
+        @test refusal("""
+            use pyo3::prelude::*;
+            #[pyclass] pub struct C { v: i32 }
+            #[pymethods] impl C {
+                #[getter] fn r#for(&self) -> i32 { self.v }
+                #[setter] fn set_for(&mut self, v: i32) { self.v = v; }
+                fn for_(&self) -> i32 { self.v }
+            }
+            """) == ""
+        # A renamed field is a property under its Python name.
+        write(joinpath(dir, "src", "lib.rs"), """
+            use pyo3::prelude::*;
+            #[pyclass] pub struct C { #[pyo3(get, name = "end")] pub last: i32 }
+            """)
+        c = only(RustCall.scan_crate(dir).pyo3_structs)
+        @test summary(RustCall._pyo3_host_bound_properties(c)) == [("end", "end_", true, false)]
+    end
+end
+
 @testset "a one-argument #[new] cannot overwrite the default constructor (#433)" begin
     info = RustCall.scan_crate(PYO3_HOST_CRATE)
     wrapper = only(filter(s -> s.name == "Wrapper", info.pyo3_structs))
@@ -565,6 +655,17 @@ end
     @test point.x == 3.0
     point.x = 6.0
     @test point.x == 6.0
+
+    # `#[getter]` / `#[setter]` methods under Python names Julia reserves are
+    # read and written under their Julia names (#524).
+    gate = bindings.Gate(Int32(5))
+    @test gate.for_ == 5
+    gate.for_ = Int32(8)
+    @test gate.for_ == 8
+    @test gate.end_ == 16
+    @test gate.plain == 9
+    @test propertynames(gate) == (:for_, :end_, :plain)
+    @test_throws ArgumentError (gate.end_ = Int32(1))
 
     # `#[staticmethod]` returning `Self`.
     origin = bindings.origin()

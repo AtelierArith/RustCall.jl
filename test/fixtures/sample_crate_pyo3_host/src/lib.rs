@@ -126,6 +126,45 @@ impl Wrapper {
     }
 }
 
+/// Properties declared through accessor methods, under Python names Julia
+/// reserves (#524): the host reads them under their Julia names and looks the
+/// Python attribute up.
+#[pyclass]
+struct Gate {
+    level: i32,
+}
+
+#[pymethods]
+impl Gate {
+    #[new]
+    fn new(level: i32) -> Self {
+        Gate { level }
+    }
+
+    /// The property `for`, read as `gate.for_`, writable through `set_for`.
+    #[getter]
+    fn r#for(&self) -> i32 {
+        self.level
+    }
+
+    #[setter]
+    fn set_for(&mut self, value: i32) {
+        self.level = value;
+    }
+
+    /// An explicit name Julia reserves: `end`, read as `gate.end_`; get-only.
+    #[getter(end)]
+    fn last(&self) -> i32 {
+        self.level * 2
+    }
+
+    /// A `get_` prefix PyO3 drops: the property `plain`.
+    #[getter]
+    fn get_plain(&self) -> i32 {
+        self.level + 1
+    }
+}
+
 #[pymethods]
 impl Point {
     #[new]
@@ -199,5 +238,6 @@ fn sample_crate_pyo3_host(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(module_name, m)?)?;
     m.add_class::<Point>()?;
     m.add_class::<Wrapper>()?;
+    m.add_class::<Gate>()?;
     Ok(())
 }

@@ -770,6 +770,9 @@ pub struct Method {
     pub skip_reason: String,
     /// The name the item is exposed under in Python (`#[pyo3(name = "...")]`),
     /// empty when it is the Rust name or the item is not a PyO3 one (#275).
+    /// For a `#[getter]` / `#[setter]` method it is the **property** PyO3
+    /// exposes: `#[getter(x)]`, or the method's name without `r#` and without
+    /// a `get_` / `set_` prefix (`fn set_x` is `x`, #524).
     #[serde(default)]
     pub python_name: String,
     /// `"getter"` / `"setter"` for a `#[getter]` / `#[setter]` method of a

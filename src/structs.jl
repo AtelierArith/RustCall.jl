@@ -274,6 +274,10 @@ struct RustStructInfo
     # dict is not exposed.
     field_pyo3_get::Dict{String, Bool}
     field_pyo3_set::Dict{String, Bool}
+    # The Python attribute of a `#[pyclass]` field, when it is not the Rust
+    # name as written (`#[pyo3(get, name = "...")]`, a raw `r#let` as `let`);
+    # a field absent from the dict is exposed under its Rust name (#524).
+    field_python_names::Dict{String, String}
     has_clone::Bool
     has_owned_string_helper::Bool
     has_borrowed_string_helper::Bool
@@ -319,6 +323,7 @@ function RustStructInfo(name::String, type_params::Vector{String}, methods::Vect
                         field_setters::Dict{String, String} = Dict{String, String}(),
                         field_pyo3_get::Dict{String, Bool} = Dict{String, Bool}(),
                         field_pyo3_set::Dict{String, Bool} = Dict{String, Bool}(),
+                        field_python_names::Dict{String, String} = Dict{String, String}(),
                         has_clone::Bool = get(derive_options, "Clone", false),
                         has_owned_string_helper::Bool = false,
                         has_borrowed_string_helper::Bool = false,
@@ -337,7 +342,7 @@ function RustStructInfo(name::String, type_params::Vector{String}, methods::Vect
                    field_vec_elements, field_free_symbols,
                    has_derive_julia_struct,
                    derive_options, field_getters, field_setters,
-                   field_pyo3_get, field_pyo3_set, has_clone,
+                   field_pyo3_get, field_pyo3_set, field_python_names, has_clone,
                    has_owned_string_helper, has_borrowed_string_helper, generic_wrappers, constraints,
                    module_path, attribute, vis, skip_reason, python_name, python_path,
                    pyo3_extends, pyo3_options, python_owned_handle, cfg_features,
