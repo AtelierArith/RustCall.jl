@@ -284,3 +284,33 @@ fn a_trait_impl_of_a_plain_type_is_left_alone() {
     let manifest = extract(source, Mode::Crate).unwrap();
     assert!(manifest.structs.is_empty());
 }
+
+#[test]
+fn a_raw_trait_name_leaves_no_hash_in_the_julia_name() {
+    // `r#type` is the trait `type`: its `r#` belongs in neither the symbol
+    // nor the Julia name, where `#` would start a comment in a module written
+    // by `write_bindings_to_file` (PR #513 review).
+    let source = r#"
+        pub trait r#type { fn m(&self) -> i32; fn r#match(&self) -> i32; }
+        #[julia] pub struct Buf { pub n: i32 }
+        #[julia] impl Buf {
+            #[julia] pub fn m(&self) -> i32 { 0 }
+            #[julia] pub fn r#match(&self) -> i32 { 1 }
+        }
+        #[julia] impl r#type for Buf {
+            #[julia] fn m(&self) -> i32 { 2 }
+            #[julia] fn r#match(&self) -> i32 { 3 }
+        }
+    "#;
+    let manifest = extract(source, Mode::Crate).unwrap();
+    let methods = &manifest.structs[0].methods;
+    let m = method(methods, "r#type", "m");
+    assert_eq!(m.symbol, "rustcall_Buf_4type_m");
+    assert_eq!(m.julia_name, "type_m");
+    let matched = method(methods, "r#type", "r#match");
+    assert_eq!(matched.symbol, "rustcall_Buf_4type_match");
+    assert_eq!(matched.julia_name, "type_match");
+    for m in methods {
+        assert!(!m.julia_name.contains('#'), "{m:?}");
+    }
+}

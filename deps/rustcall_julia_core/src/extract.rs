@@ -1350,7 +1350,10 @@ fn julia_method_names(methods: &mut [Method]) {
                 .ok()
                 .and_then(|path| crate::codegen::trait_name_of(&path))
                 .unwrap_or_default();
-            m.julia_name = format!("{trait_name}_{}", m.name);
+            // A raw identifier's `r#` is no part of the name, and `#` would
+            // start a comment in a written Julia module (PR #513 review).
+            let name = m.name.strip_prefix("r#").unwrap_or(&m.name);
+            m.julia_name = format!("{trait_name}_{name}");
         }
     }
 }

@@ -180,9 +180,15 @@ pub fn method_stem(trait_name: Option<&str>, method: &str) -> String {
 }
 
 /// The name a trait path ends in, `Far` for `tr::Far<u8>`: the trait part of
-/// [`method_stem`]. `None` for an empty (inherent) path.
+/// [`method_stem`] and of a qualified Julia name. A raw identifier loses its
+/// `r#` (`r#type` → `type`), which is no part of the name and cannot appear
+/// in a symbol or a Julia identifier. `None` for an empty (inherent) path.
 pub fn trait_name_of(trait_path: &syn::Path) -> Option<String> {
-    trait_path.segments.last().map(|s| s.ident.to_string())
+    use syn::ext::IdentExt;
+    trait_path
+        .segments
+        .last()
+        .map(|s| s.ident.unraw().to_string())
 }
 
 /// [`method_symbol`] from an already computed struct stem.
