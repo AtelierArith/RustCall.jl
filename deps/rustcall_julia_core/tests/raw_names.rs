@@ -49,3 +49,66 @@ fn a_raw_struct_and_field_are_described_as_the_proc_macro_exports_them() {
         assert!(expanded.contains(name), "{name} missing from {expanded}");
     }
 }
+
+#[test]
+fn a_raw_method_of_a_generic_inline_struct_gets_an_unraw_wrapper_name() {
+    // `inline_generic_wrappers` passed `Boxed_r#match` to `format_ident!` and
+    // the manifest looked the wrapper up under that spelling (PR #515
+    // review). The generic wrapper hangs off the method stem, as a concrete
+    // struct's symbol does.
+    let source = r#"
+        #[julia]
+        pub struct Boxed<T> { pub v: T }
+        impl<T: Copy> Boxed<T> {
+            pub fn new(v: T) -> Self { Boxed { v } }
+            pub fn r#match(&self) -> T { self.v }
+        }
+    "#;
+    let expanded = rustcall_julia_core::expand::expand(source).unwrap();
+    let boxed = &expanded.manifest.structs[0];
+    let names: Vec<&str> = boxed
+        .generic_wrappers
+        .iter()
+        .map(|w| w.name.as_str())
+        .collect();
+    assert!(names.contains(&"Boxed_match"), "{names:?}");
+    let matched = boxed.methods.iter().find(|m| m.name == "r#match").unwrap();
+    assert_eq!(matched.generic_wrapper_name, "Boxed_match");
+    assert!(!matched.generic_wrapper.is_empty());
+}
+
+#[test]
+fn a_raw_pyo3_name_is_recorded_as_python_exposes_it() {
+    // PyO3 exposes `fn r#for` as `for`: the manifest's `python_name` says so,
+    // and every consumer looks that name up (PR #515 review). An explicit
+    // `#[pyo3(name = ...)]` still wins, and a plain name stays empty.
+    let manifest = extract(
+        r#"
+        #[pyfunction] pub fn r#for(x: i32) -> i32 { x }
+        #[pyfunction] #[pyo3(name = "go")] pub fn r#loop(x: i32) -> i32 { x }
+        #[pyfunction] pub fn plain(x: i32) -> i32 { x }
+        #[pyclass] pub struct r#type { #[pyo3(get, set)] pub r#let: i32 }
+        #[pymethods] impl r#type {
+            fn r#match(&self) -> i32 { self.r#let }
+        }
+        "#,
+        Mode::Crate,
+    )
+    .unwrap();
+    let function = |name: &str| manifest.functions.iter().find(|f| f.name == name).unwrap();
+    assert_eq!(function("r#for").python_name, "for");
+    assert_eq!(function("r#loop").python_name, "go");
+    assert_eq!(function("plain").python_name, "");
+    let class = manifest
+        .structs
+        .iter()
+        .find(|s| s.name == "r#type")
+        .unwrap();
+    assert_eq!(class.python_name, "type");
+    let field = &class.fields[0];
+    assert_eq!(field.python_name, "let");
+    assert_eq!(field.getter, "rustcall_type_get_let");
+    assert_eq!(field.setter, "rustcall_type_set_let");
+    let method = class.methods.iter().find(|m| m.name == "r#match").unwrap();
+    assert_eq!(method.python_name, "match");
+}

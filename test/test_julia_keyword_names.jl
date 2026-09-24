@@ -277,6 +277,24 @@ end
         w = call(get(:while_), Int32(5))
         @test call(get(:if_), w) == 10
 
+        # A generic struct's raw method: its generic wrapper is registered
+        # under the unraw name (`Boxed_match`) the extractor gives it, and the
+        # Julia method is `match` (PR #515 review).
+        g = Module(:KwInlineGeneric)
+        Core.eval(g, :(using RustCall))
+        Core.eval(g, Meta.parse("""rust\"\"\"
+            #[julia]
+            pub struct Boxed<T> { pub v: T }
+            impl<T: Copy> Boxed<T> {
+                pub fn new(v: T) -> Self { Boxed { v } }
+                pub fn r#match(&self) -> T { self.v }
+                pub fn r#end(&self) -> T { self.v }
+            }
+            \"\"\""""))
+        bx = call(call(getfield, g, :Boxed){Int32}, Int32(6))
+        @test call(call(getfield, g, :match), bx) == 6
+        @test call(call(getfield, g, :end_), bx) == 6
+
         # `r#for` beside `for_` is refused before anything is defined.
         clash = Module(:KwInlineClash)
         Core.eval(clash, :(using RustCall))

@@ -79,6 +79,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   described with the accessors `S_get_r#let` / `S_set_r#let`, which nothing
   exports; the manifest now names `S_get_let` / `S_set_let`, the symbols the
   proc macro has always exported.
+- **A raw name is unrawed wherever it is spelled**
+  ([#514](https://github.com/AtelierArith/RustCall.jl/issues/514)). A raw
+  method of a generic inline struct (`impl<T> Boxed<T> { fn r#match }`) got a
+  generic wrapper named `Boxed_r#match`, which is not an identifier, so the
+  block failed to expand; it is now `Boxed_match`. A PyO3 item with a raw name
+  (`#[pyfunction] fn r#for`, a raw `#[pyclass]`, method or field) is recorded
+  with the `python_name` PyO3 exposes it under (`for`), so the PyO3 host
+  bindings and the wrapper crate look up the attribute Python has; a raw
+  `#[pyclass]` no longer panics the scan, and a raw field's wrapper-crate
+  accessors are `rustcall_<C>_get_<f>` without the `r#`. The PyO3 host
+  bindings run the same Julia-name clash check as every other emitter.
 - **`@rust_crate` binds the `#[julia]` methods of a trait impl**
   ([#506](https://github.com/AtelierArith/RustCall.jl/issues/506)). The crate
   scan skipped trait impls, so the methods the proc macro wrapped were neither

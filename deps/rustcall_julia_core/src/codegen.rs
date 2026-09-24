@@ -2939,9 +2939,11 @@ fn fn_source(func: ItemFn) -> String {
 /// struct with FFI name `struct_stem`: `<stem>_<method>`. Like every other
 /// name of the struct it hangs off [`symbol_stem`], so two same-named generic
 /// structs in different modules register different wrappers (#462); the
-/// manifest carries it as `Method.generic_wrapper_name`.
+/// manifest carries it as `Method.generic_wrapper_name`. The method part is
+/// [`method_stem`], so a raw method name (`r#match`) loses its `r#` exactly
+/// as it does in a concrete struct's symbol (#514).
 pub fn generic_method_wrapper_name(struct_stem: &str, method: &str) -> String {
-    format!("{struct_stem}_{method}")
+    format!("{struct_stem}_{}", method_stem(None, method))
 }
 
 /// The refusals of a generic inline struct's methods that are generic in their

@@ -30,6 +30,7 @@
 //! recorded as [`ReturnKind::PyResult`] with the `Ok` type, so Phase 2 can lower
 //! it to an opaque error flag.
 
+use syn::ext::IdentExt;
 use syn::spanned::Spanned;
 use syn::{FnArg, ImplItem, ImplItemFn, Item, ItemFn, ItemStruct, ReturnType, Type};
 
@@ -565,8 +566,14 @@ impl Pyo3Scan {
                             )
                         }
                     );
-                    let class_ident =
-                        syn::Ident::new(&self.classes[index].entry.name, imp.header.target.span());
+                    // A raw class name (`r#type`) is rebuilt as a raw
+                    // identifier: `Ident::new` refuses the `r#` (#514).
+                    let class_name = &self.classes[index].entry.name;
+                    let span = imp.header.target.span();
+                    let class_ident = match class_name.strip_prefix("r#") {
+                        Some(bare) => syn::Ident::new_raw(bare, span),
+                        None => syn::Ident::new(class_name, span),
+                    };
                     let entry = method_entry(
                         &class_ident,
                         &class_path,
@@ -1392,10 +1399,33 @@ fn path_attribute(attrs: &[syn::Attribute]) -> Option<String> {
 fn _pyo3_module_python_name(attrs: &[syn::Attribute], ident: &syn::Ident) -> String {
     let named = pyo3_name(attrs);
     if named.is_empty() {
-        ident.to_string()
+        ident.unraw().to_string()
     } else {
         named
     }
+}
+
+/// The name an item is exposed under in Python, for the manifest's
+/// `python_name`: `#[pyo3(name = "...")]` when given; otherwise empty, except
+/// for a raw Rust name (`r#for`), which PyO3 exposes without its `r#` (`for`)
+/// -- so the one name every consumer (the wrapper crate, the PyO3 host
+/// bindings) looks up is decided here (#514).
+fn python_name_of(attrs: &[syn::Attribute], rust_name: &str) -> String {
+    let named = pyo3_name(attrs);
+    if named.is_empty() {
+        unraw_python_name(rust_name)
+    } else {
+        named
+    }
+}
+
+/// The Python name of a raw Rust name (`r#for` -> `for`); empty for any other
+/// name, which Python sees as written.
+fn unraw_python_name(rust_name: &str) -> String {
+    rust_name
+        .strip_prefix("r#")
+        .map(str::to_string)
+        .unwrap_or_default()
 }
 
 /// Manifest entry of a declarative `#[pymodule] mod name { ... }` (#424). Only
@@ -1416,7 +1446,7 @@ fn module_entry(
         attribute: Attribute::PyModule,
         vis: visibility_string(&item.vis),
         skip_reason: skip_reason::PYMODULE.to_string(),
-        python_name: pyo3_name(&item.attrs),
+        python_name: python_name_of(&item.attrs, &name),
         python_path: Vec::new(),
         exported: false,
         cfg: predicate_string(&effective_cfg),
@@ -1474,7 +1504,7 @@ fn function_entry(
         attribute,
         vis: visibility_string(&func.vis),
         skip_reason: reason,
-        python_name: pyo3_name(&func.attrs),
+        python_name: python_name_of(&func.attrs, &name),
         python_path: python_path.to_vec(),
         exported: false,
         cfg: predicate_string(&effective_cfg),
@@ -1568,7 +1598,7 @@ fn class_entry(
                     || is_string_type(&f.ty)
                     || vec_element.is_some());
             let getter = if usable && access.get {
-                crate::codegen::method_symbol_of(&stem, &format!("get_{ident}"))
+                crate::codegen::method_symbol_of(&stem, &format!("get_{}", ident.unraw()))
             } else {
                 String::new()
             };
@@ -1590,11 +1620,15 @@ fn class_entry(
                 ffi_compatible: usable,
                 getter,
                 setter: if usable && access.set {
-                    crate::codegen::method_symbol_of(&stem, &format!("set_{ident}"))
+                    crate::codegen::method_symbol_of(&stem, &format!("set_{}", ident.unraw()))
                 } else {
                     String::new()
                 },
-                python_name: access.python_name,
+                python_name: if access.python_name.is_empty() {
+                    unraw_python_name(&ident.to_string())
+                } else {
+                    access.python_name
+                },
                 vis: visibility_string(&f.vis),
                 // What PyO3 exposes through the object, independent of the
                 // `ffi_compatible` decision a wrapper crate needs (#424).
@@ -1615,7 +1649,7 @@ fn class_entry(
         attribute: Attribute::PyClass,
         vis: visibility_string(&item.vis),
         skip_reason: reason,
-        python_name: pyo3_name(&item.attrs),
+        python_name: python_name_of(&item.attrs, &name),
         python_path: python_path.to_vec(),
         pyo3_extends: options.extends,
         pyo3_options,
@@ -1703,7 +1737,7 @@ fn method_entry(
         is_classmethod: has(Pyo3MethodMarker::ClassMethod),
         vis: visibility_string(&func.vis),
         skip_reason: reason,
-        python_name: pyo3_name(&func.attrs),
+        python_name: python_name_of(&func.attrs, &func.sig.ident.to_string()),
         accessor: accessor.to_string(),
         attribute: Attribute::PyMethods,
         // A scanned `#[pymethods]` method has no wrapper and so no string

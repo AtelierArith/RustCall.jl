@@ -602,8 +602,11 @@ _pyo3_host_injected_arg(rust_type::AbstractString) =
 
 _pyo3_host_attr(base, name::AbstractString) = Expr(:., base, QuoteNode(Symbol(name)))
 
+# The Python attribute of an item: the manifest's `python_name` — which the
+# extractor also fills for a raw Rust name, `r#for` being exposed as `for`
+# (#514) — or the Rust name, never with a raw identifier's `r#`.
 _pyo3_host_python_name(name, python_name) =
-    isempty(python_name) ? String(name) : String(python_name)
+    isempty(python_name) ? _pyo3_host_attr_name(name) : String(python_name)
 
 # The Python attribute of a Rust field: its name without a raw identifier's
 # `r#`, which PyO3 drops as well.
@@ -934,6 +937,27 @@ function _pyo3_host_struct_exprs(s::RustStructInfo, classes::AbstractDict)
 end
 
 """
+    _pyo3_host_check_names(info::CrateInfo)
+
+`_check_julia_name_clashes` over what `generate_pyo3_host_bindings` binds: the
+`#[pyfunction]`s and `#[pyclass]`es that are not `async`, every method of a
+class (constructors are the type itself, getters and setters properties), and
+the readable and writable fields.
+"""
+function _pyo3_host_check_names(info::CrateInfo)
+    functions = [f for f in info.pyo3_functions
+                 if f.attribute === :py_function && !_pyo3_host_async(f)]
+    structs = [s for s in info.pyo3_structs if s.attribute === :py_class]
+    _check_julia_name_clashes(functions, structs, "the PyO3 host bindings of `$(info.name)`";
+                              binds_function = _ -> true, binds_struct = _ -> true,
+                              binds_method = m -> !m.is_constructor && isempty(m.accessor) &&
+                                                  !_pyo3_host_async(m),
+                              binds_field = (s, f) -> _pyo3_host_field_readable(s, f) ||
+                                                      _pyo3_host_field_writable(s, f))
+    return nothing
+end
+
+"""
     generate_pyo3_host_bindings(crate_path; module_name, features, default_features, release) -> Expr
 
 The module expression `@rust_crate ... pyo3_host=true` evaluates: a typed Julia
@@ -983,6 +1007,10 @@ function generate_pyo3_host_bindings(crate_path::AbstractString;
     # registry in `RustCall` (#251).
     classes = Dict{String, Symbol}(s.name => Symbol(julia_struct_name(s))
                                    for s in info.pyo3_structs if s.attribute === :py_class)
+    # Two items one Julia name would bind (`fn r#for` beside `fn for_`) are
+    # refused before anything is emitted, by the check every emitter runs,
+    # over what this one binds (#514).
+    _pyo3_host_check_names(info)
     for f in info.pyo3_functions
         f.attribute === :py_function || continue
         _pyo3_host_async(f) && continue
