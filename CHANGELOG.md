@@ -17,7 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `<Buf as tr::Far>::m(self_obj)` (static methods `<Buf as tr::Far>::m()`),
   spelled as the impl header spells the type and the trait. The receiver
   argument follows the receiver's declared type (`self: &&Self` is passed
-  `&self_obj`), since a path call applies no autoref. Exported symbols
+  `&self_obj`), since a path call applies no autoref. A typed receiver whose
+  shape is not literal reference layers over `Self` — a type alias, `Box<Self>`,
+  `Rc<Self>`, `Pin<&mut Self>`, the type's own name — and `self: &mut Self`
+  (#509) are refused at the receiver with a `compile_error!`; none of them
+  compiled before either. Exported symbols
   are unchanged. The inline `rust"""` flavour wraps no trait-impl method and is
   unaffected. A wrapper now lowers such a method differently, so the published
   Rust crates (0.2.0 on crates.io) take a minor bump before they are next

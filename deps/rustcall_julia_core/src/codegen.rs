@@ -394,9 +394,17 @@ pub(crate) enum TraitReceiver {
 }
 
 impl TraitReceiver {
-    fn of(receiver: Option<&syn::Receiver>) -> Self {
+    /// The receiver's shape, when it is written as literal reference layers
+    /// over exactly `Self` (`self`, `mut self`, `&self`, `&mut self`,
+    /// `self: Self`, `self: &&Self`, ...); `Err` with the receiver type's span
+    /// otherwise. A type alias (`self: Ref<'_, Self>`), a smart pointer
+    /// (`Box<Self>`, `Rc<Self>`, `Pin<&mut Self>`) or the struct spelled by
+    /// name hides the shape from a syntactic reading, and the qualified call
+    /// has no receiver adjustment to make up for a wrong guess (PR #505
+    /// review; classifying from the resolved type is #509).
+    fn of(receiver: Option<&syn::Receiver>) -> Result<Self, proc_macro2::Span> {
         let Some(receiver) = receiver else {
-            return TraitReceiver::None;
+            return Ok(TraitReceiver::None);
         };
         let mut layers = Vec::new();
         let mut ty = unparen(&receiver.ty);
@@ -404,10 +412,17 @@ impl TraitReceiver {
             layers.push(r.mutability.is_some());
             ty = unparen(&r.elem);
         }
-        match layers.pop() {
+        let is_self = matches!(
+            ty,
+            Type::Path(tp) if tp.qself.is_none() && tp.path.is_ident("Self")
+        );
+        if !is_self {
+            return Err(syn::spanned::Spanned::span(&receiver.ty));
+        }
+        Ok(match layers.pop() {
             None => TraitReceiver::Value,
             Some(_) => TraitReceiver::Ref(layers),
-        }
+        })
     }
 
     /// The first argument of the call, `None` for a static method.
@@ -1975,6 +1990,45 @@ fn unsafe_method_error(struct_name: &Ident, m: &MethodModel) -> Option<TokenStre
     Some(quote::quote_spanned! {span=> compile_error!(#msg); })
 }
 
+/// The refusal of a trait method whose typed receiver is not literal
+/// reference layers over `Self` ([`TraitReceiver::of`]): its wrapper calls
+/// `<Buf as Tr>::m(..)`, whose first argument must match the receiver exactly,
+/// and the written type does not say what that is. `None` for a method of an
+/// inherent block, which keeps method-call syntax.
+fn trait_receiver_error(struct_name: &Ident, m: &MethodModel) -> Option<TokenStream2> {
+    m.host.as_ref()?.trait_.as_ref()?;
+    let receiver = m.func.sig.receiver()?;
+    let method = &m.func.sig.ident;
+    let span = match TraitReceiver::of(Some(receiver)) {
+        Err(span) => span,
+        // `self: &mut Self` binds `self_obj` as `&Buf`: `MethodModel::is_mutable`
+        // reads only the `&mut self` shorthand (#509), so the call would not
+        // compile either.
+        Ok(_)
+            if receiver.reference.is_none()
+                && !m.is_mutable
+                && matches!(unparen(&receiver.ty), Type::Reference(r) if r.mutability.is_some()) =>
+        {
+            let span = syn::spanned::Spanned::span(&receiver.ty);
+            let msg = format!(
+                "`{struct_name}::{method}`: a `self: &mut Self` receiver is not yet wrapped \
+                 (#509). Write it as `&mut self`."
+            );
+            return Some(quote::quote_spanned! {span=> compile_error!(#msg); });
+        }
+        Ok(_) => return None,
+    };
+    let msg = format!(
+        "`{struct_name}::{method}`: the wrapper calls this trait method through the trait, \
+         which passes the receiver exactly as declared, and this receiver type does not show \
+         its shape. Write it as `self`, `&self`, `&mut self` or reference layers over `Self` \
+         (`self: &&Self`) — not a type alias, a smart pointer or the type's own name — or \
+         expose an inherent method that calls this one (#509)."
+    );
+    // A bare `compile_error!`, as in [`unsafe_method_error`].
+    Some(quote::quote_spanned! {span=> compile_error!(#msg); })
+}
+
 /// A refusal emitted in place of (or beside) an item, gated by that item's
 /// effective `#[cfg]` set so it fires only where the item exists.
 ///
@@ -2595,7 +2649,9 @@ pub fn method_wrapper_at_impl_site(
     // Both flavours reach Rust through here for a block's method: the
     // proc-macro's `#[julia] impl`, and an inline block beside another
     // module's struct (#491).
-    if let Some(error) = unsafe_method_error(struct_name, m) {
+    if let Some(error) =
+        unsafe_method_error(struct_name, m).or_else(|| trait_receiver_error(struct_name, m))
+    {
         return gated_error(&cfg_attrs(&m.func.attrs), error);
     }
     let stem = struct_stem(struct_module_path, struct_name);
@@ -2934,7 +2990,9 @@ fn method_spec(
         Some(path) => CallTarget::TraitItem {
             ty: self_path.clone(),
             path,
-            receiver: TraitReceiver::of(m.func.sig.receiver()),
+            // `trait_receiver_error` has refused every other shape before a
+            // spec is built.
+            receiver: TraitReceiver::of(m.func.sig.receiver()).unwrap_or(TraitReceiver::Value),
         },
         None if m.is_static => CallTarget::Assoc {
             ty: self_path.clone(),
