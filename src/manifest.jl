@@ -779,6 +779,11 @@ and neither writes into the crate (#445). Hot reload rebuilds the direct build,
 so it probes there too; a caller that builds elsewhere passes that directory
 instead.
 """
+# The cfg lines of `rustc --print cfg` output (`name` or `name="value"`), without
+# Cargo's own chatter: the one reader of that output for every probe.
+_printed_cfg_lines(out::AbstractString) =
+    join(filter(l -> occursin(r"^[A-Za-z_][A-Za-z0-9_]*(=\".*\")?$", l), split(out, '\n')), "\n") * "\n"
+
 function _crate_build_cfg_text(crate_path::AbstractString; profile::AbstractString = "release",
                                memo::Bool = true, features::Vector{String} = String[],
                                target_directory::Union{Nothing, AbstractString} = nothing,
@@ -803,8 +808,7 @@ function _crate_build_cfg_text(crate_path::AbstractString; profile::AbstractStri
                 cmd = env === nothing ? setenv(probe_cmd; dir = path) :
                       setenv(probe_cmd, Dict{String, String}(env); dir = path)
                 cmd = addenv(cmd, "CARGO_TARGET_DIR" => target)
-                out = read(cmd, String)
-                join(filter(l -> occursin(r"^[A-Za-z_][A-Za-z0-9_]*(=\".*\")?$", l), split(out, '\n')), "\n") * "\n"
+                _printed_cfg_lines(read(cmd, String))
             catch e
                 @debug "Could not probe the build cfg of $(path)" exception = e
                 ""

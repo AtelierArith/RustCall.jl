@@ -363,6 +363,41 @@ end
         @test !occursin("s = :for", hidden)
         @test occursin("(:for_,)", hidden)
 
+        # The scan the bindings come from is configured as the build is: the
+        # probe is the build's own `cargo rustc --crate-type cdylib` command
+        # (`_pyo3_host_cargo_cmd`) with `--print cfg`, under the build's
+        # profile and `PYO3_PYTHON` (PR #515 review, raised on #521). This
+        # crate has no `cdylib` target, so the `#[julia]` path's probe would
+        # have been the wrapper-shaped one; the host builds it as its own root.
+        python = Sys.which("python3")
+        if python === nothing
+            @test_skip "no python3 on PATH for pyo3's build script"
+        else
+            write(joinpath(dir, "Cargo.toml"),
+                  replace(read(joinpath(dir, "Cargo.toml"), String),
+                          "crate-type = [\"cdylib\"]" => "crate-type = [\"rlib\"]"))
+            write(joinpath(dir, "src", "lib.rs"), """
+                use pyo3::prelude::*;
+                #[cfg(debug_assertions)]
+                #[pyfunction] fn debug_only(x: i32) -> i32 { x }
+                #[cfg(not(debug_assertions))]
+                #[pyfunction] fn release_only(x: i32) -> i32 { x }
+                """)
+            release_text = string(RustCall.generate_pyo3_host_bindings(dir; release = true,
+                                                                        python = python))
+            debug_text = string(RustCall.generate_pyo3_host_bindings(dir; release = false,
+                                                                      python = python))
+            @test occursin("release_only", release_text) && !occursin("debug_only", release_text)
+            @test occursin("debug_only", debug_text) && !occursin("release_only", debug_text)
+            cmd, _, _ = RustCall._pyo3_host_cargo_cmd(
+                RustCall.BuildEnvSnapshot(), dir,
+                RustCall.parse_cargo_toml(joinpath(dir, "Cargo.toml"));
+                python = python, release = false, rustc_args = ["--print", "cfg"])
+            @test "rustc" in cmd.exec && "--crate-type" in cmd.exec
+            @test "cdylib" in cmd.exec && !("--release" in cmd.exec)
+            @test "PYO3_PYTHON=$python" in cmd.env
+        end
+
         # A raw class name in argument and return position is the class: the
         # class map is keyed by `rust_name`, the key every type spelling is
         # looked up by (PR #515 review, raised on #517).

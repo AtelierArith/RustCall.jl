@@ -88,6 +88,21 @@ Whether a Python host for PyO3 crates is loaded — i.e. whether
 pyo3_host_available() = hasmethod(pyo3_host_import, Tuple{AbstractString})
 
 """
+    pyo3_host_python() -> String
+
+The interpreter the PyO3 host path builds a crate for and imports it into —
+`PythonCall.python_executable_path()`, supplied by `RustCallPyO3HostExt`. The
+build (`pyo3_host_import`) and the scan the bindings are generated from
+(`generate_pyo3_host_bindings`) both ask this, so both configure the crate for
+the same Python (#514 review). Without the extension it has no method, and
+`_pyo3_host_default_python` answers `""`.
+"""
+function pyo3_host_python end
+
+_pyo3_host_default_python() =
+    hasmethod(pyo3_host_python, Tuple{}) ? String(pyo3_host_python()) : ""
+
+"""
     build_pyo3_extension(crate_path; python, features, default_features, release, cache_enabled) -> PyO3Extension
 
 Build the PyO3 crate at `crate_path` as a Python extension module, without
@@ -348,6 +363,81 @@ function _pyo3_extension_link_args()
 end
 
 """
+    _pyo3_host_cargo_cmd(snapshot, crate_path, cargo_toml; python, features,
+                         default_features, release, rustc_args) -> (Cmd, target_dir, package)
+
+The one Cargo invocation of the PyO3 host path: `cargo rustc --crate-type
+cdylib` of the crate as its own root, under the requested profile and features,
+in RustCall's target directory for it, under `snapshot` with `PYO3_PYTHON` set
+to the interpreter the module is built for. `rustc_args` follow `--`. The build
+(`_build_pyo3_extension_library`, with the link arguments) and the cfg probe
+the bindings are scanned under (`_pyo3_host_cfg_text`, with `--print cfg`) are
+both this command, so the scan sees the `#[cfg]`s the build compiles — the
+profile's `debug_assertions`, the interpreter's Python-version cfgs — and the
+two cannot drift (#514 review). An empty `python` leaves `PYO3_PYTHON` as the
+snapshot has it (a scan outside the host extension).
+"""
+function _pyo3_host_cargo_cmd(snapshot::BuildEnvSnapshot, crate_path::AbstractString,
+                              cargo_toml::AbstractDict; python::AbstractString,
+                              features::Vector{String} = String[],
+                              default_features::Bool = true, release::Bool = true,
+                              rustc_args::Vector{String} = String[])
+    package = String(get(get(cargo_toml, "package", Dict{String, Any}()), "name", ""))
+    isempty(package) && throw(RustError(
+        "`$(crate_path)` has no `[package] name`, so Cargo cannot select it."))
+
+    args = String["rustc"]
+    release && push!(args, "--release")
+    push!(args, "-p", package, "--crate-type", "cdylib")
+    default_features || push!(args, "--no-default-features")
+    isempty(features) || push!(args, "--features", join(features, ","))
+
+    # Under RustCall's cache, never the crate's own `target/`: an installed
+    # package is read-only, and every `@rust_crate` flavour builds where
+    # `crate_target_directory` says (#486). An ambient `CARGO_TARGET_DIR`
+    # would send the library somewhere this function never looks, so it is
+    # pinned as `build_cargo_project` does.
+    target_dir = _crate_target!(crate_path, :pyo3_host)
+    env = snapshot_env(snapshot)
+    isempty(python) || (env["PYO3_PYTHON"] = String(python))
+    env["CARGO_TARGET_DIR"] = target_dir
+
+    # `--offline` under `RUSTCALL_OFFLINE`, as every other build (#461).
+    append!(args, _cargo_network_args(env))
+    # In the crate's directory through the command's `dir`, never a
+    # process-wide `cd`, which would move every other task's relative paths
+    # for the length of the build (#461).
+    cmd = setenv(isempty(rustc_args) ? `$(cargo()) $args` : `$(cargo()) $args -- $rustc_args`,
+                 env; dir = String(crate_path))
+    return cmd, target_dir, package
+end
+
+"""
+    _pyo3_host_cfg_text(snapshot, crate_path, cargo_toml; python, features,
+                        default_features, release) -> String
+
+`rustc --print cfg` of the host build (`_pyo3_host_cargo_cmd`), for the scan the
+host bindings are generated from; `""` when Cargo does not answer, and the
+lenient scan is used instead.
+"""
+function _pyo3_host_cfg_text(snapshot::BuildEnvSnapshot, crate_path::AbstractString,
+                             cargo_toml::AbstractDict; python::AbstractString,
+                             features::Vector{String} = String[],
+                             default_features::Bool = true, release::Bool = true)
+    try
+        cmd, _, _ = _pyo3_host_cargo_cmd(snapshot, crate_path, cargo_toml; python = python,
+                                         features = features,
+                                         default_features = default_features,
+                                         release = release,
+                                         rustc_args = ["--print", "cfg"])
+        return _printed_cfg_lines(read(pipeline(cmd; stderr = devnull), String))
+    catch e
+        @debug "Could not probe the host build cfg of $(crate_path)" exception = e
+        return ""
+    end
+end
+
+"""
     _build_pyo3_extension_library([snapshot,] crate_path, cargo_toml, module_name; kwargs...) -> String
 
 Run `cargo rustc --crate-type cdylib` in the crate's own directory, with the
@@ -368,34 +458,10 @@ function _build_pyo3_extension_library(snapshot::BuildEnvSnapshot,
                                        features::Vector{String} = String[],
                                        default_features::Bool = true,
                                        release::Bool = true)
-    package = String(get(get(cargo_toml, "package", Dict{String, Any}()), "name", ""))
-    isempty(package) && throw(RustError(
-        "`$(crate_path)` has no `[package] name`, so Cargo cannot select it."))
-
-    args = String["rustc"]
-    release && push!(args, "--release")
-    push!(args, "-p", package, "--crate-type", "cdylib")
-    default_features || push!(args, "--no-default-features")
-    isempty(features) || push!(args, "--features", join(features, ","))
-    link_args = _pyo3_extension_link_args()
-
-    # Under RustCall's cache, never the crate's own `target/`: an installed
-    # package is read-only, and every `@rust_crate` flavour builds where
-    # `crate_target_directory` says (#486). An ambient `CARGO_TARGET_DIR`
-    # would send the library somewhere this function never looks, so it is
-    # pinned as `build_cargo_project` does.
-    target_dir = _crate_target!(crate_path, :pyo3_host)
-    env = snapshot_env(snapshot)
-    env["PYO3_PYTHON"] = String(python)
-    env["CARGO_TARGET_DIR"] = target_dir
-
-    # `--offline` under `RUSTCALL_OFFLINE`, as every other build (#461).
-    append!(args, _cargo_network_args(env))
-    # In the crate's directory through the command's `dir`, never a
-    # process-wide `cd`, which would move every other task's relative paths
-    # for the length of the build (#461).
-    cmd = setenv(isempty(link_args) ? `$(cargo()) $args` : `$(cargo()) $args -- $link_args`,
-                 env; dir = String(crate_path))
+    cmd, target_dir, package = _pyo3_host_cargo_cmd(
+        snapshot, crate_path, cargo_toml; python = python, features = features,
+        default_features = default_features, release = release,
+        rustc_args = _pyo3_extension_link_args())
     stderr_io = IOBuffer()
     stdout_io = IOBuffer()
     proc = run(pipeline(cmd, stdout = stdout_io, stderr = stderr_io), wait = false)
@@ -1019,18 +1085,27 @@ function generate_pyo3_host_bindings(crate_path::AbstractString;
                                      module_name::Union{String, Nothing} = nothing,
                                      features::Vector{String} = String[],
                                      default_features::Bool = true,
-                                     release::Bool = true)
+                                     release::Bool = true,
+                                     python::AbstractString = _pyo3_host_default_python())
     path = abspath(String(crate_path))
     # The items of the build this module imports, not every feature variant:
     # the lenient scan keeps both of `#[cfg(feature = "x")] fn r#for` and
     # `#[cfg(not(feature = "x"))] fn for_`, which no one build has, and the
     # bindings — and the name-clash check over them — would describe a crate
-    # that does not exist (PR #515 review). `_plain_scan_info` rescans under
-    # the configuration the crate is built with, as the `#[julia]` path does;
-    # it returns the lenient scan unchanged when Cargo will not answer.
-    env = snapshot_env(BuildEnvSnapshot())
-    info = _plain_scan_info(path, scan_crate(path; cargo_env = env), features,
-                            default_features, release; env = env)
+    # that does not exist (PR #515 review). The crate is rescanned under the
+    # `--print cfg` of the very command `build_pyo3_extension` builds it with
+    # (`_pyo3_host_cargo_cmd`: the crate as its own cdylib root, this profile
+    # and these features, `PYO3_PYTHON` the importing interpreter), so a
+    # `#[cfg(debug_assertions)]` or Python-version item is scanned as it is
+    # built. When Cargo does not answer, the lenient scan stands.
+    snapshot = BuildEnvSnapshot()
+    lenient = scan_crate(path; cargo_env = snapshot_env(snapshot))
+    cfg_text = _pyo3_host_cfg_text(snapshot, path, parse_cargo_toml(joinpath(path, "Cargo.toml"));
+                                   python = python, features = features,
+                                   default_features = default_features, release = release)
+    info = isempty(cfg_text) ? lenient :
+           scan_crate(path; cfg = :cargo, cfg_text = cfg_text,
+                      cargo_env = snapshot_env(snapshot))
     mod_name = Symbol(module_name === nothing ? snake_to_pascal(info.name) : module_name)
     body = Expr(:block)
     push!(body.args, :(import RustCall))
