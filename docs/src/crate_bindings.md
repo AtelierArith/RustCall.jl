@@ -230,6 +230,60 @@ as a missing `mod` target elsewhere in the tree.
     but has no Julia wrapper until the alias is spelled as a type RustCall
     knows.
 
+### Trait impls
+
+`#[julia]` methods of a trait impl are bound too (#506). The wrapper calls the
+method through the trait (`<Buf as tr::A>::m(..)`), and the exported symbol
+carries the trait's name, length-prefixed, so it never clashes with an
+inherent method of the same name or with another trait's:
+
+```rust
+#[julia]
+impl Buf {
+    #[julia]
+    pub fn m(&self) -> i32 { self.n }           // rustcall_Buf_m
+}
+
+#[julia]
+impl tr::A for Buf {
+    #[julia]
+    fn m(&self) -> i32 { self.n * 10 }          // rustcall_Buf_1A_m
+    #[julia]
+    fn build(n: i32) -> Self { Buf { n } }      // rustcall_Buf_1A_build
+}
+
+#[julia]
+impl B for Buf {
+    #[julia]
+    fn m(&mut self, by: i32) -> i32 { by }      // rustcall_Buf_1B_m
+}
+```
+
+In Julia a trait method keeps its name unless another method of the struct
+has the same name. In that case the inherent method keeps the name, as it does
+in Rust's method resolution, and each trait's method is bound as
+`<Trait>_<name>`:
+
+```julia
+m(b)          # Buf::m
+A_m(b)        # <Buf as tr::A>::m
+B_m(b, 2)     # <Buf as B>::m
+build(Buf, 1) # <Buf as tr::A>::build
+```
+
+The trait is named by the last segment of its path. A trait's function that
+returns `Self` is bound under its own name (`build(Buf, 1)`), not as another
+`Buf(...)` constructor that would shadow the inherent one. The crate scan
+refuses a crate in two cases rather than binding one method over another:
+
+- two traits whose paths end in the same name (`a::Tr` and `b::Tr`, or
+  `From<u8>` and `From<i32>`) both wrap a method of one name, which would give
+  them one symbol;
+- a qualified name is already taken (an inherent method literally named
+  `A_m`).
+
+A trait impl of a type that is not a `#[julia]` struct is left alone.
+
 ### Static methods
 
 A method without `self` (other than a constructor) is called with the type as
