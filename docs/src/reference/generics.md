@@ -40,3 +40,14 @@ shout("hello")  # "HELLO"
 Modules = [RustCall]
 Pages = [joinpath("src", "julia_functions.jl")]
 ```
+
+## Julia names of Rust items (`src/julia_names.jl`)
+
+The one decision of the name every Rust item — function, method, field,
+struct, module — is bound under in Julia (#514): a raw identifier loses its
+`r#`, and a name Julia reserves gets a trailing underscore.
+
+```@autodocs
+Modules = [RustCall]
+Pages = [joinpath("src", "julia_names.jl")]
+```

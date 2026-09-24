@@ -410,6 +410,9 @@ macro rust_str(code)
     # runs as well (#454). A static method whose name a free function of this
     # block (or another struct's static method) also has gets no bare form
     # there (#323).
+    # Two items one Julia name would bind (`fn r#for` beside `fn for_`, #514)
+    # are refused before anything is defined.
+    _check_julia_name_clashes(julia_func_signatures, struct_infos, "the rust\"\"\" block")
     julia_defs, julia_func_wrappers = _inline_wrapper_exprs(julia_func_signatures, struct_infos)
     # The symbols this block exports, known at macro-expansion time. They are
     # recorded per *module* so that a wrapper resolves through the library its

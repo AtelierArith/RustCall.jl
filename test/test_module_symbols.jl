@@ -280,14 +280,19 @@ end
             RustCall._module_tree([sig("f", ["get_v"])], [withrun]))
         @test RustCall._check_module_names(
             RustCall._module_tree([sig("f", ["other"])], [withrun])) === nothing
-        # Rust module names Julia cannot spell: a raw identifier loses its prefix,
-        # a keyword is refused rather than written into an unparsable file.
+        # Rust module names Julia reserves: a raw identifier loses its prefix,
+        # and a Julia keyword gets a trailing underscore like every other item
+        # (#514) rather than being written into an unparsable file.
         @test RustCall._julia_module_name("r#type") == "type"
         @test RustCall._julia_module_name("shapes") == "shapes"
-        @test_throws ErrorException RustCall._julia_module_name("end")
-        @test_throws ErrorException RustCall._julia_module_name("r#function")
+        @test RustCall._julia_module_name("end") == "end_"
+        @test RustCall._julia_module_name("r#function") == "function_"
+        @test RustCall._check_module_names(
+            RustCall._module_tree([sig("f", ["macro"])], RustCall.RustStructInfo[])) === nothing
+        # ... and one that then meets a sibling of that name is refused (#514).
         @test_throws ErrorException RustCall._check_module_names(
-            RustCall._module_tree([sig("f", ["macro"])], RustCall.RustStructInfo[]))
+            RustCall._module_tree([sig("f", ["macro"]), sig("g", ["macro_"])],
+                                  RustCall.RustStructInfo[]))
         raw = RustCall._module_tree([sig("f", ["r#type"])], RustCall.RustStructInfo[])
         @test RustCall._check_module_names(raw) === nothing
         @test occursin("module type", string(RustCall._submodule_exprs(raw)[1]))

@@ -140,15 +140,7 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
                trait_path, julia_name)
 end
 
-"""
-    julia_method_name(m::RustMethod) -> String
-
-The name a method is bound under in Julia: the manifest's `julia_name` — a
-trait impl's method that shares its name with another method of the struct,
-`Far_m` (#506) — or the Rust name. The one reader, for both crate emitters
-and the layout checks.
-"""
-julia_method_name(m::RustMethod) = isempty(m.julia_name) ? m.name : m.julia_name
+# `julia_method_name(m)`, the name a method is bound under, is in `julia_names.jl` (#514).
 
 """
     _default_payload_abi(payload_type) -> String
@@ -416,7 +408,8 @@ function _static_method_collisions(functions, structs)
     counts = Dict{String, Int}()
     for func in functions
         _binds_julia_wrapper(func) || continue  # no binding, no name (#491)
-        counts[func.name] = get(counts, func.name, 0) + 1
+        name = julia_function_name(func)
+        counts[name] = get(counts, name, 0) + 1
     end
     for s in structs, m in s.methods
         _binds_julia_struct(s) || continue  # no type, no methods (#503)
@@ -449,7 +442,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
         return :()
     end
 
-    struct_name_str = info.name
+    struct_name_str = julia_struct_name(info)
     # Exported symbols hang off the FFI name, which carries the module path
     # (#300); `struct_name_str` stays the Julia type name and the label in
     # diagnostics. A generic struct's wrappers — methods, accessors, `_free` —
@@ -518,7 +511,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
             # only that.
             _boundary_item!(_boundary_label(info, m))
             _rust_refused_item!(m.skip_reason, m.name) && continue
-            fname = esc(Symbol(m.name))
+            fname = esc(Symbol(julia_method_name(m)))
             wrapper_name = _generic_method_wrapper_name(info, m)
             is_ctor = m.is_constructor
 
@@ -576,7 +569,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
         if info.has_derive_julia_struct && !isempty(info.fields)
             for (field_name, field_type) in info.fields
                 field_is_accessible(info, field_name) || continue
-                field_sym = Symbol(field_name)
+                field_sym = Symbol(julia_field_name(field_name))
                 field_getters[field_sym] = (info.field_getters[field_name], field_type)
                 if haskey(info.field_setters, field_name)
                     field_setters[field_sym] = info.field_setters[field_name]
@@ -584,12 +577,12 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
             end
         end
 
-        method_names = Set([Symbol(m.name) for m in info.methods if !_rust_refuses(m.skip_reason)])
+        method_names = Set([Symbol(julia_method_name(m)) for m in info.methods if !_rust_refuses(m.skip_reason)])
         method_accessors = Expr[]
         for m in info.methods
             _rust_refuses(m.skip_reason) && continue  # no binding (#491)
-            method_sym = Symbol(m.name)
-            method_func = esc(Symbol(m.name))
+            method_sym = Symbol(julia_method_name(m))
+            method_func = esc(Symbol(julia_method_name(m)))
             push!(method_accessors, quote
                 if field === $(QuoteNode(method_sym))
                     return (args...) -> $method_func(self, args...)
@@ -680,7 +673,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
 
     # 2. Add constructors and methods
     for m in info.methods
-        fname = esc(Symbol(m.name))
+        fname = esc(Symbol(julia_method_name(m)))
         # Exported symbol of the method wrapper, `rustcall_<Struct>_<method>`
         # (#279, module-qualified since #300); derived when a hand-built
         # `RustMethod` carries none.
@@ -762,7 +755,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
             # the block or another struct's static method; the bare `shout(s)`
             # form is a delegator, emitted only while no such name exists
             # (#323). Constructors are `Labeler(...)` and never collide.
-            if !is_ctor && !(m.name in colliding)
+            if !is_ctor && !(julia_method_name(m) in colliding)
                 # Hygienic (unescaped) argument names: an argument called like
                 # the method or the struct must not shadow them in the body.
                 dargs = [Symbol("__rustcall_arg", i) for i in eachindex(esc_args)]
@@ -830,7 +823,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
 
         for (field_name, field_type) in info.fields
             field_is_accessible(info, field_name) || continue
-            field_sym = Symbol(field_name)
+            field_sym = Symbol(julia_field_name(field_name))
             c = _ffi_field_return(info, field_name, field_type)
             kind = ffi_owned_string_return(c) ? :owned_string :
                    ffi_borrowed_string_return(c) ? :borrowed_string : :plain
@@ -848,13 +841,13 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
         end
 
         # Single Base.getproperty for all fields and methods
-        method_names = Set([Symbol(m.name) for m in info.methods if !_rust_refuses(m.skip_reason)])
+        method_names = Set([Symbol(julia_method_name(m)) for m in info.methods if !_rust_refuses(m.skip_reason)])
         # Build method accessor expressions
         method_accessors = Expr[]
         for m in info.methods
             _rust_refuses(m.skip_reason) && continue  # no binding (#491)
-            method_sym = Symbol(m.name)
-            method_func = esc(Symbol(m.name))
+            method_sym = Symbol(julia_method_name(m))
+            method_func = esc(Symbol(julia_method_name(m)))
             # Use a fixed name 'args' – it's safe within the anonymous function scope
             # and avoids 'Module.##gensym' qualification issues
             push!(method_accessors, quote
@@ -1030,7 +1023,7 @@ function _inline_method_payload_wrapper(info::RustStructInfo, m::RustMethod, fna
     inner = body(:(self.lib_name), (:(self.ptr),), (:self, preserved...))
     return quote
         function $fname(self::$self, $(esc_args...))
-            RustCall.check_not_freed(self, $(info.name))
+            RustCall.check_not_freed(self, $(julia_struct_name(info)))
             $inner
         end
     end
