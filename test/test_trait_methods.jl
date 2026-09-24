@@ -183,6 +183,42 @@ end
             end
         end
 
+        @testset "a trait's fn new() -> i32 is a plain function (PR #513 review)" begin
+            # A method is a boxed constructor by its return type only: the
+            # trait's `new` returns an `i32` and the crate must build.
+            mktempdir() do dir
+                _tm_write_crate(dir)
+                lib = joinpath(dir, "src", "lib.rs")
+                write(lib, read(lib, String) * """
+
+                    pub trait Factory { fn new() -> i32; }
+
+                    #[julia]
+                    impl Factory for Buf {
+                        #[julia]
+                        fn new() -> i32 { 77 }
+                    }
+                    """)
+                _, _, manifest = RustCall._crate_manifest(dir; cfg_text = RustCall._rustc_cfg_text(),
+                                                          allow_cargo = false)
+                buf = only(RustCall.manifest_struct_infos(manifest))
+                fnew = only(m for m in buf.methods if m.trait_path == "Factory")
+                @test !fnew.is_constructor && !fnew.returns_boxed_struct
+                @test RustCall.julia_method_name(fnew) == "Factory_new"
+                bindings = @rust_crate dir name = "TraitFactoryBindings"
+                mod = getfield(bindings, :module_ref)
+                get(name) = Base.invokelatest(getfield, mod, name)
+                Buf = get(:Buf)
+                @test Base.invokelatest(get(:Factory_new), Buf) == 77
+                # The inherent constructor is untouched.
+                @test Base.invokelatest(getproperty, Base.invokelatest(Buf, Int32(5)), :n) == 5
+                try
+                    RustCall.unload_library(get(:_LIB_NAME); close = true)
+                catch
+                end
+            end
+        end
+
         @testset "a raw method name is written without its r# (PR #513 review)" begin
             mktempdir() do dir
                 _tm_write_crate(dir)

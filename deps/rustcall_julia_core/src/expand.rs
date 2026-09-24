@@ -382,11 +382,7 @@ fn methods_of(
                 }
             };
             let refusal = crate::refusal::method_refusal(site, m);
-            let shape = crate::extract::method_return_shape(struct_name, &m.func, symbols);
-            let returns_self = matches!(
-                &m.func.sig.output,
-                syn::ReturnType::Type(_, ty) if crate::types::is_self_type(ty, struct_name)
-            );
+            let shape = crate::extract::method_return_shape(struct_name, m, symbols);
             Method {
                 name: m.name(),
                 trait_path: m.trait_path(),
@@ -403,7 +399,7 @@ fn methods_of(
                 },
                 is_static: m.is_static(),
                 is_mutable: m.is_mutable(),
-                is_constructor: m.name() == "new" || returns_self,
+                is_constructor: m.is_constructor(struct_name),
                 is_classmethod: false,
                 vis: crate::attrs::visibility_string(&m.func.vis),
                 skip_reason: refusal.map(|r| r.skip_reason()).unwrap_or_default(),
@@ -417,7 +413,7 @@ fn methods_of(
                 ok_abi: shape.ok_abi,
                 err_abi: shape.err_abi,
                 inner_abi: shape.inner_abi,
-                returns_boxed_struct: crate::codegen::returns_boxed_struct(struct_name, &m.func),
+                returns_boxed_struct: m.returns_boxed_struct(struct_name),
                 args: fn_args(&m.func.sig),
                 return_type: return_type_to_string(&m.func.sig.output),
                 return_abi: crate::codegen::return_abi(&m.func.sig).to_string(),

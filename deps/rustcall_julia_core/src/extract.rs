@@ -11,7 +11,7 @@ use syn::{FnArg, Item, ItemFn, ItemImpl, Pat, ReturnType};
 
 use crate::attrs::{has_no_mangle, rustcall_attribute};
 use crate::cfg::{body_has_cfg, predicate_string, CfgSet};
-use crate::codegen::{returns_boxed_struct, symbol_stem};
+use crate::codegen::symbol_stem;
 
 use crate::manifest::{
     Arg, Attribute, Field, Function, Manifest, Method, Mode, ReturnKind, Struct,
@@ -122,17 +122,17 @@ pub struct MethodReturnShape {
 /// the type as written, so their manifest entry must keep saying `Plain`.
 pub fn method_return_shape(
     struct_name: &syn::Ident,
-    func: &syn::ImplItemFn,
+    m: &crate::model::MethodModel,
     wrapped: bool,
 ) -> MethodReturnShape {
-    let output = &func.sig.output;
+    let output = &m.func.sig.output;
     let mut shape = MethodReturnShape {
         kind: plain_return_kind(output),
         ..Default::default()
     };
     // A constructor (`new`, or anything returning `Self`) is boxed before the
     // `Result` lowering is ever consulted, exactly as in `method_spec`.
-    if !wrapped || returns_boxed_struct(struct_name, func) {
+    if !wrapped || m.returns_boxed_struct(struct_name) {
         return shape;
     }
     let ReturnType::Type(_, ty) = output else {
@@ -1449,7 +1449,7 @@ fn crate_struct_entry(
     let shapes: Vec<MethodReturnShape> = model
         .methods
         .iter()
-        .map(|m| method_return_shape(struct_name, &m.func, true))
+        .map(|m| method_return_shape(struct_name, m, true))
         .collect();
     // Each method's refusal is decided where the proc macro decides it: at the
     // block, which spells the struct as its header does (#503).
@@ -1478,7 +1478,7 @@ fn crate_struct_entry(
             // A trait's `Self`-returning function (`Default::default`,
             // `From::from`) is bound under its name, not as the struct's
             // constructor, which it would shadow (#506).
-            is_constructor: m.trait_path().is_empty() && returns_boxed_struct(struct_name, &m.func),
+            is_constructor: m.is_constructor(struct_name),
             is_classmethod: false,
             vis: crate::attrs::visibility_string(&m.func.vis),
             python_name: String::new(),
@@ -1495,7 +1495,7 @@ fn crate_struct_entry(
             ok_abi: shapes[i].ok_abi.clone(),
             err_abi: shapes[i].err_abi.clone(),
             inner_abi: shapes[i].inner_abi.clone(),
-            returns_boxed_struct: returns_boxed_struct(struct_name, &m.func),
+            returns_boxed_struct: m.returns_boxed_struct(struct_name),
             // The block's and its modules' predicates gate the method as much
             // as its own do (#300 review, #315).
             cfg: crate::cfg::predicate_string(&crate::cfg::effective_cfg_attrs(

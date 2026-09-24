@@ -204,7 +204,15 @@ fn the_manifest_symbols_are_the_ones_the_proc_macro_exports() {
             }
         }
     "#;
-    let dir = std::env::temp_dir().join(format!("rustcall_trait_methods_{}", std::process::id()));
+    compile_and_run("symbols", &expansion, main);
+}
+
+/// Compile a proc-macro expansion with `main` and run it.
+fn compile_and_run(label: &str, expansion: &str, main: &str) {
+    let dir = std::env::temp_dir().join(format!(
+        "rustcall_trait_methods_{}_{label}",
+        std::process::id()
+    ));
     fs::create_dir_all(&dir).unwrap();
     let input = dir.join("probe.rs");
     let binary = dir.join(format!("probe{}", std::env::consts::EXE_SUFFIX));
@@ -223,13 +231,13 @@ fn the_manifest_symbols_are_the_ones_the_proc_macro_exports() {
         .unwrap();
     assert!(
         compile.status.success(),
-        "{}",
+        "{label}: {}",
         String::from_utf8_lossy(&compile.stderr)
     );
     let run = Command::new(&binary).output().unwrap();
     assert!(
         run.status.success(),
-        "{}",
+        "{label}: {}",
         String::from_utf8_lossy(&run.stderr)
     );
     fs::remove_dir_all(dir).unwrap();
@@ -343,4 +351,84 @@ fn every_raw_method_name_is_bound_without_its_prefix() {
     for m in methods {
         assert!(!m.julia_name().contains('#'), "{m:?}");
     }
+}
+
+#[test]
+fn a_method_named_new_is_boxed_only_when_it_returns_the_type() {
+    // Whether a wrapper returns an owning `*mut Buf` follows the declared
+    // return type alone (PR #513 review): a trait's `fn new() -> i32` returns
+    // an `i32`, while an inherent `fn new(..) -> Self` and a trait's
+    // `fn build(..) -> Buf` return a handle, and so does (inline) a method
+    // returning the header's alias of the type.
+    let source = r#"
+        pub trait Factory { fn new() -> i32; fn build(n: i32) -> Self; }
+        #[julia] pub struct Buf { pub n: i32 }
+        #[julia] impl Buf {
+            #[julia] pub fn new(n: i32) -> Self { Buf { n } }
+            #[julia] pub fn count() -> i32 { 3 }
+        }
+        #[julia] impl Factory for Buf {
+            #[julia] fn new() -> i32 { 7 }
+            #[julia] fn build(n: i32) -> Buf { Buf { n: n + 1 } }
+        }
+    "#;
+    let manifest = extract(source, Mode::Crate).unwrap();
+    let methods = &manifest.structs[0].methods;
+    let row = |t: &str, n: &str| {
+        let m = method(methods, t, n);
+        (m.returns_boxed_struct, m.is_constructor)
+    };
+    assert_eq!(row("", "new"), (true, true));
+    assert_eq!(row("", "count"), (false, false));
+    assert_eq!(row("Factory", "new"), (false, false));
+    assert_eq!(row("Factory", "build"), (true, false));
+
+    // The proc macro emits what the manifest says: compiled and called.
+    let main = r#"
+        fn main() {
+            unsafe {
+                assert_eq!(rustcall_Buf_7Factory_new().assume_init(), 7);
+                let p = rustcall_Buf_new(4);
+                let built = rustcall_Buf_7Factory_build(1);
+                assert_eq!((*built).n, 2);
+                assert_eq!(rustcall_Buf_count().assume_init(), 3);
+                Buf_free(built);
+                Buf_free(p);
+            }
+        }
+    "#;
+    compile_and_run("new_by_type", &proc_macro_expansion(source), main);
+
+    // The inline flavour decides the same way, the header's alias included
+    // (a `rust"""` block may rename the struct in the impl's module, #342).
+    let inline = rustcall_julia_core::expand::expand(
+        "#[julia] pub struct Buf { pub n: i32 }
+         impl Buf { pub fn new() -> i32 { 7 } pub fn make(n: i32) -> Self { Buf { n } } }
+         pub mod ops {
+             use super::Buf as Meter;
+             impl Meter { pub fn twice(&self) -> Meter { Meter { n: self.n * 2 } } }
+         }",
+    )
+    .unwrap();
+    let im = &inline.manifest.structs[0].methods;
+    let flags = |n: &str| {
+        let m = im.iter().find(|m| m.name == n).unwrap();
+        (m.returns_boxed_struct, m.is_constructor)
+    };
+    assert_eq!(flags("new"), (false, false));
+    assert_eq!(flags("make"), (true, true));
+    assert_eq!(flags("twice"), (true, true));
+    let main = r#"
+        fn main() {
+            unsafe {
+                assert_eq!(rustcall_Buf_new().assume_init(), 7);
+                let p = rustcall_Buf_make(4);
+                let twice = ops::rustcall_Buf_twice(p);
+                assert_eq!((*twice).n, 8);
+                Buf_free(twice);
+                Buf_free(p);
+            }
+        }
+    "#;
+    compile_and_run("inline_new_by_type", &inline.source, main);
 }

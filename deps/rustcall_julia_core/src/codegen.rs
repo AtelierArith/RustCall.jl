@@ -2272,8 +2272,28 @@ pub fn is_marked_module(item_mod: &ItemMod) -> bool {
 /// method (static or instance) returning `Self` / the struct type. This is what
 /// Julia needs to know; both codegen flavours box these cases.
 pub fn returns_boxed_struct(struct_name: &Ident, method: &syn::ImplItemFn) -> bool {
-    method.sig.ident == "new"
-        || matches!(&method.sig.output, ReturnType::Type(_, ty) if is_self_type(ty, struct_name))
+    returns_own_type(&method.sig.output, struct_name, None)
+}
+
+/// Whether a method returns the implementing type by value, so its wrapper
+/// hands Julia an owning `*mut Struct` (`WrapperReturn::Boxed`): the declared
+/// return type is `Self`, the struct's name, or the impl header's own type
+/// (`own_ty`, which a `use .. as` may have renamed). The one rule for the
+/// manifest's `returns_boxed_struct` / `is_constructor` and the codegen's
+/// boxed return, in both flavours (PR #513 review).
+///
+/// Decided by the return type alone, never by the method's name: a `fn new()
+/// -> i32` (a trait's, or an inherent helper) returns an `i32`, and boxing it
+/// as a `*mut Struct` does not compile.
+pub fn returns_own_type(output: &ReturnType, struct_name: &Ident, own_ty: Option<&Type>) -> bool {
+    let ReturnType::Type(_, ty) = output else {
+        return false;
+    };
+    is_self_type(ty, struct_name)
+        || own_ty
+            .and_then(last_ident)
+            .zip(last_ident(ty))
+            .is_some_and(|(own, returned)| own == returned && matches!(unparen(ty), Type::Path(_)))
 }
 
 /// Generate the FFI wrapper for a method (crate flavour).
@@ -2494,10 +2514,9 @@ fn method_returns_borrowed_str(m: &MethodModel) -> bool {
 }
 
 fn inline_method_is_ctor(struct_name: &Ident, m: &MethodModel) -> bool {
-    // Historical inline rule: `new`, or any method returning Self / the struct type
-    // (static or not) is treated as returning a boxed struct.
-    m.name() == "new"
-        || matches!(&m.func.sig.output, ReturnType::Type(_, ty) if is_self_type(ty, struct_name))
+    // A method returning `Self` / the struct type (static or not) hands Julia
+    // a boxed struct; the name decides nothing (PR #513 review).
+    m.returns_boxed_struct(struct_name)
 }
 
 /// Generate the `extern "C"` wrappers for a non-generic inline struct: the

@@ -37,7 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keeps the name and each trait's is bound as `<Trait>_<name>` (`Far_m`). That
   name is decided once by the scan and carried as `Method.julia_name`
   (additive within manifest schema 0.7). A trait's `Self`-returning function
-  is bound under its name, not as a second constructor. The scan refuses a
+  is bound under its name, not as a second constructor. Whether a method
+  returns a boxed struct (and is a constructor) is read from its return type
+  alone, never its name, in both flavours: a `fn new() -> i32` returns an
+  `i32` (it used to be boxed as `*mut Struct`, which did not compile). The scan refuses a
   crate where two traits ending in one name wrap a method of one name (a
   duplicate symbol), or where a qualified name is already taken.
   `boundary_report` examines every such method. A trait impl of a type

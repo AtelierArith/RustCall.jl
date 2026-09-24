@@ -13,7 +13,8 @@ A method of a `#[julia]` struct as recorded in the manifest.
 - `symbol`: exported wrapper symbol (`rustcall_<Struct>_<method>`, #279); empty
   for generic structs, and for a method built by hand rather than read from a
   manifest, where the emitters fall back to `method_wrapper_symbol`
-- `is_constructor`: static `new`, or any method returning `Self`/the struct type
+- `is_constructor`: an inherent method returning `Self` / the struct type, from the
+  manifest (never from the name: a `fn new() -> i32` is not one, PR #513 review)
 - `returns_boxed_struct`: the wrapper boxes the result and returns `*mut Struct`
   (manifest `Method.returns_boxed_struct`, schema 4). Julia used to re-derive
   this by comparing `return_type` against `"Self"` (#276)
@@ -102,7 +103,7 @@ end
 
 function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::Vector{String},
                     arg_types::Vector{String}, return_type::String;
-                    symbol::String = "", is_constructor::Bool = (name == "new" || return_type == "Self"),
+                    symbol::String = "", is_constructor::Bool = (return_type == "Self"),
                     generic_wrapper::String = "",
                     arg_abis::Vector{String} = _default_arg_abis(arg_types),
                     return_abi::String = _default_return_abi(return_type, arg_abis),
