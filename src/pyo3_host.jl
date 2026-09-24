@@ -168,7 +168,10 @@ function build_pyo3_extension(crate_path::AbstractString;
     # full key before it is looked at: a key whose short id collides is refused
     # rather than handed this key's module. The lock is held from the lookup
     # through the publish, so two builds of one key take turns (#504).
-    return with_owned_short_name(artifact.dir, artifact.key;
+    # `:clear`: an unrecorded directory (a pre-#504 cache entry) may hold a
+    # module built for another key that shares the short id, so it is emptied
+    # and rebuilt, never adopted (#507 review).
+    return with_owned_short_name(artifact.dir, artifact.key; foreign = :clear,
                                  what = "the PyO3 extension of `$(path)`") do
         if cache_enabled && isfile(artifact.lib_path)
             @debug "Using cached PyO3 extension module" key = artifact_short_id(artifact.key, 8) # short-id: label

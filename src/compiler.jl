@@ -221,8 +221,13 @@ function compile_rust_to_shared_lib(code::String; compiler::RustCompiler = get_d
         tmp_dir = compiler.debug_dir
         mkpath(tmp_dir)
         base_name = _unique_source_name(code, compiler)
+        # `:clear`: files of this name without a record (from a RustCall that
+        # kept none) are RustCall's own debug outputs, which this compilation
+        # rewrites anyway; they are removed rather than left to look like its
+        # output. Nothing else in `debug_dir` is touched.
         return with_owned_short_name(joinpath(tmp_dir, base_name), stable_content_hash(code);
-                                     stem = true, what = "this Rust code") do
+                                     stem = true, foreign = :clear,
+                                     what = "this Rust code") do
             _compile_rust_to_shared_lib(code, compiler, tmp_dir, base_name)
         end
     end

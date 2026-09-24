@@ -69,7 +69,30 @@ _short_name_lock(path::AbstractString, stem::Bool) =
     stem ? String(path) * ".rustcall-lock" : joinpath(String(path), SHORT_NAME_LOCK_FILE)
 
 """
-    claim_short_name!(path, key; stem = false, what = "artifact", wait = 10.0)
+    SHORT_NAME_CLAIM_LOCK
+
+The lock file, in the parent directory of short-named locations, that a claim
+holds while it decides whether an unrecorded location is empty and records its
+owner (`claim_short_name!`).
+"""
+const SHORT_NAME_CLAIM_LOCK = ".rustcall-claim.lock"
+
+# What is already at an unrecorded short name: the directory's entries, or the
+# files of a stem (`<stem>.*` and `lib<stem>.*`, the source and library a debug
+# build writes).
+function _short_name_contents(path::AbstractString, stem::Bool)
+    if !stem
+        return isdir(path) ? readdir(String(path); join = true) : String[]
+    end
+    dir, base = dirname(String(path)), basename(String(path))
+    isdir(dir) || return String[]
+    return [joinpath(dir, f) for f in readdir(dir)
+            if startswith(f, base * ".") || startswith(f, "lib" * base * ".")]
+end
+
+"""
+    claim_short_name!(path, key; stem = false, foreign = :refuse, what = "artifact",
+                      wait = 10.0)
 
 Record `key` as the owner of the persistent short name `path`, or confirm it
 already is. A name another key owns is refused with a `RustError`, never
@@ -84,15 +107,55 @@ compares the full key. A check-then-rename was not that: both could pass the
 check (#495 review). The winner writes the key after creating the file, so a
 loser that finds it empty or partial waits `wait` seconds for the whole key
 before deciding.
+
+**A location with contents but no record is foreign, never adopted.** It was
+written by a RustCall that kept no record (the PyO3 host cache before #504), or
+by something else, for a key nobody can name any more; claiming it as it stood
+would hand its contents to whichever key asked first (#507 review). Only an
+empty or absent location is claimed as it is. For anything else `foreign`
+decides: `:clear` removes the contents first — for locations whose contents are
+RustCall's own cache, rebuilt on demand — and `:refuse` raises. The decision and
+the record are made under `SHORT_NAME_CLAIM_LOCK` in the parent directory, so a
+concurrent claimant can neither see the contents half-removed nor lose a record
+to another claimant's clearing; a location that already has a record never takes
+that lock.
 """
 function claim_short_name!(path::AbstractString, key::AbstractString;
-                           stem::Bool = false, what::AbstractString = "artifact",
-                           wait::Real = 10.0)
-    stem ? mkpath(dirname(String(path))) : mkpath(String(path))
+                           stem::Bool = false, foreign::Symbol = :refuse,
+                           what::AbstractString = "artifact", wait::Real = 10.0)
+    foreign in (:clear, :refuse) || throw(ArgumentError(
+        "`foreign` must be :clear or :refuse, got $(repr(foreign))"))
+    parent = stem ? dirname(String(path)) : dirname(rstrip(String(path), ['/', '\\']))
+    mkpath(parent)
     record = _short_name_record(path, stem)
-    if _claim_lockfile!(record)
-        write(record, key)
-        return nothing
+    if !isfile(record)
+        claimed = with_short_name_lock(joinpath(parent, SHORT_NAME_CLAIM_LOCK)) do
+            # Re-checked under the lock: another claimant may have recorded it.
+            isfile(record) && return false
+            contents = _short_name_contents(path, stem)
+            if !isempty(contents)
+                foreign === :refuse && throw(RustError(
+                    "RustCall's short-named location `$(path)` holds files but no owner " *
+                    "record, so it cannot be told apart from another key's (it may predate " *
+                    "the record). Remove it and build again."))
+                for entry in contents
+                    try
+                        rm(entry; recursive = true, force = true)
+                    catch e
+                        e isa Base.IOError || rethrow()
+                        throw(RustError(
+                            "RustCall's short-named location `$(path)` holds files but no " *
+                            "owner record, and `$(entry)` could not be removed ($(e)). " *
+                            "Remove it (close any session that has it loaded) and build again."))
+                    end
+                end
+            end
+            stem || mkpath(String(path))
+            _claim_lockfile!(record) || return false
+            write(record, key)
+            return true
+        end
+        claimed && return nothing
     end
     deadline = time() + Float64(wait)
     owner = strip(read(record, String))
@@ -136,17 +199,18 @@ function with_short_name_lock(f::Function, lock_path::AbstractString; poll::Real
 end
 
 """
-    with_owned_short_name(f, path, key; stem = false, what = "artifact", wait = 10.0,
-                          poll = 0.05)
+    with_owned_short_name(f, path, key; stem = false, foreign = :refuse,
+                          what = "artifact", wait = 10.0, poll = 0.05)
 
 `claim_short_name!(path, key)`, then `f()` under the name's lock: full-key
 ownership for the lifetime of the use — a colliding key is refused, and two
 uses by the owning key serialize from build start through copy-out.
 """
 function with_owned_short_name(f::Function, path::AbstractString, key::AbstractString;
-                               stem::Bool = false, what::AbstractString = "artifact",
+                               stem::Bool = false, foreign::Symbol = :refuse,
+                               what::AbstractString = "artifact",
                                wait::Real = 10.0, poll::Real = 0.05)
-    claim_short_name!(path, key; stem = stem, what = what, wait = wait)
+    claim_short_name!(path, key; stem = stem, foreign = foreign, what = what, wait = wait)
     return with_short_name_lock(f, _short_name_lock(path, stem); poll = poll)
 end
 

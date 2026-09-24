@@ -103,6 +103,86 @@ end
     end
 end
 
+# #507 review: a location with contents but no owner record — a PyO3 host cache
+# entry written before #504 kept none — was claimed by whichever key asked
+# first, which then found the old module in it: possibly built for another key
+# that shares the short id. Such a location is foreign now: `:clear` empties it
+# before recording the owner, `:refuse` raises, and only an empty or absent one
+# is claimed as it stands.
+@testset "an unrecorded location is never adopted (#507 review)" begin
+    legacy!(dir) = (mkpath(dir); write(joinpath(dir, "ext.so"), "legacy"); dir)
+    for key in (SN_K2, SN_K1)       # a colliding key, and the very key it had
+        mktempdir() do cache
+            dir = legacy!(RustCall.short_name_path(joinpath(cache, "pyo3-host"), SN_K1))
+            seen = RustCall.with_owned_short_name(dir, key; foreign = :clear) do
+                isfile(joinpath(dir, "ext.so"))
+            end
+            @test !seen
+            @test read(joinpath(dir, RustCall.SHORT_NAME_KEY_FILE), String) == key
+
+            dir2 = legacy!(joinpath(cache, "other", "0123456789abcdef"))
+            @test_throws RustCall.RustError RustCall.claim_short_name!(dir2, key)
+            @test isfile(joinpath(dir2, "ext.so"))
+            @test !isfile(joinpath(dir2, RustCall.SHORT_NAME_KEY_FILE))
+        end
+    end
+    # An empty or absent location is claimed as before.
+    mktempdir() do root
+        empty = mkpath(joinpath(root, "0123456789abcdef"))
+        @test RustCall.claim_short_name!(empty, SN_K1) === nothing
+        @test RustCall.claim_short_name!(joinpath(root, "fedcba9876543210"), SN_K1) === nothing
+    end
+    # Claimants racing on one unrecorded directory: one owner, its record
+    # survives every other claimant's clearing, and the old contents are gone.
+    mktempdir() do root
+        dir = legacy!(joinpath(root, "0123456789abcdef"))
+        keys = ["0123456789abcdef" * string(i; base = 16, pad = 48) for i in 1:16]
+        outcome = Vector{Any}(undef, length(keys))
+        tasks = [Threads.@spawn begin
+                     try
+                         RustCall.claim_short_name!(dir, keys[i]; foreign = :clear, wait = 5)
+                         outcome[i] = :won
+                     catch e
+                         outcome[i] = e
+                     end
+                 end for i in eachindex(keys)]
+        foreach(wait, tasks)
+        winners = findall(==(:won), outcome)
+        @test length(winners) == 1
+        @test all(o -> o === :won || o isa RustCall.RustError, outcome)
+        @test read(joinpath(dir, RustCall.SHORT_NAME_KEY_FILE), String) == keys[only(winners)]
+        @test !isfile(joinpath(dir, "ext.so"))
+    end
+    # The PyO3 host path clears (its cache is RustCall's own).
+    @test occursin("with_owned_short_name(artifact.dir, artifact.key; foreign = :clear",
+                   _sn_src("pyo3_host.jl"))
+    # A crate target directory without a record: emptied, then owned.
+    mktempdir() do root
+        withenv("RUSTCALL_CACHE_DIR" => joinpath(root, "cache")) do
+            crate = mkpath(joinpath(root, "crate"))
+            base = legacy!(RustCall.crate_target_directory(crate))
+            @test RustCall._crate_target!(crate) == base
+            @test !isfile(joinpath(base, "ext.so"))
+            @test read(joinpath(base, RustCall.CRATE_TARGET_KEY_FILE), String) ==
+                  RustCall.artifact_key(RustCall.crate_target_id(crate))
+        end
+    end
+    # A debug stem: only the files of that name go; the rest of `debug_dir` stays.
+    mktempdir() do debug_dir
+        stem = joinpath(debug_dir, "rust_0123456789ab")
+        write(stem * ".rs", "legacy")
+        write(joinpath(debug_dir, "librust_0123456789ab.dylib"), "legacy")
+        write(joinpath(debug_dir, "notes.txt"), "mine")
+        write(joinpath(debug_dir, "rust_0123456789abcd.rs"), "another stem")
+        @test RustCall.claim_short_name!(stem, SN_K1; stem = true, foreign = :clear) === nothing
+        @test !isfile(stem * ".rs")
+        @test !isfile(joinpath(debug_dir, "librust_0123456789ab.dylib"))
+        @test read(joinpath(debug_dir, "notes.txt"), String) == "mine"
+        @test isfile(joinpath(debug_dir, "rust_0123456789abcd.rs"))
+        @test read(stem * ".rustcall-key", String) == SN_K1
+    end
+end
+
 @testset "crate target directory: a colliding crate is refused (#504)" begin
     mktempdir() do root
         withenv("RUSTCALL_CACHE_DIR" => joinpath(root, "cache")) do

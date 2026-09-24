@@ -834,7 +834,9 @@ const CRATE_TARGET_KEY_FILE = SHORT_NAME_KEY_FILE
 # the owner record, then a comparison of the full key.
 _claim_crate_target!(base::AbstractString, key::AbstractString,
                      crate_path::AbstractString; wait::Real = 10.0) =
-    claim_short_name!(base, key; what = "crate `$(crate_path)`", wait = wait)
+    # `:clear`: a target directory holds only Cargo's output for RustCall's own
+    # builds, which Cargo rebuilds, so an unrecorded one is emptied, not adopted.
+    claim_short_name!(base, key; foreign = :clear, what = "crate `$(crate_path)`", wait = wait)
 
 """
     TARGET_LAST_USED_STAMP
