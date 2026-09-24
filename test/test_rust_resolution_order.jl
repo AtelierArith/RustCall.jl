@@ -194,6 +194,40 @@ _ro_block(m::Module, rust::AbstractString) =
         @test check([sig("r#for"; generic = true)]) === nothing
     end
 
+    @testset "a generated method calls its wrapper symbol, not a name" begin
+        # A method's generated Julia wrapper calls the exported symbol
+        # `rustcall_<Struct>_<method>`. It went through the user-facing name
+        # resolution, which asks the block's generics first, so a generic free
+        # function whose Julia name happened to be that symbol captured the
+        # method (PR #521 review). The generics sit in a `#[julia] mod`, where
+        # they are legal Rust beside the wrappers at the crate root.
+        m = _ro_module(:ResolutionOrderWrapperSymbol)
+        _ro_block(m, """
+            #[julia]
+            pub struct Ro520S { pub v: i32 }
+            #[julia]
+            impl Ro520S {
+                pub fn new(v: i32) -> Self { Ro520S { v } }
+                pub fn scale(x: i32) -> i32 { x * 2 }
+                pub fn twice(&self) -> i32 { self.v * 2 }
+            }
+            #[julia]
+            pub mod g {
+                #[julia]
+                pub fn rustcall_Ro520S_scale<T: Copy>(x: T) -> T { x }
+                #[julia]
+                pub fn rustcall_Ro520S_twice<T: Copy>(x: T) -> T { x }
+            }
+            """)
+        # The methods reach their own wrappers.
+        @test _ro_eval(m, :(scale(Ro520S, Int32(21)))) === Int32(42)
+        obj = _ro_eval(m, :(Ro520S(Int32(5))))
+        @test _ro_eval(m, :(twice($obj))) === Int32(10)
+        # The generic keeps its user-facing name: `@rust` still reaches it.
+        @test _ro_eval(m, :(@rust rustcall_Ro520S_scale(Int32(3))::Int32)) === Int32(3)
+        @test _ro_eval(m, :(@rust rustcall_Ro520S_scale(2.5))) === 2.5
+    end
+
     @testset "a re-registered block publishes its generics with its metadata" begin
         # A block run again while its library is loaded re-registers the
         # library's metadata. The generics used to be published in a second

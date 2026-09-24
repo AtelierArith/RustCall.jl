@@ -65,6 +65,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   re-registered or reloaded while calls run is never visible without its own
   generics. A precompiled block rebound to a reloaded library name moves its
   key and its order in one transaction, and the resolver reads both in one.
+  A generated method wrapper calls its exported symbol (`rustcall_S_m`)
+  directly (`_rust_call_symbol`) and never through this name resolution, so a
+  generic free function whose Julia name equals that symbol cannot capture
+  the method.
 - **A return type that only ends in the impl header's name is not the struct**
   ([#518](https://github.com/AtelierArith/RustCall.jl/issues/518)). Whether
   a method returns its own type (and so is boxed as `*mut Struct`, and may be

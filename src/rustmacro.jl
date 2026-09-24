@@ -521,7 +521,31 @@ function _rust_call_typed(lib_name::String, func_name::String, ret_type::Type, a
     resolution = resolve_rust_call(nothing, lib_name, func_name)
     resolution isa GenericFunctionInfo && return call_generic_function(resolution, args...)
     _, target = resolution
+    return _call_resolved_typed(target, func_name, ret_type, args...)
+end
 
+"""
+    _rust_call_symbol(lib_name, symbol, ret_type, args...)
+
+Call the exported FFI symbol `symbol` — a generated wrapper such as
+`rustcall_S_scale` — with the return type its generator spliced in.
+
+Not a name `@rust` resolves: a generated wrapper already knows the exact symbol
+it calls, so it never goes through `resolve_rust_call`, whose job is to decide
+what a user-facing *name* means and which consults the generic registries
+first. Routing wrappers through it let a generic free function whose Julia
+name happened to equal a wrapper symbol (`fn rustcall_S_scale<T>` beside
+`S::scale`) capture the method call (#520 review). The symbol is resolved as
+the one snapshot `resolve_call_target` takes, starting at `lib_name`.
+"""
+function _rust_call_symbol(lib_name::String, symbol::String, ret_type::Type, args...)
+    target = resolve_call_target(lib_name, symbol)
+    return _call_resolved_typed(target, symbol, ret_type, args...)
+end
+
+# Call a resolved snapshot with a declared return type: the annotation check,
+# then the call and its panic channel, all from that one snapshot.
+function _call_resolved_typed(target, func_name::String, ret_type::Type, args...)
     # An annotation that contradicts the manifest is an error, not an override
     # (#245). `@rust f(x)::Float64` on a function the manifest records as
     # `-> i32` used to reinterpret the 32-bit result as a `Float64` and return
