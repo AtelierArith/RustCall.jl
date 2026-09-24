@@ -1529,6 +1529,8 @@ function _manifest_method(m)
         # none (an inline-mode impl), additive within schema 6 (#275 Phase 3).
         attribute = Symbol(something(_mstr_or_nothing(m, "attribute"), "none")),
         is_classmethod = _mbool(m, "is_classmethod"),
+        # A trait impl's method, by its trait (additive within schema 0.7, #503).
+        trait_path = _mstr(m, "trait_path"),
         # A generic struct's method wrapper, by the name the extractor gave it
         # (module-qualified, #462); omitted for every other method.
         generic_wrapper_name = _mstr(m, "generic_wrapper_name"),

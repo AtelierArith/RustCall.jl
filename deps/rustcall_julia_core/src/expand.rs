@@ -389,6 +389,7 @@ fn methods_of(
             );
             Method {
                 name: m.name(),
+                trait_path: m.trait_path(),
                 symbol: if symbols {
                     crate::codegen::method_symbol_of(stem, &m.name())
                 } else {

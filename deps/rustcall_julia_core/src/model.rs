@@ -92,6 +92,29 @@ impl MethodModel {
         self.func.sig.ident.to_string()
     }
 
+    /// The trait of the block the method was written in, as the header
+    /// spells it (`tr::Limits`), or empty for an inherent method: the
+    /// manifest's `Method.trait_path` (#503).
+    pub fn trait_path(&self) -> String {
+        self.host
+            .as_ref()
+            .and_then(|h| h.trait_.as_ref())
+            .map(|path| {
+                crate::types::type_to_string(&syn::Type::Path(syn::TypePath {
+                    qself: None,
+                    path: path.clone(),
+                }))
+            })
+            .unwrap_or_default()
+    }
+
+    /// Whether `other` is this method: the same name in the same trait (or
+    /// both inherent). Two blocks may define a method of one name only when
+    /// one is a trait impl, and then both are distinct methods (#503 review).
+    pub fn is_same_method(&self, other: &MethodModel) -> bool {
+        self.name() == other.name() && self.trait_path() == other.trait_path()
+    }
+
     /// Whether the method's block sits in the same module as its struct, which
     /// is where `struct_module_path` points. A method with no recorded site is
     /// its struct's neighbour (#342).
@@ -210,7 +233,7 @@ impl StructModel {
                 module_path: path.to_vec(),
                 self_ty: (*imp.self_ty).clone(),
             });
-            if !self.methods.iter().any(|seen| seen.name() == m.name()) {
+            if !self.methods.iter().any(|seen| seen.is_same_method(&m)) {
                 self.methods.push(m);
             }
         }

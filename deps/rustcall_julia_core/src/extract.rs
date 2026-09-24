@@ -1178,8 +1178,10 @@ impl CrateScan {
             if crate::refusal::method_refusal(site, &m).is_none() {
                 continue;
             }
+            // Identified by trait and name: an inherent method, or another
+            // trait's, of the same name is a different method (#503 review).
             let model = &mut self.structs[julia].model;
-            if !model.methods.iter().any(|seen| seen.name() == m.name()) {
+            if !model.methods.iter().any(|seen| seen.is_same_method(&m)) {
                 model.methods.push(m);
             }
         }
@@ -1409,6 +1411,7 @@ fn crate_struct_entry(
             .map(|r| r.skip_reason())
             .unwrap_or_default(),
             name: m.name(),
+            trait_path: m.trait_path(),
             symbol: crate::codegen::method_symbol_of(&stem, &m.name()),
             is_static: m.is_static,
             is_mutable: m.is_mutable,

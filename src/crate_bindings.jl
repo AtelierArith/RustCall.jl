@@ -2899,7 +2899,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
                                         bare::Bool = true)
     # The item every position below is filed under (#454), named before the
     # argument plan, which records first.
-    _boundary_item!(_boundary_label(info, method.name))
+    _boundary_item!(_boundary_label(info, method))
     # A method the Rust codegen refuses gets no wrapper (#491).
     _rust_refused_item!(method.skip_reason, method.name) && return Expr(:block)
     struct_name = Symbol(info.name)
@@ -5317,7 +5317,7 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
                            strict::Symbol = FFI_STRICT[], bare::Bool = true)
     # The item every position below is filed under (#454), named before the
     # argument plan, which records first.
-    _boundary_item!(_boundary_label(struct_info, method.name))
+    _boundary_item!(_boundary_label(struct_info, method))
     # A method the Rust codegen refuses gets no wrapper (#491).
     _rust_refused_item!(method.skip_reason, method.name) && return ""
     struct_name = struct_info.name

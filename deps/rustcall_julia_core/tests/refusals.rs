@@ -911,3 +911,60 @@ fn rustc_reports_exactly_the_refusal() {
     }
     let _ = fs::remove_dir_all(dir);
 }
+
+/// A refused trait-impl method is recorded under its trait, so a method of
+/// the same name — inherent, or of another trait impl — never merges it away
+/// (#503 review): the manifest keeps both, the refused one with its
+/// `skip_reason` and `trait_path`, whichever block comes first.
+#[test]
+fn a_refused_trait_method_survives_a_same_named_method() {
+    let traits = "pub mod tr {
+                      pub trait Limits { const N: usize; fn limit(&self, a: &[u8; 2]) -> i32; }
+                      pub trait Other { fn limit(&self) -> i32; }
+                  }
+                  #[julia] pub struct Buf { pub n: i32 }";
+    let inherent = "#[julia] impl Buf { #[julia] pub fn limit(&self) -> i32 { self.n } }";
+    let other = "#[julia] impl tr::Other for Buf { #[julia] fn limit(&self) -> i32 { self.n } }";
+    let refused = "#[julia] impl tr::Limits for Buf {
+                       const N: usize = 2;
+                       #[julia] fn limit(&self, a: &[u8; Self::N]) -> i32 { a.len() as i32 + self.n }
+                   }";
+    for (label, blocks) in [
+        ("inherent first", vec![inherent, refused]),
+        ("refused first", vec![refused, inherent]),
+        (
+            "inherent, then another trait",
+            vec![inherent, other, refused],
+        ),
+    ] {
+        let source = format!("{traits}\n{}", blocks.join("\n"));
+        let manifest = extract(&source, Mode::Crate).unwrap();
+        let buf = manifest.structs.iter().find(|s| s.name == "Buf").unwrap();
+        let limits: Vec<(&str, &str)> = buf
+            .methods
+            .iter()
+            .filter(|m| m.name == "limit")
+            .map(|m| (m.trait_path.as_str(), m.skip_reason.as_str()))
+            .collect();
+        assert!(
+            limits.contains(&("", "")),
+            "{label}: the inherent method is gone: {limits:?}"
+        );
+        assert!(
+            limits.contains(&("tr::Limits", "self_trait_path:tr::Limits")),
+            "{label}: the refused trait method is gone: {limits:?}"
+        );
+        // A trait impl's wrapped methods are not described (#506).
+        assert!(
+            !limits.iter().any(|(t, _)| *t == "tr::Other"),
+            "{label}: {limits:?}"
+        );
+        assert_eq!(limits.len(), 2, "{label}: {limits:?}");
+        let expansion = crate_expansion(&source).to_string();
+        assert_eq!(
+            expansion.matches("compile_error").count(),
+            1,
+            "{label}: {expansion}"
+        );
+    }
+}

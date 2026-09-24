@@ -229,6 +229,8 @@ end
                 #[julia]
                 pub fn ok(&self) -> i32 { self.n }
                 #[julia]
+                pub fn limit(&self) -> i32 { self.n }
+                #[julia]
                 pub fn other(&self, o: &same!(Self)) -> i32 { o.n }
                 #[julia]
                 pub fn first(s: &str) -> &u8 { &s.as_bytes()[0] }
@@ -259,7 +261,7 @@ end
             "Buf::other" => "unspellable_self",
             "Buf::first" => "lowered_str_borrow",
             "Buf::shown" => "impl_trait",
-            "Buf::limit" => "self_trait_path",
+            "<Buf as tr::Limits>::limit" => "self_trait_path",
             "a::danger" => "unsafe_fn",
         )
         # A refused struct is reported once, at its own entry point; its
@@ -279,7 +281,18 @@ end
         @test RustCall.partition_skip_reason(w.skip_reason)[1] == "generic_signature"
         @test RustCall.partition_skip_reason(only(w.methods).skip_reason)[1] == "generic_signature"
         buf = only(s for s in structs if s.name == "Buf")
-        @test Set(m.name for m in buf.methods if isempty(m.skip_reason)) == Set(["ok"])
+        @test Set(m.name for m in buf.methods if isempty(m.skip_reason)) == Set(["ok", "limit"])
+        # An inherent `limit` and the refused `tr::Limits::limit` are two
+        # entries, told apart by their trait (#503 review): the refused one is
+        # reported, the inherent one is examined like any method.
+        limits = [(m.trait_path, m.skip_reason) for m in buf.methods if m.name == "limit"]
+        @test Set(limits) == Set([("", ""), ("tr::Limits", "self_trait_path:tr::Limits")])
+        collect_report = RustCall._collect_boundary() do
+            RustCall._crate_wrapper_exprs(RustCall._module_tree(
+                RustCall.manifest_function_signatures(manifest), structs))
+        end
+        @test any(p -> p.item == "Buf::limit" && p.position == "return" && p.reason === nothing,
+                  collect_report.positions)
         # The refused struct binds no name, and the module lays out.
         signatures = RustCall.manifest_function_signatures(manifest)
         tree = RustCall._module_tree(signatures, structs)

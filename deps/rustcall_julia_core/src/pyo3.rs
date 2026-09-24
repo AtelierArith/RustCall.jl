@@ -1679,6 +1679,7 @@ fn method_entry(
     };
 
     Method {
+        trait_path: String::new(),
         name: name.clone(),
         symbol: crate::codegen::method_symbol_of(&struct_stem, &name),
         // `#[staticmethod]` and `#[classmethod]` are both static from the C

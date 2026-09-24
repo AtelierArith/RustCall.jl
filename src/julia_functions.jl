@@ -389,6 +389,11 @@ _boundary_label(sig::RustFunctionSignature) = qualified_name(sig.module_path, si
 _boundary_label(info::RustStructInfo) = qualified_name(info.module_path, info.name)
 _boundary_label(info::RustStructInfo, member::AbstractString) =
     string(qualified_name(info.module_path, info.name), "::", member)
+# A method: `S::m`, or `<S as tr::Trait>::m` for a trait impl's, so a refused
+# trait method and an inherent method of the same name are two items (#503).
+_boundary_label(info::RustStructInfo, m::RustMethod) =
+    isempty(m.trait_path) ? _boundary_label(info, m.name) :
+    string("<", qualified_name(info.module_path, info.name), " as ", m.trait_path, ">::", m.name)
 
 """
     _ffi_function_return(sig) -> FFIContract

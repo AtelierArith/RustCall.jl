@@ -787,6 +787,15 @@ pub struct Method {
     /// its flavour's derivation. Additive within schema 7.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub string_owner: String,
+    /// The trait of the impl block the method was written in, as the header
+    /// spells it (`tr::Limits`); empty — and then omitted — for an inherent
+    /// method. A method is identified by `(trait_path, name)`: a refused
+    /// `#[julia]` method of a trait impl is recorded on its struct (#503) and
+    /// must not be merged with an inherent method, or another trait's, of the
+    /// same name. Additive within schema 0.7. Describing a trait impl's
+    /// wrapped methods is #506.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub trait_path: String,
     /// How each `Result` / `Option` payload travels: `""` as written,
     /// `"string"` for an owned `<owner>_RustCallOwnedString` buffer released
     /// through `<owner>_free_rust_string` (schema 6, #268), the owner being

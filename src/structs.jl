@@ -88,6 +88,11 @@ struct RustMethod
     # schema 0.6, #462) — `<ffi_name>_<method>`, module-qualified like every
     # other name of the struct. Empty otherwise; see `_generic_method_wrapper_name`.
     generic_wrapper_name::String
+    # The trait of the impl block the method was written in (`tr::Limits`),
+    # empty for an inherent method (`Method.trait_path`, additive within
+    # schema 0.7, #503): a refused trait-impl method is listed beside an
+    # inherent method of the same name, and the report tells them apart.
+    trait_path::String
 end
 
 function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::Vector{String},
@@ -112,7 +117,8 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
                     callback_args::Vector{Vector{String}} = Vector{String}[String[] for _ in arg_names],
                     callback_returns::Vector{String} = fill("", length(arg_names)),
                     is_classmethod::Bool = false,
-                    generic_wrapper_name::String = "")
+                    generic_wrapper_name::String = "",
+                    trait_path::String = "")
     length(python_defaults) == length(arg_names) ||
         throw(ArgumentError("python_defaults must have one entry per argument"))
     length(python_kinds) == length(arg_names) ||
@@ -124,7 +130,8 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
                returns_boxed_struct, vis, skip_reason, python_name, accessor,
                return_kind, ok_type, err_type, inner_type, ok_abi, err_abi, inner_abi,
                string_owner, attribute, python_defaults, python_kinds,
-               callback_args, callback_returns, is_classmethod, generic_wrapper_name)
+               callback_args, callback_returns, is_classmethod, generic_wrapper_name,
+               trait_path)
 end
 
 """
@@ -492,7 +499,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
             # no binding; the report names the refusal (#491). Nothing else of
             # a generic struct is examined, so naming the item here files
             # only that.
-            _boundary_item!(_boundary_label(info, m.name))
+            _boundary_item!(_boundary_label(info, m))
             _rust_refused_item!(m.skip_reason, m.name) && continue
             fname = esc(Symbol(m.name))
             wrapper_name = _generic_method_wrapper_name(info, m)
@@ -663,7 +670,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
         wrapper_name = method_wrapper_symbol(struct_stem, m)
         # The item every position below is filed under (#454), named before
         # the argument plan, which records first.
-        _boundary_item!(_boundary_label(info, m.name))
+        _boundary_item!(_boundary_label(info, m))
         # A method the Rust codegen refuses gets no wrapper (#491).
         _rust_refused_item!(m.skip_reason, m.name) && continue
 
