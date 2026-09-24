@@ -1091,7 +1091,8 @@ function _register_manifest(expanded, lib_name::String; compiler = nothing,
     _manifest_seam(:registered, lib_name)
 
     for info in manifest_struct_infos(manifest)
-        register_generic_struct_wrappers(info, expanded.source; compiler, cargo = cargo_context)
+        register_generic_struct_wrappers(info, expanded.source; compiler, cargo = cargo_context,
+                                         lib_name)
     end
     for info in generics
         @debug "Registered generic function: $(info.name)" type_params = info.type_params

@@ -69,6 +69,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directly (`_rust_call_symbol`) and never through this name resolution, so a
   generic free function whose Julia name equals that symbol cannot capture
   the method.
+- **Two modules' generic structs of one name are each their own**
+  ([#522](https://github.com/AtelierArith/RustCall.jl/issues/522)). A generic
+  `#[julia]` struct's wrappers (`Boxed_new`, `Boxed_tag`, `Boxed_free`, ...)
+  were registered by that bare name and grouped by the struct's name alone,
+  so a second module's `Boxed` replaced the first's registration, and
+  constructing the first module's `Boxed` built — and called — the second
+  module's source. The members are now owned by the library of the block
+  that defines them (`GenericFunctionInfo.owner`, rows in
+  `RustCall.GENERIC_FUNCTIONS_BY_LIB`, dropped with the library), a group is
+  one owner's members, and the generated constructor, methods, accessors and
+  destructor resolve them from their own module through `resolve_rust_call`,
+  in the order of #520. An instantiation's cache key is unchanged (the source,
+  the bindings, the compiler and the struct's name, never the owner), so two
+  same-named structs share an instantiation only when their sources are the
+  same.
 - **A return type that only ends in the impl header's name is not the struct**
   ([#518](https://github.com/AtelierArith/RustCall.jl/issues/518)). Whether
   a method returns its own type (and so is boxed as `*mut Struct`, and may be
