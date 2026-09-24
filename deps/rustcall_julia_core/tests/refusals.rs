@@ -346,6 +346,31 @@ fn cases() -> Vec<Case> {
             message: "an unqualified `Self::…` constant here",
             refusals: 1,
         },
+        // ---- trait_receiver -------------------------------------------------
+        Case {
+            label: "crate trait method with a smart-pointer receiver",
+            mode: Crate,
+            position: TraitImplMethod,
+            source: "pub trait Take { fn take(self: Box<Self>) -> i32; }
+                     #[julia] pub struct Buf { pub n: i32 }
+                     #[julia] impl Take for Buf { #[julia] fn take(self: Box<Self>) -> i32 { self.n } }",
+            item: "Buf::take",
+            skip_reason: "trait_receiver:Box<Self>",
+            message: "this receiver type does not show its shape",
+            refusals: 1,
+        },
+        Case {
+            label: "crate trait method with a self: &mut Self receiver",
+            mode: Crate,
+            position: TraitImplMethod,
+            source: "pub trait Bump { fn bump(self: &mut Self); }
+                     #[julia] pub struct Buf { pub n: i32 }
+                     #[julia] impl Bump for Buf { #[julia] fn bump(self: &mut Self) { self.n += 1; } }",
+            item: "Buf::bump",
+            skip_reason: "trait_receiver:&mut Self",
+            message: "a `self: &mut Self` receiver is not yet wrapped",
+            refusals: 1,
+        },
         // ---- unspellable_self -----------------------------------------------
         Case {
             label: "inline Self inside a macro",
@@ -630,7 +655,9 @@ fn the_corpus_covers_every_refusal_and_position() {
             // A trait impl is wrapped by the proc macro alone, and a non-FFI
             // payload refused for a free function only (a method returns
             // such a `Result` as written).
-            if *kind == skip_reason::SELF_TRAIT_PATH && mode == Mode::Inline {
+            if (*kind == skip_reason::SELF_TRAIT_PATH || *kind == skip_reason::TRAIT_RECEIVER)
+                && mode == Mode::Inline
+            {
                 continue;
             }
             assert!(

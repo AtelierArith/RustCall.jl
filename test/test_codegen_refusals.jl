@@ -152,7 +152,8 @@ end
     end
     # Every kind the inline flavour can produce is covered; a trait impl, the
     # one place `self_trait_path` arises, is wrapped only by the proc macro.
-    @test seen == setdiff(Set(keys(RustCall.RUST_CODEGEN_REFUSALS)), Set(["self_trait_path"]))
+    @test seen == setdiff(Set(keys(RustCall.RUST_CODEGEN_REFUSALS)),
+                          Set(["self_trait_path", "trait_receiver"]))
 end
 
 @testset "a refused item gets no binding and takes no name (#503)" begin
@@ -201,6 +202,7 @@ end
 
             pub mod tr {
                 pub trait Limits { const N: usize; fn limit(&self, a: &[u8; 2]) -> i32; }
+                pub trait Take { fn take(self: Box<Self>) -> i32; }
             }
 
             #[julia]
@@ -246,6 +248,12 @@ end
             }
 
             #[julia]
+            impl tr::Take for Buf {
+                #[julia]
+                fn take(self: Box<Self>) -> i32 { self.n }
+            }
+
+            #[julia]
             pub mod a {
                 #[julia]
                 pub unsafe fn danger(p: *const i32) -> i32 { *p }
@@ -262,6 +270,7 @@ end
             "Buf::first" => "lowered_str_borrow",
             "Buf::shown" => "impl_trait",
             "<Buf as tr::Limits>::limit" => "self_trait_path",
+            "<Buf as tr::Take>::take" => "trait_receiver",
             "a::danger" => "unsafe_fn",
         )
         # A refused struct is reported once, at its own entry point; its

@@ -2,34 +2,34 @@ error: `Buf::aliased`: the wrapper calls this trait method through the trait, wh
   --> tests/ui/trait_receiver.rs:34:22
    |
 34 |     fn aliased(self: Ref<'_, Self>) -> i32 {
-   |                      ^^^
+   |                      ^^^^^^^^^^^^^
 
 error: `Buf::boxed`: the wrapper calls this trait method through the trait, which passes the receiver exactly as declared, and this receiver type does not show its shape. Write it as `self`, `&self`, `&mut self` or reference layers over `Self` (`self: &&Self`) — not a type alias, a smart pointer or the type's own name — or expose an inherent method that calls this one (#509).
   --> tests/ui/trait_receiver.rs:39:20
    |
 39 |     fn boxed(self: Box<Self>) -> i32 {
-   |                    ^^^
+   |                    ^^^^^^^^^
 
 error: `Buf::rc`: the wrapper calls this trait method through the trait, which passes the receiver exactly as declared, and this receiver type does not show its shape. Write it as `self`, `&self`, `&mut self` or reference layers over `Self` (`self: &&Self`) — not a type alias, a smart pointer or the type's own name — or expose an inherent method that calls this one (#509).
   --> tests/ui/trait_receiver.rs:44:17
    |
 44 |     fn rc(self: Rc<Self>) -> i32 {
-   |                 ^^
+   |                 ^^^^^^^^
 
 error: `Buf::pinned`: the wrapper calls this trait method through the trait, which passes the receiver exactly as declared, and this receiver type does not show its shape. Write it as `self`, `&self`, `&mut self` or reference layers over `Self` (`self: &&Self`) — not a type alias, a smart pointer or the type's own name — or expose an inherent method that calls this one (#509).
   --> tests/ui/trait_receiver.rs:49:21
    |
 49 |     fn pinned(self: Pin<&mut Self>) -> i32 {
-   |                     ^^^
+   |                     ^^^^^^^^^^^^^^
 
 error: `Buf::named`: the wrapper calls this trait method through the trait, which passes the receiver exactly as declared, and this receiver type does not show its shape. Write it as `self`, `&self`, `&mut self` or reference layers over `Self` (`self: &&Self`) — not a type alias, a smart pointer or the type's own name — or expose an inherent method that calls this one (#509).
   --> tests/ui/trait_receiver.rs:54:20
    |
 54 |     fn named(self: &Buf) -> i32 {
-   |                    ^
+   |                    ^^^^
 
 error: `Buf::typed_mut`: a `self: &mut Self` receiver is not yet wrapped (#509). Write it as `&mut self`.
   --> tests/ui/trait_receiver.rs:64:24
    |
 64 |     fn typed_mut(self: &mut Self) -> i32 {
-   |                        ^
+   |                        ^^^^^^^^^

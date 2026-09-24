@@ -36,7 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `skip_reason` from `skip_reason::CODEGEN_REFUSALS` — `unsafe_fn` (#491) and
   now `generic_signature`, `impl_trait`, `non_ffi_payload`,
   `self_trait_path`, `unspellable_self`, `lowered_str_borrow`,
-  `lowered_str_lifetime` (additive within manifest schema 0.7). A generic
+  `lowered_str_lifetime`, and `trait_receiver` for the trait-impl receiver
+  refusal of #497 above (additive within manifest schema 0.7, as is
+  `Method.trait_path`, which keeps a refused trait-impl method apart from a
+  same-named inherent one). A generic
   method of an inline struct, a crate's generic `#[julia]` function, struct or
   impl block, a `Self` inside a macro, a lowered `&str` whose lifetime the
   wrapper cannot honour, and the refused `#[julia]` methods of a crate trait
