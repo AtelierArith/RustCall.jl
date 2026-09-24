@@ -362,6 +362,12 @@ pub(crate) enum CallTarget {
     Assoc { ty: syn::Path, method: Ident },
     /// `self_obj.m(args)`
     Instance(Ident),
+    /// `<Buf as tr::Far>::m(self_obj, args)` / `<Buf as tr::Far>::m(args)`:
+    /// a method of a trait impl, called through the trait (#497). Method-call
+    /// syntax would need the trait in scope where the wrapper is emitted and
+    /// would reach an inherent method of the same name first. `ty` is the
+    /// receiver type as the wrapper spells it, for the panic message.
+    TraitItem { ty: syn::Path, path: syn::TypePath },
 }
 
 /// The last segment of a path, which is the name a human reads: the panic
@@ -1004,6 +1010,9 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
             Some(r) => format!("{}::{}", path_tail(&r.ty), method),
             None => method.to_string(),
         },
+        CallTarget::TraitItem { ty, path } => {
+            format!("{}::{}", path_tail(ty), path_tail(&path.path))
+        }
     };
 
     // The wrapper's environment is the item's, verbatim, with `Self` spelled
@@ -1106,6 +1115,18 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
         CallTarget::Free(name) => quote! { #name(#(#call_args),*) },
         CallTarget::Assoc { ty, method } => quote! { #ty::#method(#(#call_args),*) },
         CallTarget::Instance(method) => quote! { #self_obj.#method(#(#call_args),*) },
+        CallTarget::TraitItem { path, .. } => {
+            // The receiver is the first argument of a path call: the
+            // reference `self_obj` is for `&self` / `&mut self`, and the value
+            // behind it for a `self` taken by value — what method-call syntax
+            // would have auto-dereferenced to.
+            let self_arg = receiver.as_ref().map(|r| match r.borrow {
+                crate::environment::SelfBorrow::Ref(_) => quote! { #self_obj },
+                crate::environment::SelfBorrow::None => quote! { *#self_obj },
+            });
+            let args = self_arg.into_iter().chain(call_args.iter().cloned());
+            quote! { #path(#(#args),*) }
+        }
     };
     let call = quote! { #call #call_suffix };
     let prologue = quote! { #(#conversions)* #self_binding };
@@ -2851,13 +2872,22 @@ fn method_spec(
             .map(crate::environment::SelfBorrow::of)
             .unwrap_or(crate::environment::SelfBorrow::None),
     });
-    let target = if m.is_static {
-        CallTarget::Assoc {
+    // A trait impl's method is called through the trait, spelled as the
+    // header spells it: the wrapper is emitted in the block's module (#497).
+    let trait_item = m
+        .host
+        .as_ref()
+        .and_then(|host| crate::environment::trait_item_path(host, &method_name));
+    let target = match trait_item {
+        Some(path) => CallTarget::TraitItem {
+            ty: self_path.clone(),
+            path,
+        },
+        None if m.is_static => CallTarget::Assoc {
             ty: self_path.clone(),
             method: method_name,
-        }
-    } else {
-        CallTarget::Instance(method_name)
+        },
+        None => CallTarget::Instance(method_name),
     };
     let ret = if inline_method_is_ctor(struct_name, m) {
         // `new`, or any method returning `Self` / the struct type, hands Julia

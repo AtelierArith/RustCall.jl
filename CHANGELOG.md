@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A `#[julia]` method of a trait impl is called through the trait**
+  ([#497](https://github.com/AtelierArith/RustCall.jl/issues/497)). The
+  proc-macro wrapper of `#[julia] impl tr::Far for Buf { #[julia] fn m(&self) }`
+  called `self_obj.m()`, which failed with E0599 inside generated code when
+  the trait was not in scope under a bare name, and silently called an
+  inherent `Buf::m` instead of the trait's when one existed. It now calls
+  `<Buf as tr::Far>::m(self_obj)` (static methods `<Buf as tr::Far>::m()`),
+  spelled as the impl header spells the type and the trait. Exported symbols
+  are unchanged. The inline `rust"""` flavour wraps no trait-impl method and is
+  unaffected. A wrapper now lowers such a method differently, so the published
+  Rust crates (0.2.0 on crates.io) take a minor bump before they are next
+  published; the bump itself is a separate change.
+
 ## [0.7.0] - 2026-09-24
 
 ### Added
