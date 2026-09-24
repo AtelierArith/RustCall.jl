@@ -344,6 +344,16 @@ end
         bx = call(call(getfield, g, :KwBoxed514){Int32}, Int32(6))
         @test call(call(getfield, g, :match), bx) == 6
         @test call(call(getfield, g, :end_), bx) == 6
+        # One instantiation registers each member once: the raw method adds no
+        # second destructor or wrapper under another spelling. (The name is
+        # unique to this file: the monomorphization registry is process-wide,
+        # and `test_generic_struct.jl` counts its own `Boxed_free` in the same
+        # test worker — a shared `Boxed` here was the CI failure of 503c6c60.)
+        members = [info.name for info in values(RustCall.MONOMORPHIZED_FUNCTIONS)
+                   if occursin("KwBoxed514_", info.name)]
+        @test count(n -> occursin("KwBoxed514_free", n), members) == 1
+        @test count(n -> occursin("KwBoxed514_match", n), members) == 1
+        @test !any(n -> occursin("r#", n), members)
 
         # `r#for` beside `for_` is refused before anything is defined.
         clash = Module(:KwInlineClash)
