@@ -10,7 +10,11 @@ Signature of a Rust free function as recorded in the FFI manifest produced by
 source text.
 
 # Fields
-- `name`, `arg_names`, `arg_types`, `return_type`: as written in Rust
+- `name`, `arg_types`, `return_type`: as written in Rust
+- `arg_names`: the Julia parameter names of the arguments, in order —
+  `julia_parameter_names` of the Rust names, applied by the constructor, so
+  every emitter reads a name that parses (`end` → `end_`, `r#for` → `for_`,
+  #516)
 - `is_generic`, `type_params`, `constraints`: generic parameters and their trait bounds
 - `symbol`: exported C symbol (`rustcall_<ffi_name>`, #279/#300)
 - `ffi_name`: the stem every generated symbol of the function hangs off
@@ -133,8 +137,9 @@ function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_type
         throw(ArgumentError("python_kinds must have one entry per argument"))
     length(callback_args) == length(arg_names) && length(callback_returns) == length(arg_names) ||
         throw(ArgumentError("callback_args and callback_returns must have one entry per argument"))
-    RustFunctionSignature(name, arg_names, arg_types, return_type, is_generic, type_params,
-                          symbol, attribute, exported, return_kind, ok_type, err_type, inner_type,
+    # The Julia parameter names, decided here once for every emitter (#516).
+    RustFunctionSignature(name, julia_parameter_names(arg_names), arg_types, return_type,
+                          is_generic, type_params, symbol, attribute, exported, return_kind, ok_type, err_type, inner_type,
                           source, constraints, module_path, body_has_cfg,
                           has_owned_string_helper, has_borrowed_string_helper, arg_abis,
                           return_abi, vis, skip_reason, python_name, cfg_features,

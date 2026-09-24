@@ -29,6 +29,8 @@ A method of a `#[julia]` struct as recorded in the manifest.
   (`<owner>_RustCallOwnedString`, `<owner>_free_rust_string`), stated by the
   manifest rather than derived from the flavour (#342). Empty when the manifest
   states none; see `_method_string_owner`
+- `arg_names`: the Julia parameter names of the arguments after `self` —
+  `julia_parameter_names` of the Rust names, applied by the constructor (#516)
 """
 struct RustMethod
     name::String
@@ -131,7 +133,8 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
         throw(ArgumentError("python_kinds must have one entry per argument"))
     length(callback_args) == length(arg_names) && length(callback_returns) == length(arg_names) ||
         throw(ArgumentError("callback_args and callback_returns must have one entry per argument"))
-    RustMethod(name, is_static, is_mutable, arg_names, arg_types, return_type,
+    # The Julia parameter names, decided here once for every emitter (#516).
+    RustMethod(name, is_static, is_mutable, julia_parameter_names(arg_names), arg_types, return_type,
                symbol, is_constructor, generic_wrapper, arg_abis, return_abi,
                returns_boxed_struct, vis, skip_reason, python_name, accessor,
                return_kind, ok_type, err_type, inner_type, ok_abi, err_abi, inner_abi,
