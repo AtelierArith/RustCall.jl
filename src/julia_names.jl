@@ -41,7 +41,22 @@ function _spells_julia_identifier(name::AbstractString)
 end
 
 """
-    julia_binding_name(rust_name::AbstractString) -> String
+    rust_name(name::AbstractString) -> String
+
+The Rust name of an item as one name, whatever its spelling: a raw identifier
+without its `r#` (`r#type` → `type`), every other name as it is. `r#type` and
+`type` are one Rust name, and a type spelling (`PyRef<'_, r#type>`), a symbol
+(`rustcall_type_new`) or a Python attribute (`type`) carries it without the
+prefix. The manifest keeps the item's own spelling — the extractor finds items
+by it again (`specialize`) — so every Julia-side lookup, key or comparison of a
+manifest name goes through this, and the Julia binding is derived from it by
+`julia_binding_name` (#514).
+"""
+rust_name(name::AbstractString) =
+    startswith(name, "r#") ? String(SubString(name, 3)) : String(name)
+
+"""
+    julia_binding_name(spelled::AbstractString) -> String
 
 The name a Rust item is bound under in Julia — the one decision, for every item
 kind (#514):
@@ -60,14 +75,14 @@ The trailing underscore can meet a name the crate already binds (`r#for` beside
 crate is refused with both items named rather than bound with one replacing
 the other. The exported Rust symbols do not depend on this name.
 """
-function julia_binding_name(rust_name::AbstractString)
-    name = startswith(rust_name, "r#") ? String(SubString(rust_name, 3)) : String(rust_name)
+function julia_binding_name(spelled::AbstractString)
+    name = rust_name(spelled)
     _is_plain_julia_identifier(name) && return name
     if _spells_julia_identifier(name)
         bound = name * "_"
         _is_plain_julia_identifier(bound) && return bound
     end
-    error("the Rust name `$rust_name` has no Julia spelling: `$name` is not a Julia " *
+    error("the Rust name `$spelled` has no Julia spelling: `$name` is not a Julia " *
           "identifier. Rename the item (#514).")
 end
 
@@ -105,81 +120,139 @@ exported symbols hang off `info.ffi_name`, which is not a Julia name.
 """
 julia_struct_name(info::RustStructInfo) = julia_binding_name(info.name)
 
-"""
-    _check_julia_name_clashes(functions, structs, where_::AbstractString; binds_function,
-                              binds_struct, binds_method, binds_field)
 
-Refuse two items of one generated module that `julia_binding_name` binds under
-one Julia name although Rust tells them apart (#514): a name Julia reserves
-meeting the name it is renamed to — `fn r#for` beside `fn for_`, a method
-`r#end` beside a method `end_` of the same struct, a field `r#let` beside a
-field `let_`. The later definition would silently replace the earlier (or add
-a method to it), so the layout is refused with both items named. Items are
-compared within the scope Julia binds them in: free functions of the module,
-methods of one struct, fields of one struct, and the struct types of the module
-(with a free function when either name was renamed). Two entries for one Rust item
-(`#[cfg]` variants) are one item. Struct types and submodules are checked
-against every other name of the module by `_check_module_names`.
-
-Every emitter calls it — `rust\"\"\"`, `@rust_crate` and `write_bindings_to_file`
-(through `_check_module_names`), and the PyO3 host bindings — each passing
-which items it binds: the `binds_*` predicates default to the `#[julia]`
-emitters' rule, and the PyO3 host passes its own.
 """
-function _check_julia_name_clashes(functions, structs, where_::AbstractString;
-                                   binds_function = _binds_julia_wrapper,
-                                   binds_struct = _binds_julia_struct,
-                                   binds_method = m -> isempty(m.skip_reason) && !m.is_constructor,
-                                   binds_field = (s, field) -> field_is_accessible(s, field) ||
-                                                              field_is_writable(s, field))
-    function claim!(bound::Dict{String, String}, name::String, what::String)
-        prior = get(bound, name, nothing)
-        if prior !== nothing && prior != what
-            error("cannot lay out the bindings of $where_: $prior and $what would both be " *
-                  "bound in Julia as `$name`. A Rust name Julia reserves is bound with a " *
-                  "trailing underscore (`r#for` as `for_`), so it cannot sit beside an item " *
-                  "already called that. Rename one of them (#514).")
-        end
-        bound[name] = what
-        return nothing
-    end
-    bound_functions = Dict{String, String}()
-    renamed_functions = Set{String}()
+    JuliaDefinition(name, scope, owner, what)
+
+One definition a generated module makes at its top level, as the emitter
+makes it (#514): `name` is the Julia name, `scope` says what Julia keys the
+definition by, `owner` is the Rust item it comes from and `what` names that
+item in a message.
+
+- `:binding` — a type or a submodule: a constant of the module;
+- `:free` — a method with untyped positional arguments: a free function, a
+  constructor (`S(args...)`), the bare form of a static method, a PyO3-host
+  static method;
+- `(:static, T)` — `name(::Type{T}, args...)`;
+- `(:self, T)` — `name(self::T, args...)`: an instance method, a field accessor;
+- `(:prop, T)` — a property of `T` (`getproperty` / `setproperty!` branch).
+
+Two definitions of one `(name, scope)` from different owners replace one
+another (or merge into one generic function), so the layout is refused. A
+struct's constructors share the struct's owner: they are methods of the type.
+"""
+struct JuliaDefinition
+    name::String
+    scope::Any
+    owner::String
+    what::String
+end
+
+"""
+    julia_definitions(functions, structs; modules = String[], accessors = false)
+        -> Vector{JuliaDefinition}
+
+What a `#[julia]` emitter — `rust\"\"\"` (`_inline_wrapper_exprs`) and both crate
+emitters (`_crate_wrapper_exprs`, `emit_crate_module_code`) — defines at the top
+level of one module for these items: free functions, struct types and their
+constructors, static methods (the typed form, and the bare form unless
+`_static_method_collisions` — the helper the emitters use — withholds it),
+instance methods, properties, and with `accessors` the `get_<f>` / `set_<f>!`
+helpers of the crate expression emitter; `modules` are the Rust segments of
+the child modules. Every name is the one the emitter binds
+(`julia_function_name`, `julia_method_name`, `julia_field_name`,
+`julia_struct_name`, `_julia_module_name`).
+"""
+function julia_definitions(functions, structs; modules = String[], accessors::Bool = false)
+    defs = JuliaDefinition[]
+    add!(name, scope, owner, what = owner) = push!(defs, JuliaDefinition(name, scope, owner, what))
+    colliding = _static_method_collisions(functions, structs)
     for f in functions
-        binds_function(f) || continue  # no binding, no name (#491)
-        name = julia_function_name(f)
-        claim!(bound_functions, name, "the function `$(qualified_name(f.module_path, f.name))`")
-        name == f.name || push!(renamed_functions, name)
-    end
-    # Struct types share one namespace: `struct r#for` beside `struct for_`
-    # would define the type `for_` twice (PR #515 review). A type also meets a
-    # free function of its Julia name; when either was renamed, that meeting
-    # is this rule's doing and is refused here. (A plain `fn C` beside
-    # `struct C` is the older layout question `_check_module_names` answers
-    # for a crate.)
-    bound_types = Dict{String, String}()
-    for s in structs
-        binds_struct(s) || continue
-        name = julia_struct_name(s)
-        what = "the struct `$(qualified_name(s.module_path, s.name))`"
-        claim!(bound_types, name, what)
-        if haskey(bound_functions, name) && (name != s.name || name in renamed_functions)
-            claim!(Dict(name => bound_functions[name]), name, what)
-        end
+        _binds_julia_wrapper(f) || continue  # no binding, no name (#491)
+        add!(julia_function_name(f), :free,
+             "the function `$(qualified_name(f.module_path, f.name))`")
     end
     for s in structs
-        binds_struct(s) || continue  # no type, no name (#503)
+        _binds_julia_struct(s) || continue  # no type, no name (#503)
+        T = julia_struct_name(s)
         owner = qualified_name(s.module_path, s.name)
-        bound_methods = Dict{String, String}()
+        struct_owner = "the struct `$owner`"
+        add!(T, :binding, struct_owner)
         for m in s.methods
-            binds_method(m) || continue
-            claim!(bound_methods, julia_method_name(m), "the method `$(_boundary_label(s, m))`")
+            isempty(m.skip_reason) || continue
+            what = "the method `$(_boundary_label(s, m))`"
+            if m.is_constructor
+                add!(T, :free, struct_owner, what)
+            elseif m.is_static
+                name = julia_method_name(m)
+                add!(name, (:static, T), what)
+                name in colliding || add!(name, :free, what)
+            else
+                add!(julia_method_name(m), (:self, T), what)
+            end
         end
-        bound_fields = Dict{String, String}()
         for (field, _) in s.fields
-            binds_field(s, field) || continue
-            claim!(bound_fields, julia_field_name(field), "the field `$owner.$field`")
+            readable = field_is_accessible(s, field)
+            writable = field_is_writable(s, field)
+            (readable || writable) || continue
+            jfield = julia_field_name(field)
+            what = "the field `$owner.$field`"
+            add!(jfield, (:prop, T), what)
+            accessors || continue
+            readable && add!("get_$jfield", (:self, T), what)
+            writable && add!("set_$(jfield)!", (:self, T), what)
         end
+    end
+    for segment in modules
+        add!(_julia_module_name(segment), :binding, "the module `$segment`")
+    end
+    return defs
+end
+
+"""
+    _check_julia_definitions(defs, where_; types_first = true)
+
+Refuse two definitions a generated module would make under one Julia name and
+scope for different Rust items (`JuliaDefinition`): `fn r#for` beside
+`fn for_`, `struct r#for` beside `struct for_`, a free function beside a
+static method bound without its type, a method beside a field accessor of the
+same name. The later definition would silently replace the earlier, or merge
+into one generic function, so the layout is refused with both items named.
+With `types_first = false` (an emitter that defines functions before types)
+a type also refuses a function of its name that is not its own constructor.
+"""
+function _check_julia_definitions(defs, where_::AbstractString; types_first::Bool = true)
+    refuse(prior, def) = error(
+        "cannot lay out the bindings of $where_: $(prior.what) and $(def.what) would both " *
+        "define `$(def.name)` in Julia. A Rust name Julia reserves is bound with a " *
+        "trailing underscore (`r#for` as `for_`), so it cannot sit beside an item " *
+        "already bound under that name. Rename one of them (#514).")
+    seen = Dict{Tuple{String, Any}, JuliaDefinition}()
+    for def in defs
+        prior = get(seen, (def.name, def.scope), nothing)
+        if prior === nothing
+            seen[(def.name, def.scope)] = def
+        elseif prior.owner != def.owner
+            refuse(prior, def)
+        end
+    end
+    types_first && return nothing
+    for def in defs
+        def.scope === :binding || continue
+        other = get(seen, (def.name, :free), nothing)
+        other === nothing || other.owner == def.owner || refuse(other, def)
     end
     return nothing
 end
+
+"""
+    _check_julia_name_clashes(functions, structs, where_; modules, accessors)
+
+`_check_julia_definitions` over `julia_definitions` of these items: what
+`rust\"\"\"` (`src/ruststr.jl`) and the crate layout check
+(`_check_module_names`) run before emitting anything. The PyO3 host runs the
+same check over its own definitions (`_pyo3_host_definitions`).
+"""
+_check_julia_name_clashes(functions, structs, where_::AbstractString;
+                          modules = String[], accessors::Bool = false) =
+    _check_julia_definitions(julia_definitions(functions, structs; modules, accessors), where_)

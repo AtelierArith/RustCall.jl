@@ -604,14 +604,9 @@ _pyo3_host_attr(base, name::AbstractString) = Expr(:., base, QuoteNode(Symbol(na
 
 # The Python attribute of an item: the manifest's `python_name` — which the
 # extractor also fills for a raw Rust name, `r#for` being exposed as `for`
-# (#514) — or the Rust name, never with a raw identifier's `r#`.
+# (#514) — or the Rust name (`rust_name`: PyO3 drops a raw identifier's `r#`).
 _pyo3_host_python_name(name, python_name) =
-    isempty(python_name) ? _pyo3_host_attr_name(name) : String(python_name)
-
-# The Python attribute of a Rust field: its name without a raw identifier's
-# `r#`, which PyO3 drops as well.
-_pyo3_host_attr_name(field::AbstractString) =
-    startswith(field, "r#") ? String(SubString(field, 3)) : String(field)
+    isempty(python_name) ? rust_name(name) : String(python_name)
 
 # The last identifier of a type spelling: `Py` in `Py<T>`, `T` in
 # `Bound<'_, T>`, `PyIndex` in `PyRef<'_, PyIndex>`.
@@ -626,7 +621,7 @@ end
 # class and is left alone.
 function _pyo3_host_struct_target(rust_type::AbstractString, classes::AbstractDict,
                                   jstruct::Union{Symbol, Nothing} = nothing)
-    t = strip(rust_type)
+    t = rust_name(strip(rust_type))
     t == "Self" && return jstruct
     haskey(classes, t) && return classes[t]
     (startswith(t, "Vec<") || startswith(t, "Option<")) && return nothing
@@ -639,7 +634,7 @@ end
 # direct reference or a `Vec` of them), otherwise `nothing`. A class argument is
 # passed as the Python object the Julia handle holds, not as the handle.
 function _pyo3_host_struct_arg(rust_type::AbstractString, classes::AbstractDict)
-    t = strip(rust_type)
+    t = rust_name(strip(rust_type))
     if startswith(t, "Vec<") && endswith(t, ">")
         inner = strip(t[nextind(t, 5):prevind(t, lastindex(t))])
         name = _pyo3_host_last_ident(inner)
@@ -847,7 +842,7 @@ function _pyo3_host_property_expr(jname::Symbol, s::RustStructInfo)
         jt = _pyo3_host_value_type(rust_type)
         jt === nothing && continue
         push!(conversions,
-              :(s === $(QuoteNode(Symbol(_pyo3_host_attr_name(field)))) &&
+              :(s === $(QuoteNode(Symbol(rust_name(field)))) &&
                 return PythonCall.pyconvert($jt, v)))
     end
     # A field is a property under its Julia name (`julia_field_name`, #514);
@@ -858,9 +853,9 @@ function _pyo3_host_property_expr(jname::Symbol, s::RustStructInfo)
     renamed = Any[]
     for (field, _) in s.fields
         jfield = julia_field_name(field)
-        jfield == _pyo3_host_attr_name(field) && continue
+        jfield == rust_name(field) && continue
         push!(renamed, :(s === $(QuoteNode(Symbol(jfield))) &&
-                         (s = $(QuoteNode(Symbol(_pyo3_host_attr_name(field)))))))
+                         (s = $(QuoteNode(Symbol(rust_name(field)))))))
     end
     # A read-only field raises a Julia error naming it instead of the raw
     # Python `AttributeError` a descriptor would.
@@ -868,7 +863,7 @@ function _pyo3_host_property_expr(jname::Symbol, s::RustStructInfo)
     for (field, _) in s.fields
         _pyo3_host_field_writable(s, field) && continue
         push!(read_only,
-              :(s === $(QuoteNode(Symbol(_pyo3_host_attr_name(field)))) &&
+              :(s === $(QuoteNode(Symbol(rust_name(field)))) &&
                 throw(ArgumentError($(string("field `", julia_field_name(field), "` is read-only"))))))
     end
     getbody = quote
@@ -936,24 +931,69 @@ function _pyo3_host_struct_exprs(s::RustStructInfo, classes::AbstractDict)
     return out
 end
 
+# The scanned classes, keyed by `rust_name` — the key every type spelling is
+# looked up by (`_pyo3_host_struct_target`, `_pyo3_host_struct_arg`), so
+# `r#type`, `&r#type` and `PyRef<'_, r#type>` all find the class (#514) — to
+# the Julia type the emitter defines (`julia_struct_name`).
+_pyo3_host_classes(info::CrateInfo) =
+    Dict{String, Symbol}(rust_name(s.name) => Symbol(julia_struct_name(s))
+                         for s in info.pyo3_structs if s.attribute === :py_class)
+
+"""
+    _pyo3_host_definitions(info::CrateInfo) -> Vector{JuliaDefinition}
+
+What `generate_pyo3_host_bindings` defines at the top level of its module,
+item by item as its emitters define it (#514): a `#[pyfunction]` and a static
+or class method are free functions of untyped arguments (the host passes no
+type), a class is a type whose `#[new]` is its constructor, an instance method
+dispatches on its class, a readable or writable field is a property. `async`
+items and `#[getter]` / `#[setter]` methods define nothing.
+"""
+function _pyo3_host_definitions(info::CrateInfo)
+    defs = JuliaDefinition[]
+    add!(name, scope, owner, what = owner) = push!(defs, JuliaDefinition(name, scope, owner, what))
+    for f in info.pyo3_functions
+        (f.attribute === :py_function && !_pyo3_host_async(f)) || continue
+        add!(julia_function_name(f), :free,
+             "the function `$(qualified_name(f.module_path, f.name))`")
+    end
+    for s in info.pyo3_structs
+        s.attribute === :py_class || continue
+        T = julia_struct_name(s)
+        owner = "the struct `$(qualified_name(s.module_path, s.name))`"
+        add!(T, :binding, owner)
+        for m in s.methods
+            _pyo3_host_async(m) && continue
+            what = "the method `$(_boundary_label(s, m))`"
+            if m.is_constructor
+                add!(T, :free, owner, what)
+            elseif !isempty(m.accessor)
+                continue
+            elseif m.is_static || m.is_classmethod
+                add!(julia_method_name(m), :free, what)
+            else
+                add!(julia_method_name(m), (:self, T), what)
+            end
+        end
+        for (field, _) in s.fields
+            (_pyo3_host_field_readable(s, field) || _pyo3_host_field_writable(s, field)) || continue
+            add!(julia_field_name(field), (:prop, T),
+                 "the field `$(qualified_name(s.module_path, s.name)).$field`")
+        end
+    end
+    return defs
+end
+
 """
     _pyo3_host_check_names(info::CrateInfo)
 
-`_check_julia_name_clashes` over what `generate_pyo3_host_bindings` binds: the
-`#[pyfunction]`s and `#[pyclass]`es that are not `async`, every method of a
-class (constructors are the type itself, getters and setters properties), and
-the readable and writable fields.
+`_check_julia_definitions` over `_pyo3_host_definitions`: the check every
+emitter runs, over what this one defines. Its functions are emitted before its
+types, so a type also refuses a function of its name.
 """
 function _pyo3_host_check_names(info::CrateInfo)
-    functions = [f for f in info.pyo3_functions
-                 if f.attribute === :py_function && !_pyo3_host_async(f)]
-    structs = [s for s in info.pyo3_structs if s.attribute === :py_class]
-    _check_julia_name_clashes(functions, structs, "the PyO3 host bindings of `$(info.name)`";
-                              binds_function = _ -> true, binds_struct = _ -> true,
-                              binds_method = m -> !m.is_constructor && isempty(m.accessor) &&
-                                                  !_pyo3_host_async(m),
-                              binds_field = (s, f) -> _pyo3_host_field_readable(s, f) ||
-                                                      _pyo3_host_field_writable(s, f))
+    _check_julia_definitions(_pyo3_host_definitions(info),
+                             "the PyO3 host bindings of `$(info.name)`"; types_first = false)
     return nothing
 end
 
@@ -1001,12 +1041,12 @@ function generate_pyo3_host_bindings(crate_path::AbstractString;
             end
         end)
     end
-    # The scanned classes, by their Rust name: a return or argument spelling them
+    # The scanned classes, by their `rust_name` (a type spelling carries no `r#`,
+    # #514): a return or argument spelling them
     # (or `Py<T>` / `Bound<'_, T>` around one) is that Julia struct, not a
     # `Py`. Local, not module-level: `test_state.jl`'s guard forbids a mutable
     # registry in `RustCall` (#251).
-    classes = Dict{String, Symbol}(s.name => Symbol(julia_struct_name(s))
-                                   for s in info.pyo3_structs if s.attribute === :py_class)
+    classes = _pyo3_host_classes(info)
     # Two items one Julia name would bind (`fn r#for` beside `fn for_`) are
     # refused before anything is emitted, by the check every emitter runs,
     # over what this one binds (#514).

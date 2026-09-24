@@ -71,7 +71,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   would be bound under one Julia name; the layout checks (`rust"""`,
   `@rust_crate`, `write_bindings_to_file`) compare the names
   `julia_binding_name` returns and refuse the block or crate with both items
-  named.
+  named. The check runs over what each emitter defines at the top level of a
+  module (`julia_definitions`, and `_pyo3_host_definitions` for the PyO3 host):
+  a constructor, the bare form of a static method, a field accessor and a
+  submodule count as definitions like any other. So it also catches a PyO3-host
+  static method beside a `#[pyfunction]` of its Julia name, and a crate method
+  `get_x` beside a field `x`.
+- **A raw `#[pyclass]` name is recognised as the class in argument and return
+  position** ([#514](https://github.com/AtelierArith/RustCall.jl/issues/514)).
+  The PyO3 host keyed its class map by the manifest spelling `r#type`, while a
+  type spelling (`PyRef<'_, r#type>`) was looked up by `type`. Every
+  Julia-side lookup, key or composed name of a manifest name now goes through
+  `rust_name`, and a source test keeps emitters from keying or binding a raw
+  name.
 - **A raw struct or field name no longer breaks the crate scan**
   ([#514](https://github.com/AtelierArith/RustCall.jl/issues/514)).
   `#[julia] pub struct r#for` made `rustcall-extract` panic (it built

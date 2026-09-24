@@ -227,21 +227,43 @@ end
     # The inline flavour runs the same check over a block's items.
     @test_throws ErrorException RustCall._check_julia_name_clashes(
         [sig("r#for"), sig("for_")], none, "the block")
-    # Struct types, which the inline and PyO3-host callers check only here
-    # (PR #515 review): `struct r#for` beside `struct for_`, and a renamed type
-    # beside a free function of its Julia name, either way round.
+    # The check compares what the emitters *define* at the top level
+    # (`julia_definitions`), not a hand-listed set of item kinds (PR #515
+    # review). Struct types share one namespace: `struct r#for` beside
+    # `struct for_` would define the type `for_` twice.
     nofns = RustCall.RustFunctionSignature[]
-    m = msg(() -> RustCall._check_julia_name_clashes(
-        nofns, [strct("r#for", RustCall.RustMethod[]), strct("for_", RustCall.RustMethod[])],
-        "the block"))
+    ctor() = RustCall.RustMethod("new", true, false, ["x"], ["i32"], "Self")
+    static(name) = RustCall.RustMethod(name, true, false, ["x"], ["i32"], "i32")
+    inline(fs, ss) = RustCall._check_julia_name_clashes(fs, ss, "the block")
+    m = msg(() -> inline(nofns, [strct("r#for", RustCall.RustMethod[]),
+                                 strct("for_", RustCall.RustMethod[])]))
     @test occursin("`for_`", m) && occursin("struct `r#for`", m) && occursin("struct `for_`", m)
-    @test_throws ErrorException RustCall._check_julia_name_clashes(
-        [sig("while_")], [strct("r#while", RustCall.RustMethod[])], "the block")
-    @test_throws ErrorException RustCall._check_julia_name_clashes(
-        [sig("r#while")], [strct("while_", RustCall.RustMethod[])], "the block")
-    # A plain `fn C` beside `struct C` is not this rule's to refuse.
-    @test RustCall._check_julia_name_clashes(
-        [sig("C")], [strct("C", RustCall.RustMethod[])], "the block") === nothing
+    # A constructor is `T(args...)`: a free function of the type's Julia name
+    # would replace it, either way round.
+    @test_throws ErrorException inline([sig("while_")], [strct("r#while", [ctor()])])
+    @test_throws ErrorException inline([sig("r#while")], [strct("while_", [ctor()])])
+    # Types come first in a `rust"""` block, so a free function of a type's
+    # name that has no constructor only adds a method to it: not a clash.
+    @test inline([sig("C")], [strct("C", RustCall.RustMethod[])]) === nothing
+    # A static method is `for_(::Type{S}, x)`; its bare `for_(x)` is withheld
+    # when a free function or another static method is bound as `for_`
+    # (`_static_method_collisions`), so neither of these defines `for_` twice.
+    @test inline([sig("r#for")], [strct("S", [static("for_")])]) === nothing
+    @test inline(nofns, [strct("S", [static("r#for")]), strct("T", [static("for_")])]) === nothing
+    defs = RustCall.julia_definitions([sig("r#for")], [strct("S", [static("for_")])])
+    @test count(d -> d.name == "for_" && d.scope === :free, defs) == 1
+    @test any(d -> d.name == "for_" && d.scope == (:static, "S"), defs)
+    # ... but a bare static form does meet another type's constructor.
+    @test_throws ErrorException inline(nofns, [strct("r#for", [ctor()]),
+                                              strct("S", [static("for_")])])
+    # The crate expression emitter's `get_<f>` accessor meets a method of that
+    # name on the same struct: both are `get_x(self::S)`.
+    getter = strct("S", [meth("get_x")], [("x", "i32")])
+    m = msg(() -> check(nofns, [getter]))
+    @test occursin("`get_x`", m) && occursin("S::get_x", m) && occursin("S.x", m)
+    @test inline(nofns, [getter]) === nothing  # a `rust"""` block defines no accessor
+    # Two submodules one Julia name would bind.
+    @test_throws ErrorException check([sig("f"; path = ["r#end"]), sig("g"; path = ["end_"])], none)
 end
 
 @testset "rust\"\"\" binds keyword-named items (#514)" begin
@@ -326,6 +348,28 @@ end
         end
         @test err isa ErrorException
         @test occursin("`for_`", sprint(showerror, err))
+
+        # A free `fn r#for` beside static methods bound as `for_` on two
+        # structs: each static method keeps its typed form and none takes the
+        # bare name, so all three stay callable (#323, #514).
+        st = Module(:KwInlineStatics)
+        Core.eval(st, :(using RustCall))
+        Core.eval(st, Meta.parse("""rust\"\"\"
+            #[julia]
+            pub fn r#for(x: i32) -> i32 { x + 1 }
+            #[julia]
+            pub struct Sa { pub v: i32 }
+            #[julia]
+            impl Sa { pub fn for_(x: i32) -> i32 { x + 10 } }
+            #[julia]
+            pub struct Sb { pub v: i32 }
+            #[julia]
+            impl Sb { pub fn r#for(x: i32) -> i32 { x + 100 } }
+            \"\"\""""))
+        sget(n) = call(getfield, st, n)
+        @test call(sget(:for_), Int32(1)) == 2
+        @test call(sget(:for_), sget(:Sa), Int32(1)) == 11
+        @test call(sget(:for_), sget(:Sb), Int32(1)) == 101
 
         # ... and so are two struct types one Julia name would bind.
         types = Module(:KwInlineTypeClash)
@@ -493,4 +537,29 @@ include(joinpath(@__DIR__, "pyo3_wrapper_helpers.jl"))
             end
         end
     end
+end
+
+@testset "no emitter keys or binds a raw manifest name (#514)" begin
+    # Every Julia-side use of a manifest name goes through `rust_name` (a
+    # lookup, a key, a composed Rust-side name) or `julia_binding_name` (a
+    # binding). A `Symbol(x.name)`, an `x.name => ...` key or an `_$(x.name)`
+    # composed name in an emitter would carry a raw identifier's `r#` through;
+    # this is where the #514 review findings kept coming from.
+    item = "(?:f|m|s|sig|func|method|info|struct_info)"
+    patterns = [Regex("Symbol\\($item\\.name\\)"), Regex("\\b$item\\.name =>"),
+                Regex("_\\\$\\($item\\.name\\)")]
+    src = joinpath(dirname(@__DIR__), "src")
+    offenders = String[]
+    for file in ("pyo3_host.jl", "crate_bindings.jl", "structs.jl", "julia_functions.jl",
+                 "ruststr.jl", "julia_names.jl")
+        for (n, line) in enumerate(eachline(joinpath(src, file)))
+            startswith(lstrip(line), "#") && continue
+            # The crate's own package name, not an item's.
+            occursin("rust_crate_\$(info.name)_", line) && continue
+            any(p -> occursin(p, line), patterns) && push!(offenders, "$file:$n: $(strip(line))")
+        end
+    end
+    @test isempty(offenders)
+    @test RustCall.rust_name("r#type") == "type"
+    @test RustCall.rust_name("type") == "type"
 end

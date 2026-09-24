@@ -1906,9 +1906,13 @@ function _check_module_names(tree::ModuleNode)
     refuse_reserved(name, what) = name in reserved && error(
         "cannot lay out the bindings of $where_: $what binds `$name`, which every " *
         "generated module defines itself (#463). Rename it.")
-    # Two items of this node that one Julia name would bind — a Rust name
-    # Julia reserves meeting the name it is renamed to (#514).
-    _check_julia_name_clashes(tree.functions, tree.structs, where_)
+    # Two items of this node the emitters would define under one Julia name
+    # and scope — a Rust name Julia reserves meeting the name it is renamed
+    # to, a method meeting a field accessor, two submodules (#514). The
+    # expression emitter's `get_<f>` / `set_<f>!` helpers are counted.
+    _check_julia_name_clashes(tree.functions, tree.structs, where_;
+                              modules = [last(child.path) for child in tree.children],
+                              accessors = true)
     for f in tree.functions
         _binds_julia_wrapper(f) || continue  # no binding, no name (#491)
         name = julia_function_name(f)
@@ -2911,7 +2915,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     # FFI name, which carries the module path (#300). The manifest states the
     # owner (#342); the derivation stands in only for an entry that states none.
     wrapper_name = method_wrapper_symbol(info.ffi_name, method)
-    helper_owner = _method_string_owner(method, "$(info.ffi_name)_$(method.name)")
+    helper_owner = _method_string_owner(method, "$(info.ffi_name)_$(rust_name(method.name))")
 
     arg_syms = [Symbol(name) for name in method.arg_names]
 
@@ -3167,7 +3171,7 @@ function _generate_py_result_method_wrapper(info::RustStructInfo, method::RustMe
         _py_result_types(method.ok_type, method.ok_abi,
                          _ffi_context(method, struct_name_str))
 
-    helper_owner = _method_string_owner(method, "$(info.ffi_name)_$(method.name)")
+    helper_owner = _method_string_owner(method, "$(info.ffi_name)_$(rust_name(method.name))")
     c_result_struct_name = Symbol("CResult_", helper_owner)
     ptr_sym = _generated_local("func_ptr", method.arg_names)
     c_sym = _generated_local("c_result", method.arg_names)
@@ -5334,7 +5338,7 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
     # manifest states the owner (#342); the derivation stands in only for an
     # entry that states none.
     wrapper_name = method_wrapper_symbol(struct_info.ffi_name, method)
-    helper_owner = _method_string_owner(method, "$(struct_info.ffi_name)_$(method.name)")
+    helper_owner = _method_string_owner(method, "$(struct_info.ffi_name)_$(rust_name(method.name))")
 
     arg_syms = join(method.arg_names, ", ")
 
@@ -5489,7 +5493,7 @@ function _emit_py_result_method_code(info::RustStructInfo, method::RustMethod,
         (struct_name, "Ptr{Cvoid}", false) :
         _py_result_types(method.ok_type, method.ok_abi,
                          _ffi_context(method, struct_name); strict = strict)
-    helper_owner = _method_string_owner(method, "$(info.ffi_name)_$(method.name)")
+    helper_owner = _method_string_owner(method, "$(info.ffi_name)_$(rust_name(method.name))")
     c_result_struct_name = "CResult_$helper_owner"
     ptr_var = _generated_local("func_ptr", method.arg_names)
     c_var = _generated_local("c_result", method.arg_names)

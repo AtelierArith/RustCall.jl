@@ -280,6 +280,76 @@ end
         @test err isa ErrorException
         msg = err === nothing ? "" : sprint(showerror, err)
         @test occursin("struct `r#for`", msg) && occursin("struct `for_`", msg)
+
+        # The host binds a static method without its type, so it is a free
+        # function: it meets a `#[pyfunction]` of its Julia name, and another
+        # class's static method (PR #515 review, raised on #517).
+        refusal(lib) = begin
+            write(joinpath(dir, "src", "lib.rs"), lib)
+            try
+                RustCall.generate_pyo3_host_bindings(dir)
+                ""
+            catch e
+                sprint(showerror, e)
+            end
+        end
+        msg = refusal("""
+            use pyo3::prelude::*;
+            #[pyfunction] fn r#for(x: i32) -> i32 { x }
+            #[pyclass] pub struct S { pub v: i32 }
+            #[pymethods] impl S { #[staticmethod] fn for_(x: i32) -> i32 { x } }
+            """)
+        @test occursin("function `r#for`", msg) && occursin("method `S::for_`", msg)
+        msg = refusal("""
+            use pyo3::prelude::*;
+            #[pyclass] pub struct S { pub v: i32 }
+            #[pymethods] impl S { #[staticmethod] fn r#for(x: i32) -> i32 { x } }
+            #[pyclass] pub struct T { pub v: i32 }
+            #[pymethods] impl T { #[staticmethod] fn for_(x: i32) -> i32 { x } }
+            """)
+        @test occursin("method `S::r#for`", msg) && occursin("method `T::for_`", msg)
+        # The host defines its functions before its types: a function of a
+        # class's Julia name is refused too.
+        msg = refusal("""
+            use pyo3::prelude::*;
+            #[pyfunction] fn while_(x: i32) -> i32 { x }
+            #[pyclass] pub struct r#while { pub v: i32 }
+            """)
+        @test occursin("function `while_`", msg) && occursin("struct `r#while`", msg)
+        # Instance methods of two classes are dispatch, not a clash.
+        @test refusal("""
+            use pyo3::prelude::*;
+            #[pyclass] pub struct S { pub v: i32 }
+            #[pymethods] impl S { fn r#for(&self) -> i32 { 1 } }
+            #[pyclass] pub struct T { pub v: i32 }
+            #[pymethods] impl T { fn for_(&self) -> i32 { 2 } }
+            """) == ""
+
+        # A raw class name in argument and return position is the class: the
+        # class map is keyed by `rust_name`, the key every type spelling is
+        # looked up by (PR #515 review, raised on #517).
+        write(joinpath(dir, "src", "lib.rs"), """
+            use pyo3::prelude::*;
+            #[pyclass] pub struct r#type { pub v: i32 }
+            #[pyfunction] fn make() -> r#type { r#type { v: 1 } }
+            #[pyfunction] fn wrapped(py: Python<'_>) -> PyResult<Py<r#type>> { Py::new(py, r#type { v: 2 }) }
+            #[pyfunction] fn read(t: PyRef<'_, r#type>) -> i32 { t.v }
+            #[pyfunction] fn read_ref(t: &r#type) -> i32 { t.v }
+            #[pyfunction] fn read_all(ts: Vec<PyRef<'_, r#type>>) -> usize { ts.len() }
+            """)
+        info = RustCall.scan_crate(dir)
+        classes = RustCall._pyo3_host_classes(info)
+        @test classes == Dict("type" => :type)
+        for spelling in ("r#type", "&r#type", "PyRef<'_, r#type>", "Py<r#type>",
+                         "Bound<'_, r#type>")
+            @test RustCall._pyo3_host_struct_target(spelling, classes) === :type
+            @test RustCall._pyo3_host_struct_arg(spelling, classes) == (:type, false)
+        end
+        @test RustCall._pyo3_host_struct_arg("Vec<PyRef<'_, r#type>>", classes) == (:type, true)
+        text = string(Base.remove_linenums!(RustCall.generate_pyo3_host_bindings(dir)))
+        @test occursin("type((_pyo3_module()).make())", text)
+        # Every class argument is passed as the Python object the handle holds.
+        @test count("isa PythonCall.Py", text) >= 3
     end
 end
 

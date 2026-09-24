@@ -432,7 +432,15 @@ already uses — `fn r#for` beside `fn for_`, a field `r#let` beside `let_`, a
 method `r#end` beside `end_` on the same struct, `struct r#while` beside
 `fn while_`, `mod r#do` beside `mod do_`. The layout is then refused with both
 items named, rather than one binding silently replacing the other; rename one
-of them.
+of them. The check compares what the generated module actually defines
+(`RustCall.julia_definitions`): free functions, types and their constructors,
+static methods (typed, and bare unless a free function or another static
+method takes the name), instance methods, properties, the `get_<f>` /
+`set_<f>!` helpers and submodules. So a method `get_x` beside a field `x`,
+whose accessor is also `get_x`, is refused too. The PyO3 host bindings run the
+same check over what they define. Static methods there are free functions,
+because the host passes no type, so `#[staticmethod] fn for_` beside
+`#[pyfunction] fn r#for` is refused.
 
 ## Property Access Syntax
 

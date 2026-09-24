@@ -197,7 +197,7 @@ the first. The fallback is for a hand-built `RustMethod`, which states none; it
 uses the same scheme on the FFI name, never the bare name.
 """
 _generic_method_wrapper_name(info, m::RustMethod) =
-    isempty(m.generic_wrapper_name) ? string(info.ffi_name, "_", m.name) :
+    isempty(m.generic_wrapper_name) ? string(info.ffi_name, "_", rust_name(m.name)) :
     m.generic_wrapper_name
 
 """
@@ -214,7 +214,7 @@ this path: their wrappers are monomorphized by name and are addressed through
 """
 function method_wrapper_symbol(struct_name::AbstractString, method::RustMethod)
     isempty(method.symbol) || return method.symbol
-    return ffi_method_symbol(struct_name, method.name)
+    return ffi_method_symbol(struct_name, rust_name(method.name))
 end
 
 """
