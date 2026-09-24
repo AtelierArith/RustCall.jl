@@ -627,7 +627,7 @@ function _compile_and_load_rust(code::String, source_file::String, source_line::
     # under a different configuration — and the disk key and the registry name
     # can no longer drift apart, because there is only one formula.
     cache_key = _rustc_block_identity(wrapped_code, compiler, cfg_text)
-    lib_name = "rust_$(artifact_short_id(cache_key))"
+    lib_name = "rust_$(artifact_short_id(cache_key))" # short-id: label
 
     # Check if already compiled and loaded in memory
     is_in_memory = lock(REGISTRY_LOCK) do
@@ -818,7 +818,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
 
         # The library name. `artifact_short_id` is the only truncation in the
         # design and is never a lookup key (#278).
-        lib_name = "rust_cargo_$(artifact_short_id(code_hash, 16))"
+        lib_name = "rust_cargo_$(artifact_short_id(code_hash, 16))" # short-id: label
 
         # Check if already compiled and loaded in memory
         is_in_memory = lock(REGISTRY_LOCK) do
@@ -853,7 +853,7 @@ function _compile_and_load_rust_with_cargo(code::String, source_file::String, so
                 false
             end
             if loaded
-                @debug "Loaded Cargo library from cache" lib_name=lib_name cache_key=artifact_short_id(cache_key, 8)
+                @debug "Loaded Cargo library from cache" lib_name=lib_name cache_key=artifact_short_id(cache_key, 8) # short-id: label
                 return lib_name
             end
         end
@@ -1543,7 +1543,7 @@ function _compile_and_call_irust(code::String, args...)
             target_triple = compiler.target_triple,
             codegen = artifact_codegen_options(compiler),
         ))
-        func_name = "irust_func_$(artifact_short_id(code_hash))"
+        func_name = "irust_func_$(artifact_short_id(code_hash))" # short-id: label
 
         # Check if already compiled (protect IRUST_FUNCTIONS with REGISTRY_LOCK)
         cached = lock(REGISTRY_LOCK) do
@@ -1624,7 +1624,7 @@ function _compile_and_call_irust(code::String, args...)
         # `IRUST_FUNCTIONS` is written in the same critical section as the
         # handle: a concurrent `@irust` that finds the memo must find the
         # library it names.
-        lib_name = "irust_$(artifact_short_id(code_hash))"
+        lib_name = "irust_$(artifact_short_id(code_hash))" # short-id: label
         load_artifact!(irust_policy(), lib_path; lib_name, eager = (sig.symbol,))
         lock(REGISTRY_LOCK) do
             IRUST_FUNCTIONS[code_hash] = IrustSnippet(lib_name, sig.symbol, julia_ret_type)

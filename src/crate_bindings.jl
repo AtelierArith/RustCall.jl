@@ -3927,9 +3927,15 @@ crate_library_name(info::CrateInfo; release::Bool = true, kind::AbstractString =
                    features::Vector{String} = String[], default_features::Bool = true,
                    build_env::Vector{Pair{String, String}} = Pair{String, String}[],
                    snapshot::BuildEnvSnapshot = BuildEnvSnapshot()) =
-    "rust_crate_$(info.name)_$(artifact_short_id(compute_crate_hash(info; release = release,
-        kind = kind, features = features, default_features = default_features,
-        build_env = build_env, snapshot = snapshot)))"
+    _crate_library_label(info, compute_crate_hash(info; release = release, kind = kind,
+                                                  features = features,
+                                                  default_features = default_features,
+                                                  build_env = build_env, snapshot = snapshot))
+
+# A registry name, never a location: the library itself is cached under the
+# full key (#278, #504).
+_crate_library_label(info::CrateInfo, key::AbstractString) =
+    "rust_crate_$(info.name)_$(artifact_short_id(key))" # short-id: label
 
 """
     compute_crate_hash(info::CrateInfo) -> String

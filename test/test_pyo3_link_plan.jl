@@ -1931,23 +1931,36 @@ end
 # package and write one `<profile>/librustcall_wrapper_<short>.*`. Cargo's lock
 # ends when Cargo exits, before RustCall copies the file out, so without a lock
 # of its own one build's output could be cached under the other's key (#495
-# review). The build, the check and the copy hold `_with_wrapper_output_lock`
-# together; here a stub build writes its key into the shared output, yields,
-# and the copy reads it back — each copy must be its own key's.
+# review). The name comes from `with_short_name`, which holds the name's lock
+# over the build, the check and the copy (#504); here a stub build writes its
+# key into the shared output, yields, and the copy reads it back — each copy
+# must be its own key's.
 @testset "concurrent wrapper builds of one short id copy their own output (#495 review)" begin
     k1 = "0123456789abcdef" * "1"^48
     k2 = "0123456789abcdef" * "2"^48
     @test RustCall.artifact_short_id(k1) == RustCall.artifact_short_id(k2)
-    # The real build names its lock by the wrapper name, i.e. by the short id.
+    # The real build takes its package name, and the lock of that name, from
+    # `with_short_name`, and builds and copies out inside it.
     src = read(joinpath(pkgdir(RustCall), "src", "pyo3.jl"), String)
-    @test occursin("wrapper_name = \"rustcall_wrapper_\$(artifact_short_id(key))\"", src)
-    @test occursin("_with_wrapper_output_lock(joinpath(target, wrapper_name * \".lock\"))", src)
+    held = findfirst("with_short_name(target, key; prefix = \"rustcall_wrapper_\") do wrapper_name", src)
+    @test held !== nothing
+    build = findnext("built = build_cargo_project(project;", src, last(held))
+    copy = findnext("save_cargo_cached_library(key, built)", src, last(held))
+    release = findnext("cleanup_cargo_project(project)", src, last(held))
+    @test build !== nothing && copy !== nothing && release !== nothing
+    @test first(build) < first(copy) < first(release)
+    @test RustCall.short_name(k1; prefix = "rustcall_wrapper_") ==
+          RustCall.short_name(k2; prefix = "rustcall_wrapper_") ==
+          "rustcall_wrapper_0123456789abcdef"
 
     mktempdir() do dir
         out = joinpath(dir, "librustcall_wrapper_0123456789abcdef.so")
         lock_path = joinpath(dir, "rustcall_wrapper_0123456789abcdef.lock")
         copies = Dict{String, String}()
-        build_and_copy(key) = RustCall._with_wrapper_output_lock(lock_path; poll = 0.01) do
+        names = Dict{String, String}()
+        build_and_copy(key) = RustCall.with_short_name(dir, key; prefix = "rustcall_wrapper_",
+                                                       poll = 0.01) do name
+            names[key] = name
             write(out, key)                   # Cargo writes the shared output
             sleep(0.2)                        # ...and exits; the other build may start
             copies[key] = read(out, String)   # the copy-out
@@ -1956,6 +1969,8 @@ end
         foreach(wait, tasks)
         @test copies[k1] == k1
         @test copies[k2] == k2
+        # One name, one lock file, for both keys.
+        @test joinpath(dir, names[k1] * ".lock") == joinpath(dir, names[k2] * ".lock") == lock_path
 
         # Across processes: a child holds the lock over its build and copy;
         # the parent's build waits for it rather than interleaving.
@@ -1963,7 +1978,7 @@ end
         child_copy = joinpath(dir, "child_copy")
         script = """
             using RustCall
-            RustCall._with_wrapper_output_lock($(repr(lock_path))) do
+            RustCall.with_short_name_lock($(repr(lock_path))) do
                 write($(repr(out)), $(repr(k1)))
                 touch($(repr(ready)))
                 sleep(3)
@@ -1977,7 +1992,7 @@ end
             sleep(0.05)
         end
         @test isfile(ready)
-        parent_copy = RustCall._with_wrapper_output_lock(lock_path; poll = 0.01) do
+        parent_copy = RustCall.with_short_name_lock(lock_path; poll = 0.01) do
             write(out, k2)
             read(out, String)
         end

@@ -759,7 +759,7 @@ function _monomorphize_function_once(func_name::String, type_params::Dict{Symbol
         # instantiation with the same type set cannot claim the same symbol
         # (`pair<i32,i64>` and `pair<i64,i32>` both read `pair_i32_i64`, #247).
         type_suffix = join([_rust_type_suffix(t) for (_, t) in id.type_params], "_")
-        specialized_name = "$(func_name)_$(type_suffix)_$(artifact_short_id(cache_key, 8))"
+        specialized_name = "$(func_name)_$(type_suffix)_$(artifact_short_id(cache_key, 8))" # short-id: label
 
         # An instantiation an earlier session already built is reused whole
         # (#254): the record beside the cached library carries everything the
@@ -803,7 +803,7 @@ function _monomorphize_function_once(func_name::String, type_params::Dict{Symbol
         # symbol is the additive wrapper the extractor emitted next to the
         # instantiation, never the instantiation's own name (#279); resolving
         # it eagerly puts it in the winner's cache inside the same transaction.
-        lib_name = "rust_generic_$(artifact_short_id(cache_key))"
+        lib_name = "rust_generic_$(artifact_short_id(cache_key))" # short-id: label
         specialized_symbol = specialized.symbol
         artifact = load_artifact!(generics_policy(), lib_path;
                                   lib_name, eager = (specialized_symbol,),
@@ -974,7 +974,7 @@ function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
                 bindings = Pair{String, String}[string(p) => julia_type_to_rust_string(member_params[p])
                                                 for p in info.type_params]
                 push!(specs, (fn = info.path, bindings = bindings,
-                              new_name = "$(info.name)_$(type_suffix)_$(artifact_short_id(group_key, 8))"))
+                              new_name = "$(info.name)_$(type_suffix)_$(artifact_short_id(group_key, 8))")) # short-id: label
             end
             full_source = isempty(first_info.context) ? first_info.code :
                           first_info.context * "\n" * first_info.code
@@ -1016,7 +1016,7 @@ function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
             lib_path = restored.lib_path
         end
         batch_key = restored === nothing ? nothing : restored.batch_key
-        lib_name = "rust_generic_struct_$(artifact_short_id(group_key))"
+        lib_name = "rust_generic_struct_$(artifact_short_id(group_key))" # short-id: label
         eager = [s.symbol for s in specialized_functions]
         artifact = load_artifact!(generics_policy(), lib_path; lib_name, eager,
                                   snapshot_env = first_info.cargo === nothing ? nothing :
@@ -1508,7 +1508,7 @@ function _batch_monomorphize(generic_info, func_name::String,
         push!(specs, (fn = generic_info.path,
                       bindings = Pair{String, String}[string(p) => julia_type_to_rust_string(entry.params[p])
                                                       for p in generic_info.type_params],
-                      new_name = "$(func_name)_$(suffix)_$(artifact_short_id(entry.key, 8))"))
+                      new_name = "$(func_name)_$(suffix)_$(artifact_short_id(entry.key, 8))")) # short-id: label
     end
     specialized = specialize_generic_group(full_source, specs)
     built = try

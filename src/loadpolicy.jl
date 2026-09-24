@@ -1567,7 +1567,7 @@ function _generation_copy_host()
     catch
         ""
     end
-    return artifact_short_id(stable_content_hash(name), GENERATION_COPY_HOST_LEN)
+    return artifact_short_id(stable_content_hash(name), GENERATION_COPY_HOST_LEN) # short-id: lease
 end
 
 """
@@ -1604,7 +1604,7 @@ function _generation_copy_instance()
     end
     seed = string(entropy, ':', time_ns(), ':', getpid(), ':', _generation_copy_host(),
                   ':', objectid(Ref(0)))
-    fresh = artifact_short_id(stable_content_hash(seed), GENERATION_COPY_INSTANCE_LEN)
+    fresh = artifact_short_id(stable_content_hash(seed), GENERATION_COPY_INSTANCE_LEN) # short-id: lease
     # Another task may have drawn one first; one token per process, so the
     # first published wins and this task adopts it.
     current = _GENERATION_COPY_INSTANCE[]

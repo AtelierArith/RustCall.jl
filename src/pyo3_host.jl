@@ -163,23 +163,34 @@ function build_pyo3_extension(crate_path::AbstractString;
                                         features = features,
                                         default_features = default_features,
                                         release = release, snapshot = snapshot)
-    if cache_enabled && isfile(artifact.lib_path)
-        @debug "Using cached PyO3 extension module" key = artifact_short_id(artifact.key, 8)
-        return artifact
-    end
+    # The directory is named by a short name of the key (`short_name_path`), and
+    # the file in it is found again by that name alone, so it is owned by the
+    # full key before it is looked at: a key whose short id collides is refused
+    # rather than handed this key's module. The lock is held from the lookup
+    # through the publish, so two builds of one key take turns (#504).
+    # `:clear`: an unrecorded directory (a pre-#504 cache entry) may hold a
+    # module built for another key that shares the short id, so it is emptied
+    # and rebuilt, never adopted (#507 review).
+    return with_owned_short_name(artifact.dir, artifact.key; foreign = :clear,
+                                 what = "the PyO3 extension of `$(path)`") do
+        if cache_enabled && isfile(artifact.lib_path)
+            @debug "Using cached PyO3 extension module" key = artifact_short_id(artifact.key, 8) # short-id: label
+            return artifact
+        end
 
-    built = _build_pyo3_extension_library(snapshot, path, cargo_toml, module_name;
-                                          python = python, features = features,
-                                          default_features = default_features,
-                                          release = release)
-    # The key names `python` by what it reported before the build; one
-    # replaced in place since then configured this build for another Python,
-    # so it is not published under that key (#481).
-    _verify_build_interpreter(snapshot, python, fingerprint, module_name)
-    # Publish, never overwrite (#394): two sessions may build one key at once.
-    published = _publish_cache_file(built, artifact.lib_path)
-    return PyO3Extension(module_name, published.path, artifact.dir, ext_suffix,
-                         String(python), fingerprint, artifact.key)
+        built = _build_pyo3_extension_library(snapshot, path, cargo_toml, module_name;
+                                              python = python, features = features,
+                                              default_features = default_features,
+                                              release = release)
+        # The key names `python` by what it reported before the build; one
+        # replaced in place since then configured this build for another Python,
+        # so it is not published under that key (#481).
+        _verify_build_interpreter(snapshot, python, fingerprint, module_name)
+        # Publish, never overwrite (#394): two sessions may build one key at once.
+        published = _publish_cache_file(built, artifact.lib_path)
+        return PyO3Extension(module_name, published.path, artifact.dir, ext_suffix,
+                             String(python), fingerprint, artifact.key)
+    end
 end
 
 """
@@ -213,7 +224,9 @@ function _pyo3_extension_artifact(cache_dir::AbstractString, info::CrateInfo,
     # Its own tree, not the Cargo cache: an extension module is not a cached
     # cdylib, and `test_cargo` asserts the Cargo cache holds exactly one entry
     # (#287). Both `clear_cache()` and this directory's owner are one place.
-    dir = joinpath(String(cache_dir), "pyo3-host", artifact_short_id(key))
+    # Named by a short name, not the whole key; `build_pyo3_extension` claims it
+    # for the full key before it looks inside (#504).
+    dir = short_name_path(joinpath(String(cache_dir), "pyo3-host"), key)
     lib_path = joinpath(dir, String(module_name) * String(ext_suffix))
     return PyO3Extension(String(module_name), lib_path, dir, String(ext_suffix),
                          String(python), String(fingerprint), key)

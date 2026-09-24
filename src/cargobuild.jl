@@ -712,7 +712,7 @@ function build_cargo_project_cached(
     # Check cache
     cached_lib = get_cargo_cached_library(cache_key)
     if !isnothing(cached_lib) && isfile(cached_lib)
-        @debug "Using cached Cargo library" cache_key=artifact_short_id(cache_key, 8)
+        @debug "Using cached Cargo library" cache_key=artifact_short_id(cache_key, 8) # short-id: label
         return cached_lib
     end
 
@@ -755,7 +755,8 @@ names a directory of its own.
 | `:pyo3_host`    | the extension module of `pyo3_host = true` (`build_pyo3_extension`)     | `<base>/pyo3-host`     |
 | `:pyo3_wrapper` | a PyO3 crate's generated wrapper and the cfg / feature probes that describe it (`_build_pyo3_wrapper_project`, `_wrapper_probe_context`); their generated projects live under it too (`_wrapper_shaped_project`) | `<base>/pyo3-wrapper`  |
 
-`<base>` is `<Cargo cache>/targets/<artifact_short_id(crate_target_id(crate_path))>`.
+`<base>` is `<Cargo cache>/targets/<short name of crate_target_id(crate_path)>`
+(`short_name_path`).
 Never the crate's own `target/`: a package installed under a depot is
 read-only, and a CI cache that carries RustCall's cache then carries these
 builds as well. A hot reload rebuilds the direct build, so it shares that
@@ -779,10 +780,10 @@ the cache root there is already about 100 of them, and Cargo nests
 `<profile>/build/<package>-<hash>/build_script_build-<hash>.exe` below the
 target directory. The full 64-hex `artifact_key` left no room: a `pyo3_host`
 build of a crate depending on `target-lexicon` failed with `LNK1104` at 262
-characters (#486). The directory is therefore named by the key's
-`artifact_short_id`, and the full key is written inside it
+characters (#486). The directory is therefore named by the key's short name
+(`short_name_path`, #504), and the full key is written inside it
 (`CRATE_TARGET_KEY_FILE`) by the first `_crate_target!` and compared by every
-later one. Isolation is still decided by the full key: two crates whose short
+later one (`claim_short_name!`). Isolation is still decided by the full key: two crates whose short
 ids collide are refused with an error rather than sharing a directory, which
 could have Cargo report the second as fresh and leave the first one's library
 in place (#447 review).
@@ -790,8 +791,10 @@ in place (#447 review).
 function crate_target_directory(crate_path::AbstractString, flavour::Symbol = :direct)
     # Inside the Cargo cache, so `clear_cargo_cache` / `get_cargo_cache_size`
     # cover it and `cleanup_old_cache` ages it (#447 review).
-    # Short, for Windows' path limit; `_crate_target!` verifies the full key.
-    base = joinpath(get_cargo_cache_dir(), "targets", artifact_short_id(crate_target_id(crate_path)))
+    # Short, for Windows' path limit; `_crate_target!` claims it for the full
+    # key (`claim_short_name!`, #504).
+    base = short_name_path(joinpath(get_cargo_cache_dir(), "targets"),
+                           artifact_key(crate_target_id(crate_path)))
     flavour === :direct && return base
     flavour === :pyo3_host && return joinpath(base, "pyo3-host")
     flavour === :pyo3_wrapper && return joinpath(base, "pyo3-wrapper")
@@ -820,43 +823,20 @@ end
     CRATE_TARGET_KEY_FILE
 
 The file in a crate's `<base>` target directory holding the full `artifact_key`
-of the crate it belongs to; see `crate_target_directory`.
+of the crate it belongs to; see `crate_target_directory`. It is the owner record
+every persistent short-named directory carries, `SHORT_NAME_KEY_FILE` (#504).
 """
-const CRATE_TARGET_KEY_FILE = ".rustcall-crate-key"
+const CRATE_TARGET_KEY_FILE = SHORT_NAME_KEY_FILE
 
 # Record `key` as the owner of `base`, or confirm it already is; a directory
-# that another key owns is refused, never shared.
-#
-# The record is created with the exclusive-create claim `_publish_lockfile!`
-# uses (`_claim_lockfile!`, `O_CREAT | O_EXCL`), so of two claimants — two
-# processes building two crates whose short ids collide — exactly one creates
-# it; the other reads it and compares the full key. A check-then-rename was not
-# that: both could pass the check, and the second rename replaced the first
-# record, leaving two crates in one directory (#495 review). The winner writes
-# the key after creating the file, so a loser that finds it empty or partial
-# waits `wait` seconds for the whole key before deciding.
-function _claim_crate_target!(base::AbstractString, key::AbstractString,
-                              crate_path::AbstractString; wait::Real = 10.0)
-    mkpath(base)
-    record = joinpath(base, CRATE_TARGET_KEY_FILE)
-    if _claim_lockfile!(record)
-        write(record, key)
-        return nothing
-    end
-    deadline = time() + Float64(wait)
-    owner = strip(read(record, String))
-    while length(owner) < length(key) && time() < deadline
-        sleep(0.05)
-        owner = strip(read(record, String))
-    end
-    owner == key && return nothing
-    reason = length(owner) < length(key) ?
-        "holds an incomplete owner record (a process died while claiming it)" :
-        "already belongs to another crate (its short id collides with that of `$(crate_path)`)"
-    throw(RustError(
-        "RustCall's Cargo target directory `$(base)` $(reason). Remove the directory, or " *
-        "clear it with `RustCall.clear_cargo_cache()`, and build again."))
-end
+# that another key owns is refused, never shared. The claim is the one every
+# short-named location takes (`claim_short_name!`, #504): exclusive create of
+# the owner record, then a comparison of the full key.
+_claim_crate_target!(base::AbstractString, key::AbstractString,
+                     crate_path::AbstractString; wait::Real = 10.0) =
+    # `:clear`: a target directory holds only Cargo's output for RustCall's own
+    # builds, which Cargo rebuilds, so an unrecorded one is emptied, not adopted.
+    claim_short_name!(base, key; foreign = :clear, what = "crate `$(crate_path)`", wait = wait)
 
 """
     TARGET_LAST_USED_STAMP
@@ -914,7 +894,7 @@ function save_cargo_cached_library(cache_key::String, lib_path::String)
     # See `_publish_cache_file`.
     published = _publish_cache_file(lib_path, cached_path)
 
-    @debug "Cached Cargo library" cache_key=artifact_short_id(cache_key, 8) path=published.path published=published.published
+    @debug "Cached Cargo library" cache_key=artifact_short_id(cache_key, 8) path=published.path published=published.published # short-id: label
     return published.path
 end
 

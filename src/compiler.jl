@@ -67,8 +67,9 @@ Otherwise returns a fixed name since each compilation uses its own temp director
 """
 function _unique_source_name(code::String, compiler::RustCompiler)
     if compiler.debug_mode && compiler.debug_dir !== nothing
-        fingerprint = artifact_short_id(stable_content_hash(code), RECOVERY_FINGERPRINT_LEN)
-        return "rust_$(fingerprint)"
+        # A location in the shared `debug_dir`, so a short name owned by the
+        # full content digest (`compile_rust_to_shared_lib` claims it, #504).
+        return short_name(stable_content_hash(code); prefix = "rust_", n = RECOVERY_FINGERPRINT_LEN)
     end
     return "rust_code"
 end
@@ -210,16 +211,33 @@ Compile Rust code to a shared library and return the path.
 - `CompilationError` if compilation fails
 """
 function compile_rust_to_shared_lib(code::String; compiler::RustCompiler = get_default_compiler())
-    # Create a unique temporary directory for this compilation
     if compiler.debug_mode && compiler.debug_dir !== nothing
+        # The files are kept in `debug_dir`, named by a short name of the
+        # code's digest (`_unique_source_name`) that every compilation shares.
+        # The name is owned by the full digest — code whose digest shares the
+        # prefix is refused rather than overwriting these files — and held
+        # under its lock from writing the source until rustc has written the
+        # library, so two compilations of one name take turns (#504).
         tmp_dir = compiler.debug_dir
         mkpath(tmp_dir)
-    else
-        tmp_dir = mktempdir()
+        base_name = _unique_source_name(code, compiler)
+        # `:clear`: files of this name without a record (from a RustCall that
+        # kept none) are RustCall's own debug outputs, which this compilation
+        # rewrites anyway; they are removed rather than left to look like its
+        # output. Nothing else in `debug_dir` is touched.
+        return with_owned_short_name(joinpath(tmp_dir, base_name), stable_content_hash(code);
+                                     stem = true, foreign = :clear,
+                                     what = "this Rust code") do
+            _compile_rust_to_shared_lib(code, compiler, tmp_dir, base_name)
+        end
     end
+    # A unique temporary directory for this compilation, and a fixed name in it.
+    return _compile_rust_to_shared_lib(code, compiler, mktempdir(),
+                                       _unique_source_name(code, compiler))
+end
 
-    # Use unique filenames in debug_dir to avoid overwriting across compilations
-    base_name = _unique_source_name(code, compiler)
+function _compile_rust_to_shared_lib(code::String, compiler::RustCompiler,
+                                     tmp_dir::String, base_name::String)
     rs_file = joinpath(tmp_dir, "$(base_name).rs")
     lib_ext = get_library_extension()
     lib_file = joinpath(tmp_dir, "lib$(base_name)$lib_ext")

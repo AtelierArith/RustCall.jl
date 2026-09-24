@@ -337,11 +337,15 @@ artifact_key(; kwargs...) = artifact_key(ArtifactId(; kwargs...))
     artifact_short_id(key::AbstractString, n::Int = ARTIFACT_SHORT_ID_LEN) -> String
 
 The one place in the design where a key is truncated: the first `n` hex
-characters of `artifact_key`, for human-readable names only (library
-names, temporary Cargo project directories, log lines).
+characters of `artifact_key`, for human-readable names (library names, Rust
+symbols inside their own library, log lines).
 
 Never use the result as a cache lookup key: correctness must depend on the full
-digest.
+digest. Where a short id has to be a *location* — a path, or a Cargo package
+whose output lands in a shared directory — it is spelled and owned by the full
+key in `src/short_name.jl` (`short_name_path`, `claim_short_name!`,
+`with_short_name`, `with_owned_short_name`; #504), and
+`scripts/lint_artifact_identity.sh` rejects any other use not marked as a label.
 """
 artifact_short_id(id::ArtifactId, n::Int = ARTIFACT_SHORT_ID_LEN) =
     artifact_short_id(artifact_key(id), n)

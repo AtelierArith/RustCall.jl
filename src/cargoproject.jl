@@ -66,7 +66,7 @@ project directory, not the package name, is what keeps concurrent builds apart
 built library is copied into the cache under the block's key.
 """
 cargo_block_package(deps) =
-    CARGO_BLOCK_PACKAGE_PREFIX * artifact_short_id(artifact_key(cargo_lockfile_id(deps)), 12)
+    CARGO_BLOCK_PACKAGE_PREFIX * artifact_short_id(artifact_key(cargo_lockfile_id(deps)), 12) # short-id: label
 
 """
     create_cargo_project(name::String, dependencies::Vector{DependencySpec}; kwargs...) -> CargoProject
