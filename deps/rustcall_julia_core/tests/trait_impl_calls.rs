@@ -54,6 +54,41 @@ fn trait_impl_methods_are_called_through_the_trait() {
 }
 
 #[test]
+fn the_receiver_argument_follows_the_declared_receiver_type() {
+    // A path call applies no autoref: each reference layer beyond the one
+    // `self_obj` already is is taken again (PR #505 review).
+    let src = expanded(syn::parse_quote! {
+        #[julia]
+        impl tr::Forms for Buf {
+            #[julia]
+            fn typed_ref(self: &Self) -> i32 { 0 }
+            #[julia]
+            fn ref_ref(self: &&Self) -> i32 { 0 }
+            #[julia]
+            fn ref_ref_ref(self: &'a &&Self) -> i32 { 0 }
+            #[julia]
+            fn mut_value(mut self) -> i32 { 0 }
+        }
+    });
+    assert!(
+        src.contains("<Buf as tr::Forms>::typed_ref(self_obj)"),
+        "{src}"
+    );
+    assert!(
+        src.contains("<Buf as tr::Forms>::ref_ref(&self_obj)"),
+        "{src}"
+    );
+    assert!(
+        src.contains("<Buf as tr::Forms>::ref_ref_ref(&&self_obj)"),
+        "{src}"
+    );
+    assert!(
+        src.contains("<Buf as tr::Forms>::mut_value(*self_obj)"),
+        "{src}"
+    );
+}
+
+#[test]
 fn a_foreign_block_spells_both_paths_as_its_header_does() {
     let src = expanded(syn::parse_quote! {
         #[julia]

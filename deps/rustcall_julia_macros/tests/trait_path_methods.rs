@@ -11,6 +11,7 @@
 #![allow(dead_code)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 #![allow(clippy::new_ret_no_self)]
+#![allow(clippy::needless_arbitrary_self_type)]
 #![allow(non_snake_case)]
 
 use rustcall_julia_macros::julia;
@@ -108,6 +109,111 @@ pub mod ops {
         fn only_near(&self) -> i32 {
             self.n + 7
         }
+    }
+}
+
+// Every receiver form a wrapper accepts, through a path-named trait and beside
+// an inherent namesake (PR #505 review). A path call applies no autoref, so the
+// receiver argument follows the declared type: `self: &&Self` is passed
+// `&self_obj`, where method-call syntax borrowed once more on its own.
+#[julia]
+#[derive(Clone, Copy)]
+pub struct Pt {
+    pub n: i32,
+}
+
+#[julia]
+impl Pt {
+    #[julia]
+    pub fn new(n: i32) -> Self {
+        Self { n }
+    }
+}
+
+impl Pt {
+    pub fn by_ref(&self) -> i32 {
+        -1
+    }
+    pub fn by_mut(&mut self) -> i32 {
+        -1
+    }
+    pub fn typed_ref(&self) -> i32 {
+        -1
+    }
+    pub fn ref_ref(&self) -> i32 {
+        -1
+    }
+    pub fn ref_ref_ref(&self) -> i32 {
+        -1
+    }
+    pub fn by_value(self) -> i32 {
+        -1
+    }
+    pub fn mut_value(self) -> i32 {
+        -1
+    }
+}
+
+pub mod recv {
+    pub trait Forms {
+        fn by_ref(&self) -> i32;
+        fn by_mut(&mut self) -> i32;
+        fn typed_ref(self: &Self) -> i32;
+        fn ref_ref(self: &&Self) -> i32;
+        fn ref_ref_ref(self: &&&Self) -> i32;
+        fn by_value(self) -> i32;
+        fn mut_value(self) -> i32;
+    }
+}
+
+#[julia]
+impl recv::Forms for Pt {
+    #[julia]
+    fn by_ref(&self) -> i32 {
+        self.n + 1
+    }
+    #[julia]
+    fn by_mut(&mut self) -> i32 {
+        self.n += 10;
+        self.n
+    }
+    #[julia]
+    fn typed_ref(self: &Self) -> i32 {
+        self.n + 2
+    }
+    #[julia]
+    fn ref_ref(self: &&Self) -> i32 {
+        self.n + 3
+    }
+    #[julia]
+    fn ref_ref_ref(self: &&&Self) -> i32 {
+        self.n + 4
+    }
+    #[julia]
+    fn by_value(self) -> i32 {
+        self.n + 5
+    }
+    #[julia]
+    fn mut_value(mut self) -> i32 {
+        self.n += 6;
+        self.n
+    }
+}
+
+#[test]
+fn every_receiver_form_reaches_the_trait_method() {
+    let p = rustcall_Pt_new(0);
+    unsafe {
+        assert_eq!(rustcall_Pt_by_ref(p).assume_init(), 1);
+        assert_eq!(rustcall_Pt_by_mut(p).assume_init(), 10);
+        assert_eq!(rustcall_Pt_typed_ref(p).assume_init(), 12);
+        assert_eq!(rustcall_Pt_ref_ref(p).assume_init(), 13);
+        assert_eq!(rustcall_Pt_ref_ref_ref(p).assume_init(), 14);
+        assert_eq!(rustcall_Pt_by_value(p).assume_init(), 15);
+        assert_eq!(rustcall_Pt_mut_value(p).assume_init(), 16);
+        // By value is a copy: the object behind the pointer is unchanged.
+        assert_eq!((*p).n, 10);
+        Pt_free(p);
     }
 }
 

@@ -367,7 +367,66 @@ pub(crate) enum CallTarget {
     /// syntax would need the trait in scope where the wrapper is emitted and
     /// would reach an inherent method of the same name first. `ty` is the
     /// receiver type as the wrapper spells it, for the panic message.
-    TraitItem { ty: syn::Path, path: syn::TypePath },
+    TraitItem {
+        ty: syn::Path,
+        path: syn::TypePath,
+        receiver: TraitReceiver,
+    },
+}
+
+/// How a trait method's receiver is passed as the first argument of its
+/// qualified call (#497). A path call applies no autoref or autoderef, so the
+/// argument is built from the receiver's declared type rather than from the
+/// wrapper's `self_obj` (`&Buf` / `&mut Buf`): the method-call syntax it
+/// replaces adjusted that reference for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TraitReceiver {
+    /// A static method: no receiver argument.
+    None,
+    /// A receiver taken by value (`self`, `mut self`, `self: Box<Self>`, ...):
+    /// the value behind `self_obj`, `*self_obj`.
+    Value,
+    /// A reference receiver (`&self`, `&mut self`, `self: &&Self`, ...):
+    /// `self_obj` is its innermost reference, and each further layer, listed
+    /// outermost first (`true` for `&mut`), is taken again —
+    /// `self: &&Self` passes `&self_obj`.
+    Ref(Vec<bool>),
+}
+
+impl TraitReceiver {
+    fn of(receiver: Option<&syn::Receiver>) -> Self {
+        let Some(receiver) = receiver else {
+            return TraitReceiver::None;
+        };
+        let mut layers = Vec::new();
+        let mut ty = unparen(&receiver.ty);
+        while let Type::Reference(r) = ty {
+            layers.push(r.mutability.is_some());
+            ty = unparen(&r.elem);
+        }
+        match layers.pop() {
+            None => TraitReceiver::Value,
+            Some(_) => TraitReceiver::Ref(layers),
+        }
+    }
+
+    /// The first argument of the call, `None` for a static method.
+    fn argument(&self, self_obj: &Ident) -> Option<TokenStream2> {
+        match self {
+            TraitReceiver::None => None,
+            TraitReceiver::Value => Some(quote! { *#self_obj }),
+            TraitReceiver::Ref(outer) => {
+                let borrows = outer.iter().map(|mutable| {
+                    if *mutable {
+                        quote! { &mut }
+                    } else {
+                        quote! { & }
+                    }
+                });
+                Some(quote! { #(#borrows)* #self_obj })
+            }
+        }
+    }
 }
 
 /// The last segment of a path, which is the name a human reads: the panic
@@ -1010,7 +1069,7 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
             Some(r) => format!("{}::{}", path_tail(&r.ty), method),
             None => method.to_string(),
         },
-        CallTarget::TraitItem { ty, path } => {
+        CallTarget::TraitItem { ty, path, .. } => {
             format!("{}::{}", path_tail(ty), path_tail(&path.path))
         }
     };
@@ -1115,15 +1174,8 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
         CallTarget::Free(name) => quote! { #name(#(#call_args),*) },
         CallTarget::Assoc { ty, method } => quote! { #ty::#method(#(#call_args),*) },
         CallTarget::Instance(method) => quote! { #self_obj.#method(#(#call_args),*) },
-        CallTarget::TraitItem { path, .. } => {
-            // The receiver is the first argument of a path call: the
-            // reference `self_obj` is for `&self` / `&mut self`, and the value
-            // behind it for a `self` taken by value — what method-call syntax
-            // would have auto-dereferenced to.
-            let self_arg = receiver.as_ref().map(|r| match r.borrow {
-                crate::environment::SelfBorrow::Ref(_) => quote! { #self_obj },
-                crate::environment::SelfBorrow::None => quote! { *#self_obj },
-            });
+        CallTarget::TraitItem { path, receiver, .. } => {
+            let self_arg = receiver.argument(&self_obj);
             let args = self_arg.into_iter().chain(call_args.iter().cloned());
             quote! { #path(#(#args),*) }
         }
@@ -2882,6 +2934,7 @@ fn method_spec(
         Some(path) => CallTarget::TraitItem {
             ty: self_path.clone(),
             path,
+            receiver: TraitReceiver::of(m.func.sig.receiver()),
         },
         None if m.is_static => CallTarget::Assoc {
             ty: self_path.clone(),
