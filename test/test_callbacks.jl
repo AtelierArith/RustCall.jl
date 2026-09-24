@@ -66,7 +66,8 @@ const _CB_REPO = normpath(joinpath(@__DIR__, ".."))
                                               arg_abis = ["callback", ""], callback_args = [["i64"], String[]],
                                               callback_returns = ["i64", ""])
         src = RustCall._emit_function_code(good)
-        @test occursin("Base.@cfunction RustCall.CallbackSlot{1, Int64}() Int64 (Int64,)", src)
+        # Parenthesized, so the argument after it stays an argument of the call.
+        @test occursin("Base.@cfunction(RustCall.CallbackSlot{1, Int64}(), Int64, (Int64,)), Int64(x)", src)
         @test occursin("CallbackTrampoline{Int64}", src)
         @test occursin("RustCall._push_callback_frame!", src) && occursin("RustCall._pop_callback_frame!", src)
         @test occursin("try", src) && occursin("finally", src)
