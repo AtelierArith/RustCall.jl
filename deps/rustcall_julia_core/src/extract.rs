@@ -1183,6 +1183,11 @@ impl CrateScan {
             // scanned since #357. `locate` sees one name and lands on the
             // first; the block belongs to the variant under its own predicate,
             // or the other one ends up without the method (#357 review).
+            // Attached without resolving return types: the proc macro sees
+            // this one block and boxes a return only when it is spelled
+            // `Self` or as the header spells it
+            // (`codegen::returns_own_type`), so the manifest must say no
+            // more than that (#518).
             for index in self.cfg_variants_for(index, &imp.enclosing_cfg) {
                 self.check_symbol_path(imp, index)?;
                 self.structs[index].model.attach_impl(

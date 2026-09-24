@@ -67,6 +67,14 @@ pub struct MethodModel {
     /// for a lone method ([`MethodModel::from_fn`]); its wrapper then takes
     /// the struct as `Self` and no generics of a block.
     pub host: Option<ImplHost>,
+    /// Whether the declared return type, spelled otherwise than `Self` or the
+    /// header, was **resolved** to the struct the block belongs to
+    /// ([`crate::paths::names_struct`], #518): `-> super::Gauge` in `use
+    /// super::Gauge as Meter; impl Meter`, `-> crate::Gauge` in `impl Gauge`.
+    /// Only the inline expander resolves names ([`ModelTree::collect`]); the
+    /// proc macro sees one block, so for the crate flavour this stays `false`
+    /// and [`crate::codegen::returns_own_type`]'s spelling rule alone decides.
+    pub returns_own_type_resolved: bool,
 }
 
 impl MethodModel {
@@ -77,6 +85,7 @@ impl MethodModel {
             enclosing_cfg: Vec::new(),
             site: None,
             host: None,
+            returns_own_type_resolved: false,
         }
     }
 
@@ -131,16 +140,19 @@ impl MethodModel {
         crate::codegen::method_stem(trait_name.as_deref(), &self.name())
     }
 
-    /// Whether the method returns the implementing type by value
-    /// ([`crate::codegen::returns_own_type`]): its wrapper returns an owning
-    /// pointer. Read from the return type and the block's header, never the
-    /// name.
+    /// Whether the method returns the implementing type by value: its wrapper
+    /// returns an owning pointer. Read from the return type and the block's
+    /// header, never the name — spelled `Self` or as the header spells it
+    /// ([`crate::codegen::returns_own_type`]), or resolved to the struct by
+    /// the inline expander ([`MethodModel::returns_own_type_resolved`]). A
+    /// type that merely shares the header's last segment is not it (#518).
     pub fn returns_boxed_struct(&self, struct_name: &syn::Ident) -> bool {
-        crate::codegen::returns_own_type(
-            &self.func.sig.output,
-            struct_name,
-            self.host.as_ref().map(|h| &h.self_ty),
-        )
+        self.returns_own_type_resolved
+            || crate::codegen::returns_own_type(
+                &self.func.sig.output,
+                struct_name,
+                self.host.as_ref().map(|h| &h.self_ty),
+            )
     }
 
     /// Whether Julia binds the method as the struct's constructor (`Buf(..)`):
@@ -270,8 +282,25 @@ impl StructModel {
         enclosing_cfg: &[syn::Attribute],
         block_module: Option<&[String]>,
     ) {
+        self.attach_impl_resolving(imp, mode, enclosing_cfg, block_module, |_| false);
+    }
+
+    /// [`StructModel::attach_impl`] for a caller that resolves names: a
+    /// method whose declared return type `names_self` says is this struct
+    /// is recorded as returning it
+    /// ([`MethodModel::returns_own_type_resolved`], #518).
+    pub fn attach_impl_resolving(
+        &mut self,
+        imp: &ItemImpl,
+        mode: Mode,
+        enclosing_cfg: &[syn::Attribute],
+        block_module: Option<&[String]>,
+        names_self: impl Fn(&Type) -> bool,
+    ) {
         self.impls.push(imp.clone());
         for mut m in wrapped_methods(imp, mode, enclosing_cfg) {
+            m.returns_own_type_resolved =
+                matches!(&m.func.sig.output, syn::ReturnType::Type(_, ty) if names_self(ty));
             m.site = block_module.map(|path| ImplSite {
                 module_path: path.to_vec(),
                 self_ty: (*imp.self_ty).clone(),
@@ -358,6 +387,24 @@ struct ScannedBlock {
     enclosing_cfg: Vec<syn::Attribute>,
 }
 
+/// A selected struct's location alone, as [`crate::paths::names_struct`]
+/// sees it.
+#[derive(Debug)]
+struct Place {
+    module_path: Vec<String>,
+    name: String,
+}
+
+impl crate::paths::Located for Place {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn module_path(&self) -> &[String] {
+        &self.module_path
+    }
+}
+
 impl crate::paths::Located for LocatedModel {
     fn name(&self) -> &str {
         &self.name
@@ -375,13 +422,42 @@ impl ModelTree {
         let mut imports = Vec::new();
         let mut path = Vec::new();
         tree.walk(items, mode, &mut path, &[], &mut impls, &mut imports);
+        // Where every selected struct is, for resolving a method's return
+        // type while its struct's model is being extended.
+        let places: Vec<Place> = tree
+            .entries
+            .iter()
+            .map(|e| Place {
+                module_path: e.module_path.clone(),
+                name: e.name.clone(),
+            })
+            .collect();
         for block in &impls {
             if let Ok(index) = crate::paths::locate(&tree.entries, &block.header, &imports) {
-                tree.entries[index].model.attach_impl(
+                // A return type names the block's struct when it resolves
+                // to it by the path machinery the header was resolved by
+                // (#518) — `-> super::Gauge` in `impl Meter` — and never by
+                // sharing the header's last segment.
+                let names_self = |ty: &Type| {
+                    crate::paths::names_struct(
+                        &places,
+                        index,
+                        &block.item.self_ty,
+                        ty,
+                        &block.header.module_path,
+                        &imports,
+                        // RustCall compiles a `rust"""` block with `rustc`
+                        // and no `--edition`: edition 2015, where a leading
+                        // `::` is the crate root.
+                        true,
+                    )
+                };
+                tree.entries[index].model.attach_impl_resolving(
                     &block.item,
                     mode,
                     &block.enclosing_cfg,
                     Some(&block.header.module_path),
+                    names_self,
                 );
             }
         }

@@ -2275,12 +2275,25 @@ pub fn returns_boxed_struct(struct_name: &Ident, method: &syn::ImplItemFn) -> bo
     returns_own_type(&method.sig.output, struct_name, None)
 }
 
-/// Whether a method returns the implementing type by value, so its wrapper
-/// hands Julia an owning `*mut Struct` (`WrapperReturn::Boxed`): the declared
-/// return type is `Self`, the struct's name, or the impl header's own type
-/// (`own_ty`, which a `use .. as` may have renamed). The one rule for the
+/// Whether a method's declared return type **is spelled as** the implementing
+/// type, so its wrapper hands Julia an owning `*mut Struct`
+/// (`WrapperReturn::Boxed`): `Self`, or the impl header's own type spelled
+/// token for token as the header spells it (`own_ty`: `Meter` in `use
+/// super::Gauge as Meter; impl Meter`, `super::Gauge` in `impl super::Gauge`).
+/// With no header (a lone method), the bare struct name. The one rule for the
 /// manifest's `returns_boxed_struct` / `is_constructor` and the codegen's
 /// boxed return, in both flavours (PR #513 review).
+///
+/// The header and the signature are written in one scope, so one spelling
+/// names one type there. A path that merely **ends** in the header's name is
+/// not the implementing type as far as the syntax says — `other::Meter` may
+/// be `type Meter = f64` — and boxing it as `*mut Meter` does not compile
+/// (#518). A path spelled otherwise that does name the struct
+/// (`crate::Gauge` in `impl Gauge`) is recognised only by resolution, which
+/// the inline expander does ([`crate::model::MethodModel::returns_own_type_resolved`],
+/// through [`crate::paths::names_struct`]); the proc macro sees one block
+/// and cannot resolve a name, so to it only this spelling counts, and the
+/// crate scan, which must describe what the macro emits, uses no more.
 ///
 /// Decided by the return type alone, never by the method's name: a `fn new()
 /// -> i32` (a trait's, or an inherent helper) returns an `i32`, and boxing it
@@ -2289,11 +2302,15 @@ pub fn returns_own_type(output: &ReturnType, struct_name: &Ident, own_ty: Option
     let ReturnType::Type(_, ty) = output else {
         return false;
     };
-    is_self_type(ty, struct_name)
-        || own_ty
-            .and_then(last_ident)
-            .zip(last_ident(ty))
-            .is_some_and(|(own, returned)| own == returned && matches!(unparen(ty), Type::Path(_)))
+    let ty = unparen(ty);
+    let is_self = matches!(ty, Type::Path(tp) if tp.qself.is_none() && tp.path.is_ident("Self"));
+    is_self
+        || match own_ty {
+            Some(own) => {
+                matches!(ty, Type::Path(_)) && crate::receiver::same_spelling(ty, unparen(own))
+            }
+            None => is_self_type(ty, struct_name),
+        }
 }
 
 /// Generate the FFI wrapper for a method (crate flavour).
@@ -2698,8 +2715,8 @@ pub fn inline_struct_wrappers(
 /// (inline flavour, per struct). `self_path` is how the wrapper spells the
 /// struct where it is emitted — the bare name next to the struct (inline), the
 /// impl header's own path (`super::Gauge`) next to the block (crate, #315) —
-/// and `struct_name` the struct's identifier, which a `-> Self` / `-> Gauge`
-/// constructor return is recognised by.
+/// and `struct_name` the struct's identifier. Whether a method returns the
+/// struct is [`MethodModel::returns_boxed_struct`] (#518).
 #[allow(clippy::too_many_arguments)]
 fn method_spec(
     self_path: &syn::Path,

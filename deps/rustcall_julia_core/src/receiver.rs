@@ -157,7 +157,8 @@ impl Receiver {
 
 /// Whether two types are spelled with the same tokens. The header's type and
 /// a receiver naming it are compared as written: resolving either would need
-/// the crate's name resolution.
-fn same_spelling(a: &Type, b: &Type) -> bool {
+/// the crate's name resolution. Also the proc macro's half of
+/// [`crate::codegen::returns_own_type`] (#518).
+pub(crate) fn same_spelling(a: &Type, b: &Type) -> bool {
     quote!(#a).to_string() == quote!(#b).to_string()
 }
