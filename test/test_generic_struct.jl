@@ -349,7 +349,7 @@ end
     # registered under the name any more, with a freshly invented "alive"
     # flag that nothing would ever flip (#249, #277).
     @testset "a generic struct is bound to the image that allocated it" begin
-        rust"""
+        boxed_lib = rust"""
         #[julia]
         pub struct Boxed<T> {
             value: T,
@@ -396,7 +396,7 @@ end
         # generic `Boxed` of its own in the same worker, with its own
         # instantiation, and the bare name would be whichever registered last
         # (#522).
-        own_free = RustCall._generic_struct_member(@__MODULE__, "Boxed_free")
+        own_free = RustCall.GENERIC_FUNCTIONS_BY_LIB[(boxed_lib, "Boxed_free")]
         free_info = RustCall.monomorphize_function(own_free, Dict{Symbol, Type}(:T => Int32))
         @test free_info.lib_name == lib
         @test free_info.func_ptr == free_ptr

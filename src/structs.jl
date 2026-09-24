@@ -375,8 +375,9 @@ compiled into the library directly and need no registration.
 `lib_name` is the library of the block that defines the struct: it owns the
 registration (`GenericFunctionInfo.owner`), so another module's struct of the
 same name — same group, same wrapper names — neither replaces these members
-nor joins their instantiation, and the defining module reaches its own
-through `resolve_rust_call` (#522). `nothing` registers without an owner.
+nor joins their instantiation, and the struct's generated code reads its own
+members from this library's rows (`_generic_struct_member`, #522). `nothing`
+registers without an owner.
 """
 function register_generic_struct_wrappers(info::RustStructInfo, expanded_source::String;
                                            compiler = nothing, cargo = nothing,
@@ -437,9 +438,13 @@ end
 Generate Julia code to define a corresponding mutable struct and its methods.
 Only generates definitions for structs marked with #[derive(JuliaStruct)] or #[julia].
 `colliding` is `_static_method_collisions` of the whole block: a static method
-whose name is in it gets no bare `name(args...)` form (#323).
+whose name is in it gets no bare `name(args...)` form (#323). `block` is the
+defining block's `RustBlockSnapshot`, spliced into a generic struct's generated
+code so that its members are looked up under the library that block loaded
+(`_generic_struct_member`, #522).
 """
-function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = Set{String}())
+function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = Set{String}(),
+                                block::Union{Nothing, RustBlockSnapshot} = nothing)
     # Only generate Julia definitions for structs with #[derive(JuliaStruct)]
     # This is set when #[julia] attribute is used (transformed to #[derive(JuliaStruct)])
     if !info.has_derive_julia_struct
@@ -509,7 +514,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                 function $where_clause(ptr::Ptr{Cvoid}, lib::String) where {$(esc_T_params...)}
                     gen = RustCall.generic_struct_generation_snapshot(
                         $generic_free_name, ($(esc_T_params...),), lib;
-                        caller = @__MODULE__)
+                        caller = @__MODULE__, block = $block)
                     return $esc_struct{$(esc_T_params...)}(ptr, lib, gen.free_ptr, gen.alive, gen.free_channel)
                 end
             end
@@ -558,7 +563,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                              ptr_val, lib_val, gen = _call_generic_constructor(
                                  $wrapper_name, $struct_stem,
                                  ($(esc_args...),), ($(esc_T_params...),);
-                                 caller = @__MODULE__)
+                                 caller = @__MODULE__, block = $block)
                              return $esc_struct{$(esc_T_params...)}(ptr_val, lib_val,
                                                                     gen.free_ptr, gen.alive, gen.free_channel)
                          end
@@ -572,7 +577,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                          RustCall.check_not_freed(self, $struct_name_str)
                          GC.@preserve self begin
                              _call_generic_method(self.lib_name, $wrapper_name, self.ptr, ($(esc_args...),), ($(esc_T_params...),), getfield(self, :alive);
-                                                  caller = @__MODULE__)
+                                                  caller = @__MODULE__, block = $block)
                          end
                      end
                  end)
@@ -619,7 +624,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                     type_param_names = ($(map(name -> QuoteNode(name), info.type_params)...),)
                     field_type = _resolve_generic_struct_field_type(rust_field_type, type_param_names, ($(esc_T_params...),))
                     return _call_generic_field(self.lib_name, getter_name, self.ptr, field_type, ($(esc_T_params...),), getfield(self, :alive);
-                                               caller = @__MODULE__)
+                                               caller = @__MODULE__, block = $block)
                 elseif field in method_names_set
                     $(method_accessors...)
                     return getfield(self, field)
@@ -634,7 +639,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                     RustCall.check_not_freed(self, $struct_name_str)
                     setter_name = field_setters_map[field]
                     _call_generic_method(self.lib_name, setter_name, self.ptr, (value,), ($(esc_T_params...),), getfield(self, :alive);
-                                         caller = @__MODULE__)
+                                         caller = @__MODULE__, block = $block)
                     return value
                 else
                     return setfield!(self, field, value)
@@ -1228,10 +1233,11 @@ struct — and the destructor is its own (`_generic_struct_member`, #522);
 `nothing` takes the bare-name registration.
 """
 function _generic_struct_free_target(free_name::AbstractString, types::Tuple;
-                                     caller::Union{Module, Nothing} = nothing)
+                                     caller::Union{Module, Nothing} = nothing,
+                                     block::Union{Nothing, RustBlockSnapshot} = nothing)
     return try
         name = String(free_name)
-        generic_info = _generic_struct_member(caller, name)
+        generic_info = _generic_struct_member(caller, name; block)
         generic_info === nothing && return (C_NULL, "", C_NULL, 0, C_NULL)
         # The registration in hand, never the bare name again: that may be
         # another module's struct of the same name (#522). A cached
@@ -1264,9 +1270,10 @@ when two modules define a generic struct of the same name (#522).
 """
 function generic_struct_generation_snapshot(free_name::AbstractString, types::Tuple,
                                             fallback_lib::AbstractString;
-                                            caller::Union{Module, Nothing} = nothing)
+                                            caller::Union{Module, Nothing} = nothing,
+                                            block::Union{Nothing, RustBlockSnapshot} = nothing)
     free_ptr, free_lib, handle, generation, free_channel =
-        _generic_struct_free_target(free_name, types; caller)
+        _generic_struct_free_target(free_name, types; caller, block)
     name = isempty(free_lib) ? String(fallback_lib) : free_lib
     return lock(REGISTRY_LOCK) do
         free_ptr == C_NULL &&
@@ -1460,8 +1467,9 @@ the one constructed (#522).
 """
 function _call_generic_constructor(func_name::String, struct_name::AbstractString,
                                    args::Tuple, types::Tuple;
-                                   caller::Union{Module, Nothing} = nothing)
-    generic = _generic_struct_member(caller, func_name)
+                                   caller::Union{Module, Nothing} = nothing,
+                                   block::Union{Nothing, RustBlockSnapshot} = nothing)
+    generic = _generic_struct_member(caller, func_name; block)
     generic === nothing &&
         throw(RustError("'$func_name' is not registered as a generic struct constructor"))
     ptr, lib_name, handle, generation = _generic_constructor_call(generic, args, types)
@@ -1506,32 +1514,61 @@ function _call_generic_constructor(func_name::String, struct_name::AbstractStrin
     # The destructor lives in its own instantiation: take its snapshot, whose
     # flag belongs to the image the finalizer will actually call into.
     return (ptr, lib_name,
-            generic_struct_generation_snapshot(free_symbol, types, lib_name; caller))
+            generic_struct_generation_snapshot(free_symbol, types, lib_name; caller, block))
 end
 
 """
-    _generic_struct_member(caller, name) -> Union{GenericFunctionInfo, Nothing}
+    _generic_struct_member(caller, name; block = nothing) -> Union{GenericFunctionInfo, Nothing}
 
-The registration of the generic struct wrapper `name` that generated code of
-the module `caller` reaches, decided by `resolve_rust_call` like every `@rust`
-call (#520): the caller's own blocks first — the one that defines the struct —
-and only then the process-wide bare-name registration. Two modules that each
-define a generic struct of one name register the same wrapper names; the bare
-name alone built one module's objects from the other module's source (#522).
+The registration of the generic struct wrapper `name` that the generated code
+of the struct reaches: the member its **defining block** registered (#522).
 
-`caller === nothing` (a direct call without a module) reads the bare name, as
-before. A name that resolves to something other than a generic is `nothing`.
+`block` is that block's `RustBlockSnapshot`, spliced into the generated code by
+`emit_julia_definitions`; `_generic_struct_owner` finds the library `caller`
+recorded for it — after `_resolve_lib`, so a precompiled or reloaded block is
+restored and found under whatever name it now has — and the member is read
+from that library's own rows, `GENERIC_FUNCTIONS_BY_LIB[(owner, name)]`.
+This is not name resolution: another block of the module exporting an
+ordinary function of the same name (`#[no_mangle] fn Boxed_new`), or another
+module's struct of the same name, has no say in it. Only when the owner has no
+row (a registration made without a block) is the bare-name registration read,
+which is also all a call without `caller` or `block` has.
 """
-function _generic_struct_member(caller::Union{Module, Nothing}, name::AbstractString)
+function _generic_struct_member(caller::Union{Module, Nothing}, name::AbstractString;
+                                block::Union{Nothing, RustBlockSnapshot} = nothing)
     key = String(name)  # converted before STATE is taken
-    if caller === nothing
-        return lock(REGISTRY_LOCK) do
-            get(GENERIC_FUNCTION_REGISTRY, key, nothing)
-        end
+    owner = (caller === nothing || block === nothing) ? nothing :
+            _generic_struct_owner(caller, block)
+    return lock(REGISTRY_LOCK) do
+        row = owner === nothing ? nothing : get(GENERIC_FUNCTIONS_BY_LIB, (owner, key), nothing)
+        row === nothing ? get(GENERIC_FUNCTION_REGISTRY, key, nothing) : row
     end
-    resolution = resolve_rust_call(caller, "", key)
-    return resolution isa GenericFunctionInfo ? resolution : nothing
 end
+
+"""
+    _generic_struct_owner(mod, block) -> Union{String, Nothing}
+
+The library `mod` recorded for the `rust\"\"\"` block `block`, by the block's
+content (source, cfg snapshot, compiler settings, Cargo environment) rather
+than a library name: a precompiled caller's block may be reloaded under
+another name, and `_resolve_lib` renames the record with it (#522). Restores
+the module's blocks first, as every generated call does. `nothing` when the
+module records no such block.
+"""
+function _generic_struct_owner(mod::Module, block::RustBlockSnapshot)
+    _resolve_lib(mod, "")
+    libs = _module_binding(mod, :__RUSTCALL_LIBS)
+    libs === nothing && return nothing
+    for (lib, recorded) in collect(libs)
+        recorded isa RustBlockSnapshot && _same_block(recorded, block) && return String(lib)
+    end
+    return nothing
+end
+
+# The same block, whatever artifact-identity schema recorded it.
+_same_block(a::RustBlockSnapshot, b::RustBlockSnapshot) =
+    a.code == b.code && a.cfg_text == b.cfg_text && a.compiler_target == b.compiler_target &&
+    a.compiler_level == b.compiler_level && a.cargo_env == b.cargo_env
 
 # The type parameters of `generic`, bound positionally to `types`.
 _generic_type_params(generic::GenericFunctionInfo, types::Tuple) =
@@ -1552,10 +1589,11 @@ end
 # that image does not carry is resolved from `caller`, the module that defines
 # the struct, never by the bare name alone (#522).
 function _call_generic_method(lib_name::String, func_name::String, ptr::Ptr{Cvoid}, args::Tuple, types::Tuple, alive::Base.RefValue{Bool};
-                              caller::Union{Module, Nothing} = nothing)
+                              caller::Union{Module, Nothing} = nothing,
+                              block::Union{Nothing, RustBlockSnapshot} = nothing)
     original = _generic_artifact_member(lib_name, func_name, alive)
     original === nothing || return _call_monomorphized(original, ptr, args...)
-    generic_info = _generic_struct_member(caller, func_name)
+    generic_info = _generic_struct_member(caller, func_name; block)
     generic_info === nothing &&
         throw(RustError("'$func_name' is not registered as a generic struct member"))
     info = monomorphize_function(generic_info, _generic_type_params(generic_info, types))
@@ -1567,10 +1605,11 @@ function _call_generic_method(lib_name::String, func_name::String, ptr::Ptr{Cvoi
 end
 
 function _call_generic_field(lib_name::String, func_name::String, ptr::Ptr{Cvoid}, ret_type::Type, types::Tuple, alive::Base.RefValue{Bool};
-                             caller::Union{Module, Nothing} = nothing)
+                             caller::Union{Module, Nothing} = nothing,
+                             block::Union{Nothing, RustBlockSnapshot} = nothing)
     original = _generic_artifact_member(lib_name, func_name, alive)
     original === nothing || return _call_monomorphized(original, ptr)
-    generic_info = _generic_struct_member(caller, func_name)
+    generic_info = _generic_struct_member(caller, func_name; block)
     generic_info === nothing &&
         throw(RustError("'$func_name' is not registered as a generic struct member"))
     info = monomorphize_function(generic_info, _generic_type_params(generic_info, types))

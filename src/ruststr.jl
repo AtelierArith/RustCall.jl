@@ -401,7 +401,13 @@ macro rust_str(code)
     # `for_` there.
     _check_julia_name_clashes(julia_func_signatures, struct_infos, "the rust\"\"\" block";
                               registry = _registry_signatures(expanded.manifest))
-    julia_defs, julia_func_wrappers = _inline_wrapper_exprs(julia_func_signatures, struct_infos)
+    # The block as the module records it below: a generic struct's generated
+    # code finds its defining library by it, whatever name a reload gives the
+    # library (#522).
+    block_record = RustBlockSnapshot(code_str, cfg_text, snapshot_compiler.target_triple,
+                                     snapshot_compiler.optimization_level, cargo_env)
+    julia_defs, julia_func_wrappers = _inline_wrapper_exprs(julia_func_signatures, struct_infos;
+                                                            block = block_record)
     # The symbols this block exports, known at macro-expansion time. They are
     # recorded per *module* so that a wrapper resolves through the library its
     # own block loaded — not through whichever block ran last anywhere in the

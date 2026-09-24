@@ -74,9 +74,10 @@ other a plain `f`, and each module's `@rust f(x)` reaches its own.
 registration: the one made last.
 
 A generic `#[julia]` struct's constructor, methods, accessors and destructor
-are resolved the same way, from the module that defines the struct: two
-modules may each define a generic `Boxed`, and each module's `Boxed{Int32}(x)`
-builds its own, from its own source.
+are not looked up by name at all: they are the members the block that defines
+the struct registered. Two modules may each define a generic `Boxed`, and each
+module's `Boxed{Int32}(x)` builds its own, from its own source; a later block
+exporting a plain function called `Boxed_new` does not change that.
 
 ### Manual Registration
 

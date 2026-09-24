@@ -42,6 +42,8 @@ _boxed_source(tag; pad = false) = """
 _boxed(m::Module, ::Type{T}, v) where {T} = _own_call(_own_get(m, :Boxed){T}, T(v))
 _tag(m::Module, obj) = _own_call(_own_get(m, :tag), obj)
 _twice(m::Module, obj) = _own_call(_own_get(m, :twice), obj)
+# The member a block's library registered: what that block's struct reaches.
+_own_row(lib, member) = RustCall.GENERIC_FUNCTIONS_BY_LIB[(lib, member)]
 
 @testset "generic struct groups are owned by their block (#522)" begin
     if !RustCall.check_rustc_available()
@@ -88,7 +90,7 @@ _twice(m::Module, obj) = _own_call(_own_get(m, :twice), obj)
             end
         end
         # A group is one owner's members, whatever the bare name maps to.
-        own_a = RustCall._generic_struct_member(a, "Boxed_new")
+        own_a = _own_row(lib_a, "Boxed_new")
         @test own_a.owner == lib_a
         members = lock(RustCall.REGISTRY_LOCK) do
             RustCall._generic_group_members(own_a)
@@ -96,14 +98,14 @@ _twice(m::Module, obj) = _own_call(_own_get(m, :twice), obj)
         @test all(info -> info.owner == lib_a, members)
         @test Set(info.name for info in members) ⊇
               Set(["Boxed_new", "Boxed_tag", "Boxed_twice", "Boxed_free"])
-        @test RustCall._generic_struct_member(b, "Boxed_new").owner == lib_b
+        @test _own_row(lib_b, "Boxed_new").owner == lib_b
     end
 
     @testset "the cache key of an unchanged struct does not move" begin
         # The instantiation's identity is the source, the bindings, the
         # compiler and the group symbol — never the owner — so it is the key
         # it was before the owner existed, and the same whenever it is asked.
-        info = RustCall._generic_struct_member(a, "Boxed_new")
+        info = _own_row(lib_a, "Boxed_new")
         compiler = something(info.compiler, RustCall.get_default_compiler())
         params = Dict{Symbol, Type}(:T => Int32)
         member_key = RustCall.artifact_key(
@@ -124,7 +126,7 @@ _twice(m::Module, obj) = _own_call(_own_get(m, :twice), obj)
         # Running the unchanged block again re-registers the same members
         # under the same library, and reaches the same instantiation.
         @test _own_block(a, _boxed_source(1)) == lib_a
-        again = RustCall._generic_struct_member(a, "Boxed_new")
+        again = _own_row(lib_a, "Boxed_new")
         @test RustCall.artifact_key(
             RustCall._monomorphization_id(again, again.name, params, compiler)) == member_key
         y = _boxed(a, Int32, 2)
@@ -165,5 +167,57 @@ _twice(m::Module, obj) = _own_call(_own_get(m, :twice), obj)
         @test _own_call(getproperty, xb, :pad) == 99
         @test RustCall.GENERIC_FUNCTIONS_BY_LIB[(lib_b, "Boxed_new")].owner == lib_b
         foreach(finalize, (xa, xb))
+    end
+
+    # The struct's code reads its members from the library of the block that
+    # emitted it — not through `@rust` name resolution, where a later block
+    # of the module exporting an ordinary function of a member's name answers
+    # first (PR #523 review).
+    @testset "a later block's ordinary export of a member's name" begin
+        d = _own_module(:GenericOwnerD)
+        lib_d = _own_block(d, _boxed_source(7))
+        lib_d2 = _own_block(d, """
+            #[no_mangle]
+            pub extern "C" fn Boxed_new(x: i32) -> i32 { x + 1 }
+
+            #[julia]
+            pub fn Boxed_tag(x: i32) -> i32 { x + 2 }
+            """)
+        @test lib_d2 != lib_d
+        x = _boxed(d, Int32, 5)
+        @test _tag(d, x) == 7
+        @test _twice(d, x) == 10
+        @test _own_call(getproperty, x, :v) == 5
+        # `@rust` still reaches the later block's exports.
+        @test _own_eval(d, "@rust Boxed_new(Int32(1))::Int32") == 2
+        @test _own_eval(d, "Boxed_tag(Int32(1))") == 3
+        finalize(x)
+
+        @testset "after the defining block is reloaded" begin
+            # Unloaded and restored under its own name.
+            RustCall.unload_library(lib_d)
+            y = _boxed(d, Int32, 6)
+            @test _tag(d, y) == 7
+            @test _own_row(lib_d, "Boxed_new").owner == lib_d
+            finalize(y)
+            # Recorded under a name that is no longer its identity — what a
+            # precompiled caller holds when the toolchain changed: the restore
+            # reloads the block, renames the record, and the struct still
+            # finds its members by the block, not by the stored name.
+            libs = RustCall._module_binding(d, :__RUSTCALL_LIBS)
+            record = libs[lib_d]
+            RustCall.unload_library(lib_d)
+            stale = "rust_stale_" * lib_d
+            libs[stale] = record
+            delete!(libs, lib_d)
+            RustCall._rename_module_block!(d, lib_d, stale)
+            z = _boxed(d, Int32, 8)
+            @test _tag(d, z) == 7
+            @test _twice(d, z) == 16
+            @test haskey(libs, lib_d)
+            @test !haskey(libs, stale)
+            @test _own_eval(d, "@rust Boxed_new(Int32(1))::Int32") == 2
+            finalize(z)
+        end
     end
 end

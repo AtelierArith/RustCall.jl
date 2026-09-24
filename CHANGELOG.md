@@ -79,8 +79,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that defines them (`GenericFunctionInfo.owner`, rows in
   `RustCall.GENERIC_FUNCTIONS_BY_LIB`, dropped with the library), a group is
   one owner's members, and the generated constructor, methods, accessors and
-  destructor resolve them from their own module through `resolve_rust_call`,
-  in the order of #520. An instantiation's cache key is unchanged (the source,
+  destructor read them from the library of the block that emitted the struct
+  (found by the block's recorded content, so a reload that renames the
+  library is followed) — not by `@rust` name resolution, so a later block's
+  ordinary export of a member's name does not take them either. An instantiation's cache key is unchanged (the source,
   the bindings, the compiler and the struct's name, never the owner), so two
   same-named structs share an instantiation only when their sources are the
   same.
