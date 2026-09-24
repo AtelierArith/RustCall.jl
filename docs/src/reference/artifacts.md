@@ -20,7 +20,10 @@ Where Windows' path limit makes a short id a location — a crate's Cargo target
 directory, the PyO3 wrapper's Cargo package, the PyO3 host extension's cache
 directory, a debug build's files — the name is spelled and owned here: a
 persistent name is claimed for good by the full key, and a build holds the
-name's lock from build start through copy-out (#504).
+name's lock from build start through copy-out (#504). A location with files but
+no owner record is emptied or refused, never adopted; on a file system without
+locking, emptying it is refused too and it must be removed by hand, since the
+claim lock cannot keep two claimants apart there (#507 review).
 
 ```@autodocs
 Modules = [RustCall]

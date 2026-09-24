@@ -77,17 +77,24 @@ owner (`claim_short_name!`).
 """
 const SHORT_NAME_CLAIM_LOCK = ".rustcall-claim.lock"
 
-# What is already at an unrecorded short name: the directory's entries, or the
-# files of a stem (`<stem>.*` and `lib<stem>.*`, the source and library a debug
-# build writes).
+# What is already at an unrecorded short name, and what `:clear` would remove:
+# the directory's entries, or the files of a stem (`<stem>.*` and `lib<stem>.*`,
+# the source and library a debug build writes). Never an owner record or a lock
+# file: a record, once created by `O_EXCL`, is never deleted by a claimant — a
+# claimant that clears after another has recorded its key (on a file system
+# without locking, where the claim lock does not hold) must not erase that
+# record and leave two keys building into one path (#507 review).
 function _short_name_contents(path::AbstractString, stem::Bool)
+    keep = (basename(_short_name_record(path, stem)), basename(_short_name_lock(path, stem)),
+            SHORT_NAME_CLAIM_LOCK)
     if !stem
-        return isdir(path) ? readdir(String(path); join = true) : String[]
+        isdir(path) || return String[]
+        return [joinpath(String(path), f) for f in readdir(String(path)) if !(f in keep)]
     end
     dir, base = dirname(String(path)), basename(String(path))
     isdir(dir) || return String[]
     return [joinpath(dir, f) for f in readdir(dir)
-            if startswith(f, base * ".") || startswith(f, "lib" * base * ".")]
+            if !(f in keep) && (startswith(f, base * ".") || startswith(f, "lib" * base * "."))]
 end
 
 """
@@ -118,22 +125,33 @@ RustCall's own cache, rebuilt on demand — and `:refuse` raises. The decision a
 the record are made under `SHORT_NAME_CLAIM_LOCK` in the parent directory, so a
 concurrent claimant can neither see the contents half-removed nor lose a record
 to another claimant's clearing; a location that already has a record never takes
-that lock.
+that lock. Where the file system offers no locking at all (`_try_lock_lease`
+returns `nothing`), the lock cannot make clearing safe, so `:clear` degrades to
+`:refuse` for a location with contents; an empty one is still claimed by the
+exclusive create alone, and the owner record and lock files are never among what
+`:clear` removes. `try_lock` is the locking primitive, a seam for tests.
 """
 function claim_short_name!(path::AbstractString, key::AbstractString;
                            stem::Bool = false, foreign::Symbol = :refuse,
-                           what::AbstractString = "artifact", wait::Real = 10.0)
+                           what::AbstractString = "artifact", wait::Real = 10.0,
+                           try_lock::Function = _try_lock_lease)
     foreign in (:clear, :refuse) || throw(ArgumentError(
         "`foreign` must be :clear or :refuse, got $(repr(foreign))"))
     parent = stem ? dirname(String(path)) : dirname(rstrip(String(path), ['/', '\\']))
     mkpath(parent)
     record = _short_name_record(path, stem)
     if !isfile(record)
-        claimed = with_short_name_lock(joinpath(parent, SHORT_NAME_CLAIM_LOCK)) do
+        claimed = _with_short_name_lock_state(joinpath(parent, SHORT_NAME_CLAIM_LOCK);
+                                              try_lock = try_lock) do locked
             # Re-checked under the lock: another claimant may have recorded it.
             isfile(record) && return false
             contents = _short_name_contents(path, stem)
             if !isempty(contents)
+                foreign === :clear && !locked && throw(RustError(
+                    "RustCall's short-named location `$(path)` holds files but no owner " *
+                    "record, and the file system there offers no locking, so it cannot be " *
+                    "cleared safely while another process may be claiming it. Remove " *
+                    "`$(path)` by hand and build again."))
                 foreign === :refuse && throw(RustError(
                     "RustCall's short-named location `$(path)` holds files but no owner " *
                     "record, so it cannot be told apart from another key's (it may predate " *
@@ -183,16 +201,27 @@ short name holds it from the build until the output is copied out, so two builds
 of one name take turns (#495 review, #504). The lock is released when the file
 is closed, and a holder that dies releases it with the process; the file itself
 is left in place, since removing it would let a waiter lock a file a newcomer no
-longer opens. Where the file system has no locking at all, `f` runs unlocked.
+longer opens. Where the file system has no locking at all, `f` runs unlocked:
+that is the one limitation left on such a file system — two builds of one
+reused name (`with_short_name`) are then not serialized — while a claim there
+still never adopts or clears a location (`claim_short_name!`, #507 review).
 """
-function with_short_name_lock(f::Function, lock_path::AbstractString; poll::Real = 0.05)
+with_short_name_lock(f::Function, lock_path::AbstractString; poll::Real = 0.05) =
+    _with_short_name_lock_state(_ -> f(), lock_path; poll = poll)
+
+# `f(locked)`, where `locked` is `false` when the file system has no locking and
+# `f` runs unlocked (`try_lock` returned `nothing`).
+function _with_short_name_lock_state(f::Function, lock_path::AbstractString;
+                                     poll::Real = 0.05, try_lock::Function = _try_lock_lease)
     mkpath(dirname(String(lock_path)))
     io = open(String(lock_path), "a")
     try
-        while _try_lock_lease(io) === false
+        state = try_lock(io)
+        while state === false
             sleep(poll)
+            state = try_lock(io)
         end
-        return f()
+        return f(state === true)
     finally
         close(io)
     end

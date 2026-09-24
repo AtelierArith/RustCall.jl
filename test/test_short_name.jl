@@ -183,6 +183,61 @@ end
     end
 end
 
+# #507 review, second round: a record, once created, is never among what `:clear`
+# removes — on a file system without locking two claimants can both pass the
+# re-check, and the second must not erase the first's record — and without
+# locking `:clear` is refused outright.
+@testset "a claim never deletes a record, and needs a lock to clear (#507 review)" begin
+    mktempdir() do root
+        # (1) Another claimant's record appears after the re-check: the listing
+        # `:clear` works from leaves it (and every lock file) alone.
+        dir = mkpath(joinpath(root, "0123456789abcdef"))
+        write(joinpath(dir, "ext.so"), "legacy")
+        write(joinpath(dir, RustCall.SHORT_NAME_KEY_FILE), SN_K1)
+        touch(joinpath(dir, RustCall.SHORT_NAME_LOCK_FILE))
+        @test RustCall._short_name_contents(dir, false) == [joinpath(dir, "ext.so")]
+        stem = joinpath(root, "rust_0123456789ab")
+        write(stem * ".rs", "legacy")
+        write(stem * ".rustcall-key", SN_K1)
+        touch(stem * ".rustcall-lock")
+        @test RustCall._short_name_contents(stem, true) == [stem * ".rs"]
+    end
+    mktempdir() do root
+        # A claimant whose lock returns while another records its key (the
+        # re-check sees it): the other's record stands and this key is refused.
+        dir = mkpath(joinpath(root, "0123456789abcdef"))
+        write(joinpath(dir, "ext.so"), "legacy")
+        racing(io) = (write(joinpath(dir, RustCall.SHORT_NAME_KEY_FILE), SN_K1); nothing)
+        @test_throws RustCall.RustError RustCall.claim_short_name!(dir, SN_K2; foreign = :clear,
+                                                                    wait = 0, try_lock = racing)
+        @test read(joinpath(dir, RustCall.SHORT_NAME_KEY_FILE), String) == SN_K1
+    end
+    mktempdir() do root
+        # (2) No locking at all: `:clear` degrades to `:refuse` for a location
+        # with contents, naming the path; nothing is removed or recorded.
+        nolock(io) = nothing
+        dir = mkpath(joinpath(root, "0123456789abcdef"))
+        write(joinpath(dir, "ext.so"), "legacy")
+        err = try
+            RustCall.claim_short_name!(dir, SN_K1; foreign = :clear, try_lock = nolock)
+            nothing
+        catch e
+            e
+        end
+        @test err isa RustCall.RustError
+        msg = sprint(showerror, err)
+        @test occursin("no locking", msg) && occursin(dir, msg)
+        @test isfile(joinpath(dir, "ext.so"))
+        @test !isfile(joinpath(dir, RustCall.SHORT_NAME_KEY_FILE))
+        # An empty or absent location is still claimed by the exclusive create.
+        @test RustCall.claim_short_name!(joinpath(root, "fedcba9876543210"), SN_K1;
+                                         foreign = :clear, try_lock = nolock) === nothing
+        # With locking, the same location is cleared and claimed.
+        @test RustCall.claim_short_name!(dir, SN_K1; foreign = :clear) === nothing
+        @test !isfile(joinpath(dir, "ext.so"))
+    end
+end
+
 @testset "crate target directory: a colliding crate is refused (#504)" begin
     mktempdir() do root
         withenv("RUSTCALL_CACHE_DIR" => joinpath(root, "cache")) do
