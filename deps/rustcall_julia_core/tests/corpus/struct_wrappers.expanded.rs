@@ -558,7 +558,7 @@ pub extern "C" fn rustcall_Greeter_new(
                 let slice = std::slice::from_raw_parts(name_ptr, name_len);
                 String::from_utf8_lossy(slice).into_owned()
             };
-            let obj = Greeter::new(name);
+            let obj = <Greeter>::new(name);
             Box::into_raw(Box::new(obj))
         }),
     ) {
@@ -643,7 +643,7 @@ pub extern "C" fn rustcall_Greeter_rename(
                 String::from_utf8_lossy(slice).into_owned()
             };
             let self_obj = unsafe { &mut *ptr };
-            self_obj.rename(name)
+            <Greeter>::rename(self_obj, name)
         }),
     ) {
         ::std::result::Result::Ok(_) => {}
@@ -727,7 +727,7 @@ pub extern "C" fn rustcall_Greeter_greet(
             let prefix_cow = String::from_utf8_lossy(prefix_bytes);
             let prefix: &str = &prefix_cow;
             let self_obj = unsafe { &*ptr };
-            let rustcall_value = self_obj.greet(prefix);
+            let rustcall_value = <Greeter>::greet(self_obj, prefix);
             let mut rustcall_bytes = ToString::to_string(&rustcall_value).into_bytes();
             let rustcall_ret = Greeter_RustCallOwnedString {
                 ptr: rustcall_bytes.as_mut_ptr(),
@@ -817,7 +817,7 @@ pub extern "C" fn rustcall_Greeter_name(
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
-            let rustcall_value = self_obj.name();
+            let rustcall_value = <Greeter>::name(self_obj);
             Greeter_RustCallBorrowedString {
                 ptr: rustcall_value.as_ptr(),
                 len: rustcall_value.len(),
@@ -1427,7 +1427,7 @@ pub extern "C" fn rustcall_Divider_new(scale: i32) -> *mut Divider {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
-            let obj = Divider::new(scale);
+            let obj = <Divider>::new(scale);
             Box::into_raw(Box::new(obj))
         }),
     ) {
@@ -1575,7 +1575,7 @@ pub extern "C" fn rustcall_Divider_checked_div(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
             CResult_Divider_checked_div::new(
-                match self_obj.checked_div(d) {
+                match <Divider>::checked_div(self_obj, d) {
                     ::std::result::Result::Ok(rustcall_ok) => {
                         ::std::result::Result::Ok(rustcall_ok)
                     }
@@ -1718,7 +1718,7 @@ pub extern "C" fn rustcall_Divider_ratio(
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
-            COption_Divider_ratio::new(self_obj.ratio(d))
+            COption_Divider_ratio::new(<Divider>::ratio(self_obj, d))
         }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
@@ -1872,7 +1872,7 @@ pub extern "C" fn rustcall_Divider_describe(
             };
             let self_obj = unsafe { &*ptr };
             CResult_Divider_describe::new(
-                match self_obj.describe(unit) {
+                match <Divider>::describe(self_obj, unit) {
                     ::std::result::Result::Ok(rustcall_ok) => {
                         ::std::result::Result::Ok({
                             let mut rustcall_bytes = ToString::to_string(&rustcall_ok)
@@ -2023,7 +2023,7 @@ pub extern "C" fn rustcall_Divider_label(ptr: *const Divider) -> COption_Divider
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
             COption_Divider_label::new(
-                match self_obj.label() {
+                match <Divider>::label(self_obj) {
                     ::std::option::Option::Some(rustcall_some) => {
                         ::std::option::Option::Some({
                             let mut rustcall_bytes = ToString::to_string(&rustcall_some)

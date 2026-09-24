@@ -278,11 +278,12 @@ pub mod skip_reason {
     /// call cannot end inside the wrapper (#482, #503). The argument follows
     /// the colon.
     pub const LOWERED_STR_LIFETIME: &str = "lowered_str_lifetime";
-    /// A trait-impl method whose typed receiver the wrapper cannot read — a
-    /// type alias, a smart pointer, the type's own name, or `self: &mut Self`
-    /// (#497, #509). Its wrapper calls `<S as Trait>::m(..)`, which passes the
+    /// A method whose typed receiver the wrapper cannot read — a type alias,
+    /// a smart pointer, or the type under another spelling than the impl
+    /// header's (`crate::receiver`, #497, #509). Its wrapper calls the method
+    /// by path (`<S>::m(..)`, `<S as Trait>::m(..)`), which passes the
     /// receiver exactly as declared. The receiver type follows the colon.
-    pub const TRAIT_RECEIVER: &str = "trait_receiver";
+    pub const RECEIVER_TYPE: &str = "receiver_type";
 
     /// Every reason the `#[julia]` codegen itself refuses an item for, with a
     /// `compile_error!` at the item ([`crate::refusal`], #503). An item
@@ -297,7 +298,7 @@ pub mod skip_reason {
         UNSPELLABLE_SELF,
         LOWERED_STR_BORROW,
         LOWERED_STR_LIFETIME,
-        TRAIT_RECEIVER,
+        RECEIVER_TYPE,
     ];
 
     /// Whether `reason` is one of [`CODEGEN_REFUSALS`], its detail aside.

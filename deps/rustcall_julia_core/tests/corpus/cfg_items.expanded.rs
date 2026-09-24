@@ -816,7 +816,7 @@ pub extern "C" fn rustcall_Handle_fd(
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
-            ::std::mem::MaybeUninit::new(self_obj.fd())
+            ::std::mem::MaybeUninit::new(<Handle>::fd(self_obj))
         }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
@@ -900,7 +900,7 @@ pub extern "C" fn rustcall_Handle_epoll(
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
-            ::std::mem::MaybeUninit::new(self_obj.epoll())
+            ::std::mem::MaybeUninit::new(<Handle>::epoll(self_obj))
         }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,

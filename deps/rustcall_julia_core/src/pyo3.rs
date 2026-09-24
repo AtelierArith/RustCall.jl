@@ -1652,9 +1652,18 @@ fn method_entry(
     let struct_stem = crate::codegen::symbol_stem(class_path, &struct_ident.to_string());
     let markers = pyo3_method_markers(&func.attrs);
     let has = |m: Pyo3MethodMarker| markers.contains(&m);
-    let receiver = func.sig.inputs.iter().find_map(|a| match a {
-        FnArg::Receiver(r) => Some(r),
-        _ => None,
+    // The one receiver model (#509). A Phase-2 wrapper is spelled from the
+    // manifest, whose `is_static` / `is_mutable` describe only no receiver or
+    // a plain `&self` / `&mut self`; any other shape is skipped.
+    let own_ty: syn::Type = syn::parse_quote!(#struct_ident);
+    let receiver = crate::receiver::Receiver::of(&func.sig, Some(&own_ty));
+    let receiver_skip = (!receiver.is_static() && !receiver.is_single_reference()).then(|| {
+        let spelled = func
+            .sig
+            .receiver()
+            .map(|r| crate::types::type_to_string(&r.ty))
+            .unwrap_or_default();
+        skip_reason::detailed(skip_reason::RECEIVER_TYPE, &spelled)
     });
     let name = func.sig.ident.to_string();
     let is_constructor = has(Pyo3MethodMarker::New);
@@ -1675,6 +1684,7 @@ fn method_entry(
         skip_reason::detailed(skip_reason::OWNER_SKIPPED, owner_skip)
     } else {
         item_skip_reason(&func.vis, true, is_generic)
+            .or(receiver_skip)
             .unwrap_or_else(|| signature_skip_reason(&func.sig, return_kind).unwrap_or_default())
     };
 
@@ -1686,8 +1696,8 @@ fn method_entry(
         // side: neither takes a `self` receiver. A `#[classmethod]` takes a
         // `&Bound<'_, PyType>` first argument instead, so it is normally
         // skipped for using a pyo3 type.
-        is_static: receiver.is_none(),
-        is_mutable: receiver.map(|r| r.mutability.is_some()).unwrap_or(false),
+        is_static: receiver.is_static(),
+        is_mutable: receiver.is_mutable(),
         is_constructor,
         is_classmethod: has(Pyo3MethodMarker::ClassMethod),
         vis: visibility_string(&func.vis),

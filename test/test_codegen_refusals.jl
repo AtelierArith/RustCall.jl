@@ -104,6 +104,10 @@ const CR_INLINE_CASES = [
         #[julia] pub struct G { pub v: f64 }
         pub mod ops { impl super::G { pub fn first(s: &str) -> &u8 { &s.as_bytes()[0] } } }
         """, "G::first", "lowered_str_borrow"),
+    ("method with a smart-pointer receiver", """
+        #[julia] pub struct S { pub n: i32 }
+        impl S { pub fn boxed(self: Box<Self>) -> i32 { self.n } }
+        """, "S::boxed", "receiver_type"),
 ]
 
 @testset "Julia's refusal table is the Rust codegen's (#503)" begin
@@ -153,7 +157,7 @@ end
     # Every kind the inline flavour can produce is covered; a trait impl, the
     # one place `self_trait_path` arises, is wrapped only by the proc macro.
     @test seen == setdiff(Set(keys(RustCall.RUST_CODEGEN_REFUSALS)),
-                          Set(["self_trait_path", "trait_receiver"]))
+                          Set(["self_trait_path"]))
 end
 
 @testset "a refused item gets no binding and takes no name (#503)" begin
@@ -270,7 +274,7 @@ end
             "Buf::first" => "lowered_str_borrow",
             "Buf::shown" => "impl_trait",
             "<Buf as tr::Limits>::limit" => "self_trait_path",
-            "<Buf as tr::Take>::take" => "trait_receiver",
+            "<Buf as tr::Take>::take" => "receiver_type",
             "a::danger" => "unsafe_fn",
         )
         # A refused struct is reported once, at its own entry point; its

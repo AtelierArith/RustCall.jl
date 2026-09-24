@@ -80,7 +80,7 @@ fn public_class_and_unrelated_same_named_value_are_not_ambiguous() {
     assert!(!class.fields[0].getter.is_empty());
     assert!(class.methods[0].skip_reason.is_empty());
     let wrapped = wrapper_crate(&scanned, "user_crate", true);
-    assert!(wrapped.lib_rs.contains("user_crate::Thing::new()"));
+    assert!(wrapped.lib_rs.contains("<user_crate::Thing>::new()"));
 }
 
 #[test]

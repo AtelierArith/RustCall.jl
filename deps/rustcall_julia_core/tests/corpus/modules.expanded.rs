@@ -548,7 +548,7 @@ pub mod a {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| {
-                let obj = C::new(v);
+                let obj = <C>::new(v);
                 Box::into_raw(Box::new(obj))
             }),
         ) {
@@ -625,7 +625,7 @@ pub mod a {
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| {
                 let self_obj = unsafe { &*ptr };
-                ::std::mem::MaybeUninit::new(self_obj.get())
+                ::std::mem::MaybeUninit::new(<C>::get(self_obj))
             }),
         ) {
             ::std::result::Result::Ok(rustcall_value) => rustcall_value,
@@ -704,7 +704,7 @@ pub mod a {
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| {
                 let self_obj = unsafe { &*ptr };
-                let rustcall_value = self_obj.describe();
+                let rustcall_value = <C>::describe(self_obj);
                 let mut rustcall_bytes = ToString::to_string(&rustcall_value)
                     .into_bytes();
                 let rustcall_ret = a__C_RustCallOwnedString {
@@ -861,7 +861,7 @@ pub mod a {
             ::std::panic::AssertUnwindSafe(|| {
                 let self_obj = unsafe { &*ptr };
                 CResult_a__C_checked::new(
-                    match self_obj.checked() {
+                    match <C>::checked(self_obj) {
                         ::std::result::Result::Ok(rustcall_ok) => {
                             ::std::result::Result::Ok(rustcall_ok)
                         }
@@ -1446,7 +1446,7 @@ pub mod b {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| {
-                let obj = C::new(v);
+                let obj = <C>::new(v);
                 Box::into_raw(Box::new(obj))
             }),
         ) {
@@ -1523,7 +1523,7 @@ pub mod b {
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| {
                 let self_obj = unsafe { &*ptr };
-                ::std::mem::MaybeUninit::new(self_obj.get())
+                ::std::mem::MaybeUninit::new(<C>::get(self_obj))
             }),
         ) {
             ::std::result::Result::Ok(rustcall_value) => rustcall_value,

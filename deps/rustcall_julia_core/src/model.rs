@@ -2,7 +2,7 @@
 //! parsed file and shared by extraction and code generation.
 
 use syn::spanned::Spanned;
-use syn::{FnArg, ImplItem, ImplItemFn, Item, ItemImpl, ItemStruct, Type, Visibility};
+use syn::{ImplItem, ImplItemFn, Item, ItemImpl, ItemStruct, Type, Visibility};
 
 use crate::attrs::{derive_list, is_julia_attr, rustcall_attribute};
 use crate::manifest::{Attribute, Mode};
@@ -50,8 +50,6 @@ impl ImplHost {
 #[derive(Debug, Clone)]
 pub struct MethodModel {
     pub func: ImplItemFn,
-    pub is_static: bool,
-    pub is_mutable: bool,
     /// The RustCall attribute of the impl block the method was collected from
     /// (`Julia`, or `None` for an inline-mode impl that carries none).
     /// Recorded on the manifest entry (`Method.attribute`, #275 Phase 3).
@@ -73,14 +71,8 @@ pub struct MethodModel {
 
 impl MethodModel {
     pub fn from_fn(func: &ImplItemFn, attribute: Attribute) -> Self {
-        let receiver = func.sig.inputs.iter().find_map(|a| match a {
-            FnArg::Receiver(r) => Some(r),
-            _ => None,
-        });
         MethodModel {
             func: func.clone(),
-            is_static: receiver.is_none(),
-            is_mutable: receiver.map(|r| r.mutability.is_some()).unwrap_or(false),
             attribute,
             enclosing_cfg: Vec::new(),
             site: None,
@@ -90,6 +82,25 @@ impl MethodModel {
 
     pub fn name(&self) -> String {
         self.func.sig.ident.to_string()
+    }
+
+    /// The method's receiver (#509), read against the header of its block:
+    /// a typed receiver may name the type as the header spells it. The one
+    /// source of the wrapper's pointer, binding and call argument, and of the
+    /// manifest's `is_static` / `is_mutable`.
+    pub fn receiver(&self) -> crate::receiver::Receiver {
+        crate::receiver::Receiver::of(&self.func.sig, self.host.as_ref().map(|h| &h.self_ty))
+    }
+
+    /// An associated function, which takes no object.
+    pub fn is_static(&self) -> bool {
+        self.receiver().is_static()
+    }
+
+    /// Whether the method borrows the object mutably
+    /// ([`crate::receiver::Receiver::is_mutable`]).
+    pub fn is_mutable(&self) -> bool {
+        self.receiver().is_mutable()
     }
 
     /// The trait of the block the method was written in, as the header

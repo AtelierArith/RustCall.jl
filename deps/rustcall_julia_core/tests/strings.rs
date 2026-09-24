@@ -238,7 +238,7 @@ impl Holder {
         "{source}"
     );
     assert!(
-        source.contains("self_obj_.m(ptr, self_obj, s, s_bytes)"),
+        source.contains("<Holder>::m(self_obj_, ptr, self_obj, s, s_bytes)"),
         "{source}"
     );
 

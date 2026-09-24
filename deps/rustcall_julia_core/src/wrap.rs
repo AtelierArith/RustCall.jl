@@ -1509,20 +1509,19 @@ fn method_wrapper(
         false,
         has_string_args(&m.args),
     )?;
+    // A scanned method reaches here only with a plain `&self` / `&mut self`
+    // receiver (`pyo3::method_entry` skips every other shape), which is what
+    // the manifest's `is_mutable` describes.
     let receiver = (!m.is_static).then(|| WrapperReceiver {
         ty: class.clone(),
-        mutable: m.is_mutable,
+        shape: crate::receiver::Receiver::reference(m.is_mutable),
         // Spelled from a manifest: `return_plan` hands back no reference, so
         // there is no elided output lifetime to name (#484).
         borrow: crate::environment::SelfBorrow::None,
     });
-    let target = if m.is_static {
-        CallTarget::Assoc {
-            ty: class.clone(),
-            method,
-        }
-    } else {
-        CallTarget::Instance(method)
+    let target = CallTarget::Method {
+        ty: class.clone(),
+        path: crate::environment::method_item_path(None, class, &method),
     };
     let tokens = generate_wrapper(WrapperSpec {
         panic_hook: PanicHook::Runtime,

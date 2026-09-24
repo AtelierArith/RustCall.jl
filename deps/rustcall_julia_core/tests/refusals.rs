@@ -346,7 +346,55 @@ fn cases() -> Vec<Case> {
             message: "an unqualified `Self::…` constant here",
             refusals: 1,
         },
-        // ---- trait_receiver -------------------------------------------------
+        // ---- receiver_type ------------------------------------------------
+        // A receiver the wrapper cannot pass (#509): the same refusal for an
+        // inherent and a trait impl's method, in both flavours.
+        Case {
+            label: "inline method with a smart-pointer receiver",
+            mode: Inline,
+            position: Method,
+            source: "#[julia] pub struct S { pub n: i32 }
+                     impl S { pub fn boxed(self: Box<Self>) -> i32 { self.n } }",
+            item: "S::boxed",
+            skip_reason: "receiver_type:Box<Self>",
+            message: "this receiver type does not show its shape",
+            refusals: 1,
+        },
+        Case {
+            label: "inline generic-struct method with an aliased receiver",
+            mode: Inline,
+            position: GenericStructMethod,
+            source: "pub type Ref<'a, T> = &'a T;
+                     #[julia] pub struct W<T> { pub v: T }
+                     impl<T: Copy> W<T> { pub fn get(self: Ref<'_, Self>) -> T { self.v } }",
+            item: "W::get",
+            skip_reason: "receiver_type:Ref<'_, Self>",
+            message: "this receiver type does not show its shape",
+            refusals: 1,
+        },
+        Case {
+            label: "inline foreign-block method with an Rc receiver",
+            mode: Inline,
+            position: ForeignBlockMethod,
+            source: "#[julia] pub struct S { pub n: i32 }
+                     mod ops { impl super::S { pub fn rc(self: std::rc::Rc<Self>) -> i32 { self.n } } }",
+            item: "S::rc",
+            skip_reason: "receiver_type:std::rc::Rc<Self>",
+            message: "this receiver type does not show its shape",
+            refusals: 1,
+        },
+        Case {
+            label: "crate impl-block method with an aliased receiver",
+            mode: Crate,
+            position: ImplBlockMethod,
+            source: "pub type Ref<'a, T> = &'a T;
+                     #[julia] pub struct Buf { pub n: i32 }
+                     #[julia] impl Buf { #[julia] pub fn get(self: Ref<'_, Self>) -> i32 { self.n } }",
+            item: "Buf::get",
+            skip_reason: "receiver_type:Ref<'_, Self>",
+            message: "this receiver type does not show its shape",
+            refusals: 1,
+        },
         Case {
             label: "crate trait method with a smart-pointer receiver",
             mode: Crate,
@@ -355,20 +403,23 @@ fn cases() -> Vec<Case> {
                      #[julia] pub struct Buf { pub n: i32 }
                      #[julia] impl Take for Buf { #[julia] fn take(self: Box<Self>) -> i32 { self.n } }",
             item: "Buf::take",
-            skip_reason: "trait_receiver:Box<Self>",
+            skip_reason: "receiver_type:Box<Self>",
             message: "this receiver type does not show its shape",
             refusals: 1,
         },
         Case {
-            label: "crate trait method with a self: &mut Self receiver",
+            label: "crate module-item method with a pinned receiver",
             mode: Crate,
-            position: TraitImplMethod,
-            source: "pub trait Bump { fn bump(self: &mut Self); }
-                     #[julia] pub struct Buf { pub n: i32 }
-                     #[julia] impl Bump for Buf { #[julia] fn bump(self: &mut Self) { self.n += 1; } }",
-            item: "Buf::bump",
-            skip_reason: "trait_receiver:&mut Self",
-            message: "a `self: &mut Self` receiver is not yet wrapped",
+            position: ModuleItem,
+            source: "#[julia] pub mod a {
+                         #[julia] pub struct Buf { pub n: i32 }
+                         #[julia] impl Buf {
+                             #[julia] pub fn pinned(self: std::pin::Pin<&mut Self>) -> i32 { self.n }
+                         }
+                     }",
+            item: "a::Buf::pinned",
+            skip_reason: "receiver_type:std::pin::Pin<&mut Self>",
+            message: "this receiver type does not show its shape",
             refusals: 1,
         },
         // ---- unspellable_self -----------------------------------------------
@@ -655,9 +706,7 @@ fn the_corpus_covers_every_refusal_and_position() {
             // A trait impl is wrapped by the proc macro alone, and a non-FFI
             // payload refused for a free function only (a method returns
             // such a `Result` as written).
-            if (*kind == skip_reason::SELF_TRAIT_PATH || *kind == skip_reason::TRAIT_RECEIVER)
-                && mode == Mode::Inline
-            {
+            if *kind == skip_reason::SELF_TRAIT_PATH && mode == Mode::Inline {
                 continue;
             }
             assert!(

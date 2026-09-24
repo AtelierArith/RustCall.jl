@@ -1844,7 +1844,7 @@ pub extern "C" fn rustcall_geometry__Rect_new(
     let _rustcall_boundary = ::rustcall_julia_macros::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
-            let obj = user_crate::geometry::Rect::new(w);
+            let obj = <user_crate::geometry::Rect>::new(w);
             Box::into_raw(Box::new(obj))
         }),
     ) {
@@ -1923,7 +1923,7 @@ pub extern "C" fn rustcall_geometry__Rect_unit() -> *mut user_crate::geometry::R
     let _rustcall_boundary = ::rustcall_julia_macros::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
-            let obj = user_crate::geometry::Rect::unit();
+            let obj = <user_crate::geometry::Rect>::unit();
             Box::into_raw(Box::new(obj))
         }),
     ) {
@@ -2005,7 +2005,7 @@ pub extern "C" fn rustcall_geometry__Rect_area(
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
-            ::std::mem::MaybeUninit::new(self_obj.area())
+            ::std::mem::MaybeUninit::new(<user_crate::geometry::Rect>::area(self_obj))
         }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
@@ -2087,7 +2087,7 @@ pub extern "C" fn rustcall_geometry__Rect_scale(
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &mut *ptr };
-            self_obj.scale(factor)
+            <user_crate::geometry::Rect>::scale(self_obj, factor)
         }),
     ) {
         ::std::result::Result::Ok(_) => {}
@@ -2185,7 +2185,7 @@ pub extern "C" fn rustcall_geometry__Rect_label(
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
-            let rustcall_value = self_obj.label();
+            let rustcall_value = <user_crate::geometry::Rect>::label(self_obj);
             let mut rustcall_bytes = ToString::to_string(&rustcall_value).into_bytes();
             let rustcall_ret = geometry__Rect_label_RustCallOwnedString {
                 ptr: rustcall_bytes.as_mut_ptr(),
@@ -2344,8 +2344,7 @@ pub extern "C" fn rustcall_geometry__Rect_scaled(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
             CResult_geometry__Rect_scaled::new(
-                self_obj
-                    .scaled(factor)
+                <user_crate::geometry::Rect>::scaled(self_obj, factor)
                     .map_err(|rustcall_py_err| {
                         ::std::mem::drop(rustcall_py_err);
                         1i32
@@ -2506,7 +2505,7 @@ pub extern "C" fn rustcall_geometry__Counter_new() -> ::std::mem::MaybeUninit<i3
     let _rustcall_boundary = ::rustcall_julia_macros::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
-            ::std::mem::MaybeUninit::new(user_crate::geometry::Counter::new())
+            ::std::mem::MaybeUninit::new(<user_crate::geometry::Counter>::new())
         }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
@@ -2605,7 +2604,7 @@ pub extern "C" fn rustcall_geometry__Counter_describe(
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
-            let rustcall_value = self_obj.describe();
+            let rustcall_value = <user_crate::geometry::Counter>::describe(self_obj);
             let mut rustcall_bytes = ToString::to_string(&rustcall_value).into_bytes();
             let rustcall_ret = geometry__Counter_describe_RustCallOwnedString {
                 ptr: rustcall_bytes.as_mut_ptr(),

@@ -25,6 +25,7 @@ pub mod model;
 pub mod paths;
 pub mod public_routes;
 pub mod pyo3;
+pub mod receiver;
 pub mod refusal;
 pub mod specialize;
 pub mod types;

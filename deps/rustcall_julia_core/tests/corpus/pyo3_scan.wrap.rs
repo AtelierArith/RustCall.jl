@@ -948,7 +948,7 @@ pub extern "C" fn rustcall_Point_new(
                 let slice = std::slice::from_raw_parts(tag_ptr, tag_len);
                 String::from_utf8_lossy(slice).into_owned()
             };
-            let obj = user_crate::Point::new(x, y, tag);
+            let obj = <user_crate::Point>::new(x, y, tag);
             Box::into_raw(Box::new(obj))
         }),
     ) {
@@ -1027,7 +1027,7 @@ pub extern "C" fn rustcall_Point_norm(
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
-            ::std::mem::MaybeUninit::new(self_obj.norm())
+            ::std::mem::MaybeUninit::new(<user_crate::Point>::norm(self_obj))
         }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
@@ -1103,7 +1103,7 @@ pub extern "C" fn rustcall_Point_scale(ptr: *mut user_crate::Point, factor: f64)
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &mut *ptr };
-            self_obj.scale(factor)
+            <user_crate::Point>::scale(self_obj, factor)
         }),
     ) {
         ::std::result::Result::Ok(_) => {}
@@ -1177,7 +1177,7 @@ pub extern "C" fn rustcall_Point_origin() -> *mut user_crate::Point {
     let _rustcall_boundary = ::rustcall_julia_macros::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
-            let obj = user_crate::Point::origin();
+            let obj = <user_crate::Point>::origin();
             Box::into_raw(Box::new(obj))
         }),
     ) {
@@ -1256,7 +1256,7 @@ pub extern "C" fn rustcall_Point_sum(
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
-            ::std::mem::MaybeUninit::new(self_obj.sum())
+            ::std::mem::MaybeUninit::new(<user_crate::Point>::sum(self_obj))
         }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
@@ -1332,7 +1332,7 @@ pub extern "C" fn rustcall_Point_set_x(ptr: *mut user_crate::Point, value: f64) 
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &mut *ptr };
-            self_obj.set_x(value)
+            <user_crate::Point>::set_x(self_obj, value)
         }),
     ) {
         ::std::result::Result::Ok(_) => {}
@@ -1570,7 +1570,7 @@ pub extern "C" fn rustcall_shapes__Circle_new(
     let _rustcall_boundary = ::rustcall_julia_macros::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
-            let obj = user_crate::shapes::Circle::new(r);
+            let obj = <user_crate::shapes::Circle>::new(r);
             Box::into_raw(Box::new(obj))
         }),
     ) {
@@ -1652,7 +1652,7 @@ pub extern "C" fn rustcall_shapes__Circle_area(
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
-            ::std::mem::MaybeUninit::new(self_obj.area())
+            ::std::mem::MaybeUninit::new(<user_crate::shapes::Circle>::area(self_obj))
         }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,
@@ -1969,7 +1969,7 @@ pub extern "C" fn rustcall_GatedPoint_new(x: f64) -> *mut user_crate::GatedPoint
     let _rustcall_boundary = ::rustcall_julia_macros::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
-            let obj = user_crate::GatedPoint::new(x);
+            let obj = <user_crate::GatedPoint>::new(x);
             Box::into_raw(Box::new(obj))
         }),
     ) {
@@ -2116,8 +2116,7 @@ pub extern "C" fn rustcall_GatedPoint_checked(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
             CResult_GatedPoint_checked::new(
-                self_obj
-                    .checked()
+                <user_crate::GatedPoint>::checked(self_obj)
                     .map_err(|rustcall_py_err| {
                         ::std::mem::drop(rustcall_py_err);
                         1i32
