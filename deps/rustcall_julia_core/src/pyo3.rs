@@ -1765,8 +1765,8 @@ fn pyo3_args(sig: &syn::Signature, attrs: &[syn::Attribute]) -> Vec<crate::manif
 /// it. A path anchored elsewhere — `std::string::String` on a `#[pyclass]
 /// struct String` — is some other type that happens to share the last
 /// segment, and boxing it as the class would not compile (#307 review).
-/// `codegen::returns_boxed_struct`'s last-segment rule stays with the
-/// `#[julia]` path, whose items live in the crate that defines the struct.
+/// The `#[julia]` counterpart is `codegen::returns_own_type` (the spelling)
+/// with `paths::names_struct` (resolution, inline only; #518).
 fn returns_class(
     ty: &Type,
     class: &ScannedClass,

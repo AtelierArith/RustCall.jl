@@ -282,15 +282,15 @@ pub fn pyo3_vec_element_type(ty: &Type) -> Option<Type> {
     }
 }
 
-/// Check if a type is `Self` or the struct name.
+/// Check if a type is spelled `Self` or the bare struct name — one segment,
+/// no generic arguments, no qualifier. A path that merely *ends* in the name
+/// (`other::Gauge`) is some other type as far as the spelling says, and
+/// `Self::Output` is not `Self` (#518).
 pub fn is_self_type(ty: &Type, struct_name: &Ident) -> bool {
     match unparen(ty) {
-        Type::Path(tp) => tp
-            .path
-            .segments
-            .last()
-            .map(|s| s.ident == "Self" || s.ident == *struct_name)
-            .unwrap_or(false),
+        Type::Path(tp) => {
+            tp.qself.is_none() && (tp.path.is_ident("Self") || tp.path.is_ident(struct_name))
+        }
         _ => false,
     }
 }

@@ -27,6 +27,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   publish of the Rust crates is a minor bump, to 0.4.0.
 
 ### Fixed
+- **A return type that only ends in the impl header's name is not the struct**
+  ([#518](https://github.com/AtelierArith/RustCall.jl/issues/518)). Whether
+  a method returns its own type (and so is boxed as `*mut Struct`, and may be
+  a constructor) compared only the last path segment of the return type with
+  the header's. So in an inline block with `use super::Gauge as Meter; impl
+  Meter { fn raw(&self) -> other::Meter }`, where `other::Meter` is some
+  other type, `raw` was boxed as a `Gauge` and the block did not compile. A
+  return type is now the struct when it is `Self` or spelled exactly as the
+  header spells it (`codegen::returns_own_type`, both flavours). In a
+  `rust"""` block it is also the struct when the header's own path resolver
+  (`paths::names_struct`, the `locate` of the header without its glob and
+  unique-name fallbacks) resolves it to the struct, e.g. `-> super::Gauge`
+  or `-> crate::Gauge`. The proc macro sees one block and cannot resolve a
+  name, so in a `#[julia]` crate only `Self` or the header's spelling is
+  boxed. There, `-> crate::Gauge` inside `impl Gauge` is now read as a plain
+  by-value return, which Julia refuses; write `Self`. Exported symbols are
+  unchanged. `rustcall_julia_core` gains public API
+  (`MethodModel::returns_own_type_resolved`,
+  `StructModel::attach_impl_resolving`, `paths::names_struct`) and
+  `types::is_self_type` no longer matches a path that only ends in the name.
 - **`@rust_crate` binds the `#[julia]` methods of a trait impl**
   ([#506](https://github.com/AtelierArith/RustCall.jl/issues/506)). The crate
   scan skipped trait impls, so the methods the proc macro wrapped were neither

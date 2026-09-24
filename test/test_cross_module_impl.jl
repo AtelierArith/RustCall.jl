@@ -455,6 +455,81 @@ end
     end
 end
 
+# #518: whether a method returns its own type was decided by the last path
+# segment alone, so behind an aliased header (`use super::X as i32; impl i32`)
+# a return of `::std::primitive::i32` — another type whose last segment is the
+# alias — was boxed as `*mut i32` (the struct) and the block did not compile.
+# A return type is the struct when it is `Self`, spelled as the header spells
+# it, or resolved to it by the header's own path machinery.
+if RustCall.check_rustc_available()
+    rust"""
+    #[julia]
+    pub struct CmiOwnGauge {
+        pub value: i32,
+    }
+
+    impl CmiOwnGauge {
+        pub fn new(value: i32) -> Self { CmiOwnGauge { value } }
+    }
+
+    pub mod cmi_own_ops {
+        use super::CmiOwnGauge as Meter;
+
+        impl Meter {
+            // Resolved through `super::` to the struct: boxed.
+            pub fn cmi_own_twice(&self) -> super::CmiOwnGauge {
+                super::CmiOwnGauge { value: self.value * 2 }
+            }
+            // The header's own spelling: boxed.
+            pub fn cmi_own_thrice(&self) -> Meter { Meter { value: self.value * 3 } }
+        }
+    }
+
+    pub mod cmi_own_prim {
+        use super::CmiOwnGauge as i32;
+
+        impl i32 {
+            // Ends in the header's name, but is the primitive: a plain value.
+            pub fn cmi_own_raw(&self) -> ::std::primitive::i32 { self.value + 1 }
+            pub fn cmi_own_again(&self) -> Self { i32 { value: self.value + 100 } }
+        }
+    }
+    """
+end
+
+@testset "#518: an aliased header does not claim a same-named return type" begin
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc is required"
+    else
+        g = CmiOwnGauge(Int32(5))
+        @test cmi_own_raw(g) === Int32(6)
+        twice = cmi_own_twice(g)
+        @test twice isa CmiOwnGauge && twice.value == 10
+        @test cmi_own_thrice(g).value == 15
+        again = cmi_own_again(g)
+        @test again isa CmiOwnGauge && again.value == 105
+
+        info = only(RustCall.manifest_struct_infos(RustCall.expand_inline("""
+            #[julia]
+            pub struct CmiOwnGauge { pub value: i32 }
+
+            pub mod other { pub type Meter = i32; }
+
+            pub mod ops {
+                use super::other;
+                use super::CmiOwnGauge as Meter;
+                impl Meter {
+                    pub fn raw(&self) -> other::Meter { self.value }
+                    pub fn twice(&self) -> super::CmiOwnGauge { super::CmiOwnGauge { value: 0 } }
+                }
+            }
+            """).manifest))
+        m = Dict(x.name => x for x in info.methods)
+        @test !m["raw"].returns_boxed_struct
+        @test m["twice"].returns_boxed_struct
+    end
+end
+
 # rustc resolves a `mod` written inside an `include!`d fragment against the
 # **fragment's own** directory, not the including file's module directory:
 # `include!("frag/api.rs")` in `src/lib.rs` with `mod nested;` in `api.rs`

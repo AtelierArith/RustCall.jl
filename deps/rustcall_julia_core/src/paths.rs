@@ -464,7 +464,7 @@ pub fn locate<T: Located>(
     header: &ImplHeader,
     imports: &[ScannedImport],
 ) -> Result<usize, Unresolved> {
-    locate_with_fallback(structs, header, imports, true)
+    locate_with_fallback(structs, header, imports, Fallback::Any)
 }
 
 /// Resolve a return type using the same imports as impl targets, but never
@@ -474,14 +474,76 @@ pub fn locate_type<T: Located>(
     header: &ImplHeader,
     imports: &[ScannedImport],
 ) -> Result<usize, Unresolved> {
-    locate_with_fallback(structs, header, imports, false)
+    locate_with_fallback(structs, header, imports, Fallback::Unqualified)
+}
+
+/// Whether the type `ty`, written in `module_path`, names `structs[own]` —
+/// the struct an impl header spelling its type `own_ty` was resolved to —
+/// **with certainty** (#518).
+///
+/// The path is resolved as [`locate`] resolves a header — its qualifier
+/// (`crate::`, `self::`, `super::`, a module, a module a `use .. as` renamed),
+/// then the struct of that name in `module_path`, then a `use` in
+/// `module_path` that binds the name (`use super::Gauge as Meter`) — and no
+/// further: a glob import, or the one struct of that name anywhere, is how
+/// [`locate`] picks a block's struct when nothing else does, not proof that
+/// a type names it. Only `structs` are candidates, so a name that resolves to
+/// anything else (`type Meter = f64`, a struct the scan did not select)
+/// names none of them. A path this resolver cannot follow — a qualified
+/// `<T as Tr>::Meter`, a leading `::` (the extern prelude since edition
+/// 2018) — names nothing. The generic arguments must be spelled as the
+/// header spells them: `Buf<i64>` is not `impl Buf<i32>`'s own type.
+pub fn names_struct<T: Located>(
+    structs: &[T],
+    own: usize,
+    own_ty: &Type,
+    ty: &Type,
+    module_path: &[String],
+    imports: &[ScannedImport],
+) -> bool {
+    let (Type::Path(path), Type::Path(own_path)) = (unparen(ty), unparen(own_ty)) else {
+        return false;
+    };
+    if path.qself.is_some() || path.path.leading_colon.is_some() {
+        return false;
+    }
+    let (Some(last), Some(own_last)) = (path.path.segments.last(), own_path.path.segments.last())
+    else {
+        return false;
+    };
+    let (args, own_args) = (&last.arguments, &own_last.arguments);
+    if quote::quote!(#args).to_string() != quote::quote!(#own_args).to_string() {
+        return false;
+    }
+    let header = ImplHeader {
+        target: last.ident.clone(),
+        qualifier: type_path_qualifier(ty),
+        module_path: module_path.to_vec(),
+    };
+    locate_with_fallback(structs, &header, imports, Fallback::None) == Ok(own)
+}
+
+/// How far [`locate_with_fallback`] may reach once the written path and the
+/// scope it was written in have said all they can.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fallback {
+    /// A glob import, then the one struct of that name anywhere — and a
+    /// qualified header whose qualifier matched nothing is read as its bare
+    /// name ([`locate`]).
+    Any,
+    /// A written qualifier is kept ([`locate_type`]); a bare name still
+    /// falls back to a glob import and to the one struct of that name.
+    Unqualified,
+    /// Nothing beyond the path, the module's own structs and the `use`
+    /// declarations that bind the name ([`names_struct`]).
+    None,
 }
 
 fn locate_with_fallback<T: Located>(
     structs: &[T],
     header: &ImplHeader,
     imports: &[ScannedImport],
-    allow_qualified_fallback: bool,
+    fallback: Fallback,
 ) -> Result<usize, Unresolved> {
     let name = header.target.to_string();
     let named = |s: &T| s.name() == name;
@@ -522,8 +584,15 @@ fn locate_with_fallback<T: Located>(
         }
         // `impl a::C` inside module `m` means `m::a::C`, or `a::C` from the
         // crate root — try both, nearest first. `impl crate::a::C` means
-        // only the second, and `impl self::a::C` only the first.
-        for candidate in header.qualifier.candidates(&header.module_path) {
+        // only the second, and `impl self::a::C` only the first. A path
+        // resolved with certainty ([`names_struct`]) takes only the first:
+        // since edition 2018 a relative `a::C` reaches the crate root's `a`
+        // only through a `use`, which the alias step above has followed.
+        let mut candidates = header.qualifier.candidates(&header.module_path);
+        if fallback == Fallback::None && header.qualifier.anchor == PathAnchor::Relative {
+            candidates.truncate(1);
+        }
+        for candidate in candidates {
             if let Some(i) = structs
                 .iter()
                 .position(|s| named(s) && s.module_path() == candidate.as_slice())
@@ -535,7 +604,7 @@ fn locate_with_fallback<T: Located>(
         // with none there, attaching to a `C` in the impl's own module —
         // or to the one `C` anywhere — would be exactly the wrong struct
         // (#307 review).
-        if !allow_qualified_fallback || header.qualifier.forbids_fallback() {
+        if fallback != Fallback::Any || header.qualifier.forbids_fallback() {
             return Err(Unresolved::NotFound);
         }
     }
@@ -563,6 +632,10 @@ fn locate_with_fallback<T: Located>(
                 return Ok(i);
             }
         }
+    }
+
+    if fallback == Fallback::None {
+        return Err(Unresolved::NotFound);
     }
 
     // A glob has no alias to compare, but `use a::*; impl C` is still scoped
