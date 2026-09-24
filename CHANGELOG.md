@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never equals an inherent name. Inherent methods' symbols are unchanged. A
   hand-written `@rust rustcall_Buf_m(..)` call that reached a trait method
   must use the new name; `@rust_crate` bindings read symbols from the manifest.
+  The proc macro exports different symbols, and `rustcall_julia_core` gains
+  public API (`codegen::method_stem`, `Method.julia_name`), so the next
+  publish of the Rust crates is a minor bump, to 0.4.0.
 
 ### Fixed
 - **`@rust_crate` binds the `#[julia]` methods of a trait impl**
