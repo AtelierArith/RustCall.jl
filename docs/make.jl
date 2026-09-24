@@ -46,7 +46,6 @@ makedocs(
             "Troubleshooting" => "troubleshooting.md",
         ],
         "Reference" => [
-            "Project Guide" => "project_guide.md",
             "API Reference" => [
                 "Overview" => "api.md",
                 "Artifact identity and caching" => "reference/artifacts.md",
@@ -64,6 +63,10 @@ makedocs(
                 "Load policy" => "reference/loading.md",
             ],
             "Project Status" => "status.md",
+        ],
+        "Developer" => [
+            "Project Guide" => "project_guide.md",
+            "Windows Development" => "developer_windows.md",
             "Developer Pitfalls" => "developer_pitfalls.md",
         ],
         "Platforms" => [
