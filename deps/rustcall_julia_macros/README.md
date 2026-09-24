@@ -15,7 +15,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rustcall_julia_macros = "0.2"
+rustcall_julia_macros = "0.3"
 ```
 
 ## Usage

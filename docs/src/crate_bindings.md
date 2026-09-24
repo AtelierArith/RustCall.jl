@@ -26,7 +26,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-rustcall_julia_macros = "0.2"
+rustcall_julia_macros = "0.3"
 # Or, to track a RustCall.jl checkout:
 # rustcall_julia_macros = { path = "/path/to/RustCall.jl/deps/rustcall_julia_macros" }
 ```
@@ -478,7 +478,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-rustcall_julia_macros = "0.2"
+rustcall_julia_macros = "0.3"
 ```
 
 ### 3. Write Rust Code

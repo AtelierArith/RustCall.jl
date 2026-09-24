@@ -50,7 +50,10 @@ const _PUBLISHED_CRATES = ("rustcall_julia_core", "rustcall_julia_macros",
         # `model::collect_struct_models`, ...), while #470 / #480 / #483
         # changed public signatures and struct fields: for a `0.x` crate that
         # is a minor bump, so the set can never be back at 0.1 (#487).
-        @test shared >= v"0.2.0"
+        # Likewise 0.2.0 is on crates.io and #503 removed `pub` items it
+        # exports (`codegen::method_skip_reason`, `codegen::method_is_unsafe`,
+        # ...) and changed `extract::function_entry`: never back at 0.2.
+        @test shared >= v"0.3.0"
         for (crate, below) in (("rustcall_julia_macros", "rustcall_julia_macros_impl"),
                                ("rustcall_julia_macros_impl", "rustcall_julia_core"))
             toml = TOML.parsefile(joinpath(_ROOT, "deps", crate, "Cargo.toml"))

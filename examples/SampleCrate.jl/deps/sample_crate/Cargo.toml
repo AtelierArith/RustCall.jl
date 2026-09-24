@@ -12,5 +12,5 @@ crate-type = ["cdylib"]
 # example takes it by path from the RustCall.jl checkout, so that it is tested
 # with the attribute of the same tree as the RustCall it runs against. It is
 # the only reference this example makes outside its own directory; a crate of
-# your own can depend on the release instead (`rustcall_julia_macros = "0.2"`).
+# your own can depend on the release instead (`rustcall_julia_macros = "0.3"`).
 rustcall_julia_macros = { path = "../../../../deps/rustcall_julia_macros" }
