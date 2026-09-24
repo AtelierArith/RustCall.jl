@@ -1080,6 +1080,14 @@ function _register_manifest(expanded, lib_name::String; compiler = nothing,
                 blocked, cargo = cargo_context))
         end
     end
+    # A generic struct's member wrappers are generics of this library too, and
+    # go in the same transaction (#522): the struct's generated code reads an
+    # owner's whole group in one read, which is only sound if the rows are
+    # published — and dropped — all together.
+    for info in manifest_struct_infos(manifest)
+        append!(generics, _prepare_generic_struct_wrappers(info, expanded.source; compiler,
+                                                           cargo = cargo_context, lib_name))
+    end
 
     registered = if load_path !== nothing
         load_artifact!(policy, load_path; lib_name, symbols, return_types, generics,
@@ -1096,10 +1104,6 @@ function _register_manifest(expanded, lib_name::String; compiler = nothing,
     registered || return false
     _manifest_seam(:registered, lib_name)
 
-    for info in manifest_struct_infos(manifest)
-        register_generic_struct_wrappers(info, expanded.source; compiler, cargo = cargo_context,
-                                         lib_name)
-    end
     for info in generics
         @debug "Registered generic function: $(info.name)" type_params = info.type_params
     end

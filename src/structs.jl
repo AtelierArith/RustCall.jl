@@ -383,6 +383,27 @@ function register_generic_struct_wrappers(info::RustStructInfo, expanded_source:
                                            compiler = nothing, cargo = nothing,
                                            lib_name::Union{Nothing, AbstractString} = nothing)
     isempty(info.type_params) && return nothing
+    members = _prepare_generic_struct_wrappers(info, expanded_source; compiler, cargo, lib_name)
+    isempty(members) && return nothing
+    _publish_generic_struct_group!(first(members).group, members)
+    return nothing
+end
+
+"""
+    _prepare_generic_struct_wrappers(info, expanded_source; compiler, cargo, lib_name)
+        -> Vector{GenericFunctionInfo}
+
+The member registrations of a generic struct, prepared outside any lock (it
+may run the extractor), owned by `lib_name`. `_register_manifest` installs
+them with the rest of the library's metadata, in the one transaction that
+publishes the library (`install_library_metadata!`, #522): an owner's rows are
+then all there or none is, which `_read_generic_struct_snapshot` relies on.
+Empty for a non-generic struct.
+"""
+function _prepare_generic_struct_wrappers(info::RustStructInfo, expanded_source::String;
+                                          compiler = nothing, cargo = nothing,
+                                          lib_name::Union{Nothing, AbstractString} = nothing)
+    isempty(info.type_params) && return GenericFunctionInfo[]
     owner = lib_name === nothing ? "" : String(lib_name)
     group = Symbol("generic_struct:", qualified_name(info.module_path, info.name))
     members = GenericFunctionInfo[]
@@ -402,8 +423,7 @@ function register_generic_struct_wrappers(info::RustStructInfo, expanded_source:
                                   path = qualified_name(info.module_path, wrapper_name), compiler,
                                   group = group, cargo, owner))
     end
-    _publish_generic_struct_group!(group, members)
-    return nothing
+    return members
 end
 
 """

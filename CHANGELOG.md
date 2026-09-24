@@ -87,7 +87,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`RustCall.GenericStructSnapshot`) and the instantiation uses only that, so
   an unload racing a call can never leave a constructor-only group; a known
   owner whose rows are gone is retried and then refused, never answered by
-  another module's registration of the name. An instantiation's cache key is unchanged (the source,
+  another module's registration of the name. A struct's group rows are
+  installed with the rest of its library's metadata, in the one transaction
+  that publishes the library. An instantiation's cache key is unchanged (the source,
   the bindings, the compiler and the struct's name, never the owner), so two
   same-named structs share an instantiation only when their sources are the
   same.

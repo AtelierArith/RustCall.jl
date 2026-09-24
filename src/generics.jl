@@ -1794,11 +1794,7 @@ function _publish_generic_struct_group!(group::Symbol, members::Vector{GenericFu
     all(info -> info.group === group && info.owner == owner, members) ||
         error("Inconsistent generic struct group")
     lock(REGISTRY_LOCK) do
-        obsolete = [name for (name, info) in GENERIC_FUNCTION_REGISTRY
-                    if info.group === group && info.owner == owner && !(name in names)]
-        for name in obsolete
-            delete!(GENERIC_FUNCTION_REGISTRY, name)
-        end
+        _drop_obsolete_group_members!(members)
         for info in members
             GENERIC_FUNCTION_REGISTRY[info.name] = info
         end
@@ -1811,6 +1807,32 @@ function _publish_generic_struct_group!(group::Symbol, members::Vector{GenericFu
                 GENERIC_FUNCTIONS_BY_LIB[(owner, info.name)] = info
             end
         end
+    end
+    return nothing
+end
+
+"""
+    _drop_obsolete_group_members!(members)
+
+Remove from the bare-name registry every member of a generic struct group that
+`members` publish anew — same group, same owner — whose name is no longer
+among them, so a struct that lost a method loses its registration too. Other
+owners' members of a same-named group are untouched (#522). Caller holds
+`REGISTRY_LOCK`.
+"""
+function _drop_obsolete_group_members!(members)
+    groups = Dict{Tuple{Symbol, String}, Set{String}}()
+    for info in members
+        info.group === nothing && continue
+        push!(get!(Set{String}, groups, (info.group, info.owner)), info.name)
+    end
+    isempty(groups) && return nothing
+    obsolete = [name for (name, info) in GENERIC_FUNCTION_REGISTRY
+                if info.group !== nothing &&
+                   (names = get(groups, (info.group, info.owner), nothing)) !== nothing &&
+                   !(name in names)]
+    for name in obsolete
+        delete!(GENERIC_FUNCTION_REGISTRY, name)
     end
     return nothing
 end

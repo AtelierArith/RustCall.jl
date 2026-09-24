@@ -208,9 +208,7 @@ _own_row(lib, member) = RustCall.GENERIC_FUNCTIONS_BY_LIB[(lib, member)]
             record = libs[lib_d]
             RustCall.unload_library(lib_d)
             stale = "rust_stale_" * lib_d
-            libs[stale] = record
-            delete!(libs, lib_d)
-            RustCall._rename_module_block!(d, lib_d, stale)
+            RustCall._rebind_module_block!(d, libs, lib_d, stale, record)
             z = _boxed(d, Int32, 8)
             @test _tag(d, z) == 7
             @test _twice(d, z) == 16
@@ -253,6 +251,31 @@ _own_row(lib, member) = RustCall.GENERIC_FUNCTIONS_BY_LIB[(lib, member)]
         y = _boxed(e, Int32, 3)
         @test _tag(e, y) == 5
         finalize(y)
+    end
+
+    # A struct's group rows are part of its library's metadata: installed in the
+    # one transaction that publishes the library, with its symbol mappings and
+    # generic functions (#520) — so there is no moment at which the library is
+    # visible with some or none of its group (#522).
+    @testset "the group is installed with the library's metadata" begin
+        k = _own_module(:GenericOwnerK)
+        at_registration = Ref{Any}(nothing)
+        hook = function (stage, lib)
+            stage === :registered || return
+            at_registration[] = lock(RustCall.REGISTRY_LOCK) do
+                Set(name for ((l, name), info) in RustCall.GENERIC_FUNCTIONS_BY_LIB
+                    if l == lib && info.group === Symbol("generic_struct:Boxed"))
+            end
+        end
+        lib_k = task_local_storage(RustCall._AFTER_MANIFEST_REGISTRATION, hook) do
+            _own_block(k, _boxed_source(11))
+        end
+        @test at_registration[] isa Set
+        @test at_registration[] ⊇ Set(["Boxed_new", "Boxed_tag", "Boxed_twice", "Boxed_free"])
+        @test all(name -> _own_row(lib_k, name).owner == lib_k, at_registration[])
+        x = _boxed(k, Int32, 1)
+        @test _tag(k, x) == 11
+        finalize(x)
     end
 
     # The member and its whole group are one snapshot, read in one transaction;
