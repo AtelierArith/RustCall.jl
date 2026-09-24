@@ -124,8 +124,13 @@ _own_row(lib, member) = RustCall.GENERIC_FUNCTIONS_BY_LIB[(lib, member)]
         @test x.lib_name == image
         @test haskey(RustCall.MONOMORPHIZED_FUNCTIONS, member_key)
         # Running the unchanged block again re-registers the same members
-        # under the same library, and reaches the same instantiation.
+        # under the same library, and reaches the same instantiation. Its
+        # `mutable struct Boxed{T}` is re-evaluated unchanged, which Julia
+        # accepts: the binding is the very same type afterwards, so every
+        # assertion below runs against it (PR #523 review).
+        boxed_type = _own_get(a, :Boxed)
         @test _own_block(a, _boxed_source(1)) == lib_a
+        @test _own_get(a, :Boxed) === boxed_type
         again = _own_row(lib_a, "Boxed_new")
         @test RustCall.artifact_key(
             RustCall._monomorphization_id(again, again.name, params, compiler)) == member_key
@@ -143,8 +148,12 @@ _own_row(lib, member) = RustCall.GENERIC_FUNCTIONS_BY_LIB[(lib, member)]
 
     @testset "a re-run block with another body is its module's own" begin
         old = _boxed(a, Int32, 4)
+        boxed_type = _own_get(a, :Boxed)
         lib_a2 = _own_block(a, _boxed_source(10))
         @test lib_a2 != lib_a
+        # Only the Rust body changed; the Julia struct is the same definition,
+        # re-evaluated, and the same type.
+        @test _own_get(a, :Boxed) === boxed_type
         new = _boxed(a, Int32, 4)
         @test _tag(a, new) == 10
         # The object built before keeps its image; B is untouched.
