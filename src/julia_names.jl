@@ -13,7 +13,8 @@
 # submodules (`_julia_module_name`) — in every emitter (inline `rust"""`, the
 # crate expression emitter, the crate source-text emitter) and in the layout
 # checks that refuse two items bound under one name. Exported Rust symbols are
-# decided on the Rust side and never read these names.
+# decided on the Rust side and never read these names. A generated wrapper's
+# parameters are named from it too, through `julia_parameter_names` (#516).
 
 """
     _is_plain_julia_identifier(name::AbstractString) -> Bool
@@ -84,6 +85,60 @@ function julia_binding_name(spelled::AbstractString)
     end
     error("the Rust name `$spelled` has no Julia spelling: `$name` is not a Julia " *
           "identifier. Rename the item (#514).")
+end
+
+"""
+    julia_parameter_names(rust_names) -> Vector{String}
+
+The Julia parameter names of a function's or method's arguments, in order — the
+one decision for every emitter (#516). The `RustFunctionSignature` and
+`RustMethod` constructors apply it, so `arg_names` is already this list
+wherever a wrapper is generated: inline `rust\"\"\"`, the crate expression and
+source-text emitters, and the PyO3 host.
+
+- an argument is named by `julia_binding_name` (`r#for` → `for_`, `end` →
+  `end_`), so a written bindings file parses;
+- an argument with no readable Julia name — a pattern (`(a, b): (i32, i32)`),
+  `_`, or a spelling that is no Julia identifier — is named `arg<i>` after its
+  position;
+- a name another parameter already has gets further underscores (`end` beside
+  `end_` is `end__`). Names that need no change are claimed first, so they are
+  never the ones renamed.
+
+Every result is a plain, readable identifier and distinct from the others, and
+applying the function to its own result changes nothing. The locals a wrapper
+introduces are chosen against this list (`_generated_local`).
+"""
+function julia_parameter_names(rust_names)
+    names = String[String(n) for n in rust_names]
+    readable(n) = _is_plain_julia_identifier(n) && !all(==('_'), n)
+    wanted = map(enumerate(names)) do (i, n)
+        bound = try
+            julia_binding_name(n)
+        catch err
+            err isa ErrorException || rethrow()
+            ""
+        end
+        readable(bound) ? bound : "arg$(i)"
+    end
+    result = Vector{String}(undef, length(names))
+    taken = Set{String}()
+    # Names kept as written first, so a renamed one yields to them.
+    for (i, (n, w)) in enumerate(zip(names, wanted))
+        if n == w && !(w in taken)
+            result[i] = w
+            push!(taken, w)
+        end
+    end
+    for (i, w) in enumerate(wanted)
+        isassigned(result, i) && continue
+        while w in taken
+            w *= "_"
+        end
+        result[i] = w
+        push!(taken, w)
+    end
+    return result
 end
 
 """

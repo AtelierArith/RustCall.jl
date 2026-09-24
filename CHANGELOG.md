@@ -66,6 +66,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`MethodModel::returns_own_type_resolved`,
   `StructModel::attach_impl_resolving`, `paths::names_struct`) and
   `types::is_self_type` no longer matches a path that only ends in the name.
+- **A `#[julia]` argument named like a Julia keyword no longer breaks a
+  written bindings file** ([#516](https://github.com/AtelierArith/RustCall.jl/issues/516)).
+  `fn f(end: i32)` or `fn g(r#for: &str)` gave the generated wrapper a
+  parameter spelled `end` / `r#for`, so the file `write_bindings_to_file`
+  wrote did not parse. One function, `RustCall.julia_parameter_names`,
+  applied by the `RustFunctionSignature` / `RustMethod` constructors, now
+  names every generated parameter for every emitter (`rust"""`, both crate
+  emitters, the PyO3 host): the name `julia_binding_name` gives (`end_`,
+  `for_`), further underscores where another parameter already has that name
+  (`end` beside `end_` is `end__`), and `arg<i>` for a pattern or `_`, which
+  had no readable name at all. Wrappers are called positionally, so no call
+  changes.
+- **A callback argument followed by another argument loads from a written
+  bindings file** ([#516](https://github.com/AtelierArith/RustCall.jl/issues/516)).
+  The source-text emitter printed each call argument on its own, and a lone
+  `Base.@cfunction` prints in its space-separated form, which inside the call
+  swallowed the arguments after it; the file failed to load with "could not
+  evaluate cfunction argument type". The argument list is now printed as one
+  call, which parenthesizes the macro.
 - **A keyword renamed onto a taken name is refused, not bound twice**
   ([#514](https://github.com/AtelierArith/RustCall.jl/issues/514)). `fn r#for`
   beside `fn for_`, a field `r#let` beside `let_`, a method `r#end` beside

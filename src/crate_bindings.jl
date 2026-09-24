@@ -4935,7 +4935,12 @@ function _emit_string_arg_plan(func::Union{RustFunctionSignature, RustMethod})
     bindings, preserved, call_args, frame = _string_arg_plan(func, identity)
     bindings_str = join(("    " * string(b) for b in bindings), "\n")
     preserve_str = join(string.(preserved), " ")
-    converted_args_str = join(string.(call_args), ", ")
+    # Printed as one argument list, not argument by argument: a lone
+    # `Base.@cfunction` prints in its space-separated form, which inside a
+    # call swallows every argument after it (a callback argument followed by
+    # another one did not load from a written file). Inside a call Julia's
+    # printer gives it parentheses.
+    converted_args_str = String(chop(string(Expr(:call, :f, call_args...)); head = 2, tail = 1))
     frame_str = frame === nothing ? "" : string(frame)
     return bindings_str, preserve_str, converted_args_str, frame_str
 end

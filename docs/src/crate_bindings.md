@@ -426,6 +426,15 @@ e.let_                    # 3; the accessors are get_let_ / set_let_!
 bindings.do_.try_(4)
 ```
 
+Arguments follow the same rule (#516). A generated wrapper's parameters are
+named by `RustCall.julia_parameter_names`, which every emitter reads — the
+parameter of `#[julia] fn f(end: i32, r#for: &str)` is `f(end_, for_)`. A
+wrapper is called positionally, so only the written file and error messages
+show these names. Two parameters never share one: a renamed argument yields
+to an argument already called that (`fn g(end: i32, end_: i32)` is
+`g(end__, end_)`), and an argument with no Julia name of its own — a pattern
+such as `(a, b): (i32, i32)`, or `_` — is named after its position (`arg1`).
+
 The exported symbols do not change: they keep the Rust side's spelling
 without `r#`, as before. A trailing underscore can land on a name the crate
 already uses — `fn r#for` beside `fn for_`, a field `r#let` beside `let_`, a
