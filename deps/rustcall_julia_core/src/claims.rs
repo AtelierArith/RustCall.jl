@@ -354,7 +354,11 @@ pub fn default_arity_name(base: &str, omitted: usize) -> String {
 /// wrapper at all — a hand-written `release` / `release_take_panic` pair is
 /// two unrelated exports, not a collision (#338).
 pub fn function_claims(f: &Function, policy: Policy) -> Vec<Claim> {
-    if !f.exported || f.symbol.is_empty() || (policy.skip_cfg_gated && !f.cfg.is_empty()) {
+    if !f.exported
+        || f.symbol.is_empty()
+        || (policy.skip_cfg_gated && !f.cfg.is_empty())
+        || crate::manifest::skip_reason::is_codegen_refusal(&f.skip_reason)
+    {
         return Vec::new();
     }
     if !f.attribute.generates_wrapper() {
@@ -383,7 +387,10 @@ pub fn function_claims(f: &Function, policy: Policy) -> Vec<Claim> {
 /// one wrapped at a `#[julia] impl` block in another module declares its own
 /// (#342).
 pub fn struct_claims(s: &Struct, policy: Policy) -> Vec<Claim> {
-    if (policy.skip_cfg_gated && !s.cfg.is_empty()) || s.ffi_name.is_empty() {
+    if (policy.skip_cfg_gated && !s.cfg.is_empty())
+        || s.ffi_name.is_empty()
+        || crate::manifest::skip_reason::is_codegen_refusal(&s.skip_reason)
+    {
         return Vec::new();
     }
     // Everything a struct's own wrappers define is emitted next to the
@@ -437,7 +444,11 @@ pub fn struct_claims(s: &Struct, policy: Policy) -> Vec<Claim> {
         &mut buffers,
     );
     for m in &s.methods {
-        if policy.skip_cfg_gated && !m.cfg.is_empty() {
+        // A method the codegen refuses gets no wrapper and uses no buffer
+        // (#503).
+        if (policy.skip_cfg_gated && !m.cfg.is_empty())
+            || crate::manifest::skip_reason::is_codegen_refusal(&m.skip_reason)
+        {
             continue;
         }
         if !m.symbol.is_empty() {

@@ -63,7 +63,9 @@ _br_positions(report) = Set((u.item, u.position) for u in report.unsupported)
     @test _br_positions(report) == Set([
         ("takes_vec", "argument `v`"),
         ("gives_map", "return"),
-        ("fallible", "Ok payload"),
+        # A `Vec` payload is refused by the Rust codegen itself (#159), so
+        # the manifest marks it and the report names its entry point (#503).
+        ("fallible", "entry point"),
         ("Handle::combine", "argument `other`"),
         ("Handle::bytes", "return"),
         ("bad_callback", "argument `f`"),

@@ -178,10 +178,14 @@ fn item_fn_source(func: &ItemFn) -> String {
     prettyplease::unparse(&file)
 }
 
-/// Build the manifest entry of a free function.
+/// Build the manifest entry of a free function found under `mode`.
 ///
-/// `wrapped` says whether RustCall codegen (`transform_function`) is applied,
-/// which decides the `Result`/`Option` return kinds and the exported flag.
+/// A `#[julia]` function is wrapped where it is written
+/// (`codegen::transform_function`) in a crate, and in a `rust"""` block when
+/// it is not generic; that decides the `Result`/`Option` return kinds. The
+/// codegen's refusal of the item ([`crate::refusal::function_refusal`], #503)
+/// is its `skip_reason`: a refused item defines no symbol, so it is not
+/// `exported`.
 ///
 /// `enclosing_cfg` is the `#[cfg]` of every enclosing inline module: the
 /// entry's `cfg` / `cfg_features` describe when the item exists, not only
@@ -189,12 +193,16 @@ fn item_fn_source(func: &ItemFn) -> String {
 pub fn function_entry(
     func: &ItemFn,
     attribute: Attribute,
-    wrapped: bool,
+    mode: Mode,
     module_path: &[String],
     enclosing_cfg: &[syn::Attribute],
 ) -> Function {
     let effective_cfg = crate::cfg::effective_cfg_attrs(enclosing_cfg, &func.attrs);
     let is_generic = has_type_params(&func.sig.generics) || has_impl_trait(&func.sig);
+    let refusal = (attribute == Attribute::Julia)
+        .then(|| crate::refusal::function_refusal(func, module_path, mode))
+        .flatten();
+    let wrapped = attribute == Attribute::Julia && (mode == Mode::Crate || !is_generic);
     let return_type = return_type_to_string(&func.sig.output);
     let mut ok_type = String::new();
     let mut err_type = String::new();
@@ -225,7 +233,7 @@ pub fn function_entry(
             }
         }
     };
-    let exported = if is_generic {
+    let exported = if is_generic || refusal.is_some() {
         false
     } else if wrapped {
         true
@@ -263,13 +271,9 @@ pub fn function_entry(
         symbol,
         attribute,
         vis: crate::attrs::visibility_string(&func.vis),
-        // `transform_function` refuses a `#[julia] unsafe fn`; the reason
-        // says so to Julia, whose generators name the refusal (#491).
-        skip_reason: if attribute == Attribute::Julia && func.sig.unsafety.is_some() {
-            crate::manifest::skip_reason::UNSAFE_FN.to_string()
-        } else {
-            String::new()
-        },
+        // The codegen's refusal, if any (#491, #503): Julia's generators name
+        // it, and bind nothing for the item.
+        skip_reason: refusal.map(|r| r.skip_reason()).unwrap_or_default(),
         python_name: String::new(),
         python_path: Vec::new(),
         exported,
@@ -570,6 +574,40 @@ fn unmarked_module_error(kind: &str, name: &str, full_path: &[String]) -> Extrac
     ))
 }
 
+/// The error for a `#[julia]` block, module or other non-item the proc macro
+/// refuses (#503): the manifest has no entry to carry the refusal, so the scan
+/// fails with its message, naming where.
+fn refused_container(
+    refusal: crate::refusal::Refusal,
+    what: &str,
+    module_path: &[String],
+) -> ExtractError {
+    ExtractError::Unsupported(format!(
+        "{} ({what} in `{}`)",
+        refusal.message,
+        crate_path(module_path)
+    ))
+}
+
+/// `(kind, name)` of an item carrying `#[julia]` that is none of a function,
+/// a struct, an impl block or a module.
+fn unsupported_julia_item(item: &Item) -> Option<(&'static str, String)> {
+    let (attrs, what, name) = match item {
+        Item::Const(i) => (&i.attrs, "const", i.ident.to_string()),
+        Item::Enum(i) => (&i.attrs, "enum", i.ident.to_string()),
+        Item::Static(i) => (&i.attrs, "static", i.ident.to_string()),
+        Item::Trait(i) => (&i.attrs, "trait", i.ident.to_string()),
+        Item::TraitAlias(i) => (&i.attrs, "trait alias", i.ident.to_string()),
+        Item::Type(i) => (&i.attrs, "type alias", i.ident.to_string()),
+        Item::Union(i) => (&i.attrs, "union", i.ident.to_string()),
+        _ => return None,
+    };
+    attrs
+        .iter()
+        .any(crate::attrs::is_julia_attr)
+        .then_some((what, name))
+}
+
 /// `crate::a::b` for a module path, `crate` for the root.
 fn crate_path(path: &[String]) -> String {
     if path.is_empty() {
@@ -729,6 +767,10 @@ struct ScannedImpl {
     /// struct copy it was written beside, and what tells cfg-exclusive copies
     /// of one fragment apart (#357 review).
     enclosing_cfg: Vec<syn::Attribute>,
+    /// A trait impl (`#[julia] impl Trait for C`). The proc macro wraps its
+    /// `#[julia]` methods; the manifest describes only the ones it refuses,
+    /// so the refusal reaches Julia (#503).
+    trait_impl: bool,
     line: usize,
     file: String,
 }
@@ -797,6 +839,15 @@ impl CrateScan {
         includes: &mut Vec<PendingInclude>,
     ) -> Result<(), ExtractError> {
         for item in items {
+            // `#[julia]` on an item the attribute cannot expand: the proc
+            // macro refuses it, and the manifest has no entry to mark (#503).
+            if let Some((what, name)) = unsupported_julia_item(item) {
+                return Err(refused_container(
+                    crate::refusal::item_kind_refusal(item.span()),
+                    &format!("{what} `{name}`"),
+                    module_path,
+                ));
+            }
             match item {
                 Item::Fn(f) => {
                     let attribute = rustcall_attribute(&f.attrs);
@@ -808,7 +859,8 @@ impl CrateScan {
                         ));
                     }
                     if attribute == Attribute::Julia {
-                        let entry = function_entry(f, attribute, true, symbol_path, enclosing_cfg);
+                        let entry =
+                            function_entry(f, attribute, Mode::Crate, symbol_path, enclosing_cfg);
                         for (claim, owner) in entry.claims() {
                             self.claim(claim, owner, file, module_path)?;
                         }
@@ -874,7 +926,11 @@ impl CrateScan {
                     if !impl_has_julia(imp) {
                         continue;
                     }
-                    let Some(header) = ImplHeader::of(imp, module_path) else {
+                    let Some(header) = ImplHeader::of_any(imp, module_path) else {
+                        // A header the proc macro refuses outright (#503).
+                        if let Some(refusal) = crate::refusal::impl_header_refusal(&imp.self_ty) {
+                            return Err(refused_container(refusal, "an impl block", module_path));
+                        }
                         continue;
                     };
                     self.impls.push(ScannedImpl {
@@ -883,6 +939,7 @@ impl CrateScan {
                         symbol_path: symbol_path.to_vec(),
                         cfg: crate::cfg::effective_cfg_attrs(enclosing_cfg, &imp.attrs),
                         enclosing_cfg: enclosing_cfg.to_vec(),
+                        trait_impl: imp.trait_.is_some(),
                         line: imp.span().start().line,
                         file: file.to_string(),
                     });
@@ -934,6 +991,17 @@ impl CrateScan {
                 Item::Mod(m) => {
                     let inner_reachable = reachable && matches!(m.vis, syn::Visibility::Public(_));
                     let Some((_, inner)) = &m.content else {
+                        // `#[julia] mod name;` is refused by the proc macro,
+                        // which cannot expand a file module (#503).
+                        if crate::codegen::is_marked_module(m) {
+                            if let Some(refusal) = crate::refusal::module_refusal(m) {
+                                return Err(refused_container(
+                                    refusal,
+                                    &format!("module `{}`", m.ident),
+                                    module_path,
+                                ));
+                            }
+                        }
                         // `mod name;` lives in another file; the caller follows
                         // it (see `TreeScan`).
                         continue;
@@ -1066,6 +1134,10 @@ impl CrateScan {
             if wrapped_methods(&imp.item, Mode::Crate, &imp.cfg).is_empty() {
                 continue;
             }
+            if imp.trait_impl {
+                self.attach_refused_trait_methods(imp, &candidates);
+                continue;
+            }
             // Resolution follows Rust's own rules, so the plain structs are
             // candidates too; a header that lands on one names a type the
             // proc-macro wrapped as its receiver and RustCall cannot describe
@@ -1102,6 +1174,37 @@ impl CrateScan {
             manifest.structs.push(entry);
         }
         Ok(())
+    }
+
+    /// Attach the `#[julia]` methods of a trait impl that the proc macro
+    /// refuses (#503) to the `#[julia]` struct the header names, so the
+    /// refusal reaches Julia. The methods it wraps are not described — a
+    /// trait impl's wrappers are not part of the manifest — and a header
+    /// that names no `#[julia]` struct, which the scan never refused for a
+    /// trait impl, is left alone.
+    fn attach_refused_trait_methods(&mut self, imp: &ScannedImpl, candidates: &[Candidate]) {
+        let Ok(index) = locate(candidates, &imp.header, &self.imports) else {
+            return;
+        };
+        let Some(julia) = candidates[index].julia else {
+            return;
+        };
+        for mut m in wrapped_methods(&imp.item, Mode::Crate, &imp.cfg) {
+            m.site = Some(crate::model::ImplSite {
+                module_path: imp.header.module_path.clone(),
+                self_ty: (*imp.item.self_ty).clone(),
+            });
+            let site = crate::refusal::MethodSite::Crate {
+                self_ty: &imp.item.self_ty,
+            };
+            if crate::refusal::method_refusal(site, &m).is_none() {
+                continue;
+            }
+            let model = &mut self.structs[julia].model;
+            if !model.methods.iter().any(|seen| seen.name() == m.name()) {
+                model.methods.push(m);
+            }
+        }
     }
 
     /// The `#[julia]` structs at `index` — or the same-named struct at the same
@@ -1270,11 +1373,14 @@ fn crate_struct_entry(
     let struct_name = &model.item.ident;
     let effective_cfg = crate::cfg::effective_cfg_attrs(enclosing_cfg, &model.item.attrs);
     let stem = crate::codegen::symbol_stem(module_path, &struct_name.to_string());
+    // A struct the proc macro refuses (#462, #503) gets no destructor and no
+    // accessor: it is kept with the refusal as its `skip_reason`.
+    let refusal = crate::refusal::struct_refusal(&model.item, Mode::Crate);
     let fields = model
         .named_fields()
         .iter()
         .map(|(name, ty)| {
-            let ffi_compatible = field_has_accessors(ty);
+            let ffi_compatible = refusal.is_none() && field_has_accessors(ty);
             Field {
                 name: name.to_string(),
                 rust_type: type_to_string(ty),
@@ -1308,11 +1414,22 @@ fn crate_struct_entry(
         .iter()
         .map(|m| method_return_shape(struct_name, &m.func, true))
         .collect();
+    // Each method's refusal is decided where the proc macro decides it: at the
+    // block, which spells the struct as its header does (#503).
+    let bare: syn::Type = syn::parse_quote!(#struct_name);
     let methods = model
         .methods
         .iter()
         .enumerate()
         .map(|(i, m)| Method {
+            skip_reason: crate::refusal::method_refusal(
+                crate::refusal::MethodSite::Crate {
+                    self_ty: m.site.as_ref().map(|s| &s.self_ty).unwrap_or(&bare),
+                },
+                m,
+            )
+            .map(|r| r.skip_reason())
+            .unwrap_or_default(),
             name: m.name(),
             symbol: crate::codegen::method_symbol_of(&stem, &m.name()),
             is_static: m.is_static,
@@ -1320,7 +1437,6 @@ fn crate_struct_entry(
             is_constructor: returns_boxed_struct(struct_name, &m.func),
             is_classmethod: false,
             vis: crate::attrs::visibility_string(&m.func.vis),
-            skip_reason: crate::codegen::method_skip_reason(m),
             python_name: String::new(),
             accessor: String::new(),
             attribute: m.attribute,
@@ -1360,7 +1476,10 @@ fn crate_struct_entry(
         ffi_name: stem,
         attribute: model.attribute,
         vis: crate::attrs::visibility_string(&model.item.vis),
-        skip_reason: String::new(),
+        skip_reason: refusal
+            .as_ref()
+            .map(|r| r.skip_reason())
+            .unwrap_or_default(),
         python_name: String::new(),
         python_path: Vec::new(),
         pyo3_extends: String::new(),
@@ -1374,9 +1493,8 @@ fn crate_struct_entry(
         // A `String` field getter hands back an owned buffer, so the struct
         // carries `<Struct>_RustCallOwnedString` / `<Struct>_free_rust_string`
         // in crate mode too (#246).
-        has_owned_string_helper: crate::codegen::crate_struct_needs_owned_string_helper(
-            &model.item,
-        ),
+        has_owned_string_helper: refusal.is_none()
+            && crate::codegen::crate_struct_needs_owned_string_helper(&model.item),
         has_borrowed_string_helper: false,
         context_source: String::new(),
         generic_wrappers: Vec::new(),

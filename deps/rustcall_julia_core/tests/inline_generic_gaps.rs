@@ -100,9 +100,27 @@ fn a_generic_method_of_a_generic_struct_is_refused_at_the_method() {
     assert!(wrappers.contains(&"Wrap_get"), "{wrappers:?}");
     assert!(wrappers.contains(&"Wrap_new"), "{wrappers:?}");
 
-    // The manifest describes what can be bound: no `pair`.
-    let names: Vec<&str> = wrap.methods.iter().map(|m| m.name.as_str()).collect();
-    assert_eq!(names, ["new", "get"]);
+    // The manifest keeps `pair` with the refusal as its `skip_reason` and no
+    // generic wrapper, so Julia binds nothing for it (#503).
+    let methods: Vec<(&str, &str, &str)> = wrap
+        .methods
+        .iter()
+        .map(|m| {
+            (
+                m.name.as_str(),
+                m.skip_reason.as_str(),
+                m.generic_wrapper_name.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        methods,
+        [
+            ("new", "", "Wrap_new"),
+            ("get", "", "Wrap_get"),
+            ("pair", "generic_signature:U", "")
+        ]
+    );
 
     // rustc stops at the refusal, not inside generated code.
     let out = rustc("refused", &expanded.source);
@@ -159,12 +177,19 @@ fn impl_trait_and_const_methods_of_a_generic_struct_are_refused() {
         source.contains("`Cell::sized` is generic over `const N`"),
         "{source}"
     );
-    let names: Vec<&str> = expanded.manifest.structs[0]
+    let methods: Vec<(&str, &str)> = expanded.manifest.structs[0]
         .methods
         .iter()
-        .map(|m| m.name.as_str())
+        .map(|m| (m.name.as_str(), m.skip_reason.as_str()))
         .collect();
-    assert_eq!(names, ["pick"]);
+    assert_eq!(
+        methods,
+        [
+            ("shown", "impl_trait"),
+            ("sized", "generic_signature:const N"),
+            ("pick", "")
+        ]
+    );
 }
 
 /// The refusal exists only where the method does.
