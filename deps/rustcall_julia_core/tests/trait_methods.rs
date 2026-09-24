@@ -432,3 +432,52 @@ fn a_method_named_new_is_boxed_only_when_it_returns_the_type() {
     "#;
     compile_and_run("inline_new_by_type", &inline.source, main);
 }
+
+#[test]
+fn a_trait_impl_through_a_type_alias_is_refused_not_dropped() {
+    // `type Alias = Buf; #[julia] impl Tr for Alias` used to be skipped
+    // silently while the proc macro exported its wrappers (PR #513 review).
+    // The scan cannot tell what an alias names, so the crate is refused with
+    // the target named; only a target that is definitely not a `#[julia]`
+    // struct is left alone.
+    for (label, source) in [
+        (
+            "alias at the root",
+            r#"
+            pub trait Tr { fn m(&self) -> i32; }
+            #[julia] pub struct Buf { pub n: i32 }
+            pub type Alias = Buf;
+            #[julia] impl Tr for Alias { #[julia] fn m(&self) -> i32 { self.n } }
+            "#,
+        ),
+        (
+            "alias in another module",
+            r#"
+            pub trait Tr { fn m(&self) -> i32; }
+            #[julia] pub struct Buf { pub n: i32 }
+            pub mod names { pub type Alias = super::Buf; }
+            #[julia] impl Tr for names::Alias { #[julia] fn m(&self) -> i32 { self.n } }
+            "#,
+        ),
+    ] {
+        let err = extract(source, Mode::Crate).unwrap_err().to_string();
+        assert!(
+            err.contains("names `Alias`, a `type` alias"),
+            "{label}: {err}"
+        );
+        assert!(err.contains("(#506)"), "{label}: {err}");
+    }
+
+    // A trait impl of a type declared here without `#[julia]`, or of a
+    // foreign or primitive type, is ordinary code and still left alone.
+    let source = r#"
+        pub trait Tr { fn m(&self) -> i32; }
+        #[julia] pub struct Buf { pub n: i32 }
+        pub struct Plain { pub n: i32 }
+        #[julia] impl Tr for Plain { #[julia] fn m(&self) -> i32 { self.n } }
+        #[julia] impl Tr for u32 { #[julia] fn m(&self) -> i32 { 0 } }
+    "#;
+    let manifest = extract(source, Mode::Crate).unwrap();
+    assert_eq!(manifest.structs.len(), 1);
+    assert!(manifest.structs[0].methods.is_empty());
+}

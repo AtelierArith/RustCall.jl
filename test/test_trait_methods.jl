@@ -183,6 +183,38 @@ end
             end
         end
 
+        @testset "a trait impl through a type alias is refused, not dropped (PR #513 review)" begin
+            # The proc macro exports its wrappers under the alias's name and the
+            # scan cannot tell what the alias names: the report and the build
+            # refuse the crate instead of silently binding nothing.
+            mktempdir() do dir
+                _tm_write_crate(dir)
+                lib = joinpath(dir, "src", "lib.rs")
+                write(lib, read(lib, String) * """
+
+                    pub type Alias = Buf;
+                    pub trait Aliased { fn via_alias(&self) -> i32; }
+
+                    #[julia]
+                    impl Aliased for Alias {
+                        #[julia]
+                        fn via_alias(&self) -> i32 { self.n }
+                    }
+                    """)
+                message(f) = try
+                    f()
+                    ""
+                catch err
+                    sprint(showerror, err)
+                end
+                report_error = message(() -> RustCall.boundary_report(dir; io = devnull))
+                @test occursin("names `Alias`, a `type` alias", report_error)
+                build_error = message(() -> RustCall.write_bindings_to_file(
+                    dir, joinpath(dir, "Aliased.jl"); output_module_name = "AliasedWritten"))
+                @test occursin("names `Alias`, a `type` alias", build_error)
+            end
+        end
+
         @testset "a trait's fn new() -> i32 is a plain function (PR #513 review)" begin
             # A method is a boxed constructor by its return type only: the
             # trait's `new` returns an `i32` and the crate must build.

@@ -626,6 +626,25 @@ fn plain_target_error(imp: &ScannedImpl, target: &Candidate) -> ExtractError {
     ))
 }
 
+/// A `#[julia]` trait impl whose target is a `type` alias (PR #513 review).
+fn alias_target_error(imp: &ScannedImpl, target: &Candidate) -> ExtractError {
+    let header = imp.header.display();
+    let where_ = location(imp.line, &imp.file);
+    let name = &target.name;
+    let module = if target.module_path.is_empty() {
+        "the crate root".to_string()
+    } else {
+        format!("module `{}`", target.module_path.join("::"))
+    };
+    ExtractError::Unsupported(format!(
+        "#[julia] trait impl `{header}` {where_} names `{name}`, a `type` alias in {module}. \
+         The proc macro exports its methods under the alias's name, and the scan cannot \
+         tell which struct the alias names, so they could not be bound. Write the \
+         `#[julia]` struct's own name in the impl header, or remove `#[julia]` from the \
+         block (#506)."
+    ))
+}
+
 fn location(line: usize, file: &str) -> String {
     if file.is_empty() {
         format!("(line {line})")
@@ -711,6 +730,10 @@ struct PlainStruct {
     name: String,
     module_path: Vec<String>,
     file: String,
+    /// A `type X = ..;` alias rather than a type declared here: the scan
+    /// cannot tell what it names, so a `#[julia]` trait impl through it is
+    /// refused rather than skipped (PR #513 review).
+    alias: bool,
 }
 
 /// A struct an `impl` header may name, annotated or not: `julia` is its index
@@ -722,6 +745,8 @@ struct Candidate {
     module_path: Vec<String>,
     julia: Option<usize>,
     file: String,
+    /// A `type` alias ([`PlainStruct::alias`]).
+    alias: bool,
 }
 
 impl Located for Candidate {
@@ -855,6 +880,7 @@ impl CrateScan {
                         name: e.ident.to_string(),
                         module_path: module_path.clone(),
                         file: file.to_string(),
+                        alias: false,
                     });
                 }
                 Item::Union(u) => {
@@ -862,6 +888,7 @@ impl CrateScan {
                         name: u.ident.to_string(),
                         module_path: module_path.clone(),
                         file: file.to_string(),
+                        alias: false,
                     });
                 }
                 // `type Gauge = …;` names a type an inherent impl can be
@@ -872,6 +899,7 @@ impl CrateScan {
                         name: t.ident.to_string(),
                         module_path: module_path.clone(),
                         file: file.to_string(),
+                        alias: true,
                     });
                 }
                 Item::Struct(s) => {
@@ -882,6 +910,7 @@ impl CrateScan {
                             name: s.ident.to_string(),
                             module_path: module_path.clone(),
                             file: file.to_string(),
+                            alias: false,
                         });
                         continue;
                     };
@@ -1090,12 +1119,14 @@ impl CrateScan {
                 module_path: s.module_path.clone(),
                 julia: Some(i),
                 file: s.file.clone(),
+                alias: false,
             })
             .chain(self.plain_structs.iter().map(|p| Candidate {
                 name: p.name.clone(),
                 module_path: p.module_path.clone(),
                 julia: None,
                 file: p.file.clone(),
+                alias: p.alias,
             }))
             .collect();
         let mut impls = std::mem::take(&mut self.impls);
@@ -1120,13 +1151,26 @@ impl CrateScan {
             let index = match locate(&candidates, &imp.header, &self.imports) {
                 Ok(index) => match candidates[index].julia {
                     Some(julia) => julia,
-                    // A trait impl of a type that is not a `#[julia]` struct
-                    // was never refused by the scan: its wrappers are
-                    // exported and nothing binds them.
+                    // A trait impl through a `type` alias: the proc macro
+                    // wraps its methods under the alias's name, and the scan
+                    // cannot tell what the alias names, so the crate is
+                    // refused rather than left with wrappers nothing
+                    // describes (PR #513 review).
+                    None if imp.trait_impl && candidates[index].alias => {
+                        return Err(alias_target_error(imp, &candidates[index]))
+                    }
+                    // A trait impl of a type declared here without
+                    // `#[julia]` (`impl Display for Plain`) is ordinary code;
+                    // it is not bound, as before #506.
                     None if imp.trait_impl => continue,
                     None => return Err(plain_target_error(imp, &candidates[index])),
                 },
-                Err(_) if imp.trait_impl => continue,
+                // No type of that name is declared anywhere in the crate —
+                // every `#[julia]` struct is a candidate — so the target is a
+                // foreign or primitive type (`impl Tr for u32`), which is
+                // definitely not a `#[julia]` struct and is not bound. An
+                // ambiguous name is refused like an inherent block's.
+                Err(Unresolved::NotFound) if imp.trait_impl => continue,
                 Err(why) => return Err(self.unresolved_impl(imp, why)),
             };
             // A trait impl's `#[julia]` methods are attached like an inherent

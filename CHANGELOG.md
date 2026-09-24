@@ -44,7 +44,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   crate where two traits ending in one name wrap a method of one name (a
   duplicate symbol), or where a qualified name is already taken.
   `boundary_report` examines every such method. A trait impl of a type
-  without `#[julia]` is still left alone.
+  without `#[julia]` is still left alone; one through a `type` alias fails the
+  scan with the alias named instead of being dropped silently.
 - **A method's receiver is read in one place, for inherent and trait methods
   alike** ([#509](https://github.com/AtelierArith/RustCall.jl/issues/509)).
   `self: &mut Self` (and `self: &mut Buf`, `self: &mut &mut Self`) used to be

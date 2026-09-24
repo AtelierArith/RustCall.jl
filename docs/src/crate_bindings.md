@@ -282,7 +282,10 @@ refuses a crate in two cases rather than binding one method over another:
 - a qualified name is already taken (an inherent method literally named
   `A_m`).
 
-A trait impl of a type that is not a `#[julia]` struct is left alone.
+A trait impl of a type declared without `#[julia]`, or of a foreign or primitive
+type, is left alone. A trait impl through a `type` alias (`impl Tr for Alias`)
+fails the scan with the alias named: the wrappers carry the alias's name and the
+scan cannot tell which struct it names. Write the struct's own name instead.
 
 ### Static methods
 
