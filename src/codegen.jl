@@ -131,7 +131,8 @@ end
     clear_library_metadata!(lib_name)
 
 Drop everything the registries record *about* one library: its name-to-symbol
-mappings and its return-type hints.
+mappings, its return-type hints, its panic channels and the generic functions
+its block defined (`GENERIC_FUNCTIONS_BY_LIB`).
 
 Called wherever a library leaves `RUST_LIBRARIES` or is replaced under the same
 name (unload, hot reload, re-registration of a `rust\"\"\"` block). A stale
@@ -158,6 +159,13 @@ function clear_library_metadata!(lib_name::AbstractString)
         # the one that was closed (#244).
         for key in collect(keys(PANIC_CHANNELS))
             first(key) == name && delete!(PANIC_CHANNELS, key)
+        end
+        # The generic functions the library's block defined (#520): a rebuilt
+        # block registers its own again after loading, and a row left behind
+        # would let a call from the defining module specialize a source the
+        # library no longer holds.
+        for key in collect(keys(GENERIC_FUNCTIONS_BY_LIB))
+            first(key) == name && delete!(GENERIC_FUNCTIONS_BY_LIB, key)
         end
     end
     return nothing
@@ -741,8 +749,8 @@ end
 """
     copy_library_metadata!(from, to)
 
-Give the library `to` the same name-to-symbol mappings and return-type hints as
-`from`, replacing whatever it had.
+Give the library `to` the same name-to-symbol mappings, return-type hints and
+owner-qualified generic registrations as `from`, replacing whatever it had.
 
 Used when one loaded handle is registered under a second name (`@rust`'s reload
 alias, `_alias_reloaded_library`): both registries are per library, so the alias
@@ -763,6 +771,9 @@ function copy_library_metadata!(from::AbstractString, to::AbstractString)
         end
         for ((lib, name), ret_type) in collect(FUNCTION_RETURN_TYPES_BY_LIB)
             lib == source && (FUNCTION_RETURN_TYPES_BY_LIB[(target, name)] = ret_type)
+        end
+        for ((lib, name), generic) in collect(GENERIC_FUNCTIONS_BY_LIB)
+            lib == source && (GENERIC_FUNCTIONS_BY_LIB[(target, name)] = generic)
         end
     end
     return nothing

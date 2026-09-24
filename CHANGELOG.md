@@ -44,6 +44,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `var"..."` must use the new name. Exported symbols do not change.
 
 ### Fixed
+- **`@rust f(x)` reaches the caller's own block first, whatever the form**
+  ([#520](https://github.com/AtelierArith/RustCall.jl/issues/520)). The
+  typed `@rust f(x)::T` tried every loaded library's exports before the
+  generic registry, and the untyped `@rust f(x)` asked the generic registry
+  first — a registry keyed by the bare name, process-wide. So an unrelated
+  block's plain `f` shadowed a module's own generic `f` under `::T`, and that
+  generic captured another module's untyped `@rust f(x)`; two modules' generics
+  of one name shared the last registration. One function,
+  `RustCall.resolve_rust_call`, now decides for every form (typed or untyped,
+  generic or not, `lib::f` or not): the caller's own blocks first, most
+  recently run first, each asked for an exported function and a generic of
+  that name together — so a later block of the module redefines the name
+  whichever kind it is — then the process-wide generic of that name, then
+  another block's export. A block's generics are owned by its
+  library (`RustCall.GENERIC_FUNCTIONS_BY_LIB`, dropped with it) as well as
+  registered by bare name, which `call_generic_function(name, ...)` still reads.
 - **A return type that only ends in the impl header's name is not the struct**
   ([#518](https://github.com/AtelierArith/RustCall.jl/issues/518)). Whether
   a method returns its own type (and so is boxed as `*mut Struct`, and may be

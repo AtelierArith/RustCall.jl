@@ -37,19 +37,27 @@ function _ensure_module_state!(mod::Module)
     symbols = symbols isa AbstractDict ? Dict{String, String}(String(k) => String(v) for (k, v) in symbols) :
               Dict{String, String}()
     active = Ref(active isa Ref ? String(active[]) : "")
+    # When each block was last recorded, by library: `resolve_rust_call` asks
+    # the module's blocks most recent first (#520).
+    order = Dict{String, Int}()
     for record in _module_block_records(mod)
         libs[record.lib_name] = record.block
+        order[record.lib_name] = record.order
         for symbol in record.symbols
             symbols[symbol] = record.lib_name
         end
         active[] = record.lib_name
     end
     candidate = Dict{Symbol, Any}(
-        :libs => libs, :symbols => symbols, :active => active,
+        :libs => libs, :symbols => symbols, :active => active, :order => order,
         :crate_generation => CrateGenerationCell(),
         :crate_symbols => Dict{Tuple{Ptr{Cvoid}, String}, Ptr{Cvoid}}())
     return lock(REGISTRY_LOCK) do
         chosen = get!(MODULE_STATES, mod, candidate)
+        # A precompiled caller's records carry the precompiling process's
+        # sequence; a block recorded here from now on must still come later.
+        latest = maximum(values(chosen[:order]); init = 0)
+        latest > MODULE_BLOCK_SEQUENCE[] && (MODULE_BLOCK_SEQUENCE[] = latest)
         isempty(chosen[:active][]) || get!(MODULE_ACTIVE_LIB, mod, chosen[:active][])
         chosen
     end
@@ -110,6 +118,7 @@ function _record_module_block!(mod::Module, lib_name::String,
         data[:active][] = lib_name
         MODULE_ACTIVE_LIB[mod] = lib_name
         MODULE_BLOCK_SEQUENCE[] += 1
+        _state_mutate_storage!(data[:order], :setindex!, MODULE_BLOCK_SEQUENCE[], lib_name)
         ModuleBlockRecord(lib_name, block, names, MODULE_BLOCK_SEQUENCE[])
     end
     result isa ModuleBlockRecord || _throw_module_symbol_conflict(result, nameof(mod))
@@ -142,5 +151,36 @@ function _record_module_symbols_transaction!(table, lib_name, symbols, module_na
         end
     end
     conflict === nothing || _throw_module_symbol_conflict(conflict, module_name)
+    return nothing
+end
+
+"""
+    _module_block_order(mod) -> Dict{String, Int}
+
+A snapshot of when each of `mod`'s `rust\"\"\"` blocks was last recorded, by
+library name (larger is later). Empty for a module with no owned state (a
+legacy caller's raw containers), whose blocks are then ordered by name.
+"""
+function _module_block_order(mod::Module)
+    haskey(MODULE_STATES, mod) || return Dict{String, Int}()
+    return StateView(:order, mod)[]
+end
+
+"""
+    _rename_module_block!(mod, from, to)
+
+Carry a block's recorded order over when `_resolve_lib` rebinds it from the
+library name a precompiled module stored to the one the reload derived.
+"""
+function _rename_module_block!(mod::Module, from::String, to::String)
+    haskey(MODULE_STATES, mod) || return nothing
+    lock(REGISTRY_LOCK) do
+        data = MODULE_STATES[mod]
+        seq = get(data[:order], from, nothing)
+        seq === nothing && return nothing
+        _state_mutate_storage!(data[:order], :setindex!, seq, to)
+        _state_mutate_storage!(data[:order], :delete!, from)
+        return nothing
+    end
     return nothing
 end
