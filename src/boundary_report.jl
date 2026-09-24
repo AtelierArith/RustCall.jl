@@ -55,8 +55,10 @@ Prints a summary to `io` and returns `(; unsupported, checked, notes)`:
   below the crate root, `"a::f"`) and `position`
   is ``"argument `x`"``, `"return"`, `"Ok payload"`, `"Err payload"`,
   `"Some payload"`, `"field getter"`, or `"entry point"` for an item the Rust
-  codegen refuses outright — a `#[julia]` function or method that is an
-  `unsafe fn` (#491), whose other positions are then not examined;
+  codegen refuses outright — an `unsafe fn` (#491), a generic or `impl Trait`
+  signature the flavour cannot bind, a non-FFI `Result` / `Option` payload, a
+  `Self` or a lowered `&str` the wrapper cannot express (#503; the kinds of
+  `RUST_CODEGEN_REFUSALS`) — whose other positions are then not examined;
 * `checked` — how many positions were examined;
 * `notes` — one `(; item, position, rust_type, note)` per note; `position` is
   `"return"`, a payload, or `"entry point"` for an unguarded export. A note is

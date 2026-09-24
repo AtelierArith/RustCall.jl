@@ -8,7 +8,6 @@
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
-use quote::quote;
 use syn::{ItemFn, ItemImpl, ItemMod, ItemStruct};
 
 use rustcall_julia_core::codegen;
@@ -38,10 +37,7 @@ pub fn julia(_attr: TokenStream, item: TokenStream) -> TokenStream {
         return codegen::transform_module(item_mod, &[]).into();
     }
 
+    // Refused by the core like every other `#[julia]` refusal (#503).
     let item2: TokenStream2 = item.into();
-    quote! {
-        compile_error!("#[julia] can only be applied to functions, structs, impl blocks, or inline modules");
-        #item2
-    }
-    .into()
+    codegen::transform_unsupported_item(item2).into()
 }

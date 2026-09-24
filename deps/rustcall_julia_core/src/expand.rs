@@ -25,8 +25,8 @@ use crate::extract::{fn_args, function_entry};
 use crate::manifest::{Attribute, Field, Manifest, Method, Mode, Struct};
 use crate::model::{ModelTree, StructModel};
 use crate::types::{
-    const_param_names, generic_field_has_accessors, generics_to_type_params, has_impl_trait,
-    has_type_params, return_type_to_string, type_to_string,
+    generic_field_has_accessors, generics_to_type_params, has_type_params, return_type_to_string,
+    type_to_string,
 };
 
 pub struct Expanded {
@@ -138,6 +138,16 @@ fn expand_items(
     };
 
     for item in items {
+        // `#[julia]` on a kind it does not support: refused before anything
+        // is built, as the crate scan refuses it (#503 review). There is no
+        // manifest entry to carry it, so the expansion fails with the
+        // refusal's message at the item.
+        if let Some(refusal) = crate::refusal::julia_item_refusal(item) {
+            return Err(syn::Error::new(
+                refusal.span,
+                format!("{} ({})", refusal.message, refusal.detail),
+            ));
+        }
         match item {
             Item::Fn(f) => {
                 let attribute = rustcall_attribute(&f.attrs);
@@ -145,60 +155,47 @@ fn expand_items(
                     Attribute::Julia => {
                         let mut f = f.clone();
                         strip_rustcall_attrs(&mut f.attrs);
-                        let consts = const_param_names(&f.sig.generics);
-                        let impl_trait = has_impl_trait(&f.sig);
-                        if !consts.is_empty() || impl_trait {
-                            // Const generics and `impl Trait` cannot be instantiated
-                            // from Julia, and `#[no_mangle]` on a still-generic fn
-                            // exports no symbol: fail at compile time rather than at
-                            // the first call.
-                            let name = f.sig.ident.to_string();
-                            let msg = if impl_trait {
-                                format!("#[julia] function `{name}` uses `impl Trait` in its signature; `impl Trait` is not supported by RustCall")
-                            } else {
-                                format!(
-                                    "#[julia] function `{name}` has const generic parameter(s) {}; const generics are not supported by RustCall",
-                                    consts.join(", ")
-                                )
-                            };
-                            out.push(syn::parse_quote! { compile_error!(#msg); });
-                            f.vis = Visibility::Public(Default::default());
-                            push_fn(
-                                manifest,
-                                function_entry(&f, attribute, false, module_path, enclosing_cfg),
-                            );
-                            out.push(Item::Fn(f));
-                        } else if has_type_params(&f.sig.generics) {
-                            // A generic `unsafe fn` is refused like a concrete
-                            // one (#491): its specialized wrapper would call it
-                            // from a safe body. The manifest entry carries
-                            // `skip_reason = "unsafe_fn"`, and Julia registers
-                            // nothing for it.
-                            if let Some(error) = crate::codegen::unsafe_function_error(&f) {
-                                out.extend(items_of(error)?);
-                            }
-                            f.vis = Visibility::Public(Default::default());
-                            push_fn(
-                                manifest,
-                                function_entry(&f, attribute, false, module_path, enclosing_cfg),
-                            );
-                            out.push(Item::Fn(f));
-                        } else {
-                            push_fn(
-                                manifest,
-                                function_entry(&f, attribute, true, module_path, enclosing_cfg),
-                            );
+                        // The entry carries the codegen's refusal, if any, as
+                        // its `skip_reason` (#503): the same decision
+                        // `transform_function` emits the `compile_error!` for.
+                        push_fn(
+                            manifest,
+                            function_entry(&f, attribute, Mode::Inline, module_path, enclosing_cfg),
+                        );
+                        let refusal =
+                            crate::refusal::function_refusal(&f, module_path, Mode::Inline);
+                        if refusal.is_none() && !has_type_params(&f.sig.generics) {
                             out.extend(items_of(transform_function(
                                 f,
                                 module_path,
                                 PanicHook::FileOwned,
                             ))?);
+                        } else {
+                            // A generic function is emitted unwrapped and
+                            // monomorphized on demand (`specialize`); a refused
+                            // one is kept as written, next to its refusal —
+                            // a generic `unsafe fn` among them (#491): its
+                            // specialized wrapper would call it from a safe
+                            // body, and Julia registers nothing for it.
+                            if let Some(refusal) = refusal {
+                                out.extend(items_of(
+                                    refusal.compile_error(&crate::cfg::cfg_attrs(&f.attrs)),
+                                )?);
+                            }
+                            f.vis = Visibility::Public(Default::default());
+                            out.push(Item::Fn(f));
                         }
                     }
                     _ => {
                         push_fn(
                             manifest,
-                            function_entry(f, Attribute::None, false, module_path, enclosing_cfg),
+                            function_entry(
+                                f,
+                                Attribute::None,
+                                Mode::Inline,
+                                module_path,
+                                enclosing_cfg,
+                            ),
                         );
                         out.push(item.clone());
                     }
@@ -359,20 +356,32 @@ fn methods_of(
     module_path: &[String],
 ) -> Vec<Method> {
     let struct_name = &model.item.ident;
+    let bare: syn::Type = syn::parse_quote!(#struct_name);
     model
         .methods
         .iter()
-        // A method generic in its own right is refused at the method and gets
-        // no wrapper (#471 for a concrete struct, #477 for a generic one, whose
-        // instantiation binds only the struct's parameters), so there is
-        // nothing for Julia to bind.
-        .filter(|m| !crate::codegen::inline_method_is_generic(m))
-        // An `unsafe` method is refused at the method too (#491), and kept
-        // here with its `skip_reason` — a concrete struct's and a generic
-        // struct's alike — so the Julia generators name the refusal. It gets
-        // no wrapper (nor, on a generic struct, a generic wrapper), and Julia
-        // binds nothing for it.
+        // A method the codegen refuses — generic in its own right (#471 for a
+        // concrete struct, #477 for a generic one, whose instantiation binds
+        // only the struct's parameters), `unsafe` (#491), or one whose wrapper
+        // cannot be written (#482, #484) — is kept here with the refusal as
+        // its `skip_reason` (#503), a concrete struct's and a generic
+        // struct's alike, so the Julia generators name it. It gets no wrapper
+        // (nor, on a generic struct, a generic wrapper), and Julia binds
+        // nothing for it. The site is the one the wrapper would be emitted
+        // at: beside the struct, or at a block in another module (#342).
         .map(|m| {
+            let site = if !symbols {
+                crate::refusal::MethodSite::InlineGeneric { struct_name }
+            } else {
+                crate::refusal::MethodSite::Inline {
+                    self_ty: match &m.site {
+                        Some(site) if !m.is_local_to(module_path) => &site.self_ty,
+                        _ => &bare,
+                    },
+                    struct_name,
+                }
+            };
+            let refusal = crate::refusal::method_refusal(site, m);
             let shape = crate::extract::method_return_shape(struct_name, &m.func, symbols);
             let returns_self = matches!(
                 &m.func.sig.output,
@@ -380,6 +389,7 @@ fn methods_of(
             );
             Method {
                 name: m.name(),
+                trait_path: m.trait_path(),
                 symbol: if symbols {
                     crate::codegen::method_symbol_of(stem, &m.name())
                 } else {
@@ -395,7 +405,7 @@ fn methods_of(
                 is_constructor: m.name() == "new" || returns_self,
                 is_classmethod: false,
                 vis: crate::attrs::visibility_string(&m.func.vis),
-                skip_reason: crate::codegen::method_skip_reason(m),
+                skip_reason: refusal.map(|r| r.skip_reason()).unwrap_or_default(),
                 python_name: String::new(),
                 accessor: String::new(),
                 attribute: m.attribute,

@@ -80,12 +80,12 @@ use syn::{
 };
 
 use crate::cfg::cfg_attrs;
-use crate::manifest::GenericWrapper;
+use crate::manifest::{GenericWrapper, Mode};
 use crate::model::{ImplHost, MethodModel, StructModel};
+use crate::refusal::Refusal;
 use crate::types::{
     extract_option_type, extract_result_type, field_has_accessors, generic_field_has_accessors,
-    is_non_ffi_type, is_self_type, is_str_ref_type, is_string_type, is_vec_type, last_ident,
-    unparen,
+    is_self_type, is_str_ref_type, is_string_type, is_vec_type, last_ident, unparen,
 };
 
 // ============================================================================
@@ -402,7 +402,7 @@ impl TraitReceiver {
     /// name hides the shape from a syntactic reading, and the qualified call
     /// has no receiver adjustment to make up for a wrong guess (PR #505
     /// review; classifying from the resolved type is #509).
-    fn of(receiver: Option<&syn::Receiver>) -> Result<Self, proc_macro2::Span> {
+    pub(crate) fn of(receiver: Option<&syn::Receiver>) -> Result<Self, proc_macro2::Span> {
         let Some(receiver) = receiver else {
             return Ok(TraitReceiver::None);
         };
@@ -1059,7 +1059,29 @@ fn guarded_body(
 /// The single `extern "C"` wrapper generator: every entry point of this module
 /// goes through it, so the string ABI, the `#[cfg]` propagation, the receiver
 /// handling and the panic boundary cannot diverge between flavours.
+///
+/// A signature the wrapper cannot express is refused (#482, #484) — decided
+/// by [`wrapper_tokens`], and asked for ahead of generation by
+/// [`crate::refusal`] so the manifest records it (#503). Every caller in
+/// this module asks first, so the refusal emitted here is reached only by a
+/// wrapper spelled from a manifest (`crate::wrap`) or an instantiation
+/// (`crate::specialize`).
 pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
+    let cfgs = spec.cfg_attrs.clone();
+    match wrapper_tokens(spec) {
+        Ok(tokens) => tokens,
+        Err(refusal) => refusal.compile_error(&cfgs),
+    }
+}
+
+/// The refusal [`generate_wrapper`] would emit for `spec`, if any: the
+/// wrapper-level half of [`crate::refusal`] (#503).
+fn wrapper_refusal(spec: WrapperSpec) -> Option<Refusal> {
+    wrapper_tokens(spec).err()
+}
+
+/// [`generate_wrapper`]'s body: the wrapper, or why it cannot be written.
+fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
     let WrapperSpec {
         symbol,
         cfg_attrs,
@@ -1101,10 +1123,11 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
             out_of_scope = out_of_scope.or(crate::environment::expand_self_in_type(host, ty));
         }
         if let Some(span) = out_of_scope {
-            return gated_error(
-                &cfg_attrs,
-                crate::environment::out_of_scope_error(span, host, &julia_name),
-            );
+            return Err(crate::environment::out_of_scope_error(
+                span,
+                host,
+                &julia_name,
+            ));
         }
     }
     let spelled_types = {
@@ -1115,10 +1138,11 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
         quote! { #environment #predicates #(#arg_types)* #(#returned)* }
     };
     if let Some((span, in_macro)) = crate::environment::leftover_self(spelled_types) {
-        return gated_error(
-            &cfg_attrs,
-            crate::environment::leftover_self_error(span, in_macro.as_deref(), &julia_name),
-        );
+        return Err(crate::environment::leftover_self_error(
+            span,
+            in_macro.as_deref(),
+            &julia_name,
+        ));
     }
     // An elided output lifetime takes the one Rust's elision rules pick on
     // the item's signature, spelled out: the wrapper's own inputs are raw
@@ -1135,18 +1159,16 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
         &julia_name,
     ) {
         crate::environment::ElidedReturn::Named => {}
-        crate::environment::ElidedReturn::Undecidable => return TokenStream2::new(),
-        crate::environment::ElidedReturn::Refused(error) => {
-            return gated_error(&cfg_attrs, error);
-        }
+        crate::environment::ElidedReturn::Undecidable => return Ok(TokenStream2::new()),
+        crate::environment::ElidedReturn::Refused(refusal) => return Err(refusal),
     }
-    if let Some(error) = crate::environment::lowered_lifetime_error(
+    if let Some(refusal) = crate::environment::lowered_lifetime_error(
         &environment,
         &args,
         &ret.passed_types(),
         &julia_name,
     ) {
-        return gated_error(&cfg_attrs, error);
+        return Err(refusal);
     }
 
     let taken: Vec<String> = args.iter().map(|(n, _)| n.to_string()).collect();
@@ -1437,7 +1459,7 @@ pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
         }
     };
     out.extend(wrapper);
-    out
+    Ok(out)
 }
 
 /// [`owned_string_helper`] with no `#[cfg]` attributes, for a generator that
@@ -1650,6 +1672,28 @@ fn free_function_wrapper(
     module_path: &[String],
     options: &FreeFnOptions,
 ) -> TokenStream2 {
+    generate_wrapper(free_function_spec(func, module_path, options))
+}
+
+/// What [`generate_wrapper`] refuses for the wrapper [`transform_function`]
+/// gives `func` (#503); see [`crate::refusal::function_refusal`].
+pub(crate) fn free_function_wrapper_refusal(
+    func: &ItemFn,
+    module_path: &[String],
+) -> Option<Refusal> {
+    wrapper_refusal(free_function_spec(
+        func,
+        module_path,
+        &FreeFnOptions::default(),
+    ))
+}
+
+/// The [`WrapperSpec`] of a free function.
+fn free_function_spec(
+    func: &ItemFn,
+    module_path: &[String],
+    options: &FreeFnOptions,
+) -> WrapperSpec {
     let name = func.sig.ident.clone();
     // Every generated name of the function hangs off its FFI name (#300).
     let stem = format_ident!("{}", symbol_stem(module_path, &name.to_string()));
@@ -1657,7 +1701,7 @@ fn free_function_wrapper(
     let cfgs = cfg_attrs(&func.attrs);
 
     let ret = free_fn_return(func, &stem, options);
-    generate_wrapper(WrapperSpec {
+    WrapperSpec {
         symbol,
         cfg_attrs: cfgs,
         receiver: None,
@@ -1668,7 +1712,7 @@ fn free_function_wrapper(
         target: CallTarget::Free(name.into()),
         call_suffix: TokenStream2::new(),
         panic_hook: options.panic_hook,
-    })
+    }
 }
 
 /// The [`WrapperPayload`] of one `Result` / `Option` component: a `String` /
@@ -1686,12 +1730,7 @@ fn payload_of(ty: &Type, helper: &Ident, free: &Ident, declare: bool) -> Wrapper
     }
 }
 
-/// Whether a `Result` / `Option` payload can be carried by the generated
-/// `#[repr(C)]` aggregate: anything the C ABI takes as written, plus `String` /
-/// `&str`, which are lowered to an owned buffer (#268).
-pub fn payload_is_representable(ty: &Type) -> bool {
-    is_string_type(ty) || is_str_ref_type(ty) || !is_non_ffi_type(ty)
-}
+pub use crate::refusal::payload_is_representable;
 
 /// Whether a method wrapper lowers this return type into `CResult_*` — i.e.
 /// it is a `Result` whose payloads the aggregate can carry. A `Result` with a
@@ -1762,46 +1801,26 @@ fn free_fn_return(func: &ItemFn, name: &Ident, options: &FreeFnOptions) -> Wrapp
     WrapperReturn::Plain((**ty).clone())
 }
 
-/// Refuse a `#[julia]` function that is an `unsafe fn`, gated by its `#[cfg]`
-/// (#491). Its `extern "C"` entry point would let Julia call it with none of
-/// the requirements its `unsafe` states upheld. [`transform_function`] refuses
-/// a concrete one; the inline expander asks here for a generic one too, which
-/// it registers for specialization rather than transforming — a specialized
-/// wrapper would otherwise call it from a safe body and fail with E0133 at the
-/// first `@rust` call.
-pub fn unsafe_function_error(func: &ItemFn) -> Option<TokenStream2> {
-    let unsafety = func.sig.unsafety.as_ref()?;
-    let span = syn::spanned::Spanned::span(unsafety);
-    // A bare `compile_error!`, as in [`inline_generic_method_error`].
-    Some(gated_error(
-        &cfg_attrs(&func.attrs),
-        quote::quote_spanned! {span=>
-            compile_error!("#[julia] cannot be applied to unsafe functions directly. The function will be made extern \"C\" which has its own safety semantics.");
-        },
-    ))
-}
-
 /// Transform a `#[julia]` function: the annotated item is kept as written (the
 /// attribute itself is already gone) and the `extern "C"` entry point is
 /// emitted next to it under `rustcall_<fn>` (#279).
+///
+/// The rules are the crate flavour's ([`crate::refusal::function_refusal`] with
+/// [`Mode::Crate`]); the `rust"""` expander calls this only for a function
+/// that is not generic, for which the two flavours' rules agree. A refused
+/// function is kept as written too, with the refusal's `compile_error!` beside
+/// it, gated by the item's `#[cfg]` (PR #470 review): inside a `#[julia]
+/// mod`, and for a `#[cfg]` written after `#[julia]`, the macro runs before
+/// rustc evaluates the predicate, so an ungated `compile_error!` broke builds
+/// where the item does not exist. Keeping the item means the one diagnostic is
+/// not followed by a cascade about a missing item.
 pub fn transform_function(
     func: ItemFn,
     module_path: &[String],
     panic_hook: PanicHook,
 ) -> TokenStream2 {
-    // Every refusal carries the item's `#[cfg]` (PR #470 review): inside a
-    // `#[julia] mod`, and for a `#[cfg]` written after `#[julia]`, the macro
-    // runs before rustc evaluates the predicate, so an ungated
-    // `compile_error!` broke builds where the item does not exist.
-    let cfgs = cfg_attrs(&func.attrs);
-    if let Some(error) = unsafe_function_error(&func) {
-        return error;
-    }
-    if let Some(error) = non_ffi_payload_error(&func) {
-        return gated_error(&cfgs, error);
-    }
-    if let Some(error) = generic_signature_error(&func.sig, "function") {
-        let error = gated_error(&cfgs, error);
+    if let Some(refusal) = crate::refusal::function_refusal(&func, module_path, Mode::Crate) {
+        let error = refusal.compile_error(&cfg_attrs(&func.attrs));
         return quote! { #error #func };
     }
 
@@ -1819,290 +1838,39 @@ pub fn transform_function(
     }
 }
 
-/// Refuse a generic `#[julia]` item in the crate flavour (#462).
-///
-/// An `extern "C"` entry point needs concrete types, and the proc macro sees one
-/// item and cannot know which instantiations Julia will call, so a type or
-/// const parameter used to produce a wrapper naming an unbound `T` and rustc
-/// failed inside generated code. Crate extraction already reports such an item
-/// as not exported; this makes the build say why, at the item. Lifetime
-/// parameters are not refused: `fn f<'a>(s: &'a str) -> &'a str` lowers to a
-/// wrapper that names no lifetime at all, and one a passed-through argument
-/// still names (`other: &'a Buf`) is declared on the wrapper (#477).
-///
-/// The inline flavour never reaches this: `rust"""` emits a generic function
-/// or struct unwrapped and monomorphizes it on demand through `specialize`.
-///
-/// The caller emits the error **and** the item as written, so the one
-/// diagnostic is not followed by a cascade about a missing item.
-fn generic_item_error(generics: &syn::Generics, what: &str, name: &Ident) -> Option<TokenStream2> {
-    let params = generic_param_list(generics);
-    if params.is_empty() {
-        return None;
-    }
-    let msg = format!(
-        "#[julia] {what} `{name}` is generic over {}: an `extern \"C\"` entry point needs \
-         concrete types, and #[julia] cannot know which instantiations Julia will call. \
-         Write a non-generic `#[julia]` item that uses it, or define it in a `rust\"\"\"` block, where \
-         RustCall monomorphizes generics on demand.",
-        params.join(", ")
-    );
-    Some(syn::Error::new_spanned(generics, msg).to_compile_error())
+/// Whether an inline method gets an `extern "C"` wrapper next to its struct —
+/// that is, whether [`crate::refusal::method_refusal`] lets it through (#503).
+fn inline_method_is_wrapped(site: crate::refusal::MethodSite<'_>, m: &MethodModel) -> bool {
+    crate::refusal::method_refusal(site, m).is_none()
 }
 
-/// The type and const parameters of `generics`, spelled for a diagnostic
-/// (`` `T` ``, `` `const N` ``). Lifetimes are left out: they never stop an item
-/// from getting an `extern "C"` entry point.
-fn generic_param_list(generics: &syn::Generics) -> Vec<String> {
-    generics
-        .params
-        .iter()
-        .filter_map(|p| match p {
-            syn::GenericParam::Type(t) => Some(format!("`{}`", t.ident)),
-            syn::GenericParam::Const(c) => Some(format!("`const {}`", c.ident)),
-            syn::GenericParam::Lifetime(_) => None,
-        })
-        .collect()
-}
-
-/// Whether a method of an inline struct is generic in its own right — over a
-/// type or a const parameter of the method, or through `impl Trait` — and so
-/// gets no wrapper (#471, #477). The expander leaves such a method out of the
-/// manifest, since there is no entry point for Julia to bind, and
-/// [`inline_generic_method_error`] says why at the method.
-///
-/// Only the method's own parameters count: a method of a generic struct that
-/// uses just the struct's parameters (`impl<T> W<T> { fn get(&self) -> T }`)
-/// is instantiated with the struct, and lifetimes never stop a wrapper.
-pub fn inline_method_is_generic(m: &MethodModel) -> bool {
-    crate::types::has_type_params(&m.func.sig.generics) || crate::types::has_impl_trait(&m.func.sig)
-}
-
-/// Refuse a method of an inline struct that is generic in its own right
-/// (#471, #477).
-///
-/// `rust"""` wraps every `pub fn` of a concrete struct's inherent impl in an
-/// `extern "C"` entry point with a fixed symbol, which needs concrete types; a
-/// method generic over `T` used to get a wrapper naming the unbound `T`, and
-/// rustc failed inside generated code. A generic struct's wrappers are
-/// instantiated per struct type, which binds the struct's parameters and no
-/// others, so a method parameter `U` of `impl<T> W<T> { fn f<U>(..) }` stayed
-/// unbound there in the same way. Monomorphizing either on demand would need a
-/// path that binds a parameter only the method has (a generic free function is
-/// instantiated per call, a generic struct per struct type), so the block is
-/// refused at the method, naming what works instead.
-///
-/// The caller gates the error by the method's effective `#[cfg]`, so it fires
-/// only where the method exists.
-fn inline_generic_method_error(
+/// What [`generate_wrapper`] refuses for the wrapper of the method `m` of the
+/// struct `struct_name`, spelled `self_ty` where the wrapper is emitted
+/// (#503); see [`crate::refusal::method_refusal`]. The symbol and the string
+/// buffers the wrapper would use decide nothing a refusal depends on.
+pub(crate) fn method_wrapper_refusal(
+    self_ty: &Type,
     struct_name: &Ident,
-    struct_is_generic: bool,
     m: &MethodModel,
-) -> Option<TokenStream2> {
-    if !inline_method_is_generic(m) {
-        return None;
-    }
-    let sig = &m.func.sig;
-    let method = &sig.ident;
-    let params = generic_param_list(&sig.generics);
-    let (what, span) = if params.is_empty() {
-        (
-            "uses `impl Trait` in its signature".to_string(),
-            syn::spanned::Spanned::span(sig),
-        )
-    } else {
-        (
-            format!("is generic over {}", params.join(", ")),
-            syn::spanned::Spanned::span(&sig.generics),
-        )
-    };
-    let msg = if struct_is_generic {
-        format!(
-            "`{struct_name}::{method}` {what}: a generic `#[julia]` struct in a `rust\"\"\"` \
-             block has its methods instantiated per struct type, which binds the struct's own \
-             type parameters and no parameter only the method has. Make it a generic free \
-             function, which RustCall instantiates for the argument types of each call, write \
-             one method per type Julia calls using only the struct's parameters (it may \
-             delegate to the generic one), or drop `pub` if Julia does not call it (#477)."
-        )
-    } else {
-        format!(
-            "`{struct_name}::{method}` {what}: every `pub fn` of a `#[julia]` struct in a \
-             `rust\"\"\"` block gets an `extern \"C\"` entry point, which needs concrete types, and \
-             RustCall monomorphizes on demand only generic free functions and generic structs. \
-             Make it a generic free function, which RustCall instantiates for the argument types \
-             of each call, write one non-generic method per type Julia calls (it may delegate to \
-             the generic one), or drop `pub` if Julia does not call it (#471)."
-        )
-    };
-    // A bare `compile_error!`, not `syn::Error::to_compile_error`: that spells
-    // it `::core::compile_error!`, which does not resolve in the edition-2015
-    // crate a `rust"""` block is compiled as (`rustc` with no `--edition`).
-    Some(quote::quote_spanned! {span=> compile_error!(#msg); })
-}
-
-/// Whether a method is an `unsafe fn` (#491). Its wrapper would call it from
-/// an `extern "C"` body that upholds none of the requirements its `unsafe`
-/// states, so it is refused at the method ([`unsafe_method_error`]) and
-/// reported with [`crate::manifest::skip_reason::UNSAFE_FN`].
-pub fn method_is_unsafe(m: &MethodModel) -> bool {
-    m.func.sig.unsafety.is_some()
-}
-
-/// Whether an inline method gets an `extern "C"` wrapper: one generic in its
-/// own right ([`inline_method_is_generic`]) or `unsafe` ([`method_is_unsafe`])
-/// is refused at the method instead.
-pub fn inline_method_is_wrapped(m: &MethodModel) -> bool {
-    !inline_method_is_generic(m) && !method_is_unsafe(m)
-}
-
-/// The manifest `skip_reason` of a method the codegen of either flavour
-/// wraps: [`crate::manifest::skip_reason::UNSAFE_FN`] for one it refuses as
-/// `unsafe` ([`unsafe_method_error`]), empty otherwise (#491).
-pub fn method_skip_reason(m: &MethodModel) -> String {
-    if method_is_unsafe(m) {
-        crate::manifest::skip_reason::UNSAFE_FN.to_string()
-    } else {
-        String::new()
-    }
-}
-
-/// Refuse an `unsafe fn` method of a `#[julia]` struct (#491), in either
-/// flavour. The wrapper would call it from a safe `extern "C"` body — which
-/// used to fail inside generated code with rustc's E0133 — and, were that call
-/// put in an `unsafe` block, would let Julia call it with none of the
-/// requirements its `unsafe` states upheld. A `#[julia] unsafe fn` is refused
-/// the same way ([`transform_function`]).
-///
-/// The caller gates the error by the method's effective `#[cfg]`.
-fn unsafe_method_error(struct_name: &Ident, m: &MethodModel) -> Option<TokenStream2> {
-    if !method_is_unsafe(m) {
-        return None;
-    }
-    let method = &m.func.sig.ident;
-    let msg = format!(
-        "`{struct_name}::{method}` is an `unsafe fn`: its `extern \"C\"` entry point would let \
-         Julia call it with none of the requirements its `unsafe` states upheld. Expose a safe \
-         method that upholds them and calls this one, and let Julia call that instead (#491)."
-    );
-    let span = syn::spanned::Spanned::span(&m.func.sig.unsafety);
-    // A bare `compile_error!`, as in [`inline_generic_method_error`].
-    Some(quote::quote_spanned! {span=> compile_error!(#msg); })
-}
-
-/// The refusal of a trait method whose typed receiver is not literal
-/// reference layers over `Self` ([`TraitReceiver::of`]): its wrapper calls
-/// `<Buf as Tr>::m(..)`, whose first argument must match the receiver exactly,
-/// and the written type does not say what that is. `None` for a method of an
-/// inherent block, which keeps method-call syntax.
-fn trait_receiver_error(struct_name: &Ident, m: &MethodModel) -> Option<TokenStream2> {
-    m.host.as_ref()?.trait_.as_ref()?;
-    let receiver = m.func.sig.receiver()?;
-    let method = &m.func.sig.ident;
-    let span = match TraitReceiver::of(Some(receiver)) {
-        Err(span) => span,
-        // `self: &mut Self` binds `self_obj` as `&Buf`: `MethodModel::is_mutable`
-        // reads only the `&mut self` shorthand (#509), so the call would not
-        // compile either.
-        Ok(_)
-            if receiver.reference.is_none()
-                && !m.is_mutable
-                && matches!(unparen(&receiver.ty), Type::Reference(r) if r.mutability.is_some()) =>
-        {
-            let span = syn::spanned::Spanned::span(&receiver.ty);
-            let msg = format!(
-                "`{struct_name}::{method}`: a `self: &mut Self` receiver is not yet wrapped \
-                 (#509). Write it as `&mut self`."
-            );
-            return Some(quote::quote_spanned! {span=> compile_error!(#msg); });
-        }
-        Ok(_) => return None,
-    };
-    let msg = format!(
-        "`{struct_name}::{method}`: the wrapper calls this trait method through the trait, \
-         which passes the receiver exactly as declared, and this receiver type does not show \
-         its shape. Write it as `self`, `&self`, `&mut self` or reference layers over `Self` \
-         (`self: &&Self`) — not a type alias, a smart pointer or the type's own name — or \
-         expose an inherent method that calls this one (#509)."
-    );
-    // A bare `compile_error!`, as in [`unsafe_method_error`].
-    Some(quote::quote_spanned! {span=> compile_error!(#msg); })
-}
-
-/// A refusal emitted in place of (or beside) an item, gated by that item's
-/// effective `#[cfg]` set so it fires only where the item exists.
-///
-/// The proc macro can run before rustc evaluates an item's predicates — for
-/// every item inside a `#[julia] mod`, and for a `#[cfg]` written after
-/// `#[julia]` — so an ungated `compile_error!` would break a build in which the
-/// item is configured away (PR #470 review). A macro-invocation item takes
-/// outer attributes like any other item, so the predicates go straight on it.
-fn gated_error(cfgs: &[Attribute], error: TokenStream2) -> TokenStream2 {
-    if cfgs.is_empty() {
-        return error;
-    }
-    quote! { #(#cfgs)* #error }
-}
-
-/// [`generic_item_error`] for a function or method signature, which may also be
-/// generic through `impl Trait` in an argument or its return type.
-fn generic_signature_error(sig: &syn::Signature, what: &str) -> Option<TokenStream2> {
-    if let Some(error) = generic_item_error(&sig.generics, what, &sig.ident) {
-        return Some(error);
-    }
-    if crate::types::has_impl_trait(sig) {
-        let msg = format!(
-            "#[julia] {what} `{}` uses `impl Trait` in its signature, which makes it generic: \
-             an `extern \"C\"` entry point needs concrete types. Name the concrete type instead.",
-            sig.ident
-        );
-        return Some(syn::Error::new_spanned(sig, msg).to_compile_error());
-    }
-    None
-}
-
-/// `Result` / `Option` payloads must survive the C ABI; refuse at compile time
-/// rather than emit a wrapper that cannot be called.
-fn non_ffi_payload_error(func: &ItemFn) -> Option<TokenStream2> {
-    let ReturnType::Type(_, ty) = &func.sig.output else {
+) -> Option<Refusal> {
+    let Type::Path(self_path) = unparen(self_ty) else {
         return None;
     };
-    let func_name = &func.sig.ident;
-    if let Some(r) = extract_result_type(ty) {
-        let ok_type = &r.ok_type;
-        let err_type = &r.err_type;
-        if !payload_is_representable(ok_type) {
-            return Some(quote! {
-                compile_error!(concat!(
-                    "#[julia] function `", stringify!(#func_name),
-                    "` returns Result with non-FFI-compatible Ok type `", stringify!(#ok_type),
-                    "`. Use a primitive or #[repr(C)] type instead."
-                ));
-            });
-        }
-        if !payload_is_representable(err_type) {
-            return Some(quote! {
-                compile_error!(concat!(
-                    "#[julia] function `", stringify!(#func_name),
-                    "` returns Result with non-FFI-compatible Err type `", stringify!(#err_type),
-                    "`. Use a primitive or #[repr(C)] type instead."
-                ));
-            });
-        }
-    }
-    if let Some(o) = extract_option_type(ty) {
-        let inner_type = &o.inner_type;
-        if !payload_is_representable(inner_type) {
-            return Some(quote! {
-                compile_error!(concat!(
-                    "#[julia] function `", stringify!(#func_name),
-                    "` returns Option with non-FFI-compatible type `", stringify!(#inner_type),
-                    "`. Use a primitive or #[repr(C)] type instead."
-                ));
-            });
-        }
-    }
-    None
+    let stem = struct_name.clone();
+    let owned_helper = format_ident!("{}_RustCallOwnedString", stem);
+    let owned_free = format_ident!("{}_free_rust_string", stem);
+    let borrowed_helper = format_ident!("{}_RustCallBorrowedString", stem);
+    wrapper_refusal(method_spec(
+        &self_path.path,
+        struct_name,
+        &stem,
+        m,
+        &owned_helper,
+        &owned_free,
+        &borrowed_helper,
+        true,
+        PanicHook::External,
+    ))
 }
 
 /// The wrapper of a function exported with the signature as written: `Result` /
@@ -2345,8 +2113,8 @@ fn struct_stem(module_path: &[String], struct_name: &Ident) -> Ident {
 
 /// Transform a `#[julia]` struct (crate flavour): `#[repr(C)]`, `pub`, free + accessors.
 pub fn transform_struct_crate(mut item_struct: ItemStruct, module_path: &[String]) -> TokenStream2 {
-    if let Some(error) = generic_item_error(&item_struct.generics, "struct", &item_struct.ident) {
-        let error = gated_error(&cfg_attrs(&item_struct.attrs), error);
+    if let Some(refusal) = crate::refusal::struct_refusal(&item_struct, Mode::Crate) {
+        let error = refusal.compile_error(&cfg_attrs(&item_struct.attrs));
         return quote! { #error #item_struct };
     }
     let repr_c: Attribute = syn::parse_quote!(#[repr(C)]);
@@ -2389,22 +2157,11 @@ pub fn impl_target_module_path(module_path: &[String], self_ty: &Type) -> Vec<St
 /// from `ops.rs`, `impl super::Gauge` from a child module, #315); the method
 /// symbols follow the struct the header names, [`impl_target_module_path`].
 pub fn transform_impl_crate(mut item_impl: ItemImpl, module_path: &[String]) -> TokenStream2 {
-    if last_ident(&item_impl.self_ty).is_none() {
-        return gated_error(
-            &cfg_attrs(&item_impl.attrs),
-            quote! {
-                compile_error!("#[julia] on impl block requires a simple type path");
-            },
-        );
-    }
-    // A generic block (`impl<T> Wrapper<T>`) has no concrete receiver type to
-    // wrap: refuse it at the header, and keep the block as written (#462).
-    if crate::types::has_type_params(&item_impl.generics) {
-        let name = last_ident(&item_impl.self_ty)
-            .cloned()
-            .expect("checked above");
-        let error = generic_item_error(&item_impl.generics, "impl block for", &name)
-            .map(|error| gated_error(&cfg_attrs(&item_impl.attrs), error));
+    // A header that is not a type path, or a generic block (`impl<T>
+    // Wrapper<T>`), which has no concrete receiver type to wrap: refuse it at
+    // the header, and keep the block as written (#462).
+    if let Some(refusal) = crate::refusal::impl_refusal(&item_impl) {
+        let error = refusal.compile_error(&cfg_attrs(&item_impl.attrs));
         for item in &mut item_impl.items {
             if let syn::ImplItem::Fn(method) = item {
                 method.attrs.retain(|attr| !attr.path().is_ident("julia"));
@@ -2433,14 +2190,6 @@ pub fn transform_impl_crate(mut item_impl: ItemImpl, module_path: &[String]) -> 
                 .any(|attr| attr.path().is_ident("julia"));
             if has_julia_attr {
                 method.attrs.retain(|attr| !attr.path().is_ident("julia"));
-                if let Some(error) = generic_signature_error(&method.sig, "method") {
-                    // Gated like the wrapper would have been: the block's
-                    // predicates and the method's own (PR #470 review).
-                    let mut cfgs = block_cfgs.clone();
-                    cfgs.extend(cfg_attrs(&method.attrs));
-                    ffi_wrappers.extend(gated_error(&cfgs, error));
-                    continue;
-                }
                 // The generator reads the method's `#[cfg]` set and puts it on
                 // every item it emits; the block's predicates join that set
                 // for the wrapper only, the method itself is left as written.
@@ -2472,17 +2221,11 @@ pub fn transform_impl_crate(mut item_impl: ItemImpl, module_path: &[String]) -> 
 /// A file module (`mod a;`) has no body to expand: the attribute is refused
 /// with a `compile_error!` naming the alternative (an inline module block).
 pub fn transform_module(item_mod: ItemMod, module_path: &[String]) -> TokenStream2 {
+    if let Some(refusal) = crate::refusal::module_refusal(&item_mod) {
+        return refusal.compile_error(&cfg_attrs(&item_mod.attrs));
+    }
     let Some((_, items)) = item_mod.content else {
-        return gated_error(
-            &cfg_attrs(&item_mod.attrs),
-            quote! {
-            compile_error!(
-                "#[julia] on a file module (`mod name;`) is not supported: attribute macros \
-                 cannot expand a non-inline module. Write the module inline \
-                 (`#[julia] pub mod name { ... }`) to give its items a module-qualified symbol."
-            );
-            },
-        );
+        return TokenStream2::new();
     };
     let mut path = module_path.to_vec();
     path.push(item_mod.ident.to_string());
@@ -2536,7 +2279,28 @@ fn expand_marked_item(item: Item, module_path: &[String]) -> TokenStream2 {
                 quote! { #m }
             }
         }
-        other => quote! { #other },
+        // Any other kind carrying `#[julia]` is refused here, as the
+        // item-level macro would refuse it (#503 review).
+        other => match crate::refusal::julia_item_refusal(&other) {
+            Some(refusal) => {
+                let error = refusal.compile_error(&cfg_attrs(&crate::refusal::item_attrs(&other)));
+                let kept = crate::refusal::without_julia_attr(other);
+                quote! { #error #kept }
+            }
+            None => quote! { #other },
+        },
+    }
+}
+
+/// `#[julia]` on an item that is none of a function, a struct, an impl block
+/// or an inline module: the item as written, with the refusal
+/// ([`crate::refusal::attribute_target_refusal`], the decision the scans take
+/// through [`crate::refusal::julia_item_refusal`]) before it.
+pub fn transform_unsupported_item(item: TokenStream2) -> TokenStream2 {
+    let error = crate::refusal::attribute_target_refusal(&item).compile_error(&[]);
+    quote! {
+        #error
+        #item
     }
 }
 
@@ -2598,12 +2362,9 @@ fn method_wrapper_in_block(
     // refuses a header the macro would read differently from the struct it
     // resolves to — a renamed import among them (#315).
     let Some(struct_name) = last_ident(self_ty) else {
-        return gated_error(
-            &cfg_attrs(&method.attrs),
-            quote! {
-                compile_error!("#[julia] on impl block requires a simple type path");
-            },
-        );
+        return crate::refusal::impl_header_refusal(self_ty)
+            .map(|refusal| refusal.compile_error(&cfg_attrs(&method.attrs)))
+            .unwrap_or_default();
     };
     method_wrapper_at_impl_site(
         self_ty,
@@ -2639,20 +2400,23 @@ pub fn method_wrapper_at_impl_site(
     panic_hook: PanicHook,
 ) -> TokenStream2 {
     let Type::Path(self_path) = unparen(self_ty) else {
-        return gated_error(
-            &cfg_attrs(&m.func.attrs),
-            quote! {
-                compile_error!("#[julia] on impl block requires a simple type path");
-            },
-        );
+        return crate::refusal::impl_header_refusal(self_ty)
+            .map(|refusal| refusal.compile_error(&cfg_attrs(&m.func.attrs)))
+            .unwrap_or_default();
     };
     // Both flavours reach Rust through here for a block's method: the
     // proc-macro's `#[julia] impl`, and an inline block beside another
-    // module's struct (#491).
-    if let Some(error) =
-        unsafe_method_error(struct_name, m).or_else(|| trait_receiver_error(struct_name, m))
-    {
-        return gated_error(&cfg_attrs(&m.func.attrs), error);
+    // module's struct (#491). The refusal is the one the manifest records
+    // (#503); the hook says which flavour's rules apply.
+    let site = match panic_hook {
+        PanicHook::Runtime => crate::refusal::MethodSite::Crate { self_ty },
+        _ => crate::refusal::MethodSite::Inline {
+            self_ty,
+            struct_name,
+        },
+    };
+    if let Some(refusal) = crate::refusal::method_refusal(site, m) {
+        return refusal.compile_error(&cfg_attrs(&m.func.attrs));
     }
     let stem = struct_stem(struct_module_path, struct_name);
     let owner = format_ident!("{}", method_string_owner(&stem.to_string(), &m.name()));
@@ -2696,9 +2460,6 @@ pub fn inline_foreign_method_wrapper(
         .func
         .attrs
         .splice(0..0, m.enclosing_cfg.iter().cloned());
-    if let Some(error) = inline_generic_method_error(struct_name, false, m) {
-        return gated_error(&cfg_attrs(&gated.func.attrs), error);
-    }
     method_wrapper_at_impl_site(
         self_ty,
         struct_name,
@@ -2827,9 +2588,15 @@ pub fn inline_struct_wrappers(
         .filter(|m| m.is_local_to(module_path))
         .collect();
 
-    // A refused generic (#471) or `unsafe` (#491) method gets no wrapper, so
-    // it makes no buffer exist either.
-    let wrapped = || local.iter().filter(|m| inline_method_is_wrapped(m));
+    // A refused method — generic (#471), `unsafe` (#491), or one whose wrapper
+    // cannot be written (#482, #484) — gets no wrapper, so it makes no buffer
+    // exist either (#503).
+    let self_ty: Type = syn::parse_quote!(#struct_name);
+    let site = crate::refusal::MethodSite::Inline {
+        self_ty: &self_ty,
+        struct_name,
+    };
+    let wrapped = || local.iter().filter(|m| inline_method_is_wrapped(site, m));
     let needs_owned = accessible.iter().any(|(_, ty)| is_string_type(ty))
         || wrapped()
             .any(|m| method_needs_owned_string(m) && !inline_method_is_ctor(struct_name, m));
@@ -2928,10 +2695,8 @@ pub fn inline_struct_wrappers(
             .func
             .attrs
             .splice(0..0, cfgs.iter().chain(m.enclosing_cfg.iter()).cloned());
-        if let Some(error) = inline_generic_method_error(struct_name, false, m)
-            .or_else(|| unsafe_method_error(struct_name, m))
-        {
-            out.extend(gated_error(&cfg_attrs(&gated.func.attrs), error));
+        if let Some(refusal) = crate::refusal::method_refusal(site, m) {
+            out.extend(refusal.compile_error(&cfg_attrs(&gated.func.attrs)));
             continue;
         }
         out.extend(inline_method_wrapper(
@@ -2990,8 +2755,8 @@ fn method_spec(
         Some(path) => CallTarget::TraitItem {
             ty: self_path.clone(),
             path,
-            // `trait_receiver_error` has refused every other shape before a
-            // spec is built.
+            // `refusal::trait_receiver_refusal` has refused every other shape
+            // before a spec is built.
             receiver: TraitReceiver::of(m.func.sig.receiver()).unwrap_or(TraitReceiver::Value),
         },
         None if m.is_static => CallTarget::Assoc {
@@ -3197,15 +2962,16 @@ pub fn inline_generic_method_refusals(model: &StructModel) -> TokenStream2 {
     let struct_name = &model.item.ident;
     let mut out = TokenStream2::new();
     for m in &model.methods {
-        let Some(error) = inline_generic_method_error(struct_name, true, m)
-            .or_else(|| unsafe_method_error(struct_name, m))
-        else {
+        let Some(refusal) = crate::refusal::method_refusal(
+            crate::refusal::MethodSite::InlineGeneric { struct_name },
+            m,
+        ) else {
             continue;
         };
         let mut cfgs = cfg_attrs(&model.item.attrs);
         cfgs.extend(m.enclosing_cfg.iter().cloned());
         cfgs.extend(cfg_attrs(&m.func.attrs));
-        out.extend(gated_error(&cfgs, error));
+        out.extend(refusal.compile_error(&cfgs));
     }
     out
 }
@@ -3244,7 +3010,12 @@ pub fn inline_generic_wrappers(model: &StructModel, module_path: &[String]) -> V
     // struct binds only the struct's parameters (#477). Nor does an `unsafe`
     // one (#491). The expander emits [`inline_generic_method_refusals`] for
     // them instead.
-    for m in model.methods.iter().filter(|m| inline_method_is_wrapped(m)) {
+    let site = crate::refusal::MethodSite::InlineGeneric { struct_name };
+    for m in model
+        .methods
+        .iter()
+        .filter(|m| inline_method_is_wrapped(site, m))
+    {
         let method_name = &m.func.sig.ident;
         let wrapper_name = format_ident!(
             "{}",

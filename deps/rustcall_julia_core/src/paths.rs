@@ -375,6 +375,13 @@ impl ImplHeader {
         if item.trait_.is_some() {
             return None;
         }
+        Self::of_any(item, module_path)
+    }
+
+    /// The header of any `impl`, a trait impl's included; `None` for a target
+    /// that is not a path type. A `#[julia]` trait impl is wrapped by the proc
+    /// macro, and its refused methods are reported (#503).
+    pub fn of_any(item: &syn::ItemImpl, module_path: &[String]) -> Option<Self> {
         let target = crate::types::last_ident(&item.self_ty)?.clone();
         Some(ImplHeader {
             target,

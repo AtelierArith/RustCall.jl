@@ -76,10 +76,19 @@ fn a_generic_method_is_refused_at_the_method() {
     assert!(source.contains("fn rustcall_Acc_add("), "{source}");
     assert!(source.contains("fn rustcall_Acc_new("), "{source}");
 
-    // The manifest describes what was emitted: no `echo` for Julia to bind.
+    // The manifest describes what was emitted: `echo` is kept with the
+    // refusal as its `skip_reason`, so Julia binds nothing for it and the
+    // boundary report names it (#503).
     let acc = &expanded.manifest.structs[0];
-    let names: Vec<&str> = acc.methods.iter().map(|m| m.name.as_str()).collect();
-    assert_eq!(names, ["new", "add"]);
+    let methods: Vec<(&str, &str)> = acc
+        .methods
+        .iter()
+        .map(|m| (m.name.as_str(), m.skip_reason.as_str()))
+        .collect();
+    assert_eq!(
+        methods,
+        [("new", ""), ("add", ""), ("echo", "generic_signature:T")]
+    );
 
     // rustc stops at the refusal, not inside a generated wrapper.
     let out = rustc("refused", &expanded.source);
@@ -118,12 +127,19 @@ fn const_and_impl_trait_are_refused_lifetimes_are_not() {
     assert!(!source.contains("fn rustcall_Buf_sized"), "{source}");
     assert!(!source.contains("fn rustcall_Buf_shown"), "{source}");
     assert!(source.contains("fn rustcall_Buf_pick("), "{source}");
-    let names: Vec<&str> = expanded.manifest.structs[0]
+    let methods: Vec<(&str, &str)> = expanded.manifest.structs[0]
         .methods
         .iter()
-        .map(|m| m.name.as_str())
+        .map(|m| (m.name.as_str(), m.skip_reason.as_str()))
         .collect();
-    assert_eq!(names, ["pick"]);
+    assert_eq!(
+        methods,
+        [
+            ("sized", "generic_signature:const N"),
+            ("shown", "impl_trait"),
+            ("pick", "")
+        ]
+    );
 
     let lifetimes_only = expand(
         r#"
@@ -165,12 +181,12 @@ fn a_generic_method_in_a_foreign_block_is_refused() {
     );
     assert!(!source.contains("fn rustcall_Gauge_scaled"), "{source}");
     assert!(source.contains("fn rustcall_Gauge_read("), "{source}");
-    let names: Vec<&str> = expanded.manifest.structs[0]
+    let methods: Vec<(&str, &str)> = expanded.manifest.structs[0]
         .methods
         .iter()
-        .map(|m| m.name.as_str())
+        .map(|m| (m.name.as_str(), m.skip_reason.as_str()))
         .collect();
-    assert_eq!(names, ["read"]);
+    assert_eq!(methods, [("scaled", "generic_signature:T"), ("read", "")]);
 }
 
 /// The refusal exists only where the method does: a generic method gated off

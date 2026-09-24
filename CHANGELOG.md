@@ -27,6 +27,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Rust crates (0.2.0 on crates.io) take a minor bump before they are next
   published; the bump itself is a separate change.
 
+### Changed
+- **Every refusal of the `#[julia]` codegen reaches the boundary report**
+  ([#503](https://github.com/AtelierArith/RustCall.jl/issues/503)). The
+  decision to refuse an item is made in one place,
+  `rustcall_julia_core::refusal`, and both the `compile_error!` and the
+  manifest are derived from it: a refused item stays in the manifest with a
+  `skip_reason` from `skip_reason::CODEGEN_REFUSALS` — `unsafe_fn` (#491) and
+  now `generic_signature`, `impl_trait`, `non_ffi_payload`,
+  `self_trait_path`, `unspellable_self`, `lowered_str_borrow`,
+  `lowered_str_lifetime`, and `trait_receiver` for the trait-impl receiver
+  refusal of #497 above (additive within manifest schema 0.7, as is
+  `Method.trait_path`, which keeps a refused trait-impl method apart from a
+  same-named inherent one). A generic
+  method of an inline struct, a crate's generic `#[julia]` function, struct or
+  impl block, a `Self` inside a macro, a lowered `&str` whose lifetime the
+  wrapper cannot honour, and the refused `#[julia]` methods of a crate trait
+  impl are no longer missing from the manifest or unmarked in it:
+  `boundary_report` / `inline_boundary_report` list each at its
+  `"entry point"`, Julia binds nothing for it, and it takes no name and claims
+  no symbol. A refused item is now kept as written next to its refusal (an
+  `unsafe fn` and a function with a non-FFI payload used to be dropped), and a
+  non-FFI payload's diagnostic points at the payload type. `#[julia]` on a
+  file module, on an impl header that is not a type path, or on any other item
+  kind (enum, `macro_rules!`, `use`, ... — decided exhaustively over `syn::Item`) now
+  fails the crate scan and a `rust"""` expansion with the refusal's own message. `rustcall_julia_core`'s
+  public API changed (`extract::function_entry` takes a `Mode`;
+  `codegen::unsafe_function_error`, `method_skip_reason`,
+  `inline_method_is_generic`, `inline_method_is_wrapped` and
+  `method_is_unsafe` are replaced by `refusal::*`), so the next publish of the
+  Rust crates is a minor bump.
+
 ## [0.7.0] - 2026-09-24
 
 ### Added

@@ -153,7 +153,13 @@ use serde::{Deserialize, Serialize};
 ///   [`skip_reason::UNSAFE_FN`], set on a `#[julia]` function or method that
 ///   is an `unsafe fn`. Codegen refused such an item before the value
 ///   existed and still does; a consumer that ignores the reason emits a
-///   binding for an item whose build fails, as before.
+///   binding for an item whose build fails, as before. Additive within 0.7
+///   (#503): every item the codegen refuses stays in the manifest with a
+///   [`skip_reason`] from [`skip_reason::CODEGEN_REFUSALS`] — a generic or
+///   `impl Trait` signature the flavour cannot wrap, a `Result` / `Option`
+///   payload that cannot cross the C ABI, a `Self` the wrapper cannot spell,
+///   a lowered string whose lifetime the wrapper cannot honour — decided by
+///   [`crate::refusal`], the one place the `compile_error!` comes from too.
 pub const SCHEMA_VERSION: &str = "0.7";
 
 #[cfg(test)]
@@ -244,6 +250,61 @@ pub mod skip_reason {
     /// the reason lets the Julia generators name that refusal before anything
     /// is built.
     pub const UNSAFE_FN: &str = "unsafe_fn";
+    /// A `#[julia]` item generic over type or const parameters the flavour
+    /// cannot bind (#503): any generic item of a crate (the proc macro sees
+    /// one item and cannot know the instantiations), a const-generic
+    /// function of a `rust"""` block, or a method generic in its own right.
+    /// The parameters follow the colon (`generic_signature:T, const N`).
+    pub const GENERIC_SIGNATURE: &str = "generic_signature";
+    /// A `#[julia]` function or method with `impl Trait` in its signature,
+    /// which makes it generic (#503).
+    pub const IMPL_TRAIT: &str = "impl_trait";
+    /// A `#[julia]` function whose `Result` / `Option` payload cannot cross
+    /// the C ABI (#503). The payload type follows the colon.
+    pub const NON_FFI_PAYLOAD: &str = "non_ffi_payload";
+    /// A method whose signature names a trait's `Self::X` in a trait impl
+    /// whose trait the header names by a path the wrapper may not have in
+    /// scope (#482, #503).
+    pub const SELF_TRAIT_PATH: &str = "self_trait_path";
+    /// A method whose signature has a `Self` the wrapper, a free function,
+    /// cannot spell — inside a macro invocation, whose name follows the
+    /// colon (#482, #503).
+    pub const UNSPELLABLE_SELF: &str = "unspellable_self";
+    /// An item whose returned reference borrows, by lifetime elision, a
+    /// `&str` argument that arrives as a pointer and a length and is rebuilt
+    /// for the call (#484, #503). The argument follows the colon.
+    pub const LOWERED_STR_BORROW: &str = "lowered_str_borrow";
+    /// An item one of whose lowered `&'a str` arguments names a lifetime the
+    /// call cannot end inside the wrapper (#482, #503). The argument follows
+    /// the colon.
+    pub const LOWERED_STR_LIFETIME: &str = "lowered_str_lifetime";
+    /// A trait-impl method whose typed receiver the wrapper cannot read — a
+    /// type alias, a smart pointer, the type's own name, or `self: &mut Self`
+    /// (#497, #509). Its wrapper calls `<S as Trait>::m(..)`, which passes the
+    /// receiver exactly as declared. The receiver type follows the colon.
+    pub const TRAIT_RECEIVER: &str = "trait_receiver";
+
+    /// Every reason the `#[julia]` codegen itself refuses an item for, with a
+    /// `compile_error!` at the item ([`crate::refusal`], #503). An item
+    /// carrying one of them gets no wrapper and claims no symbol; Julia binds
+    /// nothing for it and the boundary report lists it.
+    pub const CODEGEN_REFUSALS: &[&str] = &[
+        UNSAFE_FN,
+        GENERIC_SIGNATURE,
+        IMPL_TRAIT,
+        NON_FFI_PAYLOAD,
+        SELF_TRAIT_PATH,
+        UNSPELLABLE_SELF,
+        LOWERED_STR_BORROW,
+        LOWERED_STR_LIFETIME,
+        TRAIT_RECEIVER,
+    ];
+
+    /// Whether `reason` is one of [`CODEGEN_REFUSALS`], its detail aside.
+    pub fn is_codegen_refusal(reason: &str) -> bool {
+        let kind = reason.split(':').next().unwrap_or("");
+        CODEGEN_REFUSALS.contains(&kind)
+    }
 
     /// `"<kind>:<detail>"`, e.g. `"pyo3_type:Python<'_>"`.
     pub fn detailed(kind: &str, detail: &str) -> String {
@@ -726,6 +787,15 @@ pub struct Method {
     /// its flavour's derivation. Additive within schema 7.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub string_owner: String,
+    /// The trait of the impl block the method was written in, as the header
+    /// spells it (`tr::Limits`); empty — and then omitted — for an inherent
+    /// method. A method is identified by `(trait_path, name)`: a refused
+    /// `#[julia]` method of a trait impl is recorded on its struct (#503) and
+    /// must not be merged with an inherent method, or another trait's, of the
+    /// same name. Additive within schema 0.7. Describing a trait impl's
+    /// wrapped methods is #506.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub trait_path: String,
     /// How each `Result` / `Option` payload travels: `""` as written,
     /// `"string"` for an owned `<owner>_RustCallOwnedString` buffer released
     /// through `<owner>_free_rust_string` (schema 6, #268), the owner being

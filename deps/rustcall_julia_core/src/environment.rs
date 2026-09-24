@@ -37,11 +37,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use proc_macro2::{Span, TokenStream as TokenStream2, TokenTree};
-use quote::{quote, quote_spanned};
+use quote::quote;
 use syn::visit_mut::VisitMut;
 use syn::{Ident, Type};
 
+use crate::manifest::skip_reason;
 use crate::model::ImplHost;
+use crate::refusal::Refusal;
 use crate::types::{is_str_ref_type, is_string_type};
 
 /// The lifetime names (`a` for `'a`) spelled anywhere in `tokens`, `for<'b>`
@@ -313,7 +315,7 @@ pub(crate) fn expand_self(host: &ImplHost, generics: &mut syn::Generics) -> Opti
 /// #497), which resolves wherever the header's paths do; a constant cannot be,
 /// because `<Buf as tr::Far>::X` would bypass an inherent `X` that `Self::X`
 /// reaches first. So this refusal stays.
-pub(crate) fn out_of_scope_error(span: Span, host: &ImplHost, julia_name: &str) -> TokenStream2 {
+pub(crate) fn out_of_scope_error(span: Span, host: &ImplHost, julia_name: &str) -> Refusal {
     let trait_path = host.trait_.as_ref().map(readable_path).unwrap_or_default();
     let self_ty = &host.self_ty;
     let self_ty = readable(quote! { #self_ty });
@@ -325,7 +327,7 @@ pub(crate) fn out_of_scope_error(span: Span, host: &ImplHost, julia_name: &str) 
          `{self_ty}::…` for an inherent one, or import the trait and name it by its bare \
          name in the impl header (#482)."
     );
-    quote_spanned! {span=> compile_error!(#msg); }
+    Refusal::new(skip_reason::SELF_TRAIT_PATH, trait_path, span, msg)
 }
 
 fn readable_path(path: &syn::Path) -> String {
@@ -370,13 +372,8 @@ pub(crate) fn leftover_self(tokens: TokenStream2) -> Option<(Span, Option<String
 }
 
 /// The refusal of a `Self` [`expand_self`] could not spell, saying which case
-/// it is. A bare `compile_error!`, which resolves in the edition-2015 crate a
-/// `rust"""` block is compiled as.
-pub(crate) fn leftover_self_error(
-    span: Span,
-    in_macro: Option<&str>,
-    julia_name: &str,
-) -> TokenStream2 {
+/// it is.
+pub(crate) fn leftover_self_error(span: Span, in_macro: Option<&str>, julia_name: &str) -> Refusal {
     let msg = match in_macro {
         Some(name) => format!(
             "`{julia_name}`: this `Self` is inside an invocation of `{name}`, whose tokens are \
@@ -390,7 +387,12 @@ pub(crate) fn leftover_self_error(
              type instead of `Self` here (#482)."
         ),
     };
-    quote_spanned! {span=> compile_error!(#msg); }
+    Refusal::new(
+        skip_reason::UNSPELLABLE_SELF,
+        in_macro.unwrap_or_default(),
+        span,
+        msg,
+    )
 }
 
 /// `environment` without the lifetime parameters that `signature` (the
@@ -493,7 +495,7 @@ pub(crate) fn lowered_lifetime_error(
     args: &[(Ident, Type)],
     returned: &[TokenStream2],
     julia_name: &str,
-) -> Option<TokenStream2> {
+) -> Option<Refusal> {
     let params: BTreeSet<String> = environment
         .lifetimes()
         .map(|lp| lp.lifetime.ident.to_string())
@@ -621,8 +623,12 @@ pub(crate) fn lowered_lifetime_error(
                          or relate `'{start}` to nothing that outlives the call (#482)."
                     )
                 };
-                let span = lifetime.ident.span();
-                return Some(quote_spanned! {span=> compile_error!(#msg); });
+                return Some(Refusal::new(
+                    skip_reason::LOWERED_STR_LIFETIME,
+                    arg.to_string(),
+                    lifetime.ident.span(),
+                    msg,
+                ));
             }
             for next in outlives.get(&name).into_iter().flatten() {
                 let mut via = via.clone();
@@ -753,8 +759,8 @@ pub(crate) enum ElidedReturn {
     /// the user's signature, where rustc reports it; a wrapper would only
     /// repeat the error inside generated code, so none is emitted.
     Undecidable,
-    /// Refused, with this bare `compile_error!`.
-    Refused(TokenStream2),
+    /// Refused.
+    Refused(Refusal),
 }
 
 /// Name the output lifetimes the item's return type leaves to elision (#484).
@@ -836,10 +842,12 @@ pub(crate) fn name_elided_return(
                              or give the returned reference a lifetime that does not come from \
                              `{arg}` (#484)."
                         );
-                        let span = *span;
-                        return ElidedReturn::Refused(
-                            quote_spanned! {span=> compile_error!(#msg); },
-                        );
+                        return ElidedReturn::Refused(Refusal::new(
+                            skip_reason::LOWERED_STR_BORROW,
+                            arg.to_string(),
+                            *span,
+                            msg,
+                        ));
                     }
                     name_elided_lifetimes(ty, &fresh);
                     declare(environment, &fresh);

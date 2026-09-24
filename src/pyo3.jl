@@ -50,6 +50,31 @@ const PYO3_SKIP_REASONS = Base.ImmutableDict(Base.ImmutableDict{String, String}(
                    "with none of the requirements its `unsafe` states upheld, so `#[julia]` " *
                    "refuses it; expose a safe function or method that upholds them and " *
                    "calls this one (#491)",
+    # The other refusals of the Rust codegen (#503), all in
+    # `RUST_CODEGEN_REFUSALS`.
+    "generic_signature" => "generic over parameters no wrapper can bind: `#[julia]` in a crate " *
+                           "cannot know which instantiations Julia calls, and neither a " *
+                           "`rust\"\"\"` struct's instantiation nor a fixed entry point binds " *
+                           "a method's own parameters, and a const generic is never " *
+                           "instantiated; write a non-generic item that calls it (#462, #471, #477)",
+    "impl_trait" => "`impl Trait` in its signature makes it generic, and an `extern \"C\"` " *
+                    "entry point needs concrete types; name the concrete type (#462, #471)",
+    "non_ffi_payload" => "a `Result` / `Option` payload that cannot cross the C ABI; use a " *
+                         "primitive, `String`/`&str` or `#[repr(C)]` type",
+    "self_trait_path" => "an unqualified `Self::…` in a trait impl whose trait the header names " *
+                         "by a path, which the wrapper may not have in scope; write " *
+                         "`<Self as Trait>::…` (#482)",
+    "unspellable_self" => "a `Self` the wrapper, a free function, cannot spell as the impl's " *
+                          "type (inside a macro invocation); write the type (#482)",
+    "lowered_str_borrow" => "its returned reference borrows a `&str` argument, which arrives " *
+                            "as a pointer and a length and lives only for the call; return an " *
+                            "owned value (#484)",
+    "lowered_str_lifetime" => "a `&str` argument whose lifetime must outlive the call, while " *
+                              "the string is rebuilt for the call only; take `String` (#482)",
+    "trait_receiver" => "a trait-impl method whose receiver type does not show its shape (a " *
+                        "type alias, a smart pointer, the type's own name, or `self: &mut Self`); " *
+                        "its wrapper calls it through the trait, which passes the receiver " *
+                        "exactly as declared; write `self`, `&self` or `&mut self` (#497, #509)",
 )
 
 """

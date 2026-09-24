@@ -386,8 +386,14 @@ Rust names it, module-qualified below the crate root — `f`, `a::f`,
 `a::S::method`, `S::field`.
 """
 _boundary_label(sig::RustFunctionSignature) = qualified_name(sig.module_path, sig.name)
+_boundary_label(info::RustStructInfo) = qualified_name(info.module_path, info.name)
 _boundary_label(info::RustStructInfo, member::AbstractString) =
     string(qualified_name(info.module_path, info.name), "::", member)
+# A method: `S::m`, or `<S as tr::Trait>::m` for a trait impl's, so a refused
+# trait method and an inherent method of the same name are two items (#503).
+_boundary_label(info::RustStructInfo, m::RustMethod) =
+    isempty(m.trait_path) ? _boundary_label(info, m.name) :
+    string("<", qualified_name(info.module_path, info.name), " as ", m.trait_path, ">::", m.name)
 
 """
     _ffi_function_return(sig) -> FFIContract
@@ -544,6 +550,16 @@ bound.
 """
 _binds_julia_wrapper(sig::RustFunctionSignature) =
     !sig.is_generic && !_rust_refuses(sig.skip_reason)
+
+"""
+    _binds_julia_struct(info) -> Bool
+
+Whether a struct gets a Julia type, and so a name in the generated module: not
+one the Rust codegen refuses (a generic `#[julia]` struct of a crate, #462,
+#503). The struct emitters report such a struct through `_rust_refused_item!`,
+and the layout checks skip it through this predicate.
+"""
+_binds_julia_struct(info::RustStructInfo) = !_rust_refuses(info.skip_reason)
 
 """
     _function_skipped!(sig) -> Bool
