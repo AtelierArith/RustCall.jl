@@ -218,12 +218,16 @@ pub fn method_string_owner(struct_stem: &str, method: &str) -> String {
 }
 
 /// The field accessors of a struct with FFI name `struct_stem`:
-/// `<stem>_get_<field>` and `<stem>_set_<field>`.
+/// `<stem>_get_<field>` and `<stem>_set_<field>`. A raw field name (`r#let`)
+/// loses its `r#`, as the accessor the proc macro exports does
+/// (`format_ident!` unraws an identifier argument, #514).
 pub fn field_getter_symbol(struct_stem: &str, field: &str) -> String {
+    let field = field.strip_prefix("r#").unwrap_or(field);
     format!("{struct_stem}_get_{field}")
 }
 
 pub fn field_setter_symbol(struct_stem: &str, field: &str) -> String {
+    let field = field.strip_prefix("r#").unwrap_or(field);
     format!("{struct_stem}_set_{field}")
 }
 
@@ -1814,7 +1818,8 @@ pub(crate) fn method_wrapper_refusal(
     let Type::Path(self_path) = unparen(self_ty) else {
         return None;
     };
-    let stem = struct_name.clone();
+    // A raw struct name (`r#for`) is no part of a symbol (#514).
+    let stem = struct_stem(&[], struct_name);
     let owned_helper = format_ident!("{}_RustCallOwnedString", stem);
     let owned_free = format_ident!("{}_free_rust_string", stem);
     let borrowed_helper = format_ident!("{}_RustCallBorrowedString", stem);
