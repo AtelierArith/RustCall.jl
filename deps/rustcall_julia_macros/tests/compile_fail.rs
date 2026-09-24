@@ -15,7 +15,8 @@ fn ui_tests() {
     t.compile_fail("tests/ui/elided_return.rs");
     // #491: an `unsafe fn` method is refused at the method.
     t.compile_fail("tests/ui/unsafe_method.rs");
-    // PR #505 review: a trait method's typed receiver whose shape is not
-    // literal reference layers over `Self` is refused at the receiver.
-    t.compile_fail("tests/ui/trait_receiver.rs");
+    // #509 (PR #505 review): a typed receiver whose shape is not literal
+    // reference layers over the type is refused at the receiver, for an
+    // inherent and a trait impl's method alike.
+    t.compile_fail("tests/ui/receiver_type.rs");
 }

@@ -1260,7 +1260,11 @@ const RUST_CODEGEN_REFUSALS = Base.ImmutableDict(Base.ImmutableDict{String, Stri
     "unspellable_self" => "unspellable `Self` in",   # #482
     "lowered_str_borrow" => "borrowed `&str` return of", # #484
     "lowered_str_lifetime" => "`&str` lifetime of",  # #482
-    "trait_receiver" => "trait receiver of",         # #497, #509
+    "receiver_type" => "receiver type of",           # #497, #509
+    # v0.7.1's name for `receiver_type` (trait impls only): no longer emitted,
+    # kept so a manifest of that extractor still reads as refused (schema 0.7
+    # is additive, PR #511 review).
+    "trait_receiver" => "trait receiver of",         # #497
 )
 
 """

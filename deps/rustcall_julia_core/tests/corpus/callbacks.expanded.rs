@@ -584,7 +584,7 @@ pub extern "C" fn rustcall_Acc_new(total: i64) -> *mut Acc {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
-            let obj = Acc::new(total);
+            let obj = <Acc>::new(total);
             Box::into_raw(Box::new(obj))
         }),
     ) {
@@ -664,7 +664,7 @@ pub extern "C" fn rustcall_Acc_fold(
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
-            ::std::mem::MaybeUninit::new(self_obj.fold(f))
+            ::std::mem::MaybeUninit::new(<Acc>::fold(self_obj, f))
         }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,

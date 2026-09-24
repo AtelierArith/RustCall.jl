@@ -94,8 +94,8 @@ fn inline_methods_get_payload_aggregates() {
     }
 
     // The inner call is preserved: the wrapper calls the method the user wrote.
-    assert!(src.contains("self_obj.checked_div(d)"), "{src}");
-    assert!(src.contains("self_obj.find(k)"), "{src}");
+    assert!(src.contains("<Div>::checked_div(self_obj, d)"), "{src}");
+    assert!(src.contains("<Div>::find(self_obj, k)"), "{src}");
 
     // A plain method is untouched.
     assert!(

@@ -351,6 +351,27 @@ than as its outermost reference (`&'a mut &'a Buf`), or a type predicate over
 it (`where &'c str: Tr`) — is refused at that lifetime with a message naming
 the method; take `String` instead.
 
+### Receivers
+
+The wrapper receives the object as a pointer and calls the method by its path,
+`<Buf>::m(..)` (`<Buf as tr::Tr>::m(..)` for a method of a trait impl), which
+passes the receiver exactly as it is declared (#509). A receiver is accepted
+when it is written as reference layers over `Self` or over the type as the
+impl header spells it:
+
+| Receiver | Wrapper takes | Julia object |
+| --- | --- | --- |
+| `&self`, `self: &Self`, `self: &Buf`, `self: &&Self` | `*const Buf` | read |
+| `&mut self`, `self: &mut Self`, `self: &mut Buf`, `self: &mut &mut Self` | `*mut Buf` | changed in place |
+| `self`, `mut self`, `self: Self` | `*const Buf` | read (the method gets a copy; the type must be `Copy`) |
+
+A receiver whose type the syntax can't resolve is refused at the receiver with
+a `compile_error!`, and the boundary report lists it as `receiver_type`. That
+covers a type alias (`self: Ref<'_, Self>`), a smart pointer (`Box<Self>`,
+`Rc<Self>`, `Arc<Self>`, `Pin<&mut Self>`), and the type spelled differently
+from the header (`self: &crate::Buf` in `impl Buf`). To expose such a method,
+add a method with an accepted receiver that calls it.
+
 ### Returned references
 
 A method or function may return a reference with an elided lifetime

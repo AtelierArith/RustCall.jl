@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A method's receiver is read in one place, for inherent and trait methods
+  alike** ([#509](https://github.com/AtelierArith/RustCall.jl/issues/509)).
+  `self: &mut Self` (and `self: &mut Buf`, `self: &mut &mut Self`) used to be
+  bound as `&Buf`, because only the `&mut self` shorthand was read as
+  mutable, so the wrapper failed to compile inside generated code (a trait
+  impl's was refused). `rustcall_julia_core::receiver::Receiver` now reads
+  every receiver as reference layers over `Self` or the impl header's own
+  spelling of the type, and the wrapper's `*const` / `*mut` pointer, its
+  binding, its call and the manifest's `is_mutable` all come from it, in both
+  flavours and in a generic struct's wrappers. Every method is now called by
+  path — `<Buf>::m(self_obj, ..)` for an inherent method, as
+  `<Buf as tr::Far>::m(..)` already was for a trait impl's (#497) — so the
+  call no longer depends on method-call autoref. A receiver the syntax cannot
+  resolve — a type alias, `Box<Self>`, `Rc<Self>`, `Arc<Self>`,
+  `Pin<&mut Self>`, the type spelled otherwise than the header — is refused at
+  the receiver for an **inherent** method too, in both flavours (it failed
+  inside generated code before, except an alias of `&Self`, which happened to
+  compile), and the refusal kind is now `receiver_type` (was
+  `trait_receiver`, trait impls only; a v0.7.1 manifest carrying
+  `trait_receiver` is still read as refused). `mut self` (a copy) is no longer
+  reported as `is_mutable`. Exported symbols are unchanged. A PyO3 method with
+  a receiver other than `&self` / `&mut self` is skipped as `receiver_type`,
+  since a wrapper spelled from the manifest can express only those.
+  `rustcall_julia_core`'s public API changed (`MethodModel`'s `is_static` /
+  `is_mutable` fields are methods, `skip_reason::TRAIT_RECEIVER` is
+  `RECEIVER_TYPE`), so the next publish of the Rust crates is a minor bump,
+  to 0.4.0.
+
 ## [0.7.1] - 2026-09-24
 
 ### Changed

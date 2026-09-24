@@ -17,14 +17,14 @@ where
     T: Clone,
 {
     let self_obj = unsafe { &*ptr };
-    self_obj.first()
+    <Pair<T>>::first(self_obj)
 }
 pub fn Pair_inline_only<T>(ptr: *const Pair<T>) -> T
 where
     T: Clone,
 {
     let self_obj = unsafe { &*ptr };
-    self_obj.inline_only()
+    <Pair<T>>::inline_only(self_obj)
 }
 pub fn Pair_get_left<T>(ptr: *const Pair<T>) -> T
 where

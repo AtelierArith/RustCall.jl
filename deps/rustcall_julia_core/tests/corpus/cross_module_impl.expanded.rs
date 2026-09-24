@@ -292,7 +292,7 @@ pub extern "C" fn rustcall_Gauge_new(value: i32) -> *mut Gauge {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
-            let obj = Gauge::new(value);
+            let obj = <Gauge>::new(value);
             Box::into_raw(Box::new(obj))
         }),
     ) {
@@ -386,7 +386,7 @@ pub mod ops {
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| {
                 let self_obj = unsafe { &*ptr };
-                ::std::mem::MaybeUninit::new(self_obj.read())
+                ::std::mem::MaybeUninit::new(<super::Gauge>::read(self_obj))
             }),
         ) {
             ::std::result::Result::Ok(rustcall_value) => rustcall_value,
@@ -462,7 +462,7 @@ pub mod ops {
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| {
                 let self_obj = unsafe { &mut *ptr };
-                self_obj.bump()
+                <super::Gauge>::bump(self_obj)
             }),
         ) {
             ::std::result::Result::Ok(_) => {}
@@ -570,7 +570,7 @@ pub mod more {
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| {
                 let self_obj = unsafe { &*ptr };
-                let rustcall_value = self_obj.label();
+                let rustcall_value = <crate::Gauge>::label(self_obj);
                 let mut rustcall_bytes = ToString::to_string(&rustcall_value)
                     .into_bytes();
                 let rustcall_ret = Gauge_label_RustCallOwnedString {
@@ -664,7 +664,7 @@ pub mod more {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| {
-                let obj = crate::Gauge::scaled(value, factor);
+                let obj = <crate::Gauge>::scaled(value, factor);
                 Box::into_raw(Box::new(obj))
             }),
         ) {
@@ -839,7 +839,7 @@ pub mod plain {
             ::std::panic::AssertUnwindSafe(|| {
                 let self_obj = unsafe { &*ptr };
                 CResult_Gauge_halved::new(
-                    match self_obj.halved() {
+                    match <Gauge>::halved(self_obj) {
                         ::std::result::Result::Ok(rustcall_ok) => {
                             ::std::result::Result::Ok(rustcall_ok)
                         }
@@ -1168,7 +1168,7 @@ pub mod a {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| {
-                let obj = C::new(v);
+                let obj = <C>::new(v);
                 Box::into_raw(Box::new(obj))
             }),
         ) {
@@ -1259,7 +1259,7 @@ pub mod b {
         match ::std::panic::catch_unwind(
             ::std::panic::AssertUnwindSafe(|| {
                 let self_obj = unsafe { &*ptr };
-                ::std::mem::MaybeUninit::new(self_obj.get())
+                ::std::mem::MaybeUninit::new(<crate::a::C>::get(self_obj))
             }),
         ) {
             ::std::result::Result::Ok(rustcall_value) => rustcall_value,

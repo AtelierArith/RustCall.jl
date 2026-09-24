@@ -1076,7 +1076,7 @@ pub extern "C" fn rustcall_Greeter_new(count: u32) -> *mut Greeter {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
-            let obj = Greeter::new(count);
+            let obj = <Greeter>::new(count);
             Box::into_raw(Box::new(obj))
         }),
     ) {
@@ -1162,7 +1162,7 @@ pub extern "C" fn rustcall_Greeter_shout(
             let suffix_cow = String::from_utf8_lossy(suffix_bytes);
             let suffix: &str = &suffix_cow;
             let self_obj = unsafe { &*ptr };
-            let rustcall_value = self_obj.shout(suffix);
+            let rustcall_value = <Greeter>::shout(self_obj, suffix);
             let mut rustcall_bytes = ToString::to_string(&rustcall_value).into_bytes();
             let rustcall_ret = Greeter_RustCallOwnedString {
                 ptr: rustcall_bytes.as_mut_ptr(),
@@ -1252,7 +1252,7 @@ pub extern "C" fn rustcall_Greeter_label(
     match ::std::panic::catch_unwind(
         ::std::panic::AssertUnwindSafe(|| {
             let self_obj = unsafe { &*ptr };
-            let rustcall_value = self_obj.label();
+            let rustcall_value = <Greeter>::label(self_obj);
             Greeter_RustCallBorrowedString {
                 ptr: rustcall_value.as_ptr(),
                 len: rustcall_value.len(),
@@ -1343,7 +1343,7 @@ pub extern "C" fn rustcall_Greeter_take(
                 String::from_utf8_lossy(slice).into_owned()
             };
             let self_obj = unsafe { &mut *ptr };
-            ::std::mem::MaybeUninit::new(self_obj.take(s))
+            ::std::mem::MaybeUninit::new(<Greeter>::take(self_obj, s))
         }),
     ) {
         ::std::result::Result::Ok(rustcall_value) => rustcall_value,

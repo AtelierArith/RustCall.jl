@@ -218,7 +218,7 @@ where
     T: Clone,
 {
     let self_obj = unsafe { &*ptr };
-    self_obj.first()
+    <Pair<T>>::first(self_obj)
 }
 """
 generic_wrapper_name = "Pair_first"
@@ -251,7 +251,7 @@ where
     T: Clone,
 {
     let self_obj = unsafe { &*ptr };
-    self_obj.inline_only()
+    <Pair<T>>::inline_only(self_obj)
 }
 """
 generic_wrapper_name = "Pair_inline_only"
@@ -277,7 +277,7 @@ where
     T: Clone,
 {
     let self_obj = unsafe { &*ptr };
-    self_obj.first()
+    <Pair<T>>::first(self_obj)
 }
 """
 type_params = ["T"]
@@ -290,7 +290,7 @@ where
     T: Clone,
 {
     let self_obj = unsafe { &*ptr };
-    self_obj.inline_only()
+    <Pair<T>>::inline_only(self_obj)
 }
 """
 type_params = ["T"]

@@ -2,7 +2,8 @@
 //! `<Buf as tr::Far>::m(self_obj)`, spelled as the impl header spells the type
 //! and the trait — the wrapper is emitted in the block's module — so it needs no
 //! import and never reaches an inherent method of the same name. An inherent
-//! block's wrapper is unchanged, and so is every exported symbol.
+//! block's method is called by path as well, `<Buf>::m(self_obj)` (#509), and
+//! every exported symbol is unchanged.
 //!
 //! The proc-macro flavour, compiled and called, is
 //! `deps/rustcall_julia_macros/tests/trait_path_methods.rs`.
@@ -108,7 +109,7 @@ fn a_foreign_block_spells_both_paths_as_its_header_does() {
 }
 
 #[test]
-fn an_inherent_block_keeps_method_call_syntax() {
+fn an_inherent_block_is_called_by_path_too() {
     let src = expanded(syn::parse_quote! {
         #[julia]
         impl Buf {
@@ -118,7 +119,10 @@ fn an_inherent_block_keeps_method_call_syntax() {
             pub fn make() -> i32 { 42 }
         }
     });
-    assert!(src.contains("self_obj.m()"), "{src}");
-    assert!(src.contains("Buf::make()"), "{src}");
+    // The same path call, without a trait (#509): `<Buf>::m` resolves to the
+    // inherent item before any trait's, and needs nothing in scope.
+    assert!(src.contains("<Buf>::m(self_obj)"), "{src}");
+    assert!(src.contains("<Buf>::make()"), "{src}");
+    assert!(!src.contains("self_obj.m("), "{src}");
     assert!(!src.contains(" as "), "{src}");
 }

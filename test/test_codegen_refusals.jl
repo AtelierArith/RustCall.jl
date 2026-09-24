@@ -104,6 +104,10 @@ const CR_INLINE_CASES = [
         #[julia] pub struct G { pub v: f64 }
         pub mod ops { impl super::G { pub fn first(s: &str) -> &u8 { &s.as_bytes()[0] } } }
         """, "G::first", "lowered_str_borrow"),
+    ("method with a smart-pointer receiver", """
+        #[julia] pub struct S { pub n: i32 }
+        impl S { pub fn boxed(self: Box<Self>) -> i32 { self.n } }
+        """, "S::boxed", "receiver_type"),
 ]
 
 @testset "Julia's refusal table is the Rust codegen's (#503)" begin
@@ -118,6 +122,25 @@ const CR_INLINE_CASES = [
     for reason in ("", "not_public", "generic", "unsupported_return:Vec<u8>", "owner_skipped:x")
         @test !RustCall._rust_refuses(reason)
     end
+end
+
+@testset "a v0.7.1 manifest's trait_receiver still reads as refused (PR #511 review)" begin
+    # v0.7.1 wrote `trait_receiver` for what is now `receiver_type`; schema 0.7
+    # is additive, so its manifests must still bind nothing for such a method.
+    @test RustCall._rust_refuses("trait_receiver:Box<Self>")
+    @test RustCall.pyo3_skip_explanation("trait_receiver") != "trait_receiver"
+    take = RustCall.RustMethod("take", false, false, String[], String[], "i32";
+                               symbol = "rustcall_Buf_take", is_constructor = false,
+                               skip_reason = "trait_receiver:Box<Self>", trait_path = "Take")
+    info = RustCall.RustStructInfo("Buf", String[], [take], "", Tuple{String, String}[],
+                                   true, Dict{String, Bool}())
+    report = RustCall._collect_boundary() do
+        RustCall._generate_crate_struct_wrapper(info)
+    end
+    @test any(p -> p.item == "<Buf as Take>::take" && p.position == "entry point" &&
+                   p.reason !== nothing, report.positions)
+    exprs = string(RustCall._generate_crate_struct_wrapper(info))
+    @test !occursin("rustcall_Buf_take", exprs)
 end
 
 @testset "inline_boundary_report lists every codegen refusal (#503)" begin
@@ -270,7 +293,7 @@ end
             "Buf::first" => "lowered_str_borrow",
             "Buf::shown" => "impl_trait",
             "<Buf as tr::Limits>::limit" => "self_trait_path",
-            "<Buf as tr::Take>::take" => "trait_receiver",
+            "<Buf as tr::Take>::take" => "receiver_type",
             "a::danger" => "unsafe_fn",
         )
         # A refused struct is reported once, at its own entry point; its

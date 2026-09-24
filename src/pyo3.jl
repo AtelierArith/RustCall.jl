@@ -71,10 +71,15 @@ const PYO3_SKIP_REASONS = Base.ImmutableDict(Base.ImmutableDict{String, String}(
                             "owned value (#484)",
     "lowered_str_lifetime" => "a `&str` argument whose lifetime must outlive the call, while " *
                               "the string is rebuilt for the call only; take `String` (#482)",
-    "trait_receiver" => "a trait-impl method whose receiver type does not show its shape (a " *
-                        "type alias, a smart pointer, the type's own name, or `self: &mut Self`); " *
+    "receiver_type" => "a method whose receiver type does not show its shape (a type " *
+                       "alias, a smart pointer, or the type spelled otherwise than the impl " *
+                       "header); its wrapper calls it by path, which passes the receiver " *
+                       "exactly as declared; write `self`, `&self`, `&mut self` or reference " *
+                       "layers over `Self` (#509)",
+    # The name v0.7.1 gave the same refusal, for trait-impl methods (#497).
+    "trait_receiver" => "a trait-impl method whose receiver type does not show its shape; " *
                         "its wrapper calls it through the trait, which passes the receiver " *
-                        "exactly as declared; write `self`, `&self` or `&mut self` (#497, #509)",
+                        "exactly as declared (#497)",
 )
 
 """

@@ -1,0 +1,29 @@
+error: `Buf::aliased`: the wrapper passes the receiver exactly as declared, and this receiver type does not show its shape. Write it as `self`, `&self`, `&mut self` or reference layers over `Self` (`self: &mut Self`, `self: &&Self`) — not a type alias, a smart pointer or the type under another spelling than the impl header's — or expose a method with such a receiver that calls this one (#509).
+  --> tests/ui/receiver_type.rs:22:26
+   |
+22 |     pub fn aliased(self: Ref<'_, Self>) -> i32 {
+   |                          ^^^^^^^^^^^^^
+
+error: `Buf::boxed`: the wrapper passes the receiver exactly as declared, and this receiver type does not show its shape. Write it as `self`, `&self`, `&mut self` or reference layers over `Self` (`self: &mut Self`, `self: &&Self`) — not a type alias, a smart pointer or the type under another spelling than the impl header's — or expose a method with such a receiver that calls this one (#509).
+  --> tests/ui/receiver_type.rs:27:24
+   |
+27 |     pub fn boxed(self: Box<Self>) -> i32 {
+   |                        ^^^^^^^^^
+
+error: `Buf::t_aliased`: the wrapper passes the receiver exactly as declared, and this receiver type does not show its shape. Write it as `self`, `&self`, `&mut self` or reference layers over `Self` (`self: &mut Self`, `self: &&Self`) — not a type alias, a smart pointer or the type under another spelling than the impl header's — or expose a method with such a receiver that calls this one (#509).
+  --> tests/ui/receiver_type.rs:58:24
+   |
+58 |     fn t_aliased(self: Ref<'_, Self>) -> i32 {
+   |                        ^^^^^^^^^^^^^
+
+error: `Buf::t_rc`: the wrapper passes the receiver exactly as declared, and this receiver type does not show its shape. Write it as `self`, `&self`, `&mut self` or reference layers over `Self` (`self: &mut Self`, `self: &&Self`) — not a type alias, a smart pointer or the type under another spelling than the impl header's — or expose a method with such a receiver that calls this one (#509).
+  --> tests/ui/receiver_type.rs:63:19
+   |
+63 |     fn t_rc(self: Rc<Self>) -> i32 {
+   |                   ^^^^^^^^
+
+error: `Buf::t_pinned`: the wrapper passes the receiver exactly as declared, and this receiver type does not show its shape. Write it as `self`, `&self`, `&mut self` or reference layers over `Self` (`self: &mut Self`, `self: &&Self`) — not a type alias, a smart pointer or the type under another spelling than the impl header's — or expose a method with such a receiver that calls this one (#509).
+  --> tests/ui/receiver_type.rs:68:23
+   |
+68 |     fn t_pinned(self: Pin<&mut Self>) -> i32 {
+   |                       ^^^^^^^^^^^^^^

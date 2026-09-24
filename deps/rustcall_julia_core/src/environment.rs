@@ -167,6 +167,21 @@ where
     Some(syn::parse_quote!(<#self_ty as #trait_path>::#rest))
 }
 
+/// The path a wrapper calls a method by (#497, #509): `<Buf as tr::Far>::m`
+/// for a method of a trait impl ([`trait_item_path`]), `<Buf>::m` for an
+/// inherent one. `self_path` is the type as the wrapper spells it, the
+/// header's own for a method of a block. The qualified form is a valid
+/// expression path whatever the type's spelling (`<Wrap<'x>>::m`), and
+/// resolves to the inherent item before any trait's.
+pub(crate) fn method_item_path(
+    host: Option<&ImplHost>,
+    self_path: &syn::Path,
+    method: &syn::Ident,
+) -> syn::TypePath {
+    host.and_then(|host| trait_item_path(host, method))
+        .unwrap_or_else(|| syn::parse_quote!(<#self_path>::#method))
+}
+
 /// Whether a path without a `<..>` qualifier starts with a bare `Self`.
 fn starts_with_self(qself: &Option<syn::QSelf>, path: &syn::Path) -> bool {
     qself.is_none()

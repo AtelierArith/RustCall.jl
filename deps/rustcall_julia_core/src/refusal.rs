@@ -478,53 +478,31 @@ fn unsafe_method_refusal(struct_name: &Ident, m: &MethodModel) -> Option<Refusal
     ))
 }
 
-/// Refuse a trait method whose typed receiver is not literal reference layers
-/// over `Self` (`codegen::TraitReceiver::of`, #497): its wrapper calls
-/// `<Buf as Tr>::m(..)`, whose first argument must match the receiver
-/// exactly, and the written type does not say what that is. A
-/// `self: &mut Self` receiver is refused too until #509 binds it as `&mut`.
-/// `None` for a method of an inherent block, which keeps method-call syntax.
-fn trait_receiver_refusal(struct_name: &Ident, m: &MethodModel) -> Option<Refusal> {
-    m.host.as_ref()?.trait_.as_ref()?;
-    let receiver = m.func.sig.receiver()?;
+/// Refuse a method whose receiver the wrapper cannot pass
+/// ([`crate::receiver::Receiver::Unreadable`], #509): a typed receiver that
+/// is not literal reference layers over `Self` or the impl header's own type
+/// — a type alias, a smart pointer, or the type spelled otherwise than the
+/// header spells it. The wrapper calls the method by path, which passes the
+/// receiver exactly as declared, and the syntax does not say what that is.
+/// The same rule for an inherent and a trait impl's method, in both flavours.
+fn receiver_refusal(struct_name: &Ident, m: &MethodModel) -> Option<Refusal> {
+    let crate::receiver::Receiver::Unreadable(ty) = m.receiver() else {
+        return None;
+    };
     let method = &m.func.sig.ident;
-    let spelled = type_to_string(&receiver.ty);
-    match crate::codegen::TraitReceiver::of(Some(receiver)) {
-        Err(_) => Some(Refusal::over(
-            skip_reason::TRAIT_RECEIVER,
-            spelled,
-            &receiver.ty,
-            format!(
-                "`{struct_name}::{method}`: the wrapper calls this trait method through the \
-                 trait, which passes the receiver exactly as declared, and this receiver type \
-                 does not show its shape. Write it as `self`, `&self`, `&mut self` or reference \
-                 layers over `Self` (`self: &&Self`) — not a type alias, a smart pointer or the \
-                 type's own name — or expose an inherent method that calls this one (#509)."
-            ),
-        )),
-        // `self: &mut Self` binds `self_obj` as `&Buf`: `MethodModel::is_mutable`
-        // reads only the `&mut self` shorthand (#509), so the call would not
-        // compile either.
-        Ok(_)
-            if receiver.reference.is_none()
-                && !m.is_mutable
-                && matches!(
-                    crate::types::unparen(&receiver.ty),
-                    Type::Reference(r) if r.mutability.is_some()
-                ) =>
-        {
-            Some(Refusal::over(
-                skip_reason::TRAIT_RECEIVER,
-                spelled,
-                &receiver.ty,
-                format!(
-                    "`{struct_name}::{method}`: a `self: &mut Self` receiver is not yet wrapped \
-                     (#509). Write it as `&mut self`."
-                ),
-            ))
-        }
-        Ok(_) => None,
-    }
+    Some(Refusal::over(
+        skip_reason::RECEIVER_TYPE,
+        type_to_string(&ty),
+        &*ty,
+        format!(
+            "`{struct_name}::{method}`: the wrapper passes the receiver exactly as declared, \
+             and this receiver type does not show its shape. Write it as `self`, `&self`, \
+             `&mut self` or reference layers over `Self` (`self: &mut Self`, `self: &&Self`) — \
+             not a type alias, a smart pointer or the type under another spelling than the \
+             impl header's — or expose a method with such a receiver that calls this one \
+             (#509)."
+        ),
+    ))
 }
 
 /// Why the codegen refuses to wrap the method `m` at `site`, if it does — the
@@ -551,8 +529,8 @@ pub fn method_refusal(site: MethodSite<'_>, m: &MethodModel) -> Option<Refusal> 
                 return Some(refusal);
             }
             let struct_name = crate::types::last_ident(self_ty)?;
-            if let Some(refusal) = unsafe_method_refusal(struct_name, m)
-                .or_else(|| trait_receiver_refusal(struct_name, m))
+            if let Some(refusal) =
+                unsafe_method_refusal(struct_name, m).or_else(|| receiver_refusal(struct_name, m))
             {
                 return Some(refusal);
             }
@@ -564,7 +542,7 @@ pub fn method_refusal(site: MethodSite<'_>, m: &MethodModel) -> Option<Refusal> 
         } => {
             if let Some(refusal) = inline_generic_method_refusal(struct_name, false, m)
                 .or_else(|| unsafe_method_refusal(struct_name, m))
-                .or_else(|| trait_receiver_refusal(struct_name, m))
+                .or_else(|| receiver_refusal(struct_name, m))
             {
                 return Some(refusal);
             }
@@ -573,6 +551,7 @@ pub fn method_refusal(site: MethodSite<'_>, m: &MethodModel) -> Option<Refusal> 
         MethodSite::InlineGeneric { struct_name } => {
             inline_generic_method_refusal(struct_name, true, m)
                 .or_else(|| unsafe_method_refusal(struct_name, m))
+                .or_else(|| receiver_refusal(struct_name, m))
         }
     }
 }
