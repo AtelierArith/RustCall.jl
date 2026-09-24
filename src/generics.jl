@@ -341,8 +341,9 @@ a second module whose block defines a generic `f` replaced the first module's
 registration, and `@rust f(x)` from the first module then specialized the
 second module's source. This table keeps each library's own registration, and
 `resolve_rust_call` consults it for the libraries of the caller's own blocks
-before anything process-wide. Rows go with their library
-(`clear_library_metadata!`), like the symbol mappings and return-type hints.
+before anything process-wide. Rows are installed and dropped with the library's
+other metadata, in the same transaction (`install_library_metadata!`,
+`clear_library_metadata!`).
 
 Guarded by `REGISTRY_LOCK`.
 """
@@ -1659,32 +1660,6 @@ function register_generic_function(
     info = _prepare_generic_function(func_name, code, type_params, constraints, context; kwargs...)
     return lock(REGISTRY_LOCK) do
         GENERIC_FUNCTION_REGISTRY[func_name] = info
-        info
-    end
-end
-
-"""
-    _publish_library_generic!(lib_name, info) -> GenericFunctionInfo
-
-Publish a generic function a `rust\"\"\"` block's library `lib_name` defines:
-under its bare name in `GENERIC_FUNCTION_REGISTRY` (the process-wide
-registration `call_generic_function(name, ...)` and a call from outside the
-defining module reach), **and** under `(lib_name, name)` in
-`GENERIC_FUNCTIONS_BY_LIB`, which is what a call from the defining module
-resolves through (#520). One transaction, so no reader sees one row without
-the other. `info` is prepared outside the lock (`_prepare_generic_function`
-may run the extractor).
-
-The owner-qualified row is written only while `lib_name` is still loaded: an
-unload racing with the registration has already dropped the library's rows
-(`clear_library_metadata!`), and a row published after it would outlive the
-library.
-"""
-function _publish_library_generic!(lib_name::String, info::GenericFunctionInfo)
-    return lock(REGISTRY_LOCK) do
-        GENERIC_FUNCTION_REGISTRY[info.name] = info
-        haskey(RUST_LIBRARIES, lib_name) &&
-            (GENERIC_FUNCTIONS_BY_LIB[(lib_name, info.name)] = info)
         info
     end
 end

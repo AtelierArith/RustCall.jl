@@ -238,9 +238,10 @@ function _resolve_lib(mod::Module, lib_name::String)
             # registered under, so the next `_resolve_lib` does not walk the
             # reload path all over again.
             _alias_reloaded_library(mod, lname, actual)
-            libs[actual] = code
-            delete!(libs, lname)
-            _rename_module_block!(mod, lname, actual)
+            # The key and the block's recorded order move together, in one
+            # transaction: a concurrent first call that saw the new key without
+            # its order ranked the module's newest block last (#520 review).
+            _rebind_module_block!(mod, libs, lname, actual, code)
         end
     end
 
@@ -417,12 +418,17 @@ end
 # restored them, the most recently recorded first. A block with no recorded
 # order (a legacy caller's) sorts last, by name, so the order never depends on
 # hashing.
+#
+# The names and their order are read in **one** transaction, as
+# `_rebind_module_block!` writes them: two reads could straddle a rebind and
+# pair the old key with the new order, ranking the newest block last (#520
+# review).
 function _module_block_libraries(mod::Module)
+    snapshot = _module_block_snapshot(mod)
+    snapshot === nothing || return snapshot
     libs = _module_binding(mod, :__RUSTCALL_LIBS)
     libs === nothing && return String[]
-    order = _module_block_order(mod)
-    names = String[String(first(entry)) for entry in collect(libs)]
-    return sort!(names; by = name -> (-get(order, name, 0), name))
+    return sort!(String[String(first(entry)) for entry in collect(libs)])
 end
 
 """

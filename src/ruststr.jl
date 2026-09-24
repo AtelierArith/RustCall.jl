@@ -1015,9 +1015,13 @@ longer in `RUST_LIBRARIES`. Returns `false` when the library turned out to be
 gone and nothing was registered; the caller then falls through to compiling and
 loading it again.
 
-The generic registrations stay outside the lock: `register_generic_function`
-may shell out to the extractor to recover a signature, which must not run with
-the global registry lock held.
+The block's generic functions are *prepared* outside the lock
+(`_prepare_generic_function` may shell out to the extractor to recover a
+signature, which must not run with the global registry lock held) and
+*installed* inside the same transaction as the symbol mappings and return-type
+hints (`install_library_metadata!`, #520), so no caller sees the library
+without its own generics. A generic struct's wrapper group is still published
+after it, process-wide, by its stem-qualified wrapper names.
 """
 function _register_manifest(expanded, lib_name::String; compiler = nothing,
                             cargo_backed::Bool = false,
@@ -1032,23 +1036,13 @@ function _register_manifest(expanded, lib_name::String; compiler = nothing,
     signatures = _registry_signatures(manifest)
     symbols, return_types = _manifest_registry_entries(signatures)
 
-    registered = if load_path !== nothing
-        load_artifact!(policy, load_path; lib_name, symbols, return_types,
-                       snapshot_env, set_current)
-        true
-    elseif handle !== nothing
-        adopt_artifact!(policy, handle; lib_name, symbols, return_types,
-                        snapshot_env, set_current)
-        true
-    else
-        register_artifact_metadata!(policy, lib_name; symbols, return_types,
-                                    require_loaded, set_current)
-    end
-    registered || return false
-
-    for info in manifest_struct_infos(manifest)
-        register_generic_struct_wrappers(info, expanded.source; compiler, cargo = cargo_context)
-    end
+    # The block's generic functions are prepared **before** the transaction and
+    # installed in it, with the symbol mappings and return-type hints (#520):
+    # publishing them afterwards left a window in which a re-registered or
+    # reloaded library was visible without its own generics, and a call from
+    # its module fell through to another module's generic of the same name.
+    # Preparing may run the extractor, which must not happen under the lock.
+    generics = GenericFunctionInfo[]
     for sig in signatures
         # A generic the Rust codegen refuses (#491: an `unsafe fn`) is not
         # registered for specialization: a specialized wrapper would call it
@@ -1072,16 +1066,51 @@ function _register_manifest(expanded, lib_name::String; compiler = nothing,
             # this library as well as published by bare name, so a call from
             # the defining module reaches *this* block's generic whatever
             # another module registers under the same name (#520).
-            info = _prepare_generic_function(julia_function_name(sig), expanded.source,
-                                             Symbol.(sig.type_params), sig.constraints, "";
-                                             arg_types = sig.arg_types, return_type = sig.return_type,
-                                             path = qualified_name(sig.module_path, sig.name), compiler,
-                                             blocked, cargo = cargo_context)
-            _publish_library_generic!(lib_name, info)
-            @debug "Registered generic function: $(sig.name)" type_params = sig.type_params
+            push!(generics, _prepare_generic_function(
+                julia_function_name(sig), expanded.source,
+                Symbol.(sig.type_params), sig.constraints, "";
+                arg_types = sig.arg_types, return_type = sig.return_type,
+                path = qualified_name(sig.module_path, sig.name), compiler,
+                blocked, cargo = cargo_context))
         end
     end
+
+    registered = if load_path !== nothing
+        load_artifact!(policy, load_path; lib_name, symbols, return_types, generics,
+                       snapshot_env, set_current)
+        true
+    elseif handle !== nothing
+        adopt_artifact!(policy, handle; lib_name, symbols, return_types, generics,
+                        snapshot_env, set_current)
+        true
+    else
+        register_artifact_metadata!(policy, lib_name; symbols, return_types, generics,
+                                    require_loaded, set_current)
+    end
+    registered || return false
+    _manifest_seam(:registered, lib_name)
+
+    for info in manifest_struct_infos(manifest)
+        register_generic_struct_wrappers(info, expanded.source; compiler, cargo = cargo_context)
+    end
+    for info in generics
+        @debug "Registered generic function: $(info.name)" type_params = info.type_params
+    end
     return true
+end
+
+# A test seam (#520): a function stored in the task-local storage of the
+# calling task under `_AFTER_MANIFEST_REGISTRATION` is called with a stage and
+# the library name, outside STATE. `:registered` runs right after the
+# transaction that published the library's metadata — symbol mappings,
+# return-type hints and generics — so a test can observe what a concurrent
+# caller would see there.
+const _AFTER_MANIFEST_REGISTRATION = :rustcall_after_manifest_registration
+
+function _manifest_seam(stage::Symbol, lib_name::AbstractString)
+    hook = get(task_local_storage(), _AFTER_MANIFEST_REGISTRATION, nothing)
+    hook === nothing || hook(stage, String(lib_name))
+    return nothing
 end
 
 # Every function of an inline manifest `_register_manifest` registers — the

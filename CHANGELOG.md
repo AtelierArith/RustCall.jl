@@ -60,6 +60,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   another block's export. A block's generics are owned by its
   library (`RustCall.GENERIC_FUNCTIONS_BY_LIB`, dropped with it) as well as
   registered by bare name, which `call_generic_function(name, ...)` still reads.
+  A library's generics are installed in the same transaction as its symbol
+  mappings and return-type hints (`install_library_metadata!`), so a block
+  re-registered or reloaded while calls run is never visible without its own
+  generics. A precompiled block rebound to a reloaded library name moves its
+  key and its order in one transaction, and the resolver reads both in one.
 - **A return type that only ends in the impl header's name is not the struct**
   ([#518](https://github.com/AtelierArith/RustCall.jl/issues/518)). Whether
   a method returns its own type (and so is boxed as `*mut Struct`, and may be

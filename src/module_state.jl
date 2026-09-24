@@ -155,31 +155,49 @@ function _record_module_symbols_transaction!(table, lib_name, symbols, module_na
 end
 
 """
-    _module_block_order(mod) -> Dict{String, Int}
+    _module_block_snapshot(mod) -> Union{Vector{String}, Nothing}
 
-A snapshot of when each of `mod`'s `rust\"\"\"` blocks was last recorded, by
-library name (larger is later). Empty for a module with no owned state (a
-legacy caller's raw containers), whose blocks are then ordered by name.
+The library names of `mod`'s blocks, most recently recorded first, read with
+their order in one STATE transaction; `nothing` for a module with no owned
+state (a legacy caller's raw containers).
 """
-function _module_block_order(mod::Module)
-    haskey(MODULE_STATES, mod) || return Dict{String, Int}()
-    return StateView(:order, mod)[]
+function _module_block_snapshot(mod::Module)
+    haskey(MODULE_STATES, mod) || return nothing
+    names, order = lock(REGISTRY_LOCK) do
+        data = MODULE_STATES[mod]
+        (String[name for name in keys(data[:libs])], copy(data[:order]))
+    end
+    return sort!(names; by = name -> (-get(order, name, 0), name))
 end
 
 """
-    _rename_module_block!(mod, from, to)
+    _rebind_module_block!(mod, libs, from, to, block)
 
-Carry a block's recorded order over when `_resolve_lib` rebinds it from the
-library name a precompiled module stored to the one the reload derived.
+Rebind one of `mod`'s blocks from the library name a precompiled module stored
+(`from`) to the one the reload derived (`to`): the `__RUSTCALL_LIBS` key and the
+block's recorded order (read by `_module_block_snapshot`) move in **one** state
+transaction. Two steps let a concurrent call see `to` with no order yet, rank
+the module's newest block last and call an older block's `f` (#520 review).
+
+`libs` is what `_module_binding(mod, :__RUSTCALL_LIBS)` returned. A legacy
+caller not adopted into STATE keeps its own raw table and records no order, so
+only its key moves.
 """
-function _rename_module_block!(mod::Module, from::String, to::String)
-    haskey(MODULE_STATES, mod) || return nothing
+function _rebind_module_block!(mod::Module, libs, from::String, to::String, block)
+    if !(libs isa StateView) || !haskey(MODULE_STATES, mod)
+        libs[to] = block
+        delete!(libs, from)
+        return nothing
+    end
     lock(REGISTRY_LOCK) do
         data = MODULE_STATES[mod]
+        _state_mutate_storage!(data[:libs], :setindex!, block, to)
+        _state_mutate_storage!(data[:libs], :delete!, from)
         seq = get(data[:order], from, nothing)
-        seq === nothing && return nothing
-        _state_mutate_storage!(data[:order], :setindex!, seq, to)
-        _state_mutate_storage!(data[:order], :delete!, from)
+        if seq !== nothing
+            _state_mutate_storage!(data[:order], :setindex!, seq, to)
+            _state_mutate_storage!(data[:order], :delete!, from)
+        end
         return nothing
     end
     return nothing

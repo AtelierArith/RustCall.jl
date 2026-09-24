@@ -194,6 +194,107 @@ _ro_block(m::Module, rust::AbstractString) =
         @test check([sig("r#for"; generic = true)]) === nothing
     end
 
+    @testset "a re-registered block publishes its generics with its metadata" begin
+        # A block run again while its library is loaded re-registers the
+        # library's metadata. The generics used to be published in a second
+        # step, after `clear_library_metadata!` had dropped the library's own
+        # generic row: a call from the module in between fell through to
+        # another module's generic of that name and specialized its body (PR
+        # #521 review). The seam runs right after the metadata transaction;
+        # there the library's own generic must already be what `@rust` reaches.
+        a = _ro_module(:ResolutionOrderRereg)
+        b = _ro_module(:ResolutionOrderReregOther)
+        block_a = """
+            #[julia]
+            pub fn ro520_rereg<T: Copy + std::ops::Add<Output = T>>(x: T) -> T { x + x }
+            """
+        lib_a = _ro_block(a, block_a)
+        _ro_block(b, """
+            #[julia]
+            pub fn ro520_rereg<T: Copy + std::ops::Add<Output = T>>(x: T) -> T { x + x + x }
+            """)
+        @test _ro_eval(a, :(@rust ro520_rereg(Int32(10)))) === Int32(20)
+        seen = Any[]
+        hook = (stage, lib) -> begin
+            stage === :registered && lib == lib_a || return
+            own = get(RustCall.GENERIC_FUNCTIONS_BY_LIB, (lib_a, "ro520_rereg"), nothing)
+            reached = RustCall.resolve_rust_call(nothing, lib_a, "ro520_rereg")
+            push!(seen, (own !== nothing, reached isa RustCall.GenericFunctionInfo &&
+                                          reached === own))
+        end
+        task_local_storage(RustCall._AFTER_MANIFEST_REGISTRATION, hook) do
+            @test _ro_block(a, block_a) == lib_a  # the same block: a re-registration
+        end
+        @test !isempty(seen)
+        @test all(first, seen)
+        @test all(last, seen)
+        @test _ro_eval(a, :(@rust ro520_rereg(Int32(10)))) === Int32(20)
+        @test _ro_eval(b, :(@rust ro520_rereg(Int32(10)))) === Int32(30)
+
+        # The transaction itself: metadata with generics installs them, and
+        # a malformed generics row is refused before anything is erased.
+        policy = RustCall.inline_rustc_policy()
+        own = RustCall.GENERIC_FUNCTIONS_BY_LIB[(lib_a, "ro520_rereg")]
+        @test_throws ArgumentError RustCall.register_artifact_metadata!(
+            policy, lib_a; generics = Any["not a generic"], require_loaded = true,
+            set_current = false)
+        @test RustCall.GENERIC_FUNCTIONS_BY_LIB[(lib_a, "ro520_rereg")] === own
+        @test RustCall.register_artifact_metadata!(
+            policy, lib_a; generics = [own], require_loaded = true, set_current = false)
+        @test RustCall.GENERIC_FUNCTIONS_BY_LIB[(lib_a, "ro520_rereg")] === own
+    end
+
+    @testset "a block's library key and its order are rebound together" begin
+        # `_resolve_lib` rebinds a precompiled block from the library name it
+        # stored to the one a reload derived. The key and the block's order
+        # moved in two steps, so a concurrent first call could see the new key
+        # with no order, rank the module's newest block last and call an older
+        # block (PR #521 review). Pure state: the blocks are recorded, not built.
+        m = _ro_module(:ResolutionOrderRebind)
+        snapshot = RustCall.RustBlockSnapshot("", "", "", 0)
+        RustCall._record_module_block!(m, "ro520_older", snapshot, String[])
+        RustCall._record_module_block!(m, "ro520_newest", snapshot, String[])
+        libs = RustCall.StateView(:libs, m)
+        @test RustCall._module_block_libraries(m) == ["ro520_newest", "ro520_older"]
+        RustCall._rebind_module_block!(m, libs, "ro520_newest", "ro520_renamed", snapshot)
+        @test RustCall._module_block_libraries(m) == ["ro520_renamed", "ro520_older"]
+        @test !haskey(libs, "ro520_newest")
+
+        # Readers never see the rebound block ranked below an older one.
+        if Threads.nthreads() >= 2
+            names = ("ro520_renamed", "ro520_newest")
+            done = Threads.Atomic{Bool}(false)
+            writer = Threads.@spawn begin
+                for i in 1:50_000
+                    from, to = isodd(i) ? names : reverse(names)
+                    RustCall._rebind_module_block!(m, libs, from, to, snapshot)
+                end
+                done[] = true
+            end
+            violations = 0
+            reads = 0
+            while !done[]
+                order = RustCall._module_block_libraries(m)
+                reads += 1
+                (length(order) == 2 && first(order) in names) || (violations += 1)
+            end
+            wait(writer)
+            @test violations == 0
+            @test reads > 0
+        else
+            @test_skip "needs at least 2 threads (the 4-thread CI job runs it)"
+        end
+
+        # `_resolve_lib` rebinds through that one function, never key by key.
+        source = read(joinpath(dirname(@__DIR__), "src", "rustmacro.jl"), String)
+        body = source[findfirst("function _resolve_lib(", source)[1]:end]
+        body = body[1:findfirst("\nend", body)[1]]
+        code = join((l for l in split(body, '\n') if !startswith(strip(l), "#")), '\n')
+        @test occursin("_rebind_module_block!(", code)
+        @test !occursin("delete!(libs", code)
+        @test !occursin("libs[actual]", code)
+    end
+
     @testset "a later block of one module redefines a name, whatever its kind" begin
         m = _ro_module(:ResolutionOrderLater)
         _ro_block(m, """
