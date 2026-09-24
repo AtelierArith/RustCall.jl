@@ -470,6 +470,9 @@ if RustCall.check_rustc_available()
 
     impl CmiOwnGauge {
         pub fn new(value: i32) -> Self { CmiOwnGauge { value } }
+        // An inline block is edition 2015, where a leading `::` is the
+        // crate root: resolved to the struct, boxed (#519 review).
+        pub fn cmi_own_copy(&self) -> ::CmiOwnGauge { CmiOwnGauge { value: self.value + 7 } }
     }
 
     pub mod cmi_own_ops {
@@ -508,6 +511,8 @@ end
         @test cmi_own_thrice(g).value == 15
         again = cmi_own_again(g)
         @test again isa CmiOwnGauge && again.value == 105
+        copy = cmi_own_copy(g)
+        @test copy isa CmiOwnGauge && copy.value == 12
 
         info = only(RustCall.manifest_struct_infos(RustCall.expand_inline("""
             #[julia]

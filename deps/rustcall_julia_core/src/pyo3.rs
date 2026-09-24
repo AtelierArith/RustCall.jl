@@ -1778,25 +1778,17 @@ fn returns_class(
     let Type::Path(path) = unparen(ty) else {
         return false;
     };
-    if path.qself.is_some() {
+    // A leading `::` names the current crate only in edition 2015
+    // (`paths::edition_type_qualifier`, the rule every resolution shares).
+    let Some(qualifier) = crate::paths::edition_type_qualifier(path, edition_2015) else {
         return false;
-    }
-    // A leading `::` names the current crate only in edition 2015. In newer
-    // editions it starts in the extern prelude, which this scanner cannot
-    // resolve and must not confuse with a same-named local module.
-    if path.path.leading_colon.is_some() && !edition_2015 {
-        return false;
-    }
+    };
     if path.path.is_ident("Self") {
         return true;
     }
     let Some(target) = path.path.segments.last() else {
         return false;
     };
-    let mut qualifier = crate::paths::type_path_qualifier(ty);
-    if path.path.leading_colon.is_some() {
-        qualifier.anchor = crate::paths::PathAnchor::Crate;
-    }
     let header = ImplHeader {
         target: target.ident.clone(),
         qualifier,

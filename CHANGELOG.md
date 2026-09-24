@@ -38,8 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   header spells it (`codegen::returns_own_type`, both flavours). In a
   `rust"""` block it is also the struct when the header's own path resolver
   (`paths::names_struct`, the `locate` of the header without its glob and
-  unique-name fallbacks) resolves it to the struct, e.g. `-> super::Gauge`
-  or `-> crate::Gauge`. The proc macro sees one block and cannot resolve a
+  unique-name fallbacks) resolves it to the struct, e.g. `-> super::Gauge`,
+  `-> crate::Gauge`, or `-> ::Gauge` (a block is compiled as edition 2015,
+  where a leading `::` is the crate root, the rule `paths::edition_type_qualifier`
+  now gives every resolution of a written type path). The proc macro sees one block and cannot resolve a
   name, so in a `#[julia]` crate only `Self` or the header's spelling is
   boxed. There, `-> crate::Gauge` inside `impl Gauge` is now read as a plain
   by-value return, which Julia refuses; write `Self`. Exported symbols are

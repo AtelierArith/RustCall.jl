@@ -159,6 +159,26 @@ pub fn type_path_qualifier(ty: &Type) -> PathQualifier {
     path_qualifier(p.path.segments.iter().map(|s| s.ident.to_string()))
 }
 
+/// The qualifier of a path type written in a crate of the given edition, or
+/// `None` for a path this resolver cannot follow: a qualified `<T as Tr>::C`,
+/// or a leading `::` outside edition 2015. A leading `::` names the current
+/// crate's root only in edition 2015 (what RustCall compiles a `rust"""`
+/// block as: `rustc` with no `--edition`); since 2018 it starts in the extern
+/// prelude, whose crates no scan here indexes, and it must not be confused
+/// with a same-named local module. The one rule for every resolution of a
+/// written type path — a `type` alias ([`import_of_type_alias`]), a PyO3
+/// return type, a `#[julia]` return type ([`names_struct`], #518).
+pub fn edition_type_qualifier(path: &syn::TypePath, edition_2015: bool) -> Option<PathQualifier> {
+    if path.qself.is_some() || (path.path.leading_colon.is_some() && !edition_2015) {
+        return None;
+    }
+    let mut qualifier = path_qualifier(path.path.segments.iter().map(|s| s.ident.to_string()));
+    if path.path.leading_colon.is_some() {
+        qualifier.anchor = PathAnchor::Crate;
+    }
+    Some(qualifier)
+}
+
 /// Split a written path into its anchor and its module segments, dropping the
 /// final segment (the item's own name).
 pub fn path_qualifier(segments: impl IntoIterator<Item = String>) -> PathQualifier {
@@ -281,31 +301,20 @@ pub fn import_of_type_alias(
     let Type::Path(path) = unparen(&item.ty) else {
         return None;
     };
-    if path.path.leading_colon.is_some() && !edition_2015 {
-        return None;
-    }
-    path.qself.is_none().then(|| {
-        let anchored: Vec<String> = path
-            .path
-            .segments
-            .iter()
-            .map(|s| s.ident.to_string())
-            .collect();
-        let mut qualifier = path_qualifier(anchored.iter().cloned());
-        if path.path.leading_colon.is_some() {
-            qualifier.anchor = PathAnchor::Crate;
-        }
-        let path = anchored
-            .into_iter()
-            .filter(|s| s != "crate" && s != "self" && s != "super")
-            .collect();
-        ScannedImport {
-            module_path: module_path.to_vec(),
-            alias: item.ident.to_string(),
-            path,
-            qualifier,
-            glob: false,
-        }
+    let qualifier = edition_type_qualifier(path, edition_2015)?;
+    let path = path
+        .path
+        .segments
+        .iter()
+        .map(|s| s.ident.to_string())
+        .filter(|s| s != "crate" && s != "self" && s != "super")
+        .collect();
+    Some(ScannedImport {
+        module_path: module_path.to_vec(),
+        alias: item.ident.to_string(),
+        path,
+        qualifier,
+        glob: false,
     })
 }
 
@@ -489,10 +498,11 @@ pub fn locate_type<T: Located>(
 /// [`locate`] picks a block's struct when nothing else does, not proof that
 /// a type names it. Only `structs` are candidates, so a name that resolves to
 /// anything else (`type Meter = f64`, a struct the scan did not select)
-/// names none of them. A path this resolver cannot follow — a qualified
-/// `<T as Tr>::Meter`, a leading `::` (the extern prelude since edition
-/// 2018) — names nothing. The generic arguments must be spelled as the
-/// header spells them: `Buf<i64>` is not `impl Buf<i32>`'s own type.
+/// names none of them. The path is anchored by [`edition_type_qualifier`]:
+/// a leading `::` is the crate root in edition 2015 (`-> ::Gauge` in a
+/// `rust"""` block) and names nothing since 2018, and a qualified
+/// `<T as Tr>::Meter` names nothing. The generic arguments must be spelled as
+/// the header spells them: `Buf<i64>` is not `impl Buf<i32>`'s own type.
 pub fn names_struct<T: Located>(
     structs: &[T],
     own: usize,
@@ -500,13 +510,14 @@ pub fn names_struct<T: Located>(
     ty: &Type,
     module_path: &[String],
     imports: &[ScannedImport],
+    edition_2015: bool,
 ) -> bool {
     let (Type::Path(path), Type::Path(own_path)) = (unparen(ty), unparen(own_ty)) else {
         return false;
     };
-    if path.qself.is_some() || path.path.leading_colon.is_some() {
+    let Some(qualifier) = edition_type_qualifier(path, edition_2015) else {
         return false;
-    }
+    };
     let (Some(last), Some(own_last)) = (path.path.segments.last(), own_path.path.segments.last())
     else {
         return false;
@@ -517,7 +528,7 @@ pub fn names_struct<T: Located>(
     }
     let header = ImplHeader {
         target: last.ident.clone(),
-        qualifier: type_path_qualifier(ty),
+        qualifier,
         module_path: module_path.to_vec(),
     };
     locate_with_fallback(structs, &header, imports, Fallback::None) == Ok(own)

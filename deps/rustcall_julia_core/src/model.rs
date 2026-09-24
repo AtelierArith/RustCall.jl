@@ -446,6 +446,10 @@ impl ModelTree {
                         ty,
                         &block.header.module_path,
                         &imports,
+                        // RustCall compiles a `rust"""` block with `rustc`
+                        // and no `--edition`: edition 2015, where a leading
+                        // `::` is the crate root.
+                        true,
                     )
                 };
                 tree.entries[index].model.attach_impl_resolving(

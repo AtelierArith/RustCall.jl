@@ -147,6 +147,49 @@ fn a_plain_header_resolves_the_return_type_where_the_block_is() {
     compile_and_run("inline_plain", &expanded.source, main, false);
 }
 
+/// RustCall compiles a `rust"""` block with no `--edition`, i.e. edition
+/// 2015, where a leading `::` is the crate root: `-> ::Gauge` is the struct,
+/// resolved by the anchor rule every resolution shares
+/// (`paths::edition_type_qualifier`), and `-> ::other::Gauge` is not
+/// (#519 review).
+#[test]
+fn a_leading_double_colon_is_the_crate_root_inline() {
+    let src = r#"
+        #[julia] pub struct Gauge { pub value: i32 }
+        pub mod other { pub type Gauge = i32; }
+        impl Gauge {
+            pub fn copy(&self) -> ::Gauge { Gauge { value: self.value + 1 } }
+            pub fn aliased(&self) -> ::other::Gauge { self.value + 2 }
+        }
+        pub mod ops {
+            impl super::Gauge {
+                pub fn rooted(&self) -> ::Gauge { ::Gauge { value: self.value + 3 } }
+            }
+        }
+    "#;
+    let expanded = expand(src).unwrap();
+    let m = &expanded.manifest;
+    assert_eq!(boxed(m, "Gauge", "copy"), (true, true));
+    assert_eq!(boxed(m, "Gauge", "rooted"), (true, true));
+    assert_eq!(boxed(m, "Gauge", "aliased"), (false, false));
+    let main = r#"
+        fn main() {
+            unsafe {
+                let p = Box::into_raw(Box::new(Gauge { value: 1 }));
+                let copy = rustcall_Gauge_copy(p);
+                assert_eq!((*copy).value, 2);
+                Gauge_free(copy);
+                let rooted = ops::rustcall_Gauge_rooted(p);
+                assert_eq!((*rooted).value, 4);
+                Gauge_free(rooted);
+                assert_eq!(rustcall_Gauge_aliased(p).assume_init(), 3);
+                Gauge_free(p);
+            }
+        }
+    "#;
+    compile_and_run("inline_leading_colon", &expanded.source, main, false);
+}
+
 /// A glob import or the one struct of a name anywhere is how a *header* is
 /// matched when nothing else says; it is not proof that a return type names
 /// the struct. `use crate::model::*;` brings `model::Gauge` in, but an item
