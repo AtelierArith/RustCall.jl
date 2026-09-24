@@ -466,7 +466,7 @@ pub fn struct_claims(s: &Struct, policy: Policy) -> Vec<Claim> {
             let mut claims = wrapper_claims(&m.symbol);
             claims.extend(aggregate_claims(
                 m.return_kind,
-                &crate::codegen::method_string_owner(&s.ffi_name, &m.name),
+                &crate::codegen::method_string_owner(&s.ffi_name, &m.method_stem()),
                 &m.args,
             ));
             out.extend(scoped(claims, &where_));
@@ -481,7 +481,7 @@ pub fn struct_claims(s: &Struct, policy: Policy) -> Vec<Claim> {
         // per-method stem for an entry written before that column existed or
         // by a scan that has not decided yet (`crate::wrap`).
         let owner = if m.string_owner.is_empty() {
-            crate::codegen::method_string_owner(&s.ffi_name, &m.name)
+            crate::codegen::method_string_owner(&s.ffi_name, &m.method_stem())
         } else {
             m.string_owner.clone()
         };

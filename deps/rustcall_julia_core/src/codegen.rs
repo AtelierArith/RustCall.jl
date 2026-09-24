@@ -156,6 +156,41 @@ pub fn method_symbol(module_path: &[String], struct_name: &str, method: &str) ->
     method_symbol_of(&symbol_stem(module_path, struct_name), method)
 }
 
+/// The part of every per-method name after the struct stem (#506): the
+/// method's own name for an inherent method; for a method of a trait impl,
+/// the trait's name, length-prefixed, ahead of it — `3Far_m` for `Far::m`.
+///
+/// The exported symbol (`rustcall_<stem>_<method stem>`), the string buffers
+/// a crate wrapper declares (`<stem>_<method stem>_…`) and the `CResult_` /
+/// `COption_` aggregate all hang off it, so a struct with an inherent `m` and
+/// the `m` of two traits exports `rustcall_Buf_m`, `rustcall_Buf_3Far_m` and
+/// `rustcall_Buf_4Near_m`. An identifier cannot start with a digit, so no
+/// inherent method's name is a trait method's stem, and the length prefix
+/// keeps every `(trait, method)` pair apart. The trait is named by the last
+/// segment of its path as the header writes it (`tr::Far<u8>` → `Far`): two
+/// impls whose traits end in the same name and that both wrap a method of the
+/// same name get one symbol, which the crate scan's duplicate-symbol check
+/// refuses (`crate::claims`).
+pub fn method_stem(trait_name: Option<&str>, method: &str) -> String {
+    let method = method.strip_prefix("r#").unwrap_or(method);
+    match trait_name.map(|t| t.strip_prefix("r#").unwrap_or(t)) {
+        None => method.to_string(),
+        Some(trait_name) => format!("{}{trait_name}_{method}", trait_name.len()),
+    }
+}
+
+/// The name a trait path ends in, `Far` for `tr::Far<u8>`: the trait part of
+/// [`method_stem`] and of a qualified Julia name. A raw identifier loses its
+/// `r#` (`r#type` → `type`), which is no part of the name and cannot appear
+/// in a symbol or a Julia identifier. `None` for an empty (inherent) path.
+pub fn trait_name_of(trait_path: &syn::Path) -> Option<String> {
+    use syn::ext::IdentExt;
+    trait_path
+        .segments
+        .last()
+        .map(|s| s.ident.unraw().to_string())
+}
+
 /// [`method_symbol`] from an already computed struct stem.
 pub fn method_symbol_of(struct_stem: &str, method: &str) -> String {
     format!("{SYMBOL_PREFIX}{struct_stem}_{method}")
@@ -2237,8 +2272,28 @@ pub fn is_marked_module(item_mod: &ItemMod) -> bool {
 /// method (static or instance) returning `Self` / the struct type. This is what
 /// Julia needs to know; both codegen flavours box these cases.
 pub fn returns_boxed_struct(struct_name: &Ident, method: &syn::ImplItemFn) -> bool {
-    method.sig.ident == "new"
-        || matches!(&method.sig.output, ReturnType::Type(_, ty) if is_self_type(ty, struct_name))
+    returns_own_type(&method.sig.output, struct_name, None)
+}
+
+/// Whether a method returns the implementing type by value, so its wrapper
+/// hands Julia an owning `*mut Struct` (`WrapperReturn::Boxed`): the declared
+/// return type is `Self`, the struct's name, or the impl header's own type
+/// (`own_ty`, which a `use .. as` may have renamed). The one rule for the
+/// manifest's `returns_boxed_struct` / `is_constructor` and the codegen's
+/// boxed return, in both flavours (PR #513 review).
+///
+/// Decided by the return type alone, never by the method's name: a `fn new()
+/// -> i32` (a trait's, or an inherent helper) returns an `i32`, and boxing it
+/// as a `*mut Struct` does not compile.
+pub fn returns_own_type(output: &ReturnType, struct_name: &Ident, own_ty: Option<&Type>) -> bool {
+    let ReturnType::Type(_, ty) = output else {
+        return false;
+    };
+    is_self_type(ty, struct_name)
+        || own_ty
+            .and_then(last_ident)
+            .zip(last_ident(ty))
+            .is_some_and(|(own, returned)| own == returned && matches!(unparen(ty), Type::Path(_)))
 }
 
 /// Generate the FFI wrapper for a method (crate flavour).
@@ -2342,7 +2397,10 @@ pub fn method_wrapper_at_impl_site(
         return refusal.compile_error(&cfg_attrs(&m.func.attrs));
     }
     let stem = struct_stem(struct_module_path, struct_name);
-    let owner = format_ident!("{}", method_string_owner(&stem.to_string(), &m.name()));
+    let owner = format_ident!(
+        "{}",
+        method_string_owner(&stem.to_string(), &m.method_stem())
+    );
     let owned_helper = format_ident!("{}_RustCallOwnedString", owner);
     let owned_free = format_ident!("{}_free_rust_string", owner);
     let borrowed_helper = format_ident!("{}_RustCallBorrowedString", owner);
@@ -2456,10 +2514,9 @@ fn method_returns_borrowed_str(m: &MethodModel) -> bool {
 }
 
 fn inline_method_is_ctor(struct_name: &Ident, m: &MethodModel) -> bool {
-    // Historical inline rule: `new`, or any method returning Self / the struct type
-    // (static or not) is treated as returning a boxed struct.
-    m.name() == "new"
-        || matches!(&m.func.sig.output, ReturnType::Type(_, ty) if is_self_type(ty, struct_name))
+    // A method returning `Self` / the struct type (static or not) hands Julia
+    // a boxed struct; the name decides nothing (PR #513 review).
+    m.returns_boxed_struct(struct_name)
 }
 
 /// Generate the `extern "C"` wrappers for a non-generic inline struct: the
@@ -2656,8 +2713,10 @@ fn method_spec(
     panic_hook: PanicHook,
 ) -> WrapperSpec {
     let method_name = m.func.sig.ident.clone();
-    let method_name_str = method_name.to_string();
-    let symbol = format_ident!("{}", method_symbol_of(&stem.to_string(), &method_name_str));
+    // Every per-method name hangs off the method stem, which tells an
+    // inherent method from each trait's of the same name (#506).
+    let method_stem = m.method_stem();
+    let symbol = format_ident!("{}", method_symbol_of(&stem.to_string(), &method_stem));
     let shape = m.receiver();
     let receiver = (!shape.is_static()).then(|| WrapperReceiver {
         ty: self_path.clone(),
@@ -2685,13 +2744,13 @@ fn method_spec(
         // `CResult_<Struct>_<method>`, with a `String` payload composed onto
         // the owner's owned-string buffer.
         WrapperReturn::CResult {
-            name: format_ident!("CResult_{}_{}", stem, method_name_str),
+            name: format_ident!("CResult_{}_{}", stem, method_stem),
             ok: payload_of(&r.ok_type, owned_helper, owned_free, declare),
             err: payload_of(&r.err_type, owned_helper, owned_free, declare),
         }
     } else if let Some(o) = method_option_return(m) {
         WrapperReturn::COption {
-            name: format_ident!("COption_{}_{}", stem, method_name_str),
+            name: format_ident!("COption_{}_{}", stem, method_stem),
             inner: payload_of(&o.inner_type, owned_helper, owned_free, declare),
         }
     } else if method_returns_string(m) || method_copies_str(m) {

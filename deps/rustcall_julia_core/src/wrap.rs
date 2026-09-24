@@ -1135,7 +1135,7 @@ fn python_method_wrapper(
     };
     let omitted = original.args.len() - entry.args.len();
     let owner_name = crate::claims::default_arity_name(
-        &crate::codegen::method_string_owner(class_name, &entry.name),
+        &crate::codegen::method_string_owner(class_name, &entry.method_stem()),
         omitted,
     );
 
@@ -1495,7 +1495,7 @@ fn method_wrapper(
     // `RustCall._emit_method_code`'s `<Struct>_<method>` owner matches.
     let owner = format_ident!(
         "{}",
-        crate::codegen::method_string_owner(class_name, &m.name)
+        crate::codegen::method_string_owner(class_name, &m.method_stem())
     );
     let boxed = m.returns_boxed_struct.then(|| class.clone());
     let plan = return_plan(

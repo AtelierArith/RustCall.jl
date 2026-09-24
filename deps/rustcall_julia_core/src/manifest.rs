@@ -727,6 +727,27 @@ impl Field {
     }
 }
 
+impl Method {
+    /// The part of every per-method name after the struct stem
+    /// ([`crate::codegen::method_stem`], #506), from [`Method::trait_path`].
+    pub fn method_stem(&self) -> String {
+        let trait_name = syn::parse_str::<syn::Path>(&self.trait_path)
+            .ok()
+            .and_then(|path| crate::codegen::trait_name_of(&path));
+        crate::codegen::method_stem(trait_name.as_deref(), &self.name)
+    }
+
+    /// The name Julia binds the method under: [`Method::julia_name`], or the
+    /// Rust name when that is empty.
+    pub fn julia_name(&self) -> &str {
+        if self.julia_name.is_empty() {
+            &self.name
+        } else {
+            &self.julia_name
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Method {
     pub name: String,
@@ -805,10 +826,21 @@ pub struct Method {
     /// method. A method is identified by `(trait_path, name)`: a refused
     /// `#[julia]` method of a trait impl is recorded on its struct (#503) and
     /// must not be merged with an inherent method, or another trait's, of the
-    /// same name. Additive within schema 0.7. Describing a trait impl's
-    /// wrapped methods is #506.
+    /// same name. Additive within schema 0.7. Since #506 every `#[julia]`
+    /// method of a crate trait impl is described, its wrapper exported under
+    /// [`Method::method_stem`].
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub trait_path: String,
+    /// The name Julia binds the method under, when it is not [`Method::name`]
+    /// (#506): a trait impl's method whose name another described method of
+    /// the struct also has — an inherent one, or another trait's — is bound
+    /// as `<Trait>_<name>` (`Far_m`), the inherent method keeping `m`, as
+    /// Rust's own method resolution prefers it. Empty — and then omitted —
+    /// for every other method, which is bound under its name. Decided once,
+    /// by the crate scan (`extract::julia_method_names`). Additive within
+    /// schema 0.7.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub julia_name: String,
     /// How each `Result` / `Option` payload travels: `""` as written,
     /// `"string"` for an owned `<owner>_RustCallOwnedString` buffer released
     /// through `<owner>_free_rust_string` (schema 6, #268), the owner being

@@ -119,6 +119,38 @@ impl MethodModel {
             .unwrap_or_default()
     }
 
+    /// The part of every per-method name after the struct stem
+    /// ([`crate::codegen::method_stem`], #506): the name, preceded by the
+    /// trait's for a method of a trait impl.
+    pub fn method_stem(&self) -> String {
+        let trait_name = self
+            .host
+            .as_ref()
+            .and_then(|h| h.trait_.as_ref())
+            .and_then(crate::codegen::trait_name_of);
+        crate::codegen::method_stem(trait_name.as_deref(), &self.name())
+    }
+
+    /// Whether the method returns the implementing type by value
+    /// ([`crate::codegen::returns_own_type`]): its wrapper returns an owning
+    /// pointer. Read from the return type and the block's header, never the
+    /// name.
+    pub fn returns_boxed_struct(&self, struct_name: &syn::Ident) -> bool {
+        crate::codegen::returns_own_type(
+            &self.func.sig.output,
+            struct_name,
+            self.host.as_ref().map(|h| &h.self_ty),
+        )
+    }
+
+    /// Whether Julia binds the method as the struct's constructor (`Buf(..)`):
+    /// an inherent method returning the type. A trait's `Self`-returning
+    /// function (`Default::default`, `From::from`) keeps its own name, and
+    /// would otherwise shadow the inherent constructor (#506).
+    pub fn is_constructor(&self, struct_name: &syn::Ident) -> bool {
+        self.trait_path().is_empty() && self.returns_boxed_struct(struct_name)
+    }
+
     /// Whether `other` is this method: the same name in the same trait (or
     /// both inherent). Two blocks may define a method of one name only when
     /// one is a trait impl, and then both are distinct methods (#503 review).

@@ -11,7 +11,7 @@ use syn::{FnArg, Item, ItemFn, ItemImpl, Pat, ReturnType};
 
 use crate::attrs::{has_no_mangle, rustcall_attribute};
 use crate::cfg::{body_has_cfg, predicate_string, CfgSet};
-use crate::codegen::{returns_boxed_struct, symbol_stem};
+use crate::codegen::symbol_stem;
 
 use crate::manifest::{
     Arg, Attribute, Field, Function, Manifest, Method, Mode, ReturnKind, Struct,
@@ -122,17 +122,17 @@ pub struct MethodReturnShape {
 /// the type as written, so their manifest entry must keep saying `Plain`.
 pub fn method_return_shape(
     struct_name: &syn::Ident,
-    func: &syn::ImplItemFn,
+    m: &crate::model::MethodModel,
     wrapped: bool,
 ) -> MethodReturnShape {
-    let output = &func.sig.output;
+    let output = &m.func.sig.output;
     let mut shape = MethodReturnShape {
         kind: plain_return_kind(output),
         ..Default::default()
     };
     // A constructor (`new`, or anything returning `Self`) is boxed before the
     // `Result` lowering is ever consulted, exactly as in `method_spec`.
-    if !wrapped || returns_boxed_struct(struct_name, func) {
+    if !wrapped || m.returns_boxed_struct(struct_name) {
         return shape;
     }
     let ReturnType::Type(_, ty) = output else {
@@ -626,6 +626,25 @@ fn plain_target_error(imp: &ScannedImpl, target: &Candidate) -> ExtractError {
     ))
 }
 
+/// A `#[julia]` trait impl whose target is a `type` alias (PR #513 review).
+fn alias_target_error(imp: &ScannedImpl, target: &Candidate) -> ExtractError {
+    let header = imp.header.display();
+    let where_ = location(imp.line, &imp.file);
+    let name = &target.name;
+    let module = if target.module_path.is_empty() {
+        "the crate root".to_string()
+    } else {
+        format!("module `{}`", target.module_path.join("::"))
+    };
+    ExtractError::Unsupported(format!(
+        "#[julia] trait impl `{header}` {where_} names `{name}`, a `type` alias in {module}. \
+         The proc macro exports its methods under the alias's name, and the scan cannot \
+         tell which struct the alias names, so they could not be bound. Write the \
+         `#[julia]` struct's own name in the impl header, or remove `#[julia]` from the \
+         block (#506)."
+    ))
+}
+
 fn location(line: usize, file: &str) -> String {
     if file.is_empty() {
         format!("(line {line})")
@@ -711,6 +730,10 @@ struct PlainStruct {
     name: String,
     module_path: Vec<String>,
     file: String,
+    /// A `type X = ..;` alias rather than a type declared here: the scan
+    /// cannot tell what it names, so a `#[julia]` trait impl through it is
+    /// refused rather than skipped (PR #513 review).
+    alias: bool,
 }
 
 /// A struct an `impl` header may name, annotated or not: `julia` is its index
@@ -722,6 +745,8 @@ struct Candidate {
     module_path: Vec<String>,
     julia: Option<usize>,
     file: String,
+    /// A `type` alias ([`PlainStruct::alias`]).
+    alias: bool,
 }
 
 impl Located for Candidate {
@@ -749,8 +774,9 @@ struct ScannedImpl {
     /// of one fragment apart (#357 review).
     enclosing_cfg: Vec<syn::Attribute>,
     /// A trait impl (`#[julia] impl Trait for C`). The proc macro wraps its
-    /// `#[julia]` methods; the manifest describes only the ones it refuses,
-    /// so the refusal reaches Julia (#503).
+    /// `#[julia]` methods, and the manifest describes every one of them with
+    /// its trait (#503, #506); a header naming no `#[julia]` struct is left
+    /// alone rather than refused.
     trait_impl: bool,
     line: usize,
     file: String,
@@ -854,6 +880,7 @@ impl CrateScan {
                         name: e.ident.to_string(),
                         module_path: module_path.clone(),
                         file: file.to_string(),
+                        alias: false,
                     });
                 }
                 Item::Union(u) => {
@@ -861,6 +888,7 @@ impl CrateScan {
                         name: u.ident.to_string(),
                         module_path: module_path.clone(),
                         file: file.to_string(),
+                        alias: false,
                     });
                 }
                 // `type Gauge = …;` names a type an inherent impl can be
@@ -871,6 +899,7 @@ impl CrateScan {
                         name: t.ident.to_string(),
                         module_path: module_path.clone(),
                         file: file.to_string(),
+                        alias: true,
                     });
                 }
                 Item::Struct(s) => {
@@ -881,6 +910,7 @@ impl CrateScan {
                             name: s.ident.to_string(),
                             module_path: module_path.clone(),
                             file: file.to_string(),
+                            alias: false,
                         });
                         continue;
                     };
@@ -1089,12 +1119,14 @@ impl CrateScan {
                 module_path: s.module_path.clone(),
                 julia: Some(i),
                 file: s.file.clone(),
+                alias: false,
             })
             .chain(self.plain_structs.iter().map(|p| Candidate {
                 name: p.name.clone(),
                 module_path: p.module_path.clone(),
                 julia: None,
                 file: p.file.clone(),
+                alias: p.alias,
             }))
             .collect();
         let mut impls = std::mem::take(&mut self.impls);
@@ -1112,10 +1144,6 @@ impl CrateScan {
             if wrapped_methods(&imp.item, Mode::Crate, &imp.cfg).is_empty() {
                 continue;
             }
-            if imp.trait_impl {
-                self.attach_refused_trait_methods(imp, &candidates);
-                continue;
-            }
             // Resolution follows Rust's own rules, so the plain structs are
             // candidates too; a header that lands on one names a type the
             // proc-macro wrapped as its receiver and RustCall cannot describe
@@ -1123,10 +1151,32 @@ impl CrateScan {
             let index = match locate(&candidates, &imp.header, &self.imports) {
                 Ok(index) => match candidates[index].julia {
                     Some(julia) => julia,
+                    // A trait impl through a `type` alias: the proc macro
+                    // wraps its methods under the alias's name, and the scan
+                    // cannot tell what the alias names, so the crate is
+                    // refused rather than left with wrappers nothing
+                    // describes (PR #513 review).
+                    None if imp.trait_impl && candidates[index].alias => {
+                        return Err(alias_target_error(imp, &candidates[index]))
+                    }
+                    // A trait impl of a type declared here without
+                    // `#[julia]` (`impl Display for Plain`) is ordinary code;
+                    // it is not bound, as before #506.
+                    None if imp.trait_impl => continue,
                     None => return Err(plain_target_error(imp, &candidates[index])),
                 },
+                // No type of that name is declared anywhere in the crate —
+                // every `#[julia]` struct is a candidate — so the target is a
+                // foreign or primitive type (`impl Tr for u32`), which is
+                // definitely not a `#[julia]` struct and is not bound. An
+                // ambiguous name is refused like an inherent block's.
+                Err(Unresolved::NotFound) if imp.trait_impl => continue,
                 Err(why) => return Err(self.unresolved_impl(imp, why)),
             };
+            // A trait impl's `#[julia]` methods are attached like an inherent
+            // block's (#506): each keeps its trait (`MethodModel::host`),
+            // which is what tells it from an inherent method or another
+            // trait's of the same name, and what its symbol hangs off.
             // Two `#[julia]` structs of one name at one module path are cfg
             // variants of each other — a fragment included under
             // `#[cfg(feature = "x")]` and `#[cfg(not(feature = "x"))]`, both
@@ -1149,42 +1199,14 @@ impl CrateScan {
             for (claim, owner) in entry.claims() {
                 self.claim(claim, owner, &scanned.file, &scanned.module_path)?;
             }
+            // Two methods with one symbol are refused above; two with one
+            // Julia name only here (#506).
+            if let Some(clash) = julia_name_clash(&entry) {
+                return Err(ExtractError::Unsupported(clash));
+            }
             manifest.structs.push(entry);
         }
         Ok(())
-    }
-
-    /// Attach the `#[julia]` methods of a trait impl that the proc macro
-    /// refuses (#503) to the `#[julia]` struct the header names, so the
-    /// refusal reaches Julia. The methods it wraps are not described — a
-    /// trait impl's wrappers are not part of the manifest — and a header
-    /// that names no `#[julia]` struct, which the scan never refused for a
-    /// trait impl, is left alone.
-    fn attach_refused_trait_methods(&mut self, imp: &ScannedImpl, candidates: &[Candidate]) {
-        let Ok(index) = locate(candidates, &imp.header, &self.imports) else {
-            return;
-        };
-        let Some(julia) = candidates[index].julia else {
-            return;
-        };
-        for mut m in wrapped_methods(&imp.item, Mode::Crate, &imp.cfg) {
-            m.site = Some(crate::model::ImplSite {
-                module_path: imp.header.module_path.clone(),
-                self_ty: (*imp.item.self_ty).clone(),
-            });
-            let site = crate::refusal::MethodSite::Crate {
-                self_ty: &imp.item.self_ty,
-            };
-            if crate::refusal::method_refusal(site, &m).is_none() {
-                continue;
-            }
-            // Identified by trait and name: an inherent method, or another
-            // trait's, of the same name is a different method (#503 review).
-            let model = &mut self.structs[julia].model;
-            if !model.methods.iter().any(|seen| seen.is_same_method(&m)) {
-                model.methods.push(m);
-            }
-        }
     }
 
     /// The `#[julia]` structs at `index` — or the same-named struct at the same
@@ -1345,6 +1367,85 @@ impl CrateScan {
     }
 }
 
+/// Decide the name Julia binds each method under (`Method::julia_name`, #506).
+///
+/// An inherent method keeps its name, and so does a trait impl's method whose
+/// name no other method of the struct has. When one does — an inherent `m`
+/// beside `impl Far for Buf { fn m }`, or `m` of two traits — each trait's is
+/// bound as `<Trait>_<m>` (`Far_m`), the trait named as its path ends: Rust's
+/// method resolution prefers the inherent method and needs the trait spelled
+/// out for the others, and so does the Julia surface. The rule reads the
+/// struct's described methods only, so a method's Julia name does not depend
+/// on the order blocks were scanned in.
+fn julia_method_names(methods: &mut [Method]) {
+    // A raw identifier's `r#` is no part of the name: `r#foo` and `foo` are
+    // one Rust name, and `#` would start a comment in a written Julia module
+    // (PR #513 review). Names are compared, and bound, without it.
+    fn bare(name: &str) -> &str {
+        name.strip_prefix("r#").unwrap_or(name)
+    }
+    let names: Vec<(String, String)> = methods
+        .iter()
+        .map(|m| (m.trait_path.clone(), bare(&m.name).to_string()))
+        .collect();
+    for m in methods.iter_mut() {
+        let name = bare(&m.name).to_string();
+        let shared = !m.trait_path.is_empty()
+            && names
+                .iter()
+                .any(|(trait_path, other)| *other == name && *trait_path != m.trait_path);
+        if shared {
+            let trait_name = syn::parse_str::<syn::Path>(&m.trait_path)
+                .ok()
+                .and_then(|path| crate::codegen::trait_name_of(&path))
+                .unwrap_or_default();
+            m.julia_name = format!("{trait_name}_{name}");
+        } else if name != m.name {
+            // Any method, inherent or a trait's, spelled as a raw identifier.
+            m.julia_name = name;
+        }
+    }
+}
+
+/// Two methods of one struct that Julia would bind under one name
+/// (`julia_method_names`): a trait method qualified into the name of another
+/// method (`Far_m` beside an inherent `Far_m`), or two traits whose paths end
+/// in the same name. The later definition would silently replace the
+/// earlier, so the scan refuses the crate with both named (#506).
+fn julia_name_clash(entry: &Struct) -> Option<String> {
+    let bound: Vec<&Method> = entry
+        .methods
+        .iter()
+        .filter(|m| {
+            !m.is_constructor && !crate::manifest::skip_reason::is_codegen_refusal(&m.skip_reason)
+        })
+        .collect();
+    let describe = |m: &Method| {
+        if m.trait_path.is_empty() {
+            format!("`{}::{}`", entry.name, m.name)
+        } else {
+            format!("`<{} as {}>::{}`", entry.name, m.trait_path, m.name)
+        }
+    };
+    for (i, a) in bound.iter().enumerate() {
+        for b in &bound[i + 1..] {
+            if a.julia_name() == b.julia_name() && !crate::pyo3::cfg_exclusive(&a.cfg, &b.cfg) {
+                return Some(format!(
+                    "#[julia] {} and {} of struct `{}` would both be bound in Julia as `{}`. \
+                     A trait impl's method that shares its name with another method of the \
+                     struct is bound as `<Trait>_<method>`; rename one of the methods, or \
+                     remove `#[julia]` from one of them (#506).",
+                    describe(a),
+                    describe(b),
+                    entry.name,
+                    a.julia_name()
+                ));
+            }
+        }
+    }
+    None
+}
+
 fn crate_struct_entry(
     model: &StructModel,
     module_path: &[String],
@@ -1392,7 +1493,7 @@ fn crate_struct_entry(
     let shapes: Vec<MethodReturnShape> = model
         .methods
         .iter()
-        .map(|m| method_return_shape(struct_name, &m.func, true))
+        .map(|m| method_return_shape(struct_name, m, true))
         .collect();
     // Each method's refusal is decided where the proc macro decides it: at the
     // block, which spells the struct as its header does (#503).
@@ -1412,10 +1513,16 @@ fn crate_struct_entry(
             .unwrap_or_default(),
             name: m.name(),
             trait_path: m.trait_path(),
-            symbol: crate::codegen::method_symbol_of(&stem, &m.name()),
+            // Decided over the whole struct once every method is known
+            // (`julia_method_names`).
+            julia_name: String::new(),
+            symbol: crate::codegen::method_symbol_of(&stem, &m.method_stem()),
             is_static: m.is_static(),
             is_mutable: m.is_mutable(),
-            is_constructor: returns_boxed_struct(struct_name, &m.func),
+            // A trait's `Self`-returning function (`Default::default`,
+            // `From::from`) is bound under its name, not as the struct's
+            // constructor, which it would shadow (#506).
+            is_constructor: m.is_constructor(struct_name),
             is_classmethod: false,
             vis: crate::attrs::visibility_string(&m.func.vis),
             python_name: String::new(),
@@ -1424,7 +1531,7 @@ fn crate_struct_entry(
             // The proc-macro emits every method's wrapper at its impl block,
             // with string buffers of its own (`method_wrapper_at_impl_site`),
             // wherever the block sits.
-            string_owner: crate::codegen::method_string_owner(&stem, &m.name()),
+            string_owner: crate::codegen::method_string_owner(&stem, &m.method_stem()),
             return_kind: shapes[i].kind,
             ok_type: shapes[i].ok_type.clone(),
             err_type: shapes[i].err_type.clone(),
@@ -1432,7 +1539,7 @@ fn crate_struct_entry(
             ok_abi: shapes[i].ok_abi.clone(),
             err_abi: shapes[i].err_abi.clone(),
             inner_abi: shapes[i].inner_abi.clone(),
-            returns_boxed_struct: returns_boxed_struct(struct_name, &m.func),
+            returns_boxed_struct: m.returns_boxed_struct(struct_name),
             // The block's and its modules' predicates gate the method as much
             // as its own do (#300 review, #315).
             cfg: crate::cfg::predicate_string(&crate::cfg::effective_cfg_attrs(
@@ -1448,7 +1555,9 @@ fn crate_struct_entry(
             generic_wrapper: String::new(),
             generic_wrapper_name: String::new(),
         })
-        .collect();
+        .collect::<Vec<_>>();
+    let mut methods = methods;
+    julia_method_names(&mut methods);
     Struct {
         callable_path: Vec::new(),
         cfg: predicate_string(&effective_cfg),

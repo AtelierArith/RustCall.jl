@@ -7,7 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+- **A trait impl's `#[julia]` method exports a symbol that carries its
+  trait** ([#506](https://github.com/AtelierArith/RustCall.jl/issues/506)).
+  `#[julia] impl tr::Far for Buf { #[julia] fn m }` exported
+  `rustcall_Buf_m`, the symbol an inherent `Buf::m` exports, so an inherent
+  method and a trait's of one name, or two traits' methods of one name,
+  defined one `#[no_mangle]` symbol twice. Every per-method name now hangs
+  off one method stem (`rustcall_julia_core::codegen::method_stem`): the
+  method's name for an inherent method, the trait's name, length-prefixed,
+  ahead of it for a trait's. So the symbol is now `rustcall_Buf_3Far_m`, and
+  its string buffers (`Buf_3Far_m_…`) and `CResult_` / `COption_` aggregates
+  are named the same way. No identifier starts with a digit, so the stem
+  never equals an inherent name. Inherent methods' symbols are unchanged. A
+  hand-written `@rust rustcall_Buf_m(..)` call that reached a trait method
+  must use the new name; `@rust_crate` bindings read symbols from the manifest.
+  The proc macro exports different symbols, and `rustcall_julia_core` gains
+  public API (`codegen::method_stem`, `Method.julia_name`), so the next
+  publish of the Rust crates is a minor bump, to 0.4.0.
+
 ### Fixed
+- **`@rust_crate` binds the `#[julia]` methods of a trait impl**
+  ([#506](https://github.com/AtelierArith/RustCall.jl/issues/506)). The crate
+  scan skipped trait impls, so the methods the proc macro wrapped were neither
+  described nor bound. They are now in the manifest with their `trait_path`
+  and symbol, and both crate emitters (`@rust_crate` and
+  `write_bindings_to_file`) bind them. A trait method keeps its name unless
+  another method of the struct has the same name. Then the inherent method
+  keeps the name and each trait's is bound as `<Trait>_<name>` (`Far_m`). That
+  name is decided once by the scan and carried as `Method.julia_name`
+  (additive within manifest schema 0.7). A trait's `Self`-returning function
+  is bound under its name, not as a second constructor. Whether a method
+  returns a boxed struct (and is a constructor) is read from its return type
+  alone, never its name, in both flavours: a `fn new() -> i32` returns an
+  `i32` (it used to be boxed as `*mut Struct`, which did not compile). The scan refuses a
+  crate where two traits ending in one name wrap a method of one name (a
+  duplicate symbol), or where a qualified name is already taken.
+  `boundary_report` examines every such method. A trait impl of a type
+  without `#[julia]` is still left alone; one through a `type` alias fails the
+  scan with the alias named instead of being dropped silently.
 - **A method's receiver is read in one place, for inherent and trait methods
   alike** ([#509](https://github.com/AtelierArith/RustCall.jl/issues/509)).
   `self: &mut Self` (and `self: &mut Buf`, `self: &mut &mut Self`) used to be
