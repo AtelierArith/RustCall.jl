@@ -276,6 +276,61 @@ _own_row(lib, member) = RustCall.GENERIC_FUNCTIONS_BY_LIB[(lib, member)]
         x = _boxed(k, Int32, 1)
         @test _tag(k, x) == 11
         finalize(x)
+        # The restore path — an unloaded or precompiled block brought back by
+        # its module's next call — installs them the same way: the rows are
+        # there in the transaction that publishes the restored library, not
+        # after it (PR #523 review).
+        RustCall.unload_library(lib_k)
+        @test !haskey(RustCall.GENERIC_FUNCTIONS_BY_LIB, (lib_k, "Boxed_new"))
+        at_registration[] = nothing
+        y = task_local_storage(RustCall._AFTER_MANIFEST_REGISTRATION, hook) do
+            _boxed(k, Int32, 2)
+        end
+        @test at_registration[] isa Set
+        @test at_registration[] ⊇ Set(["Boxed_new", "Boxed_tag", "Boxed_twice", "Boxed_free"])
+        @test _tag(k, y) == 11
+        finalize(y)
+    end
+
+    # A generic registered by hand, one wrapper at a time, is ungrouped: its
+    # constructor's snapshot holds only itself, and the destructor is a
+    # registration of its own — found as before, never looked for inside the
+    # constructor's one-member "group" (PR #523 review).
+    @testset "a hand-registered, ungrouped constructor keeps its destructor" begin
+        src = """
+            #[julia]
+            pub struct LegacyBox522<T> { pub v: T }
+            impl<T: Copy> LegacyBox522<T> {
+                pub fn new(v: T) -> Self { LegacyBox522 { v } }
+            }
+            """
+        expanded = RustCall.expand_inline(src)
+        info = only(RustCall.manifest_struct_infos(expanded.manifest))
+        wrappers = [first(w) for w in info.generic_wrappers]
+        @test "LegacyBox522_new" in wrappers
+        @test "LegacyBox522_free" in wrappers
+        for (wrapper, _, params) in info.generic_wrappers
+            RustCall.register_generic_function(wrapper, expanded.source,
+                Symbol.(isempty(params) ? info.type_params : params))
+        end
+        @test RustCall.GENERIC_FUNCTION_REGISTRY["LegacyBox522_new"].group === nothing
+        legacy = _own_module(:GenericOwnerLegacy)
+        # The emitted code names these helpers unqualified, as `rust"""`'s own
+        # expansion (a RustCall macro) resolves them.
+        Core.eval(legacy, :(using RustCall: _call_generic_constructor, _call_generic_method,
+                                            _call_generic_field, _resolve_generic_struct_field_type))
+        Core.eval(legacy, :(macro emit_legacy()
+            $(RustCall.emit_julia_definitions)($info)
+        end))
+        Base.invokelatest(Core.eval, legacy, :(@emit_legacy))
+        x = _own_call(_own_get(legacy, :LegacyBox522){Int32}, Int32(4))
+        @test getfield(x, :free_ptr) != C_NULL
+        @test getfield(x, :alive)[]
+        @test _own_call(getproperty, x, :v) == 4
+        before = RustCall.finalizer_failure_count()
+        finalize(x)
+        @test getfield(x, :ptr) == C_NULL
+        @test RustCall.finalizer_failure_count() == before
     end
 
     # The member and its whole group are one snapshot, read in one transaction;

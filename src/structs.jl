@@ -1497,6 +1497,7 @@ function _call_generic_constructor(func_name::String, struct_name::AbstractStrin
     snapshot === nothing &&
         throw(RustError("'$func_name' is not registered as a generic struct constructor"))
     _generic_struct_seam(snapshot)
+    grouped = snapshot.member.group !== nothing
     ptr, lib_name, handle, generation = _generic_constructor_call(snapshot, args, types)
     # Generic struct groups specialize the destructor beside the constructor.
     # Resolve that cached wrapper first so the object captures the same image
@@ -1509,8 +1510,11 @@ function _call_generic_constructor(func_name::String, struct_name::AbstractStrin
     free_info = _generic_artifact_member(lib_name, free_name, alive)
     if free_info === nothing
         free_info = try
-            # The destructor of the constructor's own group, from its snapshot.
-            generic_free = _generic_snapshot_member(snapshot, free_name)
+            # The destructor of the constructor's own group, from its snapshot;
+            # a hand-registered, ungrouped constructor has no group, and its
+            # destructor is a registration of its own (PR #523 review).
+            generic_free = grouped ? _generic_snapshot_member(snapshot, free_name) :
+                           _generic_struct_snapshot(caller, free_name; block)
             monomorphize_function(generic_free, _generic_type_params(generic_free.member, types))
         catch
             nothing
@@ -1540,7 +1544,7 @@ function _call_generic_constructor(func_name::String, struct_name::AbstractStrin
     # flag belongs to the image the finalizer will actually call into.
     return (ptr, lib_name,
             generic_struct_generation_snapshot(free_symbol, types, lib_name; caller, block,
-                                               group = snapshot))
+                                               group = grouped ? snapshot : nothing))
 end
 
 """
@@ -1576,24 +1580,18 @@ function _generic_struct_snapshot(caller::Union{Module, Nothing}, name::Abstract
                                   block::Union{Nothing, RustBlockSnapshot} = nothing)
     key = String(name)  # converted before STATE is taken
     (caller === nothing || block === nothing) && return _read_generic_struct_snapshot(nothing, key)
-    owner = nothing
-    for _ in 1:_GENERIC_OWNER_ATTEMPTS
+    # The same rule as `resolve_rust_call` (`_resolve_own_definition`): a known
+    # owner's missing rows are restored and read again, or refused.
+    return _resolve_own_definition() do
         owner = _generic_struct_owner(caller, block)
         # The module records no such block: nothing owns the name here.
         owner === nothing && return _read_generic_struct_snapshot(nothing, key)
         snapshot = _read_generic_struct_snapshot(owner, key)
-        snapshot === nothing || return snapshot
-        yield()
+        snapshot === nothing ?
+            _OwnDefinitionVanished("the generic struct member '$key' of library '$owner'") :
+            snapshot
     end
-    throw(RustError("the generic struct member '$key' of library '$owner' is not " *
-                    "registered: its defining block's library was unloaded or replaced " *
-                    "while it was being looked up, and restoring it did not register it again"))
 end
-
-# How many times `_generic_struct_snapshot` restores the defining block when the
-# owner's row is missing before it gives up. A row goes missing only while an
-# unload races the lookup; the restore that follows registers it again.
-const _GENERIC_OWNER_ATTEMPTS = 3
 
 """
     _read_generic_struct_snapshot(owner, key) -> Union{GenericStructSnapshot, Nothing}

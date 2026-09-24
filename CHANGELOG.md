@@ -89,7 +89,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   owner whose rows are gone is retried and then refused, never answered by
   another module's registration of the name. A struct's group rows are
   installed with the rest of its library's metadata, in the one transaction
-  that publishes the library. An instantiation's cache key is unchanged (the source,
+  that publishes the library. The same rule now holds for `@rust f(x)`: when
+  one of the caller's own blocks is found unloaded after it was restored, the
+  call restores it again (up to three times) or raises, and never falls
+  through to another module's generic of the same name
+  (`RustCall._resolve_own_definition`, shared by both lookups). A
+  hand-registered, ungrouped generic constructor keeps finding its separately
+  registered `_free`. An instantiation's cache key is unchanged (the source,
   the bindings, the compiler and the struct's name, never the owner), so two
   same-named structs share an instantiation only when their sources are the
   same.
