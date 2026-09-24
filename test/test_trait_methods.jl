@@ -183,6 +183,49 @@ end
             end
         end
 
+        @testset "a raw method name is written without its r# (PR #513 review)" begin
+            mktempdir() do dir
+                _tm_write_crate(dir)
+                # A trait method spelled as a raw identifier, unique and shared.
+                lib = joinpath(dir, "src", "lib.rs")
+                write(lib, read(lib, String) * """
+
+                    pub trait Raw { fn r#match(&self) -> i32; fn r#loop(&self) -> i32; }
+
+                    #[julia]
+                    impl Buf {
+                        #[julia]
+                        pub fn r#loop(&self) -> i32 { -1 }
+                    }
+
+                    #[julia]
+                    impl Raw for Buf {
+                        #[julia]
+                        fn r#match(&self) -> i32 { self.n + 1000 }
+                        #[julia]
+                        fn r#loop(&self) -> i32 { self.n + 2000 }
+                    }
+                    """)
+                output_path = joinpath(dir, "RawTraitMethods.jl")
+                RustCall.write_bindings_to_file(dir, output_path;
+                                                output_module_name = "RawTraitMethodsWritten")
+                content = read(output_path, String)
+                @test !occursin("function r#", content)
+                sandbox = Module(:TmRawSandbox)
+                Base.include(sandbox, output_path)
+                mod = Base.invokelatest(getfield, sandbox, :RawTraitMethodsWritten)
+                get(name) = Base.invokelatest(getfield, mod, name)
+                b = Base.invokelatest(get(:Buf), Int32(4))
+                @test Base.invokelatest(get(:match), b) == 1004
+                @test Base.invokelatest(get(:loop), b) == -1
+                @test Base.invokelatest(get(:Raw_loop), b) == 2004
+                try
+                    RustCall.unload_library(get(:_LIB_NAME); close = true)
+                catch
+                end
+            end
+        end
+
         @testset "a module written by write_bindings_to_file binds them too" begin
             mktempdir() do dir
                 _tm_write_crate(dir)

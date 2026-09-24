@@ -1334,26 +1334,31 @@ impl CrateScan {
 /// struct's described methods only, so a method's Julia name does not depend
 /// on the order blocks were scanned in.
 fn julia_method_names(methods: &mut [Method]) {
+    // A raw identifier's `r#` is no part of the name: `r#foo` and `foo` are
+    // one Rust name, and `#` would start a comment in a written Julia module
+    // (PR #513 review). Names are compared, and bound, without it.
+    fn bare(name: &str) -> &str {
+        name.strip_prefix("r#").unwrap_or(name)
+    }
     let names: Vec<(String, String)> = methods
         .iter()
-        .map(|m| (m.trait_path.clone(), m.name.clone()))
+        .map(|m| (m.trait_path.clone(), bare(&m.name).to_string()))
         .collect();
     for m in methods.iter_mut() {
-        if m.trait_path.is_empty() {
-            continue;
-        }
-        let shared = names
-            .iter()
-            .any(|(trait_path, name)| *name == m.name && *trait_path != m.trait_path);
+        let name = bare(&m.name).to_string();
+        let shared = !m.trait_path.is_empty()
+            && names
+                .iter()
+                .any(|(trait_path, other)| *other == name && *trait_path != m.trait_path);
         if shared {
             let trait_name = syn::parse_str::<syn::Path>(&m.trait_path)
                 .ok()
                 .and_then(|path| crate::codegen::trait_name_of(&path))
                 .unwrap_or_default();
-            // A raw identifier's `r#` is no part of the name, and `#` would
-            // start a comment in a written Julia module (PR #513 review).
-            let name = m.name.strip_prefix("r#").unwrap_or(&m.name);
             m.julia_name = format!("{trait_name}_{name}");
+        } else if name != m.name {
+            // Any method, inherent or a trait's, spelled as a raw identifier.
+            m.julia_name = name;
         }
     }
 }

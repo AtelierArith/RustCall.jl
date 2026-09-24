@@ -314,3 +314,33 @@ fn a_raw_trait_name_leaves_no_hash_in_the_julia_name() {
         assert!(!m.julia_name.contains('#'), "{m:?}");
     }
 }
+
+#[test]
+fn every_raw_method_name_is_bound_without_its_prefix() {
+    // A raw name is normalized for every method, not only a shared one, and
+    // `foo` and `r#foo` are one name when deciding whether it is shared
+    // (PR #513 review, round 2).
+    let source = r#"
+        pub trait Tr { fn r#match(&self) -> i32; fn r#loop(&self) -> i32; }
+        #[julia] pub struct Buf { pub n: i32 }
+        #[julia] impl Buf {
+            #[julia] pub fn r#loop(&self) -> i32 { 0 }
+            #[julia] pub fn r#fn(&self) -> i32 { 1 }
+        }
+        #[julia] impl Tr for Buf {
+            #[julia] fn r#match(&self) -> i32 { 2 }
+            #[julia] fn r#loop(&self) -> i32 { 3 }
+        }
+    "#;
+    let manifest = extract(source, Mode::Crate).unwrap();
+    let methods = &manifest.structs[0].methods;
+    // Unique names, inherent or a trait's: bound under the bare name.
+    assert_eq!(method(methods, "Tr", "r#match").julia_name, "match");
+    assert_eq!(method(methods, "", "r#fn").julia_name, "fn");
+    // `loop` is shared: the inherent one keeps it, the trait's is qualified.
+    assert_eq!(method(methods, "", "r#loop").julia_name, "loop");
+    assert_eq!(method(methods, "Tr", "r#loop").julia_name, "Tr_loop");
+    for m in methods {
+        assert!(!m.julia_name().contains('#'), "{m:?}");
+    }
+}
