@@ -724,6 +724,10 @@ function install_library_metadata!(name::String, metadata::PreparedLibraryMetada
     for (key, ret_type) in metadata.return_types
         FUNCTION_RETURN_TYPES_BY_LIB[(name, key)] = ret_type
     end
+    # A generic struct's members replace that group's earlier members of the
+    # same owner in the bare-name registry too (#522); the library's own rows
+    # were cleared above.
+    _drop_obsolete_group_members!(metadata.generics)
     for info in metadata.generics
         GENERIC_FUNCTION_REGISTRY[info.name] = info
         GENERIC_FUNCTIONS_BY_LIB[(name, info.name)] = info

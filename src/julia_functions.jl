@@ -596,11 +596,16 @@ struct (`emit_julia_definitions`, with the block-wide static-method
 collisions of #323) and the block's function wrappers. `@rust_str` splices
 them into its expansion; `inline_boundary_report` runs them in collecting
 mode (#454), so what the report examines is what the block defines.
+
+`block` is the block's `RustBlockSnapshot` as `@rust_str` records it: a generic
+struct's generated code finds its members through it (#522).
 """
 function _inline_wrapper_exprs(signatures::Vector{RustFunctionSignature},
-                               struct_infos::Vector{RustStructInfo})
+                               struct_infos::Vector{RustStructInfo};
+                               block = nothing)
     colliding = _static_method_collisions(signatures, struct_infos)
-    struct_defs = [emit_julia_definitions(info; colliding = colliding) for info in struct_infos]
+    struct_defs = [emit_julia_definitions(info; colliding = colliding, block = block)
+                   for info in struct_infos]
     return struct_defs, emit_julia_function_wrappers(signatures)
 end
 

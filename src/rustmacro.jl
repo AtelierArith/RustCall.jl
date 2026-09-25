@@ -392,26 +392,108 @@ A caller that verifies the snapshot (`::T`) does so before publishing it.
 """
 @noinline function resolve_rust_call(mod::Union{Module, Nothing}, lib_name::String,
                                      func_name::String)
-    resolved, own = if mod === nothing
-        lib_name, String[lib_name]
-    else
-        restored = _resolve_lib(mod, lib_name)
-        restored, isempty(lib_name) ? _module_block_libraries(mod) : String[restored]
-    end
-    epoch = artifact_epoch()
+    # One attempt per restore; an attempt that finds one of the caller's own
+    # blocks unloaded after its restore cannot know whether that block defines
+    # the name, and is retried rather than answered by the fallback (#522).
+    return _resolve_own_definition() do
+        resolved, own, blocks = if mod === nothing
+            lib_name, String[lib_name], String[]
+        else
+            restored = _resolve_lib(mod, lib_name)
+            blocks = _module_block_libraries(mod)
+            restored, isempty(lib_name) ? blocks : String[restored], blocks
+        end
+        _resolution_seam(:restored)
+        epoch = artifact_epoch()
 
-    for lib in own
-        # A generic row first only because it is a table read; one block
-        # never defines a function and a generic of one Julia name.
-        generic = get(GENERIC_FUNCTIONS_BY_LIB, (lib, func_name), nothing)
+        # Whether each of the caller's own blocks defines the name is decided
+        # from ONE snapshot — loaded or not, its generation, its generic row
+        # and whether it exports the name, read in one transaction (#522). A
+        # library's rows are installed and dropped with it, so a loaded block
+        # with no row and no export does not define the name; an unloaded own
+        # block may, and what it defines is unknown until it is restored.
+        states = _own_definition_snapshot(own, func_name)
+        _resolution_seam(:owned_read)
+        for st in states
+            own_block = st.lib in blocks
+            if !st.loaded
+                own_block && return _OwnDefinitionVanished("`$func_name` in library '$(st.lib)'")
+                continue
+            end
+            # A generic first only because it is in hand; one block never
+            # defines a function and a generic of one Julia name.
+            st.generic === nothing || return st.generic
+            target = resolve_call_target(st.lib, func_name; fallback = false)
+            target === nothing || return (epoch, target)
+            # It exported the name when the snapshot was taken and does not
+            # now: its image went away in between.
+            own_block && st.exports &&
+                return _OwnDefinitionVanished("`$func_name` in library '$(st.lib)'")
+        end
+        # Every own block was loaded and answered nothing — as long as each is
+        # still the image the snapshot saw; a symbol lookup that missed on a
+        # replaced image proves nothing.
+        _own_images_unchanged(states, blocks) ||
+            return _OwnDefinitionVanished("`$func_name` in the caller's own libraries")
+
+        generic = get(GENERIC_FUNCTION_REGISTRY, func_name, nothing)
         generic === nothing || return generic
-        target = resolve_call_target(lib, func_name; fallback = false)
-        target === nothing || return (epoch, target)
+        return (epoch, resolve_call_target(resolved, func_name))
     end
+end
 
-    generic = get(GENERIC_FUNCTION_REGISTRY, func_name, nothing)
-    generic === nothing || return generic
-    return (epoch, resolve_call_target(resolved, func_name))
+"""
+    _OwnDefinitionVanished(what)
+
+What one attempt of `_resolve_own_definition` returns when the caller's own
+defining library went away between restoring it and reading its rows: the
+answer is unknown, and nothing process-wide may stand in for it (#522).
+"""
+struct _OwnDefinitionVanished
+    what::String
+end
+
+# How many times `_resolve_own_definition` restores before it gives up. A
+# library disappears only while an unload races the resolution; the restore
+# that follows registers it again.
+const _OWN_DEFINITION_ATTEMPTS = 3
+
+"""
+    _resolve_own_definition(attempt) -> result
+
+Run `attempt()` — which restores the caller's blocks and reads their rows —
+until it returns something other than `_OwnDefinitionVanished`, at most
+`_OWN_DEFINITION_ATTEMPTS` times, then raise a `RustError` naming what
+vanished. The one rule for both lookups by owner (#522): `resolve_rust_call`
+(a name the caller's own block may define) and `_generic_struct_snapshot` (a
+member of the block that emitted a struct). Once the caller's own definition
+is in question, the process-wide registration is never consulted for that
+call — it may be another module's definition of the same name.
+"""
+function _resolve_own_definition(attempt)
+    last = nothing
+    for _ in 1:_OWN_DEFINITION_ATTEMPTS
+        result = attempt()
+        result isa _OwnDefinitionVanished || return result
+        last = result
+        yield()
+    end
+    throw(RustError("$(last.what) is not registered: its defining block's library was " *
+                    "unloaded or replaced while it was being resolved, and restoring it did " *
+                    "not register it again"))
+end
+
+
+# Test seam: called with a stage from `resolve_rust_call`, outside STATE —
+# `:restored` right after the caller's blocks are restored and before anything
+# is resolved, so a test can unload a library in exactly that window (#522).
+# Task local, like `_AFTER_MANIFEST_REGISTRATION`: no other task can install one.
+const _AFTER_RUST_RESOLUTION_RESTORE = :rustcall_after_rust_resolution_restore
+
+function _resolution_seam(stage::Symbol)
+    hook = get(task_local_storage(), _AFTER_RUST_RESOLUTION_RESTORE, nothing)
+    hook === nothing || hook(stage)
+    return nothing
 end
 
 # The libraries `mod`'s own `rust"""` blocks loaded, after `_resolve_lib` has

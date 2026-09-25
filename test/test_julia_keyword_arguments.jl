@@ -209,19 +209,19 @@ end
         Core.eval(g, :(using RustCall))
         Core.eval(g, Meta.parse("""rust\"\"\"
             #[julia]
-            pub fn kw_twice516<T: Copy + std::ops::Add<Output = T>>(end: T) -> T { end + end }
+            pub fn kw_twice<T: Copy + std::ops::Add<Output = T>>(end: T) -> T { end + end }
 
             #[julia]
-            pub struct KwBox516<T> { v: T }
+            pub struct KwBox<T> { v: T }
 
-            impl<T: Copy + std::ops::Add<Output = T>> KwBox516<T> {
+            impl<T: Copy + std::ops::Add<Output = T>> KwBox<T> {
                 pub fn new(r#type: T) -> Self { Self { v: r#type } }
                 pub fn plus(&self, end: T, end_: T) -> T { self.v + end + end_ }
                 pub fn tagged(&self, r#for: &str) -> usize { r#for.len() }
             }
             \"\"\""""))
-        @test RustCall.call_generic_function("kw_twice516", Int32(4)) == 8
-        box = Base.invokelatest(Base.invokelatest(getfield, g, :KwBox516){Int32}, Int32(1))
+        @test RustCall.call_generic_function("kw_twice", Int32(4)) == 8
+        box = Base.invokelatest(Base.invokelatest(getfield, g, :KwBox){Int32}, Int32(1))
         @test Base.invokelatest(Base.invokelatest(getfield, g, :plus), box, Int32(2), Int32(3)) == 6
         @test Base.invokelatest(Base.invokelatest(getfield, g, :tagged), box, "abc") == 3
     end
