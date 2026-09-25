@@ -185,10 +185,13 @@ end
     raw = RustCall.RustFunctionSignature("g", ["r#func_ptr"], ["i32"], "i32", false, String[])
     @test RustCall._generated_local("func_ptr", raw.arg_names) != :func_ptr
     # The PyO3 host reads the same names.
+    scalar = RustCall.PyO3Shape(:scalar, "i32")
     py = RustCall.RustFunctionSignature("h", ["end", "r#for"], ["i32", "i32"], "i32", false, String[];
-                                        attribute = :py_function)
-    @test first(RustCall._pyo3_host_args(py.arg_names, py.arg_types, py.python_defaults,
-                                         py.python_kinds, Dict{String, Any}())) == [:end_, :for_]
+                                        attribute = :py_function,
+                                        py_arg_shapes = Union{Nothing, RustCall.PyO3Shape}[scalar, scalar],
+                                        py_return_shape = scalar)
+    @test first(RustCall._pyo3_host_args(py.arg_names, py.py_arg_shapes, py.python_defaults,
+                                         py.python_kinds)) == [:end_, :for_]
 end
 
 @testset "rust\"\"\" binds keyword-named arguments (#516)" begin
@@ -302,8 +305,8 @@ end
         f = only(filter(f -> f.name == "both", info.pyo3_functions))
         @test f.arg_names == ["end__", "end_", "for_"]
         text = string(Base.remove_linenums!(Expr(:block,
-            RustCall._pyo3_host_function_expr(f, Dict{String, Symbol}())...)))
-        @test occursin("function both(end__::", text)
+            RustCall._pyo3_host_function_expr(f)...)))
+        @test occursin("function both(end__, end_, for_)", text)
         @test !occursin("var\"end\"", text) && !occursin("r#", text)
     end
 end

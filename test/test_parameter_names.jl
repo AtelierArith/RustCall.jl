@@ -251,7 +251,7 @@ end
 function _pn_pyo3(dir, src)
     _pn_write_crate(dir, src; name = "pn_pyo3", pyo3 = true)
     info = PN.scan_crate(dir)
-    return Expr(:block, PN._pyo3_host_item_exprs(info, PN._pyo3_host_classes(info))...)
+    return Expr(:block, PN._pyo3_host_item_exprs(info)...)
 end
 
 function _pn_emitters(textdir, pyodir)

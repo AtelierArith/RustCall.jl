@@ -85,6 +85,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `c_result`) keeps its name. `test/test_parameter_names.jl` checks every
   emitter: no definition that takes a parameter or is defined on a crate type
   binds a name a Rust identifier can spell.
+- **A PyO3 host property declared through `#[getter]` / `#[setter]` methods is
+  read under its Julia name** ([#524](https://github.com/AtelierArith/RustCall.jl/issues/524)).
+  `#[getter] fn r#for(&self)` is the Python attribute `for`, but
+  `pyo3_host = true` bindings remapped only declared fields, so `obj.for_`
+  was sent to Python as `for_` and raised `AttributeError`; such a property
+  was also missing from `propertynames` and from the name-clash check. The
+  host now reads one list of bound properties
+  (`RustCall._pyo3_host_bound_properties`): every exposed field and every
+  accessor method, merged by the Python attribute, each under
+  `julia_binding_name` of that attribute (`for_`, `end_`). That one list
+  drives the remapping, `propertynames`, `getproperty` / `setproperty!` (a
+  getter types the read as a field's Rust type does; a property with no
+  setter raises `ArgumentError`) and the clash definitions, so a
+  `#[getter] fn r#for` beside a `#[pyo3(get)] for_` field is refused with
+  both items named. A field renamed with `#[pyo3(get, name = "...")]` is now
+  a property under that name too. The extractor records a getter's or
+  setter's property in the manifest's `python_name` — the attribute's name,
+  or the method's without `r#` and without a `get_` / `set_` prefix, PyO3's
+  rule — so the PyO3 wrapper crate's Python-owned accessor helpers look up
+  the same attribute (a `#[getter] fn get_x` read `get_x` there, not `x`).
+  **Every PyO3 host value now crosses by what it is at run time, never by
+  the Rust spelling of its position** (PR #525 review). The generated module
+  defines two conversions every binding, getter and setter goes through:
+  `_pyo3_to_python` hands Python a class handle's Python object, a Julia
+  array of numbers as a `numpy.ndarray` when numpy imports (pyo3-numpy
+  extracts from nothing else, and PyO3 reads a `Vec` from one as from any
+  sequence), another array or a tuple element by element, and anything else
+  as it is (`nothing` is `None`); `_pyo3_from_python` reads `None` back as
+  `nothing` and an object as the Julia handle of the most derived of the
+  module's classes in its type's MRO (a table built once from the class
+  objects), so a `#[pyclass(extends = ...)]` object stays itself and an
+  instance of a Python-defined subclass of a `#[pyclass(subclass)]` is its
+  nearest bound base.
+  So a type alias of a class handle (`type Handle = Py<Point>`), an optional
+  one, a bare `Option` beside a glob of a module whose `Option` is private,
+  a crate's own `Option` (by path or shadowing the bare name), `Py<Self>`,
+  `Option<Py<PyAny>>`, a `Vec` of class objects returned, and every setter
+  of these are called as a Python caller would call them; before, each of
+  them depended on reading the type, and a misread handed PyO3 a
+  `juliacall` wrapper or returned a raw `Py`. Arguments are untyped (Python
+  checks them). The extractor still describes each position
+  (`py_shape` / `py_return`, `rustcall_julia_core::manifest::PyShape`,
+  additive within schema 0.7), read off the spelling with no path
+  resolution — a primitive, `String` / `&str`, `Vec` / `Option` bare or
+  under a std root, a pyo3-numpy array by its name, `Python` / `PyModule`
+  as interpreter-supplied, else opaque — and it is a hint only: it types
+  what the value conversion left (`i32` is `Int32`, a numpy return a
+  `Vector{Float64}`, a `PyResult` the `RustResult`'s parameter), and a value
+  that does not fit it stays the Python object it is. The one thing the host
+  takes from it is which arguments the interpreter supplies, by PyO3's own
+  rule (a type whose last segment is `Python`). The Julia-side spelling
+  parsers (class, numpy, injected-argument and value-type readers) are gone,
+  and a manifest from an extractor that predates the field is refused with
+  the instruction to rebuild it.
+  An identifier-form property name
+  (`#[getter(r#type)]`) is unrawed like every Rust name (`type`); a string
+  `name = "..."` is taken as written. And
+  a name the generated module or type defines for itself — the handle field
+  `_rustcall_py`, `_pyo3_module`, `_PYO3_MODULE`, `_pyo3_to_python`,
+  `_pyo3_from_python`, `_PyO3Object`, the imports — is part of the
+  one-namespace clash check: a crate item bound under
+  one (a `#[getter] fn _rustcall_py`, a `#[pyfunction] fn _pyo3_module`) is
+  refused with both named instead of shadowing the handle or redefining the
+  module's import function. The reserved names are read off the prelude the
+  emitter emits (`_pyo3_host_prelude_exprs`), not listed.
+- **`rustcall_julia_core::codegen::method_symbol` spells a raw method name as
+  the exported symbol** (PR #517 review). `method_symbol(&[], "S", "r#match")`
+  returned `rustcall_S_r#match`; the wrapper exports `rustcall_S_match`. It
+  now goes through `method_stem`, and every public name helper of `codegen`
+  (`method_symbol_of`, `struct_free_symbol`, `method_string_owner`, the field
+  accessor symbols, `panic_symbol`, `generic_method_wrapper_name`) drops an
+  `r#` it is handed. A core test calls each with raw names and checks that
+  the list it calls is every such helper in `codegen.rs`. No symbol the
+  generators emit changes.
 - **`@rust f(x)` reaches the caller's own block first, whatever the form**
   ([#520](https://github.com/AtelierArith/RustCall.jl/issues/520)). The
   typed `@rust f(x)::T` tried every loaded library's exports before the

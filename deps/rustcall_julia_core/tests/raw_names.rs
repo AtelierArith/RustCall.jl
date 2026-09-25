@@ -161,6 +161,61 @@ fn a_python_owned_class_with_raw_members_gets_a_wrapper_crate() {
 }
 
 #[test]
+fn a_pyo3_accessor_method_records_the_property_python_exposes() {
+    // A `#[getter]` / `#[setter]` method is the Python property PyO3 derives
+    // from it: the attribute's name, or the method's name without `r#` and
+    // without a `get_` / `set_` prefix. The manifest's `python_name` carries
+    // it, so the PyO3 host and the wrapper crate look up one name (#524).
+    let manifest = extract(
+        r#"
+        #[pyclass] pub struct Acc { v: i32 }
+        #[pymethods] impl Acc {
+            #[getter] fn r#for(&self) -> i32 { self.v }
+            #[setter] fn set_for(&mut self, x: i32) { self.v = x; }
+            #[getter(end)] fn ending(&self) -> i32 { self.v }
+            #[setter(name = "end")] fn put_end(&mut self, x: i32) { self.v = x; }
+            #[getter] #[pyo3(name = "total")] fn get_sum(&self) -> i32 { self.v }
+            #[getter] fn get_plain(&self) -> i32 { self.v }
+            #[getter] fn plain_too(&self) -> i32 { self.v }
+            #[getter] fn get_(&self) -> i32 { self.v }
+            fn get_value(&self) -> i32 { self.v }
+            #[getter(r#type)] fn kind(&self) -> i32 { self.v }
+            #[setter(r#type)] fn put_kind(&mut self, x: i32) { self.v = x; }
+            #[getter(name = "r#literal")] fn lit(&self) -> i32 { self.v }
+        }
+        "#,
+        Mode::Crate,
+    )
+    .unwrap();
+    let methods = &manifest.structs[0].methods;
+    let python = |name: &str| {
+        methods
+            .iter()
+            .find(|m| m.name == name)
+            .unwrap()
+            .python_name
+            .clone()
+    };
+    assert_eq!(python("r#for"), "for");
+    assert_eq!(python("set_for"), "for");
+    assert_eq!(python("ending"), "end");
+    assert_eq!(python("put_end"), "end");
+    assert_eq!(python("get_sum"), "total");
+    assert_eq!(python("get_plain"), "plain");
+    // The method's own name: nothing to record.
+    assert_eq!(python("plain_too"), "");
+    // An empty remainder is no property name; the method keeps its own.
+    assert_eq!(python("get_"), "");
+    // Not an accessor: a method keeps its name, prefix and all.
+    assert_eq!(python("get_value"), "");
+    // An identifier override is a Rust name, unrawed as every name is (PR
+    // #525 review); a string `name = "..."` is taken as written.
+    assert_eq!(python("kind"), "type");
+    assert_eq!(python("put_kind"), "type");
+    assert_eq!(python("lit"), "r#literal");
+}
+
+#[test]
 fn a_raw_no_mangle_export_records_its_native_symbol() {
     // `#[no_mangle] pub extern "C" fn r#for` is exported by rustc as `for`;
     // the manifest's symbol is what Julia `dlsym`s (PR #515 review).
@@ -172,6 +227,110 @@ fn a_raw_no_mangle_export_records_its_native_symbol() {
     let f = &manifest.functions[0];
     assert_eq!(f.name, "r#for");
     assert_eq!(f.symbol, "for");
+}
+
+/// Every public name helper of `codegen` is total over a raw name: called with
+/// `r#` spellings wherever it takes a name or a stem, it returns what the
+/// exported item is called, without a `#` (PR #517 review:
+/// `method_symbol(&[], "S", "r#match")` returned `rustcall_S_r#match`).
+///
+/// The helpers checked are listed here, and the list is compared with the
+/// source: every `pub fn` of `codegen.rs` that takes a `&str` and returns a
+/// `String` must be in it, so a new helper is checked the day it is added.
+#[test]
+fn every_public_symbol_helper_drops_a_raw_prefix() {
+    use rustcall_julia_core::codegen::*;
+    let raw_path = vec!["r#mod".to_string()];
+    let checked: Vec<(&str, String, &str)> = vec![
+        ("symbol_stem", symbol_stem(&[], "r#for"), "for"),
+        ("symbol_stem", symbol_stem(&raw_path, "r#for"), "mod__for"),
+        (
+            "function_symbol",
+            function_symbol(&[], "r#for"),
+            "rustcall_for",
+        ),
+        (
+            "function_symbol",
+            function_symbol(&raw_path, "r#for"),
+            "rustcall_mod__for",
+        ),
+        (
+            "method_symbol",
+            method_symbol(&[], "S", "r#match"),
+            "rustcall_S_match",
+        ),
+        (
+            "method_symbol",
+            method_symbol(&raw_path, "r#type", "r#match"),
+            "rustcall_mod__type_match",
+        ),
+        ("method_stem", method_stem(None, "r#match"), "match"),
+        (
+            "method_stem",
+            method_stem(Some("r#type"), "r#match"),
+            "4type_match",
+        ),
+        (
+            "method_symbol_of",
+            method_symbol_of("r#type", "r#match"),
+            "rustcall_type_match",
+        ),
+        (
+            "struct_free_symbol",
+            struct_free_symbol("r#type"),
+            "type_free",
+        ),
+        (
+            "method_string_owner",
+            method_string_owner("r#type", "r#match"),
+            "type_match",
+        ),
+        (
+            "field_getter_symbol",
+            field_getter_symbol("r#type", "r#let"),
+            "type_get_let",
+        ),
+        (
+            "field_setter_symbol",
+            field_setter_symbol("r#type", "r#let"),
+            "type_set_let",
+        ),
+        ("panic_symbol", panic_symbol("r#for"), "for_take_panic"),
+        (
+            "generic_method_wrapper_name",
+            generic_method_wrapper_name("r#type", "r#match"),
+            "type_match",
+        ),
+    ];
+    for (helper, got, want) in &checked {
+        assert_eq!(got, want, "{helper}");
+        assert!(!got.contains('#'), "{helper}: {got}");
+    }
+
+    // The list is the source's list.
+    let codegen = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/codegen.rs"),
+    )
+    .unwrap();
+    let mut helpers = Vec::new();
+    for item in codegen.split("\npub fn ").skip(1) {
+        // The signature, however rustfmt wrapped it: up to the body's brace.
+        let signature = item.split('{').next().unwrap_or_default();
+        let Some((name, rest)) = signature.split_once('(') else {
+            continue;
+        };
+        if rest.contains("&str") && rest.trim_end().ends_with("-> String") {
+            helpers.push(name.to_string());
+        }
+    }
+    let missing: Vec<&String> = helpers
+        .iter()
+        .filter(|h| !checked.iter().any(|(name, _, _)| name == h))
+        .collect();
+    assert!(
+        !helpers.is_empty() && missing.is_empty(),
+        "public name helpers not checked with a raw name: {missing:?}"
+    );
 }
 
 /// The class-level guarantee (#514): every identifier, symbol or helper name

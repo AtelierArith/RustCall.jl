@@ -1,0 +1,144 @@
+schema_version = "0.7"
+mode = "inline"
+structs = []
+
+[[functions]]
+name = "make"
+ffi_name = "make"
+symbol = "make"
+attribute = "none"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "Node"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 56
+module_path = []
+
+[[functions.args]]
+name = "level"
+rust_type = "i32"
+abi = ""
+
+[[functions]]
+name = "find"
+ffi_name = "find"
+symbol = "find"
+attribute = "none"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "core::option::Option<Py<Node>>"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 61
+module_path = []
+
+[[functions.args]]
+name = "nodes"
+rust_type = "std::vec::Vec<pyo3::Py<Node>>"
+abi = ""
+
+[[functions.args]]
+name = "name"
+rust_type = "&str"
+abi = "str"
+
+[[functions]]
+name = "anything"
+ffi_name = "anything"
+symbol = "anything"
+attribute = "none"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "Py<PyAny>"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 67
+module_path = []
+
+[[functions.args]]
+name = "x"
+rust_type = "Py<PyAny>"
+abi = ""
+
+[[functions]]
+name = "module_name"
+ffi_name = "module_name"
+symbol = "module_name"
+attribute = "none"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "String"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 72
+module_path = []
+
+[[functions.args]]
+name = "module"
+rust_type = "&Bound<'_, PyModule>"
+abi = ""

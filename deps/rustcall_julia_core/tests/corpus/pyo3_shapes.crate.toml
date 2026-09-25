@@ -1,0 +1,516 @@
+schema_version = "0.7"
+mode = "crate"
+
+[[functions]]
+name = "make"
+ffi_name = "make"
+symbol = "rustcall_make"
+attribute = "py_function"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "Node"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 56
+module_path = []
+
+[[functions.args]]
+name = "level"
+rust_type = "i32"
+abi = ""
+
+[functions.args.py_shape]
+kind = "scalar"
+name = "i32"
+
+[functions.py_return]
+kind = "opaque"
+
+[[functions]]
+name = "find"
+ffi_name = "find"
+symbol = "rustcall_find"
+attribute = "py_function"
+vis = "pub"
+skip_reason = "pyo3_type:pyo3::Py<Node>"
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "core::option::Option<Py<Node>>"
+return_kind = "option"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = "Py<Node>"
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 61
+module_path = []
+
+[[functions.args]]
+name = "nodes"
+rust_type = "std::vec::Vec<pyo3::Py<Node>>"
+abi = ""
+
+[functions.args.py_shape]
+kind = "vec"
+
+[functions.args.py_shape.inner]
+kind = "opaque"
+
+[[functions.args]]
+name = "name"
+rust_type = "&str"
+abi = "str"
+
+[functions.args.py_shape]
+kind = "string"
+
+[functions.py_return]
+kind = "option"
+
+[functions.py_return.inner]
+kind = "opaque"
+
+[[functions]]
+name = "anything"
+ffi_name = "anything"
+symbol = "rustcall_anything"
+attribute = "py_function"
+vis = "pub"
+skip_reason = "pyo3_type:Py<PyAny>"
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "Py<PyAny>"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 67
+module_path = []
+
+[[functions.args]]
+name = "x"
+rust_type = "Py<PyAny>"
+abi = ""
+
+[functions.args.py_shape]
+kind = "opaque"
+
+[functions.py_return]
+kind = "opaque"
+
+[[functions]]
+name = "module_name"
+ffi_name = "module_name"
+symbol = "rustcall_module_name"
+attribute = "py_function"
+vis = "pub"
+skip_reason = "pyo3_type:Bound<'_, PyModule>"
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "String"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 72
+module_path = []
+
+[[functions.args]]
+name = "module"
+rust_type = "&Bound<'_, PyModule>"
+abi = ""
+
+[functions.args.py_shape]
+kind = "injected"
+
+[functions.py_return]
+kind = "string"
+
+[[structs]]
+name = "Node"
+ffi_name = "Node"
+attribute = "py_class"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+cfg = ""
+cfg_features = []
+type_params = []
+derives = []
+has_clone = false
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+context_source = ""
+generic_wrappers = []
+line = 12
+module_path = []
+
+[[structs.fields]]
+name = "level"
+rust_type = "i32"
+abi = ""
+ffi_compatible = true
+getter = "rustcall_Node_get_level"
+setter = "rustcall_Node_set_level"
+python_name = ""
+vis = "pub"
+pyo3_get = true
+pyo3_set = true
+
+[structs.fields.py_shape]
+kind = "scalar"
+name = "i32"
+
+[[structs.fields]]
+name = "label"
+rust_type = "String"
+abi = "string"
+ffi_compatible = true
+getter = "rustcall_Node_get_label"
+setter = ""
+python_name = ""
+vis = "pub"
+pyo3_get = true
+
+[structs.fields.py_shape]
+kind = "string"
+
+[[structs.methods]]
+name = "new"
+symbol = "rustcall_Node_new"
+is_static = true
+is_mutable = false
+is_constructor = true
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
+attribute = "py_methods"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+returns_boxed_struct = true
+return_type = "Self"
+return_abi = ""
+generic_wrapper = ""
+
+[structs.methods.py_return]
+kind = "opaque"
+
+[[structs.methods.args]]
+name = "level"
+rust_type = "i32"
+abi = ""
+
+[structs.methods.args.py_shape]
+kind = "scalar"
+name = "i32"
+
+[[structs.methods]]
+name = "twin"
+symbol = "rustcall_Node_twin"
+is_static = false
+is_mutable = false
+is_constructor = false
+vis = "pub"
+skip_reason = "pyo3_type:Python<'_>"
+python_name = ""
+accessor = ""
+attribute = "py_methods"
+return_kind = "py_result"
+ok_type = "Py<Self>"
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+returns_boxed_struct = false
+return_type = "PyResult<Py<Self>>"
+return_abi = ""
+generic_wrapper = ""
+
+[structs.methods.py_return]
+kind = "opaque"
+
+[[structs.methods.args]]
+name = "py"
+rust_type = "Python<'_>"
+abi = ""
+
+[structs.methods.args.py_shape]
+kind = "injected"
+
+[[structs.methods]]
+name = "adopt"
+symbol = "rustcall_Node_adopt"
+is_static = false
+is_mutable = true
+is_constructor = false
+vis = "pub"
+skip_reason = "pyo3_type:PyRef<'_, Self>"
+python_name = ""
+accessor = ""
+attribute = "py_methods"
+return_kind = "unit"
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+returns_boxed_struct = false
+return_type = "()"
+return_abi = ""
+generic_wrapper = ""
+
+[structs.methods.py_return]
+kind = "unit"
+
+[[structs.methods.args]]
+name = "other"
+rust_type = "PyRef<'_, Self>"
+abi = ""
+
+[structs.methods.args.py_shape]
+kind = "opaque"
+
+[[structs.methods]]
+name = "maybe"
+symbol = "rustcall_Node_maybe"
+is_static = false
+is_mutable = false
+is_constructor = false
+vis = "pub"
+skip_reason = "pyo3_type:PyRef<'_, Node>"
+python_name = ""
+accessor = ""
+attribute = "py_methods"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+returns_boxed_struct = false
+return_type = "i32"
+return_abi = ""
+generic_wrapper = ""
+
+[structs.methods.py_return]
+kind = "scalar"
+name = "i32"
+
+[[structs.methods.args]]
+name = "other"
+rust_type = "std::option::Option<PyRef<'_, Node>>"
+abi = ""
+
+[structs.methods.args.py_shape]
+kind = "option"
+
+[structs.methods.args.py_shape.inner]
+kind = "opaque"
+
+[[structs.methods]]
+name = "own"
+symbol = "rustcall_Node_own"
+is_static = false
+is_mutable = false
+is_constructor = false
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
+attribute = "py_methods"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+returns_boxed_struct = false
+return_type = "i32"
+return_abi = ""
+generic_wrapper = ""
+
+[structs.methods.py_return]
+kind = "scalar"
+name = "i32"
+
+[[structs.methods.args]]
+name = "other"
+rust_type = "crate::Option<i32>"
+abi = ""
+
+[structs.methods.args.py_shape]
+kind = "opaque"
+
+[[structs.methods]]
+name = "shadowed"
+symbol = "rustcall_Node_shadowed"
+is_static = false
+is_mutable = false
+is_constructor = false
+vis = "pub"
+skip_reason = ""
+python_name = ""
+accessor = ""
+attribute = "py_methods"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+returns_boxed_struct = false
+return_type = "i32"
+return_abi = ""
+generic_wrapper = ""
+
+[structs.methods.py_return]
+kind = "scalar"
+name = "i32"
+
+[[structs.methods.args]]
+name = "other"
+rust_type = "Option<i32>"
+abi = ""
+
+[structs.methods.args.py_shape]
+kind = "option"
+
+[structs.methods.args.py_shape.inner]
+kind = "scalar"
+name = "i32"
+
+[[structs.methods]]
+name = "many"
+symbol = "rustcall_Node_many"
+is_static = false
+is_mutable = false
+is_constructor = false
+vis = "pub"
+skip_reason = "pyo3_type:Bound<'_, Node>"
+python_name = ""
+accessor = ""
+attribute = "py_methods"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+returns_boxed_struct = false
+return_type = "usize"
+return_abi = ""
+generic_wrapper = ""
+
+[structs.methods.py_return]
+kind = "scalar"
+name = "usize"
+
+[[structs.methods.args]]
+name = "others"
+rust_type = "Vec<Bound<'_, Node>>"
+abi = ""
+
+[structs.methods.args.py_shape]
+kind = "vec"
+
+[structs.methods.args.py_shape.inner]
+kind = "opaque"
+
+[[structs.methods]]
+name = "sum"
+symbol = "rustcall_Node_sum"
+is_static = false
+is_mutable = false
+is_constructor = false
+vis = "pub"
+skip_reason = "pyo3_type:PyReadonlyArray1<'_, f64>"
+python_name = ""
+accessor = ""
+attribute = "py_methods"
+return_kind = "plain"
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+returns_boxed_struct = false
+return_type = "f64"
+return_abi = ""
+generic_wrapper = ""
+
+[structs.methods.py_return]
+kind = "scalar"
+name = "f64"
+
+[[structs.methods.args]]
+name = "values"
+rust_type = "PyReadonlyArray1<'_, f64>"
+abi = ""
+
+[structs.methods.args.py_shape]
+kind = "array"
+name = "f64"
+rank = 1

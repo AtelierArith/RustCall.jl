@@ -101,6 +101,11 @@ struct RustFunctionSignature
     # of a **declarative** PyO3 module (`#[pymodule] mod outer { ... }`), below
     # the imported module. Empty for a function-form crate or a direct item.
     python_path::Vector{String}
+    # The PyO3-host shape of each argument and of the return (`Arg.py_shape`,
+    # `Function.py_return`, additive within schema 0.7; PR #525 review);
+    # `nothing` where the extractor described none (a `#[julia]` function).
+    py_arg_shapes::Vector{Union{Nothing, PyO3Shape}}
+    py_return_shape::Union{Nothing, PyO3Shape}
 end
 
 function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_types::Vector{String},
@@ -128,7 +133,10 @@ function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_type
                                ffi_name::String = name,
                                callback_args::Vector{Vector{String}} = Vector{String}[String[] for _ in arg_names],
                                callback_returns::Vector{String} = fill("", length(arg_names)),
-                               python_path::Vector{String} = String[])
+                               python_path::Vector{String} = String[],
+                               py_arg_shapes::Vector{Union{Nothing, PyO3Shape}} =
+                                   Union{Nothing, PyO3Shape}[nothing for _ in arg_names],
+                               py_return_shape::Union{Nothing, PyO3Shape} = nothing)
     length(arg_abis) == length(arg_types) ||
         throw(ArgumentError("arg_abis must have one entry per argument"))
     length(python_defaults) == length(arg_names) ||
@@ -145,7 +153,7 @@ function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_type
                           return_abi, vis, skip_reason, python_name, cfg_features,
                           ok_abi, err_abi, inner_abi, python_defaults, python_kinds,
                           isempty(ffi_name) ? name : ffi_name, callback_args,
-                          callback_returns, python_path)
+                          callback_returns, python_path, py_arg_shapes, py_return_shape)
 end
 
 """

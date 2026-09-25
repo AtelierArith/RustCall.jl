@@ -1342,8 +1342,10 @@ fn python_method_wrapper(
             })
         }
     } else if entry.accessor == "setter" {
+        // The scan records the property PyO3 exposes (`set_x` is `x`, #524);
+        // an empty `python_name` is the method's own name.
         let descriptor = if entry.python_name.is_empty() {
-            entry.name.strip_prefix("set_").unwrap_or(&entry.name)
+            entry.name.as_str()
         } else {
             entry.python_name.as_str()
         };

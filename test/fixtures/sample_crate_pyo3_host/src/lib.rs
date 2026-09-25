@@ -126,6 +126,132 @@ impl Wrapper {
     }
 }
 
+/// Properties declared through accessor methods, under Python names Julia
+/// reserves (#524): the host reads them under their Julia names and looks the
+/// Python attribute up.
+#[pyclass]
+struct Gate {
+    level: i32,
+}
+
+#[pymethods]
+impl Gate {
+    #[new]
+    fn new(level: i32) -> Self {
+        Gate { level }
+    }
+
+    /// The property `for`, read as `gate.for_`, writable through `set_for`.
+    #[getter]
+    fn r#for(&self) -> i32 {
+        self.level
+    }
+
+    #[setter]
+    fn set_for(&mut self, value: i32) {
+        self.level = value;
+    }
+
+    /// An explicit name Julia reserves: `end`, read as `gate.end_`; get-only.
+    #[getter(end)]
+    fn last(&self) -> i32 {
+        self.level * 2
+    }
+
+    /// A `get_` prefix PyO3 drops: the property `plain`.
+    #[getter]
+    fn get_plain(&self) -> i32 {
+        self.level + 1
+    }
+
+    /// A getter returning another class: the host wraps it into `Point`, as
+    /// it does a method's class return (PR #525 review).
+    #[getter]
+    fn anchor(&self, py: Python<'_>) -> PyResult<Py<Point>> {
+        Py::new(
+            py,
+            Point {
+                x: self.level as f64,
+                y: 0.0,
+            },
+        )
+    }
+
+    /// A setter taking another class: the host passes the Python object the
+    /// Julia handle holds, as it does a method's class argument.
+    #[setter]
+    fn set_anchor(&mut self, point: PyRef<'_, Point>) {
+        self.level = point.x as i32;
+    }
+
+    /// A numpy setter: the host converts a Julia array with `numpy.asarray`,
+    /// as it does a method's numpy argument.
+    #[getter]
+    fn samples(&self) -> i32 {
+        self.level
+    }
+
+    #[setter]
+    fn set_samples(&mut self, values: PyReadonlyArray1<f64>) {
+        self.level = values.as_array().iter().sum::<f64>() as i32;
+    }
+
+    /// A getter returning the class through `Self` behind a wrapper: `Self`
+    /// is the enclosing class however it is wrapped (PR #525 review).
+    #[getter]
+    fn twin(&self, py: Python<'_>) -> PyResult<Py<Self>> {
+        Py::new(py, Gate { level: self.level })
+    }
+
+    /// A setter taking the class through `Self` behind a wrapper.
+    #[setter]
+    fn set_twin(&mut self, other: PyRef<'_, Self>) {
+        self.level = other.level;
+    }
+
+    /// A method returning and taking `Self` behind wrappers, like the
+    /// accessors above.
+    fn copied(&self, py: Python<'_>) -> Py<Self> {
+        Py::new(py, Gate { level: self.level }).unwrap()
+    }
+
+    fn level_of(&self, other: PyRef<'_, Self>) -> i32 {
+        other.level
+    }
+
+    /// An optional class, returned and taken: `None` is `nothing` on the
+    /// Julia side, a present value the class (PR #525 review).
+    #[getter]
+    fn maybe_twin(&self, py: Python<'_>) -> PyResult<Option<Py<Self>>> {
+        if self.level > 0 {
+            Ok(Some(Py::new(py, Gate { level: self.level })?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    #[setter]
+    fn set_maybe_twin(&mut self, other: Option<PyRef<'_, Self>>) {
+        self.level = other.map(|o| o.level).unwrap_or(0);
+    }
+
+    fn level_or_zero(&self, other: Option<PyRef<'_, Self>>) -> i32 {
+        other.map(|o| o.level).unwrap_or(0)
+    }
+
+    /// An optional opaque value: `None` is Julia's `nothing` whatever the
+    /// payload is (PR #525 review).
+    fn maybe_any(&self, py: Python<'_>) -> Option<Py<PyAny>> {
+        (self.level > 0).then(|| self.level.into_pyobject(py).unwrap().into_any().unbind())
+    }
+
+    /// A getter named by a raw identifier: the property is `type`.
+    #[getter(r#type)]
+    fn kind(&self) -> i32 {
+        self.level
+    }
+}
+
 #[pymethods]
 impl Point {
     #[new]
@@ -183,6 +309,149 @@ impl Point {
     }
 }
 
+// Spellings no reading of the type can be sure of (PR #525 review). The host
+// converts every value by what it is at run time, so each of these is called
+// as a Python caller would call it: a `Point` handle is its Python object,
+// `nothing` is `None`, a returned `Point` object is a `Point` handle.
+
+/// A type alias of a class handle, and of an optional one.
+type Handle = Py<Point>;
+type MaybePoint = Option<Py<Point>>;
+
+#[pyfunction]
+fn handle_x(point: Handle, py: Python<'_>) -> f64 {
+    point.borrow(py).x
+}
+
+#[pyfunction]
+fn make_handle(py: Python<'_>, x: f64) -> PyResult<Handle> {
+    Py::new(py, Point { x, y: 0.0 })
+}
+
+#[pyfunction]
+fn maybe_point(py: Python<'_>, x: f64) -> PyResult<MaybePoint> {
+    if x > 0.0 {
+        Ok(Some(Py::new(py, Point { x, y: 0.0 })?))
+    } else {
+        Ok(None)
+    }
+}
+
+#[pyfunction]
+fn maybe_x(point: MaybePoint, py: Python<'_>) -> f64 {
+    point.map(|p| p.borrow(py).x).unwrap_or(-1.0)
+}
+
+mod hidden {
+    /// Private: a glob import of this module does not bring it in, so the
+    /// bare `Option` below is still std's.
+    #[allow(dead_code)]
+    struct Option<T>(T);
+}
+
+mod globbed {
+    #[allow(unused_imports)]
+    use super::hidden::*;
+    use super::Point;
+    use pyo3::prelude::*;
+
+    #[pyfunction]
+    pub fn glob_x(point: Option<Py<Point>>, py: Python<'_>) -> Option<f64> {
+        point.map(|p| p.borrow(py).x)
+    }
+}
+
+/// numpy under another name.
+mod aliased_numpy {
+    use numpy as np;
+    use pyo3::prelude::*;
+
+    #[pyfunction]
+    pub fn np_total(values: np::PyReadonlyArray1<'_, f64>) -> f64 {
+        values.as_array().sum()
+    }
+}
+
+/// A crate's own `Option`: extracted from whatever object is passed.
+mod custom {
+    use super::Point;
+    use pyo3::prelude::*;
+
+    #[derive(FromPyObject)]
+    pub struct Option<T>(pub T);
+
+    /// The bare name is this module's `Option`, not std's.
+    #[pyfunction]
+    pub fn custom_bare_x(point: Option<Py<Point>>, py: Python<'_>) -> f64 {
+        point.0.borrow(py).x
+    }
+}
+
+#[pyfunction]
+fn custom_x(point: crate::custom::Option<Py<Point>>, py: Python<'_>) -> f64 {
+    point.0.borrow(py).x
+}
+
+/// A `Vec` argument reached from a numpy array (a Julia array of numbers is
+/// passed as one when numpy imports): PyO3 reads it as a sequence.
+#[pyfunction]
+fn vec_sum(values: Vec<f64>) -> f64 {
+    values.iter().sum()
+}
+
+#[pyfunction]
+fn count_true(flags: Vec<bool>) -> usize {
+    flags.iter().filter(|f| **f).count()
+}
+
+/// A `Vec` of class objects returned: a vector of `Point` handles.
+#[pyfunction]
+fn points(n: usize) -> Vec<Point> {
+    (0..n)
+        .map(|i| Point {
+            x: i as f64,
+            y: 0.0,
+        })
+        .collect()
+}
+
+/// A subclassable class, a Rust subclass of it, and a function that hands back
+/// whatever `Shape` it is given: an object is read back as the most derived
+/// bound class in its type's MRO (PR #525 review), so a `Square` stays a
+/// `Square` and a Python-defined subclass of `Shape` is a `Shape`.
+#[pyclass(subclass)]
+struct Shape {
+    #[pyo3(get)]
+    tag: i32,
+}
+
+#[pymethods]
+impl Shape {
+    #[new]
+    fn new(tag: i32) -> Self {
+        Shape { tag }
+    }
+}
+
+#[pyclass(extends = Shape)]
+struct Square {
+    #[pyo3(get)]
+    extra: i32,
+}
+
+#[pymethods]
+impl Square {
+    #[new]
+    fn new(tag: i32, extra: i32) -> (Self, Shape) {
+        (Square { extra }, Shape { tag })
+    }
+}
+
+#[pyfunction]
+fn echo_shape(shape: Py<Shape>) -> Py<Shape> {
+    shape
+}
+
 #[pymodule]
 fn sample_crate_pyo3_host(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(add, m)?)?;
@@ -197,7 +466,22 @@ fn sample_crate_pyo3_host(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(apply_twice, m)?)?;
     m.add_function(wrap_pyfunction!(echo_object, m)?)?;
     m.add_function(wrap_pyfunction!(module_name, m)?)?;
+    m.add_function(wrap_pyfunction!(handle_x, m)?)?;
+    m.add_function(wrap_pyfunction!(make_handle, m)?)?;
+    m.add_function(wrap_pyfunction!(maybe_point, m)?)?;
+    m.add_function(wrap_pyfunction!(maybe_x, m)?)?;
+    m.add_function(wrap_pyfunction!(globbed::glob_x, m)?)?;
+    m.add_function(wrap_pyfunction!(aliased_numpy::np_total, m)?)?;
+    m.add_function(wrap_pyfunction!(custom::custom_bare_x, m)?)?;
+    m.add_function(wrap_pyfunction!(custom_x, m)?)?;
+    m.add_function(wrap_pyfunction!(vec_sum, m)?)?;
+    m.add_function(wrap_pyfunction!(count_true, m)?)?;
+    m.add_function(wrap_pyfunction!(points, m)?)?;
+    m.add_function(wrap_pyfunction!(echo_shape, m)?)?;
+    m.add_class::<Shape>()?;
+    m.add_class::<Square>()?;
     m.add_class::<Point>()?;
     m.add_class::<Wrapper>()?;
+    m.add_class::<Gate>()?;
     Ok(())
 }
