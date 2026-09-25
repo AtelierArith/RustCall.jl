@@ -1445,8 +1445,10 @@ functions whose `attribute` origin is in `origins` are returned — by default t
 `origins = PYO3_ATTRIBUTE_ORIGINS` for the PyO3-scanned items instead (#275).
 """
 function manifest_function_signatures(manifest::Dict; only_attributed::Bool = true,
-                                      origins = RUSTCALL_ATTRIBUTE_ORIGINS)
+                                      origins = RUSTCALL_ATTRIBUTE_ORIGINS,
+                                      reserved_names = nothing)
     sigs = RustFunctionSignature[]
+    types = reserved_names === nothing ? _manifest_reserved_names(manifest) : reserved_names
     for f in _mvec(manifest, "functions")
         attr = _mstr(f, "attribute")
         if only_attributed && !(attr in origins)
@@ -1488,12 +1490,48 @@ function manifest_function_signatures(manifest::Dict; only_attributed::Bool = tr
             python_name = _mstr(f, "python_name"),
             python_path = String[String(p) for p in _mvec(f, "python_path")],
             cfg_features = String[String(c) for c in _mvec(f, "cfg_features")],
+            reserved_names = types,
         ))
     end
     return sigs
 end
 
-function _manifest_method(m)
+"""
+    _manifest_reserved_names(manifest) -> Set{String}
+
+Every name a manifest's items define in Julia — its functions, struct types,
+constructors, methods, accessors and submodules, as `julia_definitions` and
+`_pyo3_host_definitions` list them for the one-namespace check (#514) — which
+a generated wrapper may read
+by name (`S(ptr, ...)`, `self::S`, a static method's bare form calling its
+typed form) and a parameter therefore never takes (`julia_parameter_names`'s
+`reserved`, PR #527 review). Properties are left out: they are reached through
+`getproperty`, never by name. Every origin counts (`#[julia]` and PyO3 items
+alike), crate-wide: a name taken in one module is reserved in every other, the
+safe side — an underscore on a parameter. A manifest whose items have no Julia
+spelling reserves nothing here; the layout check refuses it before anything is
+emitted.
+"""
+function _manifest_reserved_names(manifest::AbstractDict)
+    functions = manifest_function_signatures(manifest; only_attributed = false,
+                                             reserved_names = ())
+    structs = manifest_struct_infos(manifest; origins = (), reserved_names = ())
+    modules = unique!(String[segment for item in vcat(functions, structs)
+                             for segment in item.module_path])
+    # The `#[julia]` emitters' list and the PyO3 host's (`src/pyo3_host.jl`,
+    # included later and called at run time), the ones the layout checks read.
+    defs = try
+        vcat(julia_definitions(functions, structs; modules, accessors = true),
+             _pyo3_host_definitions(functions, structs))
+    catch err
+        err isa ErrorException || rethrow()
+        return Set{String}()
+    end
+    return Set{String}(def.name for def in defs
+                       if !(def.scope isa Tuple && first(def.scope) === :prop))
+end
+
+function _manifest_method(m, reserved_names = ())
     args = _mvec(m, "args")
     RustMethod(
         _mstr(m, "name"),
@@ -1541,6 +1579,7 @@ function _manifest_method(m)
         # A generic struct's method wrapper, by the name the extractor gave it
         # (module-qualified, #462); omitted for every other method.
         generic_wrapper_name = _mstr(m, "generic_wrapper_name"),
+        reserved_names = reserved_names,
     )
 end
 
@@ -1557,8 +1596,9 @@ RustCall attribute produced (`julia`, `derive_julia_struct`) and drops the
 for them yet (#275). Pass `PYO3_ATTRIBUTE_ORIGINS` to get exactly those, or an
 empty tuple for no filtering at all.
 """
-function manifest_struct_infos(manifest::Dict; origins = nothing)
+function manifest_struct_infos(manifest::Dict; origins = nothing, reserved_names = nothing)
     keep = origins === nothing ? ("julia", "derive_julia_struct", "none", "") : origins
+    reserved = reserved_names === nothing ? _manifest_reserved_names(manifest) : reserved_names
     infos = RustStructInfo[]
     for s in _mvec(manifest, "structs")
         isempty(keep) || _mstr(s, "attribute") in keep || continue
@@ -1607,7 +1647,7 @@ function manifest_struct_infos(manifest::Dict; origins = nothing)
         push!(infos, RustStructInfo(
             _mstr(s, "name"),
             manifest_type_params(s),
-            RustMethod[_manifest_method(m) for m in _mvec(s, "methods")],
+            RustMethod[_manifest_method(m, reserved) for m in _mvec(s, "methods")],
             _mstr(s, "context_source"),
             fields,
             true,

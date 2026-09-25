@@ -88,7 +88,7 @@ function julia_binding_name(spelled::AbstractString)
 end
 
 """
-    julia_parameter_names(rust_names) -> Vector{String}
+    julia_parameter_names(rust_names; reserved = ()) -> Vector{String}
 
 The Julia parameter names of a function's or method's arguments, in order — the
 one decision for every emitter (#516). The `RustFunctionSignature` and
@@ -104,17 +104,21 @@ source-text emitters, and the PyO3 host.
 - a name another parameter already has gets further underscores (`end` beside
   `end_` is `end__`). Names that need no change are claimed first, so they are
   never the ones renamed;
-- a name a wrapper uses itself is never a parameter (#526): one of
-  `_JULIA_EMITTER_NAMES` gets underscores (`pointer` → `pointer_`, `obj` →
-  `obj_`), and a capitalised name — the spelling of every type a wrapper names
-  (`Int32`, `Csize_t`, the struct's own type, `CResult_f`) — has its first
-  letter lowered (`S` → `s`, then underscores if that is taken).
+- a name a wrapper uses itself is never a parameter (#526) and gets
+  underscores instead: one of `_JULIA_EMITTER_NAMES` (`pointer` → `pointer_`,
+  `obj` → `obj_`, `Int32` → `Int32_`), a `CResult_` / `COption_` aggregate
+  (`_reserved_aggregate_name`), and one of `reserved` — every name the item's
+  own crate or block defines, which only its caller knows
+  (`manifest_function_signatures` / `manifest_struct_infos` pass
+  `_manifest_reserved_names`, the one-namespace definitions; PR #527 review: a
+  struct `foo` is read by its wrappers, so a parameter `foo` is `foo_`, while a
+  parameter `Foo` is kept).
 
 Every result is a plain, readable identifier and distinct from the others, and
 applying the function to its own result changes nothing. The locals a wrapper
 introduces are chosen against this list (`_generated_local`).
 """
-function julia_parameter_names(rust_names)
+function julia_parameter_names(rust_names; reserved = ())
     names = String[String(n) for n in rust_names]
     readable(n) = _is_plain_julia_identifier(n) && !all(==('_'), n)
     wanted = map(enumerate(names)) do (i, n)
@@ -124,24 +128,24 @@ function julia_parameter_names(rust_names)
             err isa ErrorException || rethrow()
             ""
         end
-        readable(bound) || return "arg$(i)"
-        # A type's spelling is lowered: the wrapper may name that type.
-        isuppercase(first(bound)) || return bound
-        lowered = lowercasefirst(bound)
-        return readable(lowered) ? lowered : "arg$(i)"
+        readable(bound) ? bound : "arg$(i)"
     end
+    unusable(w) = w in _JULIA_EMITTER_NAMES || _reserved_aggregate_name(w) || w in reserved
     result = Vector{String}(undef, length(names))
     taken = Set{String}()
     # Names kept as written first, so a renamed one yields to them.
     for (i, (n, w)) in enumerate(zip(names, wanted))
-        if n == w && !(w in taken) && !(w in _JULIA_EMITTER_NAMES)
+        if n == w && !(w in taken) && !unusable(w)
             result[i] = w
             push!(taken, w)
         end
     end
     for (i, w) in enumerate(wanted)
         isassigned(result, i) && continue
-        while w in taken || w in _JULIA_EMITTER_NAMES
+        # Off a reserved prefix first (`CResult_f` → `arg_CResult_f`): an
+        # underscore alone would never leave it.
+        _reserved_aggregate_name(w) && (w = "arg_" * w)
+        while w in taken || unusable(w)
             w *= "_"
         end
         result[i] = w
@@ -151,15 +155,26 @@ function julia_parameter_names(rust_names)
 end
 
 """
+    _reserved_aggregate_name(name) -> Bool
+
+Whether `name` is spelled like a `CResult_<stem>` / `COption_<stem>` aggregate,
+the Julia types a `Result` / `Option` wrapper reads its payload through: the
+extractor names them per item, so the prefix is reserved rather than each name.
+"""
+_reserved_aggregate_name(name::AbstractString) =
+    startswith(name, "CResult_") || startswith(name, "COption_")
+
+"""
     _JULIA_EMITTER_NAMES
 
 The names a generated wrapper uses without qualification and a parameter must
 therefore never take (#526): the helpers of a generated `@rust_crate` module
 (`_call_target`, `_guard_panic`, ...), the Base functions and constants the
 wrappers call (`pointer`, `sizeof`, `getfield`, `nothing`, ...), the PyO3
-host's receiver `obj` and its module import `_pyo3_module`. Capitalised names
-(types) are reserved by rule in `julia_parameter_names`, and a local a wrapper
-introduces is renamed instead (`_generated_local`). `test/test_parameter_names.jl`
+host's receiver `obj` and its module import `_pyo3_module`, and the types the
+wrappers name (`Int32`, `Ptr`, `RustResult`, ...). The item's own types are
+reserved by the caller that knows them (`julia_parameter_names`'s `reserved`),
+and a local a wrapper introduces is renamed instead (`_generated_local`). `test/test_parameter_names.jl`
 derives the set from what every emitter emits and fails, naming it, when an
 emitter reads a name that is not here.
 """
@@ -170,10 +185,16 @@ const _JULIA_EMITTER_NAMES = (
     # The generated `@rust_crate` module's helpers (both crate emitters).
     "_call_target", "_ctor_target", "_check_not_freed", "_guard_panic",
     "_result_payload", "call_rust_function",
+    # ... and the module-level ones it defines for itself.
+    "__init__", "_get_func_ptr", "_symbol", "_required_symbol", "_struct_generation",
+    "_vec_target", "_live_handle",
     "_call_rust_owned_string_ptr", "_call_rust_borrowed_string_ptr",
     # Base.
     "getfield", "pointer", "sizeof", "isa", "rethrow", "sprint", "showerror",
     "nothing",
+    # The modules and types the wrappers name.
+    "RustCall", "PythonCall", "RustResult", "RustOption", "String", "Ptr", "Cvoid",
+    "Csize_t", "C_NULL", "Bool", "Int32", "UInt", "Float64",
 )
 
 """
@@ -281,7 +302,10 @@ function julia_definitions(functions, structs; modules = String[], accessors::Bo
         for m in s.methods
             isempty(m.skip_reason) || continue
             what = "the method `$(_boundary_label(s, m))`"
-            if m.is_constructor
+            # A constructor is a static method returning the struct; one with a
+            # receiver is bound under its own name, as every emitter binds it
+            # (`method.is_static && method.is_constructor`, PR #527 review).
+            if m.is_constructor && m.is_static
                 add!(T, :free, struct_owner; what, parent = T)
             elseif m.is_static
                 name = julia_method_name(m)

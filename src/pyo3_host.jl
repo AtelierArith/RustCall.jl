@@ -1019,15 +1019,18 @@ type), a class is a type whose `#[new]` is its constructor, an instance method
 dispatches on its class, a readable or writable field is a property. `async`
 items and `#[getter]` / `#[setter]` methods define nothing.
 """
-function _pyo3_host_definitions(info::CrateInfo)
+_pyo3_host_definitions(info::CrateInfo) =
+    _pyo3_host_definitions(info.pyo3_functions, info.pyo3_structs)
+
+function _pyo3_host_definitions(functions::AbstractVector, structs::AbstractVector)
     defs = JuliaDefinition[]
     add!(name, scope, owner; what = owner, parent = "") =
         push!(defs, JuliaDefinition(name, scope, owner, what, parent))
-    for f in _pyo3_host_bound_functions(info)
+    for f in _pyo3_host_bound_functions(functions)
         add!(julia_function_name(f), :free,
              "the function `$(qualified_name(f.module_path, f.name))`")
     end
-    for s in _pyo3_host_bound_classes(info)
+    for s in _pyo3_host_bound_classes(structs)
         T = julia_struct_name(s)
         owner = "the struct `$(qualified_name(s.module_path, s.name))`"
         add!(T, :binding, owner)
@@ -1053,10 +1056,12 @@ end
 # definitions (`_pyo3_host_definitions`) are read from (#514). `async` items
 # are refused by the extractor (`async_fn`) and bound nowhere; `#[getter]` /
 # `#[setter]` methods are Python properties reached through `getproperty`.
-_pyo3_host_bound_functions(info::CrateInfo) =
-    [f for f in info.pyo3_functions if f.attribute === :py_function && !_pyo3_host_async(f)]
-_pyo3_host_bound_classes(info::CrateInfo) =
-    [s for s in info.pyo3_structs if s.attribute === :py_class]
+_pyo3_host_bound_functions(info::CrateInfo) = _pyo3_host_bound_functions(info.pyo3_functions)
+_pyo3_host_bound_functions(functions::AbstractVector) =
+    [f for f in functions if f.attribute === :py_function && !_pyo3_host_async(f)]
+_pyo3_host_bound_classes(info::CrateInfo) = _pyo3_host_bound_classes(info.pyo3_structs)
+_pyo3_host_bound_classes(structs::AbstractVector) =
+    [s for s in structs if s.attribute === :py_class]
 _pyo3_host_bound_methods(s::RustStructInfo) =
     [m for m in s.methods if !_pyo3_host_async(m) && (m.is_constructor || isempty(m.accessor))]
 _pyo3_host_bound_fields(s::RustStructInfo) =

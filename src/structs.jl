@@ -126,7 +126,8 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
                     callback_returns::Vector{String} = fill("", length(arg_names)),
                     is_classmethod::Bool = false,
                     generic_wrapper_name::String = "",
-                    trait_path::String = "", julia_name::String = "")
+                    trait_path::String = "", julia_name::String = "",
+                    reserved_names = ())
     length(python_defaults) == length(arg_names) ||
         throw(ArgumentError("python_defaults must have one entry per argument"))
     length(python_kinds) == length(arg_names) ||
@@ -134,7 +135,9 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
     length(callback_args) == length(arg_names) && length(callback_returns) == length(arg_names) ||
         throw(ArgumentError("callback_args and callback_returns must have one entry per argument"))
     # The Julia parameter names, decided here once for every emitter (#516).
-    RustMethod(name, is_static, is_mutable, julia_parameter_names(arg_names), arg_types, return_type,
+    # `reserved_names`: the types of the item's own crate or block (#527).
+    RustMethod(name, is_static, is_mutable,
+               julia_parameter_names(arg_names; reserved = reserved_names), arg_types, return_type,
                symbol, is_constructor, generic_wrapper, arg_abis, return_abi,
                returns_boxed_struct, vis, skip_reason, python_name, accessor,
                return_kind, ok_type, err_type, inner_type, ok_abi, err_abi, inner_abi,

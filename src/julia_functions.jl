@@ -128,7 +128,8 @@ function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_type
                                ffi_name::String = name,
                                callback_args::Vector{Vector{String}} = Vector{String}[String[] for _ in arg_names],
                                callback_returns::Vector{String} = fill("", length(arg_names)),
-                               python_path::Vector{String} = String[])
+                               python_path::Vector{String} = String[],
+                               reserved_names = ())
     length(arg_abis) == length(arg_types) ||
         throw(ArgumentError("arg_abis must have one entry per argument"))
     length(python_defaults) == length(arg_names) ||
@@ -138,7 +139,9 @@ function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_type
     length(callback_args) == length(arg_names) && length(callback_returns) == length(arg_names) ||
         throw(ArgumentError("callback_args and callback_returns must have one entry per argument"))
     # The Julia parameter names, decided here once for every emitter (#516).
-    RustFunctionSignature(name, julia_parameter_names(arg_names), arg_types, return_type,
+    # `reserved_names`: the types of the item's own crate or block (#527).
+    RustFunctionSignature(name, julia_parameter_names(arg_names; reserved = reserved_names),
+                          arg_types, return_type,
                           is_generic, type_params, symbol, attribute, exported, return_kind, ok_type, err_type, inner_type,
                           source, constraints, module_path, body_has_cfg,
                           has_owned_string_helper, has_borrowed_string_helper, arg_abis,

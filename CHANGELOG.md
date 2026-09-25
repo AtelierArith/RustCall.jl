@@ -53,14 +53,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   String are not callable`), a method parameter `getfield` did the same to
   `getfield(self, :ptr)`, and a PyO3 host method `fn m(&self, obj: i32)` gave
   its wrapper two parameters named `obj`, which Julia refuses to define. The
-  one allocator, `RustCall.julia_parameter_names`, now reserves those names:
+  one allocator, `RustCall.julia_parameter_names`, now gives such a parameter
+  an underscore (`pointer_`, `obj_`, and a fresh `arg_CResult_f` for a
+  `CResult_` / `COption_` aggregate's spelling). It reserves
   `RustCall._JULIA_EMITTER_NAMES` (the generated module's helpers, the Base
-  functions the wrappers call, `nothing`, the host's `obj` and
-  `_pyo3_module`) get an underscore, and a capitalised name, which is how a
-  wrapper spells a type, has its first letter lowered (`S` → `s`).
-  `test/test_parameter_names.jl` derives the set from what every emitter emits:
-  it fails, naming the name, when a wrapper reads a name that is not reserved
-  or when a reserved name is no longer used. `rust"""` was not affected: its
+  functions, modules and types the wrappers name, the host's `obj` and
+  `_pyo3_module`) and every name the item's own crate or block defines — its
+  functions, types, constructors, methods, accessors and submodules, read from
+  the same one-namespace definitions the #514 layout check uses
+  (`julia_definitions`, `_pyo3_host_definitions`), which the manifest
+  conversion hands the constructors. So a struct `foo` makes a parameter `foo`
+  `foo_`, while a parameter `Foo` is kept. `julia_definitions` now files a
+  method with a receiver that returns its struct under the method's name, as
+  every emitter binds it, not as a constructor. `test/test_parameter_names.jl`
+  derives all of it from what every emitter emits: it fails, naming the name,
+  when a wrapper reads or an emitter defines a name that is not reserved, or
+  when a reserved name is no longer used. `rust"""` was not affected: its
   wrappers are a hygienic macro expansion. The PyO3 host's own locals (its
   `catch` variable and a comprehension variable) are no longer identifiers a
   parameter can spell.
