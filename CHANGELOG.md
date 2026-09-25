@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-09-26
+
 ### Breaking
 - **Regenerate every file written by `write_bindings_to_file` under an
   earlier RustCall.** The bindings format is still `0.7`, so a file written by
@@ -3071,7 +3073,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration tests for Rust helpers library
 - Documentation examples tests
 
-[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/atelierarith/RustCall.jl/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/atelierarith/RustCall.jl/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.6...v0.7.0
 [0.6.6]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.5...v0.6.6
