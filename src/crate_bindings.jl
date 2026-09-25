@@ -2102,6 +2102,39 @@ const _CRATE_MODULE_PRELUDE_NAMES = "call_rust_function, get_function_pointer_fr
     "                 _result_payload, FFIByValue"
 
 """
+    _rename_crate_tree(tree; strict) -> ModuleNode
+
+`tree` with every parameter named against what **both** crate emitters make of
+its module's items — the expressions `@rust_crate` evaluates and the source
+text `write_bindings_to_file` writes, parsed (#526) — so the two agree on every
+name, and each is free of every name the other's definitions use.
+"""
+function _rename_crate_tree(tree::ModuleNode; strict::Symbol = FFI_STRICT[])
+    return _rename_tree_parameters(tree, (fs, ss) -> begin
+        colliding = _static_method_collisions(fs, ss)
+        text = join(vcat(String[_emit_function_code(f; strict = strict)
+                                for f in fs if !_function_skipped!(f)],
+                         String[_emit_struct_code(s; strict = strict, colliding = colliding)
+                                for s in ss]), "\n")
+        Expr(:block, _function_wrappers_expr(fs), _struct_wrappers_expr(ss, colliding),
+             Meta.parseall(text))
+    end)
+end
+
+"""
+    _rename_tree_parameters(tree, emit) -> ModuleNode
+
+`tree` with every module's items renamed by `_rename_parameters` against what
+`emit(functions, structs)` makes of that module's items (#526).
+"""
+function _rename_tree_parameters(tree::ModuleNode, emit)
+    functions, structs = _rename_parameters(tree.functions, tree.structs, emit)
+    return ModuleNode(tree.path, Vector{RustFunctionSignature}(functions),
+                      Vector{RustStructInfo}(structs),
+                      ModuleNode[_rename_tree_parameters(child, emit) for child in tree.children])
+end
+
+"""
     _submodule_exprs(node::ModuleNode) -> Vector{Expr}
 
 The `module <name> ... end` expressions for the children of `node`, each with
@@ -2141,6 +2174,8 @@ wrappers, its struct definitions (with the root's static-method collisions,
 report examines is the surface the module defines.
 """
 function _crate_wrapper_exprs(tree::ModuleNode)
+    # Every parameter named against the definitions it lands in (#526).
+    tree = _rename_crate_tree(tree)
     colliding = _static_method_collisions(tree.functions, tree.structs)
     return (_function_wrappers_expr(tree.functions),
             _struct_wrappers_expr(tree.structs, colliding),
@@ -4901,6 +4936,8 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     # into the submodules below (#300).
     tree = _module_tree(info)
     _check_module_names(tree)
+    # Every parameter named against the definitions it lands in (#526).
+    tree = _rename_crate_tree(tree; strict = strict)
     for func in tree.functions
         _function_skipped!(func) && continue
         code = _emit_function_code(func; strict = strict)

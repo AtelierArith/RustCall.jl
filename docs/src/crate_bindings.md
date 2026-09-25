@@ -434,12 +434,10 @@ show these names. Two parameters never share one: a renamed argument yields
 to an argument already called that (`fn g(end: i32, end_: i32)` is
 `g(end__, end_)`), and an argument with no Julia name of its own — a pattern
 such as `(a, b): (i32, i32)`, or `_` — is named after its position (`arg1`).
-A parameter never takes a name the wrapper uses itself (#526): `pointer`,
-`getfield`, `nothing`, the generated module's helpers such as `_call_target`,
-the PyO3 host's receiver `obj`, and every name the crate itself defines — a
-struct, a function, a method, a submodule — get an underscore
-(`fn echo(pointer: &str)` is `echo(pointer_)`; beside a `struct foo`, a
-parameter `foo` is `foo_`).
+A parameter never takes a name its wrapper uses itself (#526): the emitters
+name each parameter against every other name of the definition it lands in, so
+`fn echo(pointer: &str)` is `echo(pointer_)` where the wrapper calls
+`pointer`, and `Int64: i64` is `Int64_` where it converts through `Int64`.
 
 The exported symbols do not change: they keep the Rust side's spelling
 without `r#`, as before. A trailing underscore can land on a name the crate

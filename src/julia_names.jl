@@ -88,7 +88,7 @@ function julia_binding_name(spelled::AbstractString)
 end
 
 """
-    julia_parameter_names(rust_names; reserved = ()) -> Vector{String}
+    julia_parameter_names(rust_names) -> Vector{String}
 
 The Julia parameter names of a function's or method's arguments, in order — the
 one decision for every emitter (#516). The `RustFunctionSignature` and
@@ -104,15 +104,10 @@ source-text emitters, and the PyO3 host.
 - a name another parameter already has gets further underscores (`end` beside
   `end_` is `end__`). Names that need no change are claimed first, so they are
   never the ones renamed;
-- a name a wrapper uses itself is never a parameter (#526) and gets
-  underscores instead: one of `_JULIA_EMITTER_NAMES` (`pointer` → `pointer_`,
-  `obj` → `obj_`, `Int32` → `Int32_`), a `CResult_` / `COption_` aggregate
-  (`_reserved_aggregate_name`), and one of `reserved` — every name the item's
-  own crate or block defines, which only its caller knows
-  (`manifest_function_signatures` / `manifest_struct_infos` pass
-  `_manifest_reserved_names`, the one-namespace definitions; PR #527 review: a
-  struct `foo` is read by its wrappers, so a parameter `foo` is `foo_`, while a
-  parameter `Foo` is kept).
+- a name in `reserved` gets underscores too: the emitters pass every other
+  name the wrapper's own definition contains (`_rename_parameters`, #526), so
+  `fn echo(pointer: &str)` is `echo(pointer_)` where the wrapper calls
+  `pointer`, and `Int64: i64` is `Int64_` where it converts through `Int64`.
 
 Every result is a plain, readable identifier and distinct from the others, and
 applying the function to its own result changes nothing. The locals a wrapper
@@ -130,22 +125,18 @@ function julia_parameter_names(rust_names; reserved = ())
         end
         readable(bound) ? bound : "arg$(i)"
     end
-    unusable(w) = w in _JULIA_EMITTER_NAMES || _reserved_aggregate_name(w) || w in reserved
     result = Vector{String}(undef, length(names))
     taken = Set{String}()
     # Names kept as written first, so a renamed one yields to them.
     for (i, (n, w)) in enumerate(zip(names, wanted))
-        if n == w && !(w in taken) && !unusable(w)
+        if n == w && !(w in taken) && !(w in reserved)
             result[i] = w
             push!(taken, w)
         end
     end
     for (i, w) in enumerate(wanted)
         isassigned(result, i) && continue
-        # Off a reserved prefix first (`CResult_f` → `arg_CResult_f`): an
-        # underscore alone would never leave it.
-        _reserved_aggregate_name(w) && (w = "arg_" * w)
-        while w in taken || unusable(w)
+        while w in taken || w in reserved
             w *= "_"
         end
         result[i] = w
@@ -153,49 +144,6 @@ function julia_parameter_names(rust_names; reserved = ())
     end
     return result
 end
-
-"""
-    _reserved_aggregate_name(name) -> Bool
-
-Whether `name` is spelled like a `CResult_<stem>` / `COption_<stem>` aggregate,
-the Julia types a `Result` / `Option` wrapper reads its payload through: the
-extractor names them per item, so the prefix is reserved rather than each name.
-"""
-_reserved_aggregate_name(name::AbstractString) =
-    startswith(name, "CResult_") || startswith(name, "COption_")
-
-"""
-    _JULIA_EMITTER_NAMES
-
-The names a generated wrapper uses without qualification and a parameter must
-therefore never take (#526): the helpers of a generated `@rust_crate` module
-(`_call_target`, `_guard_panic`, ...), the Base functions and constants the
-wrappers call (`pointer`, `sizeof`, `getfield`, `nothing`, ...), the PyO3
-host's receiver `obj` and its module import `_pyo3_module`, and the types the
-wrappers name (`Int32`, `Ptr`, `RustResult`, ...). The item's own types are
-reserved by the caller that knows them (`julia_parameter_names`'s `reserved`),
-and a local a wrapper introduces is renamed instead (`_generated_local`). `test/test_parameter_names.jl`
-derives the set from what every emitter emits and fails, naming it, when an
-emitter reads a name that is not here.
-"""
-const _JULIA_EMITTER_NAMES = (
-    # The PyO3 host (`src/pyo3_host.jl`): the receiver of an instance method,
-    # the module's lazy import and array conversion.
-    "obj", "_pyo3_module", "_pyo3_asarray",
-    # The generated `@rust_crate` module's helpers (both crate emitters).
-    "_call_target", "_ctor_target", "_check_not_freed", "_guard_panic",
-    "_result_payload", "call_rust_function",
-    # ... and the module-level ones it defines for itself.
-    "__init__", "_get_func_ptr", "_symbol", "_required_symbol", "_struct_generation",
-    "_vec_target", "_live_handle",
-    "_call_rust_owned_string_ptr", "_call_rust_borrowed_string_ptr",
-    # Base.
-    "getfield", "pointer", "sizeof", "isa", "rethrow", "sprint", "showerror",
-    "nothing",
-    # The modules and types the wrappers name.
-    "RustCall", "PythonCall", "RustResult", "RustOption", "String", "Ptr", "Cvoid",
-    "Csize_t", "C_NULL", "Bool", "Int32", "UInt", "Float64",
-)
 
 """
     julia_function_name(f::RustFunctionSignature) -> String
@@ -302,10 +250,7 @@ function julia_definitions(functions, structs; modules = String[], accessors::Bo
         for m in s.methods
             isempty(m.skip_reason) || continue
             what = "the method `$(_boundary_label(s, m))`"
-            # A constructor is a static method returning the struct; one with a
-            # receiver is bound under its own name, as every emitter binds it
-            # (`method.is_static && method.is_constructor`, PR #527 review).
-            if m.is_constructor && m.is_static
+            if m.is_constructor
                 add!(T, :free, struct_owner; what, parent = T)
             elseif m.is_static
                 name = julia_method_name(m)
@@ -413,3 +358,139 @@ _check_julia_name_clashes(functions, structs, where_::AbstractString;
                           modules = String[], accessors::Bool = false, registry = nothing) =
     _check_julia_definitions(julia_definitions(functions, structs; modules, accessors, registry),
                              where_)
+
+# ----------------------------------------------------------------------------
+# Parameter names against the emitted wrapper itself (#526)
+# ----------------------------------------------------------------------------
+#
+# A wrapper's body names things of its own without qualification — the
+# generated module's helpers, Base functions, the types it converts through
+# (`Int64(x)`), its type variables, the PyO3 host's receiver `obj` — and a
+# parameter spelled like one of them shadows it. No list of those names can be
+# complete (PR #527 review), so the names are read off the wrapper: every
+# emitter's items are first emitted with a unique placeholder for each
+# parameter, every other symbol of each definition taking one is collected,
+# and the parameter is named against that set.
+
+const _PARAMETER_PLACEHOLDER_PREFIX = "__rustcall_arg_"
+
+# A copy of a function / method record with other parameter names, or of a
+# struct record with other methods; every other field as it is.
+_with_field(item, field::Symbol, value) =
+    typeof(item)((f === field ? value : getfield(item, f) for f in fieldnames(typeof(item)))...)
+
+"""
+    _rename_parameters(functions, structs, emit) -> (functions, structs)
+
+The items with each parameter named so that no definition an emitter makes
+from them reads a name its parameter would shadow (#526). `emit(functions,
+structs)` runs the emitter over the items and returns what it defines — an
+`Expr`, or the source text of the source-text emitter, which is parsed.
+
+It is run once on placeholder parameters (`__rustcall_arg_<k>__`), without
+logging and without recording anything for a boundary report (a throwaway
+collector, so a refusal is recorded rather than raised); for every definition
+that takes a placeholder, each other symbol it contains — what it reads, calls
+or binds, its other parameters, its type variables — is reserved for that
+item. Each item's names are then `julia_parameter_names` of its own against
+its reserved set. An emitter that raises on the placeholders leaves the items
+as they are: it raises again on the real ones.
+"""
+function _rename_parameters(functions::AbstractVector, structs::AbstractVector, emit)
+    owner = Dict{String, Any}()
+    counter = Ref(0)
+    function placeholder!(key)
+        counter[] += 1
+        p = string(_PARAMETER_PLACEHOLDER_PREFIX, counter[], "__")
+        owner[p] = key
+        return p
+    end
+    placeholders!(key, n) = String[placeholder!(key) for _ in 1:n]
+    probe_functions = [_with_field(f, :arg_names, placeholders!((:f, i), length(f.arg_names)))
+                       for (i, f) in enumerate(functions)]
+    probe_structs = [_with_field(s, :methods,
+                                 [_with_field(m, :arg_names,
+                                              placeholders!((:m, i, j), length(m.arg_names)))
+                                  for (j, m) in enumerate(s.methods)])
+                     for (i, s) in enumerate(structs)]
+    probe = _probe_emission(() -> emit(probe_functions, probe_structs))
+    probe === nothing && return functions, structs
+    probe isa AbstractString && (probe = Meta.parseall(probe))
+    reserved = Dict{Any, Set{String}}()
+    _parameter_scopes!(reserved, probe, owner)
+    named(item, key) = haskey(reserved, key) ?
+        _with_field(item, :arg_names, julia_parameter_names(item.arg_names; reserved = reserved[key])) :
+        item
+    renamed_functions = [named(f, (:f, i)) for (i, f) in enumerate(functions)]
+    renamed_structs = [_with_field(s, :methods,
+                                   [named(m, (:m, i, j)) for (j, m) in enumerate(s.methods)])
+                       for (i, s) in enumerate(structs)]
+    return renamed_functions, renamed_structs
+end
+
+# Run an emitter for its output only: nothing logged, nothing recorded for a
+# boundary report being collected on this task, `nothing` when it raises.
+function _probe_emission(f)
+    tls = task_local_storage()
+    saved = get(tls, _BOUNDARY_COLLECTOR_KEY, nothing)
+    tls[_BOUNDARY_COLLECTOR_KEY] = BoundaryCollector()
+    try
+        return Base.CoreLogging.with_logger(f, Base.CoreLogging.NullLogger())
+    catch err
+        err isa InterruptException && rethrow()
+        return nothing
+    finally
+        saved === nothing ? delete!(tls, _BOUNDARY_COLLECTOR_KEY) :
+                            (tls[_BOUNDARY_COLLECTOR_KEY] = saved)
+    end
+end
+
+# The placeholders a symbol carries: a parameter's own, or a local derived
+# from it (`__rustcall_str___rustcall_arg_3__`).
+_parameter_placeholders(name::AbstractString) =
+    [m.match for m in eachmatch(r"__rustcall_arg_\d+__", name)]
+
+# Every symbol of an expression, quoted ones included.
+function _expr_symbols!(out::Set{String}, x)
+    if x isa Symbol
+        push!(out, String(x))
+    elseif x isa QuoteNode
+        _expr_symbols!(out, x.value)
+    elseif x isa Expr
+        foreach(a -> _expr_symbols!(out, a), x.args)
+    end
+    return out
+end
+
+# Whether `x` defines a function: `function f(...)`, `f(...) = ...`, with any
+# `where` / return annotation.
+function _is_function_definition(x)
+    x isa Expr && x.head in (:function, :(=)) && length(x.args) == 2 || return false
+    sig = x.args[1]
+    while sig isa Expr && sig.head in (:where, :(::))
+        sig = sig.args[1]
+    end
+    return sig isa Expr && sig.head === :call
+end
+
+function _parameter_scopes!(reserved::AbstractDict, x, owner::AbstractDict)
+    x isa Expr || return reserved
+    if _is_function_definition(x)
+        symbols = _expr_symbols!(Set{String}(), x)
+        keys_here = Set{Any}()
+        others = Set{String}()
+        for name in symbols
+            found = _parameter_placeholders(name)
+            if isempty(found)
+                push!(others, name)
+            else
+                foreach(p -> haskey(owner, p) && push!(keys_here, owner[p]), found)
+            end
+        end
+        for key in keys_here
+            union!(get!(reserved, key, Set{String}()), others)
+        end
+    end
+    foreach(a -> _parameter_scopes!(reserved, a, owner), x.args)
+    return reserved
+end

@@ -1,18 +1,16 @@
 # A Rust parameter named like something a generated wrapper uses (#526).
 #
 # A wrapper names its parameters after the Rust ones (`julia_parameter_names`,
-# #516), and its body reads names of its own: the helpers of the generated
-# module (`_call_target`, `_guard_panic`, `_pyo3_module`), Base functions
-# (`pointer`, `sizeof`, `getfield`), the PyO3 host's receiver `obj`. A
-# parameter spelled like one of them shadowed it — `fn echo(pointer: &str)`
-# made the `@rust_crate` wrapper call its own argument, and a PyO3 method
-# `fn m(&self, obj: i32)` gave a wrapper two parameters named `obj`, which does
-# not even define. The one allocator reserves those names —
-# `RustCall._JULIA_EMITTER_NAMES`, the `CResult_` / `COption_` aggregates, and
-# the types the item's own crate or block defines (a struct `foo` is a name a
-# wrapper reads, a parameter `Foo` is not; PR #527 review) — and this file
-# derives the set from what the emitters actually emit, so an emitter that
-# starts reading a new name fails here until the name is reserved.
+# #516), and its body names things of its own without qualification: the
+# generated module's helpers (`_call_target`), Base functions (`pointer`,
+# `getfield`), the types it converts through (`Int64(x)`), its type variables,
+# the PyO3 host's receiver `obj`. A parameter spelled like one of them
+# shadowed it. No list of such names can be complete (PR #527 review), so every
+# emitter names its parameters against its own output (`_rename_parameters`):
+# it emits once with placeholders, reads every other name of each definition,
+# and names each parameter against those. This file checks the result the same
+# way for every emitter: emitting a corpus whose parameter is spelled `n` must
+# give, up to that parameter's final name, exactly what spelling it `zqx` gives.
 
 using Test
 using RustCall
@@ -58,7 +56,7 @@ function _pn_params(call::Expr)
 end
 
 # Every `function` definition in `x` whose signature is a call, with its body.
-function _pn_defs(x, out = Tuple{Expr, Any, Vector{Symbol}}[])
+function _pn_defs(x, out = Tuple{Expr, Any, Vector{Symbol}, Expr}[])
     x isa Expr || return out
     if x.head in (:function, :(=)) && length(x.args) == 2
         sig = x.args[1]
@@ -74,7 +72,7 @@ function _pn_defs(x, out = Tuple{Expr, Any, Vector{Symbol}}[])
             end
             sig = sig.args[1]
         end
-        sig isa Expr && sig.head === :call && push!(out, (sig, x.args[2], typevars))
+        sig isa Expr && sig.head === :call && push!(out, (sig, x.args[2], typevars, x))
     end
     foreach(a -> _pn_defs(a, out), x.args)
     return out
@@ -253,15 +251,7 @@ end
 function _pn_pyo3(dir, src)
     _pn_write_crate(dir, src; name = "pn_pyo3", pyo3 = true)
     info = PN.scan_crate(dir)
-    classes = PN._pyo3_host_classes(info)
-    out = Any[]
-    for f in PN._pyo3_host_bound_functions(info)
-        append!(out, PN._pyo3_host_function_expr(f, classes))
-    end
-    for s in PN._pyo3_host_bound_classes(info)
-        append!(out, PN._pyo3_host_struct_exprs(s, classes))
-    end
-    return Expr(:block, out...)
+    return Expr(:block, PN._pyo3_host_item_exprs(info, PN._pyo3_host_classes(info))...)
 end
 
 function _pn_emitters(textdir, pyodir)
@@ -274,77 +264,68 @@ function _pn_emitters(textdir, pyodir)
     ]
 end
 
-# The names the allocator reserves for an emitter's corpus: the manifest's own
-# definitions (`_manifest_reserved_names`), as the constructors are given them.
-function _pn_reserved(label, n)
-    src = label == "rust\"\"\" generic struct" ? _pn_generic_source(n) :
-          label == "pyo3_host" ? _pn_pyo3_source(n) : _pn_julia_source(n)
-    mode = startswith(label, "rust") ? "inline" : "crate"
-    return PN._manifest_reserved_names(PN.extract_manifest(src; mode))
+# The output of an emitter with its corpus parameter at `from` read with the
+# parameter at `to`: every symbol `from` exactly (and the string-argument local
+# derived from it), every string `from` exactly, replaced. Parsed text and
+# expressions both; line numbers dropped.
+function _pn_alpha(x, from::Symbol, to::Symbol)
+    local_from = Symbol("__rustcall_str_", from)
+    local_to = Symbol("__rustcall_str_", to)
+    swap(y) = y === from ? to : y === local_from ? local_to :
+              y isa String && y == String(from) ? String(to) :
+              y isa QuoteNode ? QuoteNode(swap(y.value)) :
+              y isa Expr ? Expr(y.head, map(swap, y.args)...) : y
+    return swap(x)
 end
 
-# The plain names an emitter's output defines: its functions and types.
-function _pn_defined(expr, out = Set{String}())
-    expr isa Expr || return out
-    if expr.head === :struct
-        name = expr.args[2]
-        name isa Expr && name.head === :curly && (name = name.args[1])
-        name isa Expr && name.head === :escape && (name = name.args[1])
-        name isa Symbol && push!(out, String(name))
-    end
-    foreach(a -> _pn_defined(a, out), expr.args)
-    return out
-end
+# Printed without line numbers or gensym counters (`##payload#145`), which
+# differ between two emissions of the same definition.
+_pn_text_of(x) = replace(string(Base.remove_linenums!(deepcopy(x))), r"##(\w+)#\d+" => s"##\1#")
+
+# A name a Rust function can take as a parameter: a plain identifier, not a
+# keyword, and not in RustCall's own `__rustcall_` namespace, which the
+# emitters' locals use (`_generated_local`).
+_pn_rust_parameter(n::Symbol) =
+    occursin(r"^[A-Za-z_][A-Za-z0-9_]*$", String(n)) &&
+    !(String(n) in ("self", "Self", "super", "crate", "_")) &&
+    !startswith(String(n), "__rustcall_")
+
+# Every symbol of an expression.
+_pn_symbols(x, out = Set{Symbol}()) =
+    x isa Symbol ? push!(out, x) :
+    x isa QuoteNode ? _pn_symbols(x.value, out) :
+    x isa Expr ? (foreach(a -> _pn_symbols(a, out), x.args); out) : out
 
 # A name a parameter could meet in a wrapper: a plain identifier, not one the
 # allocator hands out itself for a parameter it renamed (`zqx`).
 _pn_identifier(s::Symbol) = Base.isidentifier(s) && Meta.parse(String(s); raise = false) isa Symbol
 
-@testset "julia_parameter_names reserves the emitters' own names (#526)" begin
+@testset "julia_parameter_names takes the names in scope (#526)" begin
     names = PN.julia_parameter_names
-    @test names(["obj", "pointer", "x"]) == ["obj_", "pointer_", "x"]
-    @test names(["getfield", "sizeof", "nothing"]) == ["getfield_", "sizeof_", "nothing_"]
-    # A type name the wrappers read is reserved; any other capitalised name is
-    # kept as written (PR #527 review: lowering `Foo` onto a struct `foo`
-    # shadowed it).
-    @test names(["Int32", "Foo"]) == ["Int32_", "Foo"]
-    @test names(["CResult_f", "COption_g"]) == ["arg_CResult_f", "arg_COption_g"]
-    # The item's own types are reserved by the caller, which knows them.
-    @test names(["foo", "Foo"]; reserved = ["foo"]) == ["foo_", "Foo"]
-    @test names(["S", "s"]; reserved = ["S"]) == ["S_", "s"]
-    # A name kept as written still wins over a renamed one.
-    @test names(["obj", "obj_"]) == ["obj__", "obj_"]
-    # Idempotent, and never a reserved name.
-    for input in (["obj", "pointer", "S", "s", "end"], ["_call_target", "_guard_panic"],
-                  collect(PN._JULIA_EMITTER_NAMES))
-        out = names(input; reserved = ["S"])
-        @test names(out; reserved = ["S"]) == out
-        @test !any(n -> n in PN._JULIA_EMITTER_NAMES || n == "S", out)
-        @test allunique(out)
-    end
-    # A generic struct's type variables are in scope in its method wrappers
-    # (`where {obj_}`): a parameter renamed onto one is renamed again (PR #527
-    # review).
-    generic = PN.extract_manifest("""
-        #[julia] pub struct G<obj_> { pub v: obj_ }
-        impl<obj_: Copy> G<obj_> {
-            pub fn new(obj: obj_) -> Self { G { v: obj } }
-            pub fn pick(&self, obj: obj_, obj_2: obj_) -> obj_ { obj }
-        }
-        """; mode = "inline")
-    for m in only(PN.manifest_struct_infos(generic)).methods
-        @test !("obj_" in m.arg_names) && allunique(m.arg_names)
-    end
-    # The manifest's own types are what the constructors are given.
-    m = PN.extract_manifest("""
-        #[julia] pub struct foo { pub v: i32 }
-        #[julia] impl foo {
-            #[julia] pub fn new(Foo: i32, foo: i32) -> Self { foo { v: Foo + foo } }
-        }
-        #[julia] pub fn make(foo: i32, Foo: i32) -> i32 { foo + Foo }
-        """; mode = "crate")
-    @test only(PN.manifest_function_signatures(m)).arg_names == ["foo_", "Foo"]
-    @test only(only(PN.manifest_struct_infos(m)).methods).arg_names == ["Foo", "foo_"]
+    @test names(["pointer", "x"]; reserved = ["pointer"]) == ["pointer_", "x"]
+    @test names(["Int64", "Foo"]; reserved = ["Int64", "foo"]) == ["Int64_", "Foo"]
+    @test names(["obj", "obj_"]; reserved = ["obj"]) == ["obj__", "obj_"]
+    out = names(["obj", "pointer", "end"]; reserved = ["obj", "pointer"])
+    @test names(out; reserved = ["obj", "pointer"]) == out
+    @test allunique(out)
+end
+
+@testset "a parameter is named against its own definitions (#526)" begin
+    # A toy emitter: `f` converts through its argument's spelling, `g` does
+    # not. Only `f`'s parameter meets a name of its definition.
+    f = PN.RustFunctionSignature("f", ["Int64"], ["i64"], "i64", false, String[])
+    g = PN.RustFunctionSignature("g", ["Int64"], ["i64"], "i64", false, String[])
+    emit(fs, ss) = Expr(:block, [begin
+        p = Symbol(only(sig.arg_names))
+        sig.name == "f" ? :(function f($p) Int64($p) end) : :(function g($p) $p end)
+    end for sig in fs]...)
+    renamed, _ = PN._rename_parameters([f, g], PN.RustStructInfo[], emit)
+    @test only(renamed[1].arg_names) == "Int64_"
+    @test only(renamed[2].arg_names) == "Int64"
+    # An emitter that raises leaves the names alone: it raises again.
+    failing(fs, ss) = error("refused")
+    same, _ = PN._rename_parameters([f], PN.RustStructInfo[], failing)
+    @test only(same[1].arg_names) == "Int64"
 end
 
 if !PN_HAVE_CARGO || !PN.check_rustc_available()
@@ -356,89 +337,47 @@ else
     pyodir = mktempdir()
     emitters = _pn_emitters(textdir, pyodir)
 
-    @testset "every name a wrapper reads is reserved from its parameters (#526)" begin
-        # Derived from the emitters' own output: with a parameter named `zqx`,
-        # every name any wrapper taking it binds or reads — other than its
-        # parameters — is reserved, a type of the corpus itself (`S`, `G`, `P`),
-        # or a local the emitter renames itself when a parameter takes it
-        # (`_generated_local`).
+    @testset "no parameter meets a name of its own definition, in any emitter (#526)" begin
+        # For each emitter: the names its output for the `zqx` corpus uses in
+        # a definition taking `zqx` — what a parameter could shadow — and a few
+        # more; the corpus with its parameter spelled like each of them must be
+        # the `zqx` corpus up to the parameter's final name. A parameter that
+        # kept a name its definition reads, or was renamed onto one, breaks
+        # the equivalence (that name would be swapped too).
         for (label, gen) in emitters
-            unreserved = Set{Symbol}()
-            reserved = _pn_reserved(label, "zqx")
-            ex = gen("zqx")
-            # Every function and type the emitter defines is a reserved name.
-            defined = union(_pn_defined(ex),
-                            Set(String(_pn_unesc(sig.args[1])) for (sig, _) in _pn_defs(ex)
-                                if _pn_unesc(sig.args[1]) isa Symbol))
-            undefended = [d for d in defined
-                          if !(d in reserved || d in PN._JULIA_EMITTER_NAMES ||
-                               PN._reserved_aggregate_name(d)) && _pn_identifier(Symbol(d))]
-            @test isempty(undefended) || (@info "$label defines unreserved names" undefended; false)
-            for (sig, params, bound, read) in _pn_wrappers(ex, :zqx)
-                for s in setdiff(union(read, bound), params)
-                    _pn_identifier(s) || continue
-                    str = String(s)
-                    (str in PN._JULIA_EMITTER_NAMES || str in reserved) && continue
-                    PN._reserved_aggregate_name(str) && continue
-                    startswith(str, "__rustcall_") && continue
-                    push!(unreserved, s)
-                end
+            base = gen("zqx")
+            used = Set{Symbol}()
+            for (sig, body) in _pn_defs(base)
+                :zqx in _pn_params(sig) || continue
+                union!(used, _pn_symbols(sig), _pn_symbols(body))
             end
-            # A local the emitter binds is renamed on collision: check that
-            # instead of reserving it.
-            for s in collect(unreserved)
-                renamed = all(_pn_wrappers(gen(String(s)), s)) do (sig, params, bound, read)
-                    !(s in params) || !(s in bound)
-                end
-                renamed && delete!(unreserved, s)
-            end
-            @test isempty(unreserved) || (@info "$label reads unreserved names" unreserved; false)
-        end
-        # ... and nothing is reserved that no emitter uses.
-        used = Set{String}()
-        for (label, gen) in emitters
-            ex = gen("zqx")
-            for (sig, params, bound, read) in _pn_wrappers(ex, :zqx)
-                union!(used, String.(union(read, bound, params)))
-            end
-            # A name the emitter defines is reserved as well.
-            union!(used, _pn_defined(ex))
-            union!(used, (String(_pn_unesc(sig.args[1])) for (sig, _) in _pn_defs(ex)
-                          if _pn_unesc(sig.args[1]) isa Symbol))
-        end
-        unused = [n for n in PN._JULIA_EMITTER_NAMES if !(n in used)]
-        @test isempty(unused) || (@info "reserved but unused" unused; false)
-    end
-
-    @testset "no wrapper parameter shadows a name its wrapper uses (#526)" begin
-        # The emitters, with a parameter named after each reserved name and
-        # after the corpus's own definitions (types, methods, functions): a
-        # reserved name is renamed, and no wrapper then has two parameters of
-        # one name or a parameter spelled like a name it reads.
-        probes = vcat(collect(PN._JULIA_EMITTER_NAMES),
-                      ["S", "P", "m", "st", "f_plain", "CResult_f_result", "T"])
-        for (label, gen) in emitters
-            # The parameters a wrapper has of its own (the PyO3 host's `obj`).
-            own = Dict(sig.args[1] => setdiff(params, [:zqx])
-                       for (sig, params, _, _) in _pn_wrappers(gen("zqx"), :zqx))
+            probes = sort!(collect(setdiff(union(used, Symbol.(["Int64", "Float32", "Char",
+                                                                 "Cint", "obj", "T", "pointer"])),
+                                           Set([:zqx, Symbol("__rustcall_str_zqx")]))))
+            base_defs = _pn_defs(base)
+            failures = String[]
             for n in probes
-                _pn_identifier(Symbol(n)) || continue
-                reserved = _pn_reserved(label, n)
-                renamed = Symbol(PN.julia_parameter_names([n]; reserved)[1])
-                taken = n in PN._JULIA_EMITTER_NAMES || n in reserved ||
-                        PN._reserved_aggregate_name(n)
-                taken && @test renamed !== Symbol(n)
-                for (sig, params, bound, read, typevars) in _pn_wrappers(gen(n), renamed)
-                    # Never a type variable of the wrapper itself (PR #527
-                    # review: `G<obj_>` with `obj: obj_`).
-                    ok = allunique(params) && renamed in params &&
-                         isempty(intersect(params, typevars)) &&
-                         (!taken || !(Symbol(n) in params) ||
-                          Symbol(n) in get(own, sig.args[1], Symbol[]))
-                    ok || @info "$label: `$n` meets the wrapper" sig
-                    @test ok
+                (_pn_identifier(n) && _pn_rust_parameter(n)) || continue
+                out = try
+                    gen(String(n))
+                catch
+                    continue    # not a name Rust accepts for a parameter
+                end
+                out_defs = _pn_defs(out)
+                length(out_defs) == length(base_defs) ||
+                    (push!(failures, "$n: $(length(out_defs)) definitions"); continue)
+                # Definition by definition: the parameter's final name is what
+                # stands where `zqx` stood, and swapping it back must give the
+                # `zqx` definition exactly.
+                for ((zsig, _, _, zdef), (nsig, _, _, ndef)) in zip(base_defs, out_defs)
+                    at = findfirst(==(:zqx), _pn_params(zsig))
+                    at === nothing && continue
+                    final = _pn_params(nsig)[at]
+                    _pn_text_of(_pn_alpha(ndef, final, :zqx)) == _pn_text_of(zdef) ||
+                        push!(failures, "$n -> $final in $(zsig.args[1])")
                 end
             end
+            @test isempty(failures) || (@info "$label: a parameter meets its definition" failures; false)
         end
     end
 
@@ -449,6 +388,12 @@ else
             use rustcall_julia_macros::julia;
             #[julia] pub fn echo(pointer: &str) -> String { pointer.to_string() }
             #[julia] pub fn size(sizeof: i32, nothing: i32) -> i32 { sizeof + nothing }
+            // Parameters named like the types the wrapper body converts
+            // through (PR #527 review).
+            #[allow(non_snake_case)]
+            #[julia] pub fn widen(Int64: i64, Float32: f32, Char: u32, Cint: i32) -> i64 {
+                Int64 + Float32 as i64 + Char as i64 + Cint as i64
+            }
             // A lowercase type and parameters spelled like it (PR #527 review).
             #[allow(non_camel_case_types)]
             #[julia] pub struct foo { pub v: i32 }
@@ -466,6 +411,7 @@ else
             call = Base.invokelatest
             @test call(get(:echo), "hi") == "hi"
             @test call(get(:size), Int32(2), Int32(3)) == 5
+            @test call(get(:widen), Int64(1), Float32(2), UInt32(3), Int32(4)) == 10
             acc = call(get(:Acc), Int32(4))
             @test call(get(:add), acc, Int32(5)) == 9
             f = call(get(:foo), Int32(1), Int32(2))

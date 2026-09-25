@@ -745,8 +745,7 @@ function _pyo3_host_args(arg_names, arg_types, python_defaults, python_kinds,
             if isvector
                 push!(sig, :($sym::AbstractVector))
                 push!(conv,
-                      :([var"#item" isa PythonCall.Py ? var"#item" :
-                         getfield(var"#item", :_rustcall_py) for var"#item" in $sym]))
+                      :([x isa PythonCall.Py ? x : getfield(x, :_rustcall_py) for x in $sym]))
             else
                 push!(sig, :($sym))
                 push!(conv,
@@ -782,9 +781,9 @@ function _pyo3_host_single_def(name::Symbol, sig::Vector{Any}, call::Expr, retur
         body = quote
             try
                 return RustCall.RustResult{$jt, String}(true, $valued)
-            catch var"#err"
-                var"#err" isa PythonCall.PyException || rethrow()
-                return RustCall.RustResult{$jt, String}(false, sprint(showerror, var"#err"))
+            catch err
+                err isa PythonCall.PyException || rethrow()
+                return RustCall.RustResult{$jt, String}(false, sprint(showerror, err))
             end
         end
         return Expr(:function, Expr(:call, name, sig...), body)
@@ -1019,18 +1018,15 @@ type), a class is a type whose `#[new]` is its constructor, an instance method
 dispatches on its class, a readable or writable field is a property. `async`
 items and `#[getter]` / `#[setter]` methods define nothing.
 """
-_pyo3_host_definitions(info::CrateInfo) =
-    _pyo3_host_definitions(info.pyo3_functions, info.pyo3_structs)
-
-function _pyo3_host_definitions(functions::AbstractVector, structs::AbstractVector)
+function _pyo3_host_definitions(info::CrateInfo)
     defs = JuliaDefinition[]
     add!(name, scope, owner; what = owner, parent = "") =
         push!(defs, JuliaDefinition(name, scope, owner, what, parent))
-    for f in _pyo3_host_bound_functions(functions)
+    for f in _pyo3_host_bound_functions(info)
         add!(julia_function_name(f), :free,
              "the function `$(qualified_name(f.module_path, f.name))`")
     end
-    for s in _pyo3_host_bound_classes(structs)
+    for s in _pyo3_host_bound_classes(info)
         T = julia_struct_name(s)
         owner = "the struct `$(qualified_name(s.module_path, s.name))`"
         add!(T, :binding, owner)
@@ -1056,12 +1052,10 @@ end
 # definitions (`_pyo3_host_definitions`) are read from (#514). `async` items
 # are refused by the extractor (`async_fn`) and bound nowhere; `#[getter]` /
 # `#[setter]` methods are Python properties reached through `getproperty`.
-_pyo3_host_bound_functions(info::CrateInfo) = _pyo3_host_bound_functions(info.pyo3_functions)
-_pyo3_host_bound_functions(functions::AbstractVector) =
-    [f for f in functions if f.attribute === :py_function && !_pyo3_host_async(f)]
-_pyo3_host_bound_classes(info::CrateInfo) = _pyo3_host_bound_classes(info.pyo3_structs)
-_pyo3_host_bound_classes(structs::AbstractVector) =
-    [s for s in structs if s.attribute === :py_class]
+_pyo3_host_bound_functions(info::CrateInfo) =
+    [f for f in info.pyo3_functions if f.attribute === :py_function && !_pyo3_host_async(f)]
+_pyo3_host_bound_classes(info::CrateInfo) =
+    [s for s in info.pyo3_structs if s.attribute === :py_class]
 _pyo3_host_bound_methods(s::RustStructInfo) =
     [m for m in s.methods if !_pyo3_host_async(m) && (m.is_constructor || isempty(m.accessor))]
 _pyo3_host_bound_fields(s::RustStructInfo) =
@@ -1078,6 +1072,30 @@ function _pyo3_host_check_names(info::CrateInfo)
     _check_julia_definitions(_pyo3_host_definitions(info),
                              "the PyO3 host bindings of `$(info.name)`")
     return nothing
+end
+
+"""
+    _pyo3_host_item_exprs(info, classes) -> Vector{Any}
+
+The definitions of the host's functions and classes, every parameter named
+against the definitions it lands in (`_rename_parameters`, #526).
+"""
+function _pyo3_host_item_exprs(info::CrateInfo, classes::AbstractDict)
+    emit(fs, ss) = Expr(:block, _pyo3_host_item_exprs(fs, ss, classes)...)
+    functions, structs = _rename_parameters(_pyo3_host_bound_functions(info),
+                                            _pyo3_host_bound_classes(info), emit)
+    return _pyo3_host_item_exprs(functions, structs, classes)
+end
+
+function _pyo3_host_item_exprs(functions, structs, classes::AbstractDict)
+    out = Any[]
+    for f in functions
+        append!(out, _pyo3_host_function_expr(f, classes))
+    end
+    for s in structs
+        append!(out, _pyo3_host_struct_exprs(s, classes))
+    end
+    return out
 end
 
 """
@@ -1152,11 +1170,6 @@ function generate_pyo3_host_bindings(crate_path::AbstractString;
     # refused before anything is emitted, by the check every emitter runs,
     # over what this one binds (#514).
     _pyo3_host_check_names(info)
-    for f in _pyo3_host_bound_functions(info)
-        append!(body.args, _pyo3_host_function_expr(f, classes))
-    end
-    for s in _pyo3_host_bound_classes(info)
-        append!(body.args, _pyo3_host_struct_exprs(s, classes))
-    end
+    append!(body.args, _pyo3_host_item_exprs(info, classes))
     return Expr(:module, true, mod_name, body)
 end

@@ -128,8 +128,7 @@ function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_type
                                ffi_name::String = name,
                                callback_args::Vector{Vector{String}} = Vector{String}[String[] for _ in arg_names],
                                callback_returns::Vector{String} = fill("", length(arg_names)),
-                               python_path::Vector{String} = String[],
-                               reserved_names = ())
+                               python_path::Vector{String} = String[])
     length(arg_abis) == length(arg_types) ||
         throw(ArgumentError("arg_abis must have one entry per argument"))
     length(python_defaults) == length(arg_names) ||
@@ -139,9 +138,7 @@ function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_type
     length(callback_args) == length(arg_names) && length(callback_returns) == length(arg_names) ||
         throw(ArgumentError("callback_args and callback_returns must have one entry per argument"))
     # The Julia parameter names, decided here once for every emitter (#516).
-    # `reserved_names`: the types of the item's own crate or block (#527).
-    RustFunctionSignature(name, julia_parameter_names(arg_names; reserved = reserved_names),
-                          arg_types, return_type,
+    RustFunctionSignature(name, julia_parameter_names(arg_names), arg_types, return_type,
                           is_generic, type_params, symbol, attribute, exported, return_kind, ok_type, err_type, inner_type,
                           source, constraints, module_path, body_has_cfg,
                           has_owned_string_helper, has_borrowed_string_helper, arg_abis,
@@ -598,6 +595,19 @@ struct's generated code finds its members through it (#522).
 function _inline_wrapper_exprs(signatures::Vector{RustFunctionSignature},
                                struct_infos::Vector{RustStructInfo};
                                block = nothing)
+    # Every parameter named against the definitions it lands in (#526).
+    emit(fs, ss) = begin
+        defs, wrappers = _inline_wrapper_exprs_as_emitted(
+            Vector{RustFunctionSignature}(fs), Vector{RustStructInfo}(ss); block)
+        Expr(:block, defs..., wrappers)
+    end
+    signatures, struct_infos = _rename_parameters(signatures, struct_infos, emit)
+    return _inline_wrapper_exprs_as_emitted(Vector{RustFunctionSignature}(signatures),
+                                            Vector{RustStructInfo}(struct_infos); block)
+end
+
+function _inline_wrapper_exprs_as_emitted(signatures::Vector{RustFunctionSignature},
+                                          struct_infos::Vector{RustStructInfo}; block = nothing)
     colliding = _static_method_collisions(signatures, struct_infos)
     struct_defs = [emit_julia_definitions(info; colliding = colliding, block = block)
                    for info in struct_infos]

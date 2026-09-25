@@ -52,29 +52,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `write_bindings_to_file` wrapper call its own argument (`objects of type
   String are not callable`), a method parameter `getfield` did the same to
   `getfield(self, :ptr)`, and a PyO3 host method `fn m(&self, obj: i32)` gave
-  its wrapper two parameters named `obj`, which Julia refuses to define. The
-  one allocator, `RustCall.julia_parameter_names`, now gives such a parameter
-  an underscore (`pointer_`, `obj_`, and a fresh `arg_CResult_f` for a
-  `CResult_` / `COption_` aggregate's spelling). It reserves
-  `RustCall._JULIA_EMITTER_NAMES` (the generated module's helpers, the Base
-  functions, modules and types the wrappers name, the host's `obj` and
-  `_pyo3_module`) and every name the item's own crate or block defines — its
-  functions, types, constructors, methods, accessors and submodules, read from
-  the same one-namespace definitions the #514 layout check uses
-  (`julia_definitions`, `_pyo3_host_definitions`), which the manifest
-  conversion hands the constructors — together with the wrapper's own type
-  variables, the generic parameters a generic struct's method wrappers bind
-  with `where {T...}` (`G<obj_>` with `obj: obj_` no longer renames the
-  argument onto `obj_`). So a struct `foo` makes a parameter `foo` `foo_`,
-  while a parameter `Foo` is kept. `julia_definitions` now files a
-  method with a receiver that returns its struct under the method's name, as
-  every emitter binds it, not as a constructor. `test/test_parameter_names.jl`
-  derives all of it from what every emitter emits: it fails, naming the name,
-  when a wrapper reads or an emitter defines a name that is not reserved, or
-  when a reserved name is no longer used. `rust"""` was not affected: its
-  wrappers are a hygienic macro expansion. The PyO3 host's own locals (its
-  `catch` variable and a comprehension variable) are no longer identifiers a
-  parameter can spell.
+  its wrapper two parameters named `obj`, which Julia refuses to define; so
+  did `Int64: i64` beside the `Int64(x)` the wrapper converts through, and a
+  generic struct's type variable (`G<obj_>` with `obj: obj_`). No list of
+  such names can be complete, so every emitter now names its parameters
+  against its own output (`RustCall._rename_parameters`): it emits its items
+  once with a unique placeholder for each parameter (nothing logged, nothing
+  recorded for a boundary report), collects every other name of each
+  definition taking one — what it reads, calls or binds, its other
+  parameters, its type variables — and gives the parameter a name outside
+  that set through the one allocator, `RustCall.julia_parameter_names`
+  (`pointer_`, `obj_`, `Int64_`). `rust"""`, both `@rust_crate` emitters
+  (the source text parsed) and the PyO3 host do this. `test/test_parameter_names.jl`
+  checks every emitter: a corpus whose parameter is spelled like any name its
+  definitions use must emit, up to the parameter's final name, exactly what
+  the same corpus emits with an unused spelling.
 - **`@rust f(x)` reaches the caller's own block first, whatever the form**
   ([#520](https://github.com/AtelierArith/RustCall.jl/issues/520)). The
   typed `@rust f(x)::T` tried every loaded library's exports before the

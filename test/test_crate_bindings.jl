@@ -1209,31 +1209,18 @@ end
     info = RustCall.scan_crate(SAMPLE_CRATE_PATH)
     code = RustCall.emit_crate_module_code(info, "/tmp/libsample.so")
 
-    # Plain return, string arguments named func_ptr / lib_name
-    @test occursin("__rustcall_str_func_ptr = RustCall.ffi_string_argument(func_ptr, \"func_ptr\", \"shadow_str_len\")", code)
-    @test occursin("__rustcall_str_lib_name = RustCall.ffi_string_argument(lib_name, \"lib_name\", \"shadow_str_len\")", code)
-    @test occursin("__rustcall_func_ptr, panic_channel = _call_target(var\"#TC#fn#rustcall_shadow_str_len\", \"rustcall_shadow_str_len\")", code)
-    @test occursin("call_rust_function(__rustcall_func_ptr, Csize_t, pointer(__rustcall_str_func_ptr)", code)
-    # The conversions come before the pointer lookup
-    @test findfirst("__rustcall_str_func_ptr = RustCall.ffi_string_argument(func_ptr,", code).start <
-          findfirst("__rustcall_func_ptr, panic_channel = _call_target(var\"#TC#fn#rustcall_shadow_str_len\", \"rustcall_shadow_str_len\")", code).start
-
-    # Result return: func_ptr and c_result are both argument names
-    @test occursin("__rustcall_func_ptr, panic_channel = _call_target(var\"#TC#fn#rustcall_shadow_parse_int\", \"rustcall_shadow_parse_int\")", code)
-    @test occursin("__rustcall_c_result = GC.@preserve(__rustcall_str_func_ptr, call_rust_function(__rustcall_func_ptr, CResult_shadow_parse_int,", code)
-    @test occursin("if __rustcall_c_result.is_ok == 1", code)
-
-    # Option return: func_ptr and c_option are both argument names
-    @test occursin("__rustcall_func_ptr, panic_channel = _call_target(var\"#TC#fn#rustcall_shadow_first_char\", \"rustcall_shadow_first_char\")", code)
-    @test occursin("__rustcall_c_option = GC.@preserve(__rustcall_str_func_ptr, call_rust_function(__rustcall_func_ptr, COption_shadow_first_char,", code)
-    @test occursin("if __rustcall_c_option.is_some == 1", code)
-
-    # No strings, but still a colliding argument name
-    @test occursin("__rustcall_func_ptr, panic_channel = _call_target(var\"#TC#fn#rustcall_shadow_double\", \"rustcall_shadow_double\")", code)
-    @test occursin("call_rust_function(__rustcall_func_ptr, Int32, Int32(func_ptr))", code)
-
-    # Names that do not collide keep their readable form
-    @test occursin("func_ptr, panic_channel = _call_target(var\"#TC#fn#rustcall_parse_int\", \"rustcall_parse_int\")", code)
+    # Since #526 every parameter is named against the definition it lands in:
+    # an argument spelled like one of the wrapper's own locals (`func_ptr`,
+    # `c_result`, `c_option`) is the one renamed, and the locals keep their
+    # readable names. `lib_name` is no local of these wrappers and is kept.
+    @test occursin("function shadow_str_len(func_ptr_, lib_name)", code)
+    @test occursin("__rustcall_str_func_ptr_ = RustCall.ffi_string_argument(func_ptr_, \"func_ptr_\", \"shadow_str_len\")", code)
+    @test occursin("func_ptr, panic_channel = _call_target(var\"#TC#fn#rustcall_shadow_str_len\", \"rustcall_shadow_str_len\")", code)
+    @test occursin("function shadow_parse_int(func_ptr_, c_result_)", code)
+    @test occursin("c_result = GC.@preserve(__rustcall_str_func_ptr_, call_rust_function(func_ptr, CResult_shadow_parse_int,", code)
+    @test occursin("function shadow_first_char(func_ptr_, c_option_)", code)
+    @test occursin("c_option = GC.@preserve(__rustcall_str_func_ptr_, call_rust_function(func_ptr, COption_shadow_first_char,", code)
+    @test occursin("call_rust_function(func_ptr, Int32, Int32(func_ptr_))", code)
 
     @test Meta.parse(code) isa Expr
 

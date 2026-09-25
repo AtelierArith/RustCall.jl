@@ -132,18 +132,21 @@ end
     functions = RustCall.manifest_function_signatures(manifest)
     structs = RustCall.manifest_struct_infos(manifest)
     tree = RustCall._module_tree(functions, structs)
+    # The parameters as both emitters name them (#526); `_crate_wrapper_exprs`
+    # does this itself, the source-text loop below is given the result.
+    named = RustCall._rename_crate_tree(tree)
     exprs = RustCall._collect_boundary() do
         RustCall._crate_wrapper_exprs(tree)
     end
     source = RustCall._collect_boundary() do
-        for f in tree.functions
+        for f in named.functions
             RustCall._function_skipped!(f) || RustCall._emit_function_code(f)
         end
-        colliding = RustCall._static_method_collisions(tree.functions, tree.structs)
-        for s in tree.structs
+        colliding = RustCall._static_method_collisions(named.functions, named.structs)
+        for s in named.structs
             RustCall._emit_struct_code(s; colliding = colliding)
         end
-        RustCall._submodule_code(tree)
+        RustCall._submodule_code(named)
     end
     @test !isempty(exprs.positions)
     @test exprs.positions == source.positions
