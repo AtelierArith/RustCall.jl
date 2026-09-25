@@ -1788,6 +1788,8 @@ function _pyo3_wrapper_items(manifest::Dict)
             field_vec_elements = st.field_vec_elements,
             field_free_symbols = st.field_free_symbols,
             field_setters = st.field_setters, has_clone = st.has_clone,
+            field_pyo3_get = st.field_pyo3_get, field_pyo3_set = st.field_pyo3_set,
+            field_python_names = st.field_python_names, field_py_shapes = st.field_py_shapes,
             has_owned_string_helper = st.has_owned_string_helper,
             has_borrowed_string_helper = st.has_borrowed_string_helper,
             generic_wrappers = st.generic_wrappers, constraints = st.constraints,

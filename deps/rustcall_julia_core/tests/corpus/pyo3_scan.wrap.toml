@@ -74,10 +74,22 @@ name = "a"
 rust_type = "i32"
 abi = ""
 
+[functions.args.py_shape]
+kind = "scalar"
+name = "i32"
+
 [[functions.args]]
 name = "b"
 rust_type = "i32"
 abi = ""
+
+[functions.args.py_shape]
+kind = "scalar"
+name = "i32"
+
+[functions.py_return]
+kind = "scalar"
+name = "i32"
 
 [[functions]]
 name = "shout"
@@ -113,6 +125,12 @@ name = "s"
 rust_type = "String"
 abi = "string"
 
+[functions.args.py_shape]
+kind = "string"
+
+[functions.py_return]
+kind = "string"
+
 [[functions]]
 name = "double"
 ffi_name = "double"
@@ -146,6 +164,14 @@ module_path = []
 name = "x"
 rust_type = "f64"
 abi = ""
+
+[functions.args.py_shape]
+kind = "scalar"
+name = "f64"
+
+[functions.py_return]
+kind = "scalar"
+name = "f64"
 
 [[functions]]
 name = "private_add"
@@ -181,10 +207,22 @@ name = "a"
 rust_type = "i32"
 abi = ""
 
+[functions.args.py_shape]
+kind = "scalar"
+name = "i32"
+
 [[functions.args]]
 name = "b"
 rust_type = "i32"
 abi = ""
+
+[functions.args.py_shape]
+kind = "scalar"
+name = "i32"
+
+[functions.py_return]
+kind = "scalar"
+name = "i32"
 
 [[functions]]
 name = "crate_add"
@@ -220,10 +258,22 @@ name = "a"
 rust_type = "i32"
 abi = ""
 
+[functions.args.py_shape]
+kind = "scalar"
+name = "i32"
+
 [[functions.args]]
 name = "b"
 rust_type = "i32"
 abi = ""
+
+[functions.args.py_shape]
+kind = "scalar"
+name = "i32"
+
+[functions.py_return]
+kind = "scalar"
+name = "i32"
 
 [[functions]]
 name = "with_python"
@@ -259,6 +309,13 @@ name = "py"
 rust_type = "Python<'_>"
 abi = ""
 
+[functions.args.py_shape]
+kind = "injected"
+
+[functions.py_return]
+kind = "scalar"
+name = "i32"
+
 [[functions]]
 name = "takes_any"
 ffi_name = "takes_any"
@@ -292,6 +349,13 @@ module_path = []
 name = "obj"
 rust_type = "&PyAny"
 abi = ""
+
+[functions.args.py_shape]
+kind = "opaque"
+
+[functions.py_return]
+kind = "scalar"
+name = "usize"
 
 [[functions]]
 name = "takes_bound"
@@ -327,6 +391,13 @@ name = "obj"
 rust_type = "Bound<'_, PyList>"
 abi = ""
 
+[functions.args.py_shape]
+kind = "opaque"
+
+[functions.py_return]
+kind = "scalar"
+name = "usize"
+
 [[functions]]
 name = "returns_object"
 ffi_name = "returns_object"
@@ -357,6 +428,9 @@ body_has_cfg = false
 line = 59
 module_path = []
 
+[functions.py_return]
+kind = "opaque"
+
 [[functions]]
 name = "returns_py_of"
 ffi_name = "returns_py_of"
@@ -386,6 +460,9 @@ source = ""
 body_has_cfg = false
 line = 64
 module_path = []
+
+[functions.py_return]
+kind = "opaque"
 
 [[functions]]
 name = "parse"
@@ -421,6 +498,13 @@ name = "s"
 rust_type = "&str"
 abi = "str"
 
+[functions.args.py_shape]
+kind = "string"
+
+[functions.py_return]
+kind = "scalar"
+name = "i32"
+
 [[functions]]
 name = "parse_object"
 ffi_name = "parse_object"
@@ -454,6 +538,12 @@ module_path = []
 name = "s"
 rust_type = "&str"
 abi = "str"
+
+[functions.args.py_shape]
+kind = "string"
+
+[functions.py_return]
+kind = "opaque"
 
 [[functions]]
 name = "identity"
@@ -492,6 +582,12 @@ name = "x"
 rust_type = "T"
 abi = ""
 
+[functions.args.py_shape]
+kind = "opaque"
+
+[functions.py_return]
+kind = "opaque"
+
 [[functions]]
 name = "demo"
 ffi_name = "demo"
@@ -525,6 +621,12 @@ module_path = []
 name = "m"
 rust_type = "&Bound<'_, PyModule>"
 abi = ""
+
+[functions.args.py_shape]
+kind = "injected"
+
+[functions.py_return]
+kind = "unit"
 
 [[functions]]
 name = "deep"
@@ -560,6 +662,14 @@ name = "a"
 rust_type = "i32"
 abi = ""
 
+[functions.args.py_shape]
+kind = "scalar"
+name = "i32"
+
+[functions.py_return]
+kind = "scalar"
+name = "i32"
+
 [[functions]]
 name = "unreachable_add"
 ffi_name = "private_0mod__unreachable_0add"
@@ -593,6 +703,14 @@ module_path = ["private_mod"]
 name = "a"
 rust_type = "i32"
 abi = ""
+
+[functions.args.py_shape]
+kind = "scalar"
+name = "i32"
+
+[functions.py_return]
+kind = "scalar"
+name = "i32"
 
 [[functions]]
 name = "gated_add"
@@ -628,10 +746,22 @@ name = "a"
 rust_type = "i32"
 abi = ""
 
+[functions.args.py_shape]
+kind = "scalar"
+name = "i32"
+
 [[functions.args]]
 name = "b"
 rust_type = "i32"
 abi = ""
+
+[functions.args.py_shape]
+kind = "scalar"
+name = "i32"
+
+[functions.py_return]
+kind = "scalar"
+name = "i32"
 
 [[structs]]
 name = "Point"
@@ -664,6 +794,10 @@ vis = "pub"
 pyo3_get = true
 pyo3_set = true
 
+[structs.fields.py_shape]
+kind = "scalar"
+name = "f64"
+
 [[structs.fields]]
 name = "y"
 rust_type = "f64"
@@ -675,6 +809,10 @@ python_name = ""
 vis = "pub"
 pyo3_get = true
 
+[structs.fields.py_shape]
+kind = "scalar"
+name = "f64"
+
 [[structs.fields]]
 name = "tag"
 rust_type = "String"
@@ -685,6 +823,9 @@ setter = ""
 python_name = "label"
 vis = "pub"
 pyo3_get = true
+
+[structs.fields.py_shape]
+kind = "string"
 
 [[structs.methods]]
 name = "new"
@@ -710,20 +851,35 @@ return_type = "Self"
 return_abi = ""
 generic_wrapper = ""
 
+[structs.methods.py_return]
+kind = "class"
+name = "Point"
+
 [[structs.methods.args]]
 name = "x"
 rust_type = "f64"
 abi = ""
+
+[structs.methods.args.py_shape]
+kind = "scalar"
+name = "f64"
 
 [[structs.methods.args]]
 name = "y"
 rust_type = "f64"
 abi = ""
 
+[structs.methods.args.py_shape]
+kind = "scalar"
+name = "f64"
+
 [[structs.methods.args]]
 name = "tag"
 rust_type = "String"
 abi = "string"
+
+[structs.methods.args.py_shape]
+kind = "string"
 
 [[structs.methods]]
 name = "norm"
@@ -750,6 +906,10 @@ return_type = "f64"
 return_abi = ""
 generic_wrapper = ""
 
+[structs.methods.py_return]
+kind = "scalar"
+name = "f64"
+
 [[structs.methods]]
 name = "scale"
 symbol = "rustcall_Point_scale"
@@ -774,10 +934,17 @@ return_type = "()"
 return_abi = ""
 generic_wrapper = ""
 
+[structs.methods.py_return]
+kind = "unit"
+
 [[structs.methods.args]]
 name = "factor"
 rust_type = "f64"
 abi = ""
+
+[structs.methods.args.py_shape]
+kind = "scalar"
+name = "f64"
 
 [[structs.methods]]
 name = "origin"
@@ -804,6 +971,10 @@ return_type = "Self"
 return_abi = ""
 generic_wrapper = ""
 
+[structs.methods.py_return]
+kind = "class"
+name = "Point"
+
 [[structs.methods]]
 name = "from_class"
 symbol = "rustcall_Point_from_class"
@@ -828,10 +999,17 @@ return_abi = ""
 generic_wrapper = ""
 is_classmethod = true
 
+[structs.methods.py_return]
+kind = "class"
+name = "Point"
+
 [[structs.methods.args]]
 name = "cls"
 rust_type = "&Bound<'_, pyo3::types::PyType>"
 abi = ""
+
+[structs.methods.args.py_shape]
+kind = "opaque"
 
 [[structs.methods]]
 name = "sum"
@@ -858,6 +1036,10 @@ return_type = "f64"
 return_abi = ""
 generic_wrapper = ""
 
+[structs.methods.py_return]
+kind = "scalar"
+name = "f64"
+
 [[structs.methods]]
 name = "set_x"
 symbol = "rustcall_Point_set_x"
@@ -882,10 +1064,17 @@ return_type = "()"
 return_abi = ""
 generic_wrapper = ""
 
+[structs.methods.py_return]
+kind = "unit"
+
 [[structs.methods.args]]
 name = "value"
 rust_type = "f64"
 abi = ""
+
+[structs.methods.args.py_shape]
+kind = "scalar"
+name = "f64"
 
 [[structs.methods]]
 name = "as_object"
@@ -910,6 +1099,9 @@ args = []
 return_type = "PyObject"
 return_abi = ""
 generic_wrapper = ""
+
+[structs.methods.py_return]
+kind = "opaque"
 
 [[structs]]
 name = "Secret"
@@ -941,6 +1133,10 @@ python_name = ""
 vis = ""
 pyo3_get = true
 
+[structs.fields.py_shape]
+kind = "scalar"
+name = "i32"
+
 [[structs.methods]]
 name = "new"
 symbol = "rustcall_Secret_new"
@@ -964,10 +1160,18 @@ return_type = "Self"
 return_abi = ""
 generic_wrapper = ""
 
+[structs.methods.py_return]
+kind = "class"
+name = "Secret"
+
 [[structs.methods.args]]
 name = "value"
 rust_type = "i32"
 abi = ""
+
+[structs.methods.args.py_shape]
+kind = "scalar"
+name = "i32"
 
 [[structs]]
 name = "Circle"
@@ -999,6 +1203,10 @@ python_name = ""
 vis = "pub"
 pyo3_get = true
 
+[structs.fields.py_shape]
+kind = "scalar"
+name = "f64"
+
 [[structs.methods]]
 name = "new"
 symbol = "rustcall_shapes__Circle_new"
@@ -1023,10 +1231,18 @@ return_type = "Self"
 return_abi = ""
 generic_wrapper = ""
 
+[structs.methods.py_return]
+kind = "class"
+name = "Circle"
+
 [[structs.methods.args]]
 name = "r"
 rust_type = "f64"
 abi = ""
+
+[structs.methods.args.py_shape]
+kind = "scalar"
+name = "f64"
 
 [[structs.methods]]
 name = "area"
@@ -1052,6 +1268,10 @@ args = []
 return_type = "f64"
 return_abi = ""
 generic_wrapper = ""
+
+[structs.methods.py_return]
+kind = "scalar"
+name = "f64"
 
 [[structs]]
 name = "GatedPoint"
@@ -1084,6 +1304,10 @@ vis = "pub"
 pyo3_get = true
 pyo3_set = true
 
+[structs.fields.py_shape]
+kind = "scalar"
+name = "f64"
+
 [[structs.fields]]
 name = "hidden_but_gettable"
 rust_type = "f64"
@@ -1094,6 +1318,10 @@ setter = ""
 python_name = ""
 vis = ""
 pyo3_get = true
+
+[structs.fields.py_shape]
+kind = "scalar"
+name = "f64"
 
 [[structs.methods]]
 name = "new"
@@ -1119,10 +1347,18 @@ return_type = "Self"
 return_abi = ""
 generic_wrapper = ""
 
+[structs.methods.py_return]
+kind = "class"
+name = "GatedPoint"
+
 [[structs.methods.args]]
 name = "x"
 rust_type = "f64"
 abi = ""
+
+[structs.methods.args.py_shape]
+kind = "scalar"
+name = "f64"
 
 [[structs.methods]]
 name = "checked"
@@ -1148,3 +1384,7 @@ args = []
 return_type = "PyResult<f64>"
 return_abi = ""
 generic_wrapper = ""
+
+[structs.methods.py_return]
+kind = "scalar"
+name = "f64"

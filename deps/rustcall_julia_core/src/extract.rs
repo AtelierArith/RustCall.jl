@@ -74,6 +74,7 @@ pub fn typed_arg(pt: &syn::PatType) -> Arg {
         callback_return,
         python_default: String::new(),
         python_kind: String::new(),
+        py_shape: None,
     }
 }
 
@@ -305,6 +306,7 @@ pub fn function_entry(
         body_has_cfg: body_has_cfg(&func.block),
         line: func.span().start().line,
         module_path: module_path.to_vec(),
+        py_return: None,
     }
 }
 
@@ -1489,6 +1491,7 @@ fn crate_struct_entry(
                 pyo3_get: false,
                 pyo3_set: false,
                 precollision: None,
+                py_shape: None,
             }
         })
         .collect();
@@ -1558,6 +1561,7 @@ fn crate_struct_entry(
             return_abi: crate::codegen::return_abi(&m.func.sig).to_string(),
             generic_wrapper: String::new(),
             generic_wrapper_name: String::new(),
+            py_return: None,
         })
         .collect::<Vec<_>>();
     let mut methods = methods;

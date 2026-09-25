@@ -1488,9 +1488,29 @@ function manifest_function_signatures(manifest::Dict; only_attributed::Bool = tr
             python_name = _mstr(f, "python_name"),
             python_path = String[String(p) for p in _mvec(f, "python_path")],
             cfg_features = String[String(c) for c in _mvec(f, "cfg_features")],
+            py_arg_shapes = Union{Nothing, PyO3Shape}[_manifest_py_shape(a, "py_shape")
+                                                      for a in args],
+            py_return_shape = _manifest_py_shape(f, "py_return"),
         ))
     end
     return sigs
+end
+
+"""
+    _manifest_py_shape(entry, key) -> Union{Nothing, PyO3Shape}
+
+The PyO3-host shape the extractor recorded under `key` (`py_shape` of an
+argument or field, `py_return` of a function or method), or `nothing` when it
+recorded none: a `#[julia]` item, or a manifest from an extractor that predates
+the field (additive within schema 0.7; PR #525 review).
+"""
+function _manifest_py_shape(entry, key::AbstractString)
+    table = get(entry, key, nothing)
+    table isa AbstractDict || return nothing
+    inner = _manifest_py_shape(table, "inner")
+    kind = get(table, "kind", "opaque")
+    return PyO3Shape(Symbol(isempty(kind) ? "opaque" : kind), String(get(table, "name", "")),
+                     Int(get(table, "rank", 0)), inner)
 end
 
 function _manifest_method(m)
@@ -1541,6 +1561,9 @@ function _manifest_method(m)
         # A generic struct's method wrapper, by the name the extractor gave it
         # (module-qualified, #462); omitted for every other method.
         generic_wrapper_name = _mstr(m, "generic_wrapper_name"),
+        py_arg_shapes = Union{Nothing, PyO3Shape}[_manifest_py_shape(a, "py_shape")
+                                                  for a in args],
+        py_return_shape = _manifest_py_shape(m, "py_return"),
     )
 end
 
@@ -1571,6 +1594,7 @@ function manifest_struct_infos(manifest::Dict; origins = nothing)
         pyo3_get = Dict{String, Bool}()
         pyo3_set = Dict{String, Bool}()
         python_names = Dict{String, String}()
+        py_shapes = Dict{String, PyO3Shape}()
         # The extractor omits the column when it is false, so an all-read-only
         # struct and a legacy manifest both look "empty"; the presence of the
         # key anywhere says the column exists and every field gets an explicit
@@ -1595,6 +1619,8 @@ function manifest_struct_infos(manifest::Dict; origins = nothing)
             # "...")]`, or a raw `r#let` as `let`); the host's property (#524).
             isempty(_mstr(f, "python_name")) ||
                 (python_names[name] = _mstr(f, "python_name"))
+            field_shape = _manifest_py_shape(f, "py_shape")
+            field_shape === nothing || (py_shapes[name] = field_shape)
             # Each accessor on its own: a `#[julia]` struct carries both, a
             # `#[pyclass]` field carries what `#[pyo3(get)]` / `#[pyo3(set)]`
             # declared, and a `set`-only field is a setter with no getter
@@ -1625,6 +1651,7 @@ function manifest_struct_infos(manifest::Dict; origins = nothing)
             field_pyo3_get = pyo3_get,
             field_pyo3_set = pyo3_set,
             field_python_names = python_names,
+            field_py_shapes = py_shapes,
             has_clone = _mbool(s, "has_clone"),
             has_owned_string_helper = _mbool(s, "has_owned_string_helper"),
             has_borrowed_string_helper = _mbool(s, "has_borrowed_string_helper"),

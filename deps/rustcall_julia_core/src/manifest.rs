@@ -464,6 +464,73 @@ pub struct Arg {
     /// or `kw_args`; empty outside a declared PyO3 signature.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub python_kind: String,
+    /// How the PyO3 host hands this value to Python, resolved by the scan
+    /// from the type's paths (#264, PR #525 review): see [`PyShape`]. Present
+    /// on every PyO3-scanned position and absent everywhere else, so a
+    /// consumer tells a scan that describes no shape from one that describes
+    /// an opaque value. Additive within schema 0.7.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub py_shape: Option<PyShape>,
+}
+
+/// What a value of a PyO3 item's argument, return or property is to the
+/// Python-host bindings, decided by the scan from the type's **paths** so no
+/// consumer reads a Rust type spelling (#264, PR #525 review):
+///
+/// * `kind = "class"` — one `#[pyclass]` object, `name` the class's Rust
+///   name without `r#`: the class itself, `Self` (the enclosing class), or
+///   pyo3's `Py` / `Bound` / `Borrowed` / `PyRef` / `PyRefMut` around one;
+///   the path resolved to a scanned class as an impl header is;
+/// * `"vec"` / `"option"` — `std`'s `Vec<T>` / `Option<T>` (the bare name
+///   only when the crate declares or imports no item of that name), `inner`
+///   the element's shape;
+/// * `"array"` — a pyo3-numpy `PyArray<N>` / `PyReadonlyArray<N>` (`N` a rank
+///   or `Dyn`, `rank = -1`), bare or behind `Py` / `Bound`; `name` the element
+///   primitive;
+/// * `"scalar"` — a primitive, `name` its spelling (`i32`, `f64`, `bool`);
+/// * `"string"` — `String` or a `&str`; `"unit"` — `()`;
+/// * `"injected"` — supplied by the interpreter, not by the caller:
+///   `Python<'_>`, or the `PyModule` a `#[pyo3(pass_module)]` function gets;
+/// * `"opaque"` — anything else (`Py<PyAny>`, a crate's own `Option`), passed
+///   and returned as the Python object it is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PyShape {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "is_zero_rank")]
+    pub rank: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inner: Option<Box<PyShape>>,
+}
+
+fn is_zero_rank(rank: &i32) -> bool {
+    *rank == 0
+}
+
+impl PyShape {
+    pub fn of(kind: &str) -> Self {
+        PyShape {
+            kind: kind.to_string(),
+            name: String::new(),
+            rank: 0,
+            inner: None,
+        }
+    }
+
+    pub fn named(kind: &str, name: &str) -> Self {
+        PyShape {
+            name: name.to_string(),
+            ..PyShape::of(kind)
+        }
+    }
+
+    pub fn wrapping(kind: &str, inner: PyShape) -> Self {
+        PyShape {
+            inner: Some(Box::new(inner)),
+            ..PyShape::of(kind)
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -619,6 +686,10 @@ pub struct Function {
     /// its canonical module. Empty means module_path + name (legacy manifests).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub callable_path: Vec<String>,
+    /// The PyO3-host shape of the value the function returns — of `T` for a
+    /// `PyResult<T>` — see [`Arg::py_shape`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub py_return: Option<PyShape>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -679,6 +750,10 @@ pub struct Field {
     /// `set_all`; never when the class is `frozen`). See [`Field::pyo3_get`].
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pyo3_set: bool,
+    /// The PyO3-host shape of the field's value, `Self` resolved to its
+    /// class; see [`Arg::py_shape`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub py_shape: Option<PyShape>,
     /// The accessors this field had before a **symbol collision** took them.
     ///
     /// In memory only, and never serialized: it exists so the collision
@@ -844,6 +919,10 @@ pub struct Method {
     /// schema 0.7.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub julia_name: String,
+    /// The PyO3-host shape of the value the method returns — of `T` for a
+    /// `PyResult<T>`, `Self` resolved to its class; see [`Arg::py_shape`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub py_return: Option<PyShape>,
     /// How each `Result` / `Option` payload travels: `""` as written,
     /// `"string"` for an owned `<owner>_RustCallOwnedString` buffer released
     /// through `<owner>_free_rust_string` (schema 6, #268), the owner being

@@ -487,6 +487,7 @@ Manifest schema 5 adds, for every function, struct and method:
 | `skip_reason` | why the item cannot be wrapped, empty when it can |
 | `python_name` | the name PyO3 exposes it under, when it is not the Rust name as written: `#[pyo3(name = "...")]`, a raw `r#for` as `for`, and for a `#[getter]` / `#[setter]` method the property (`#[getter(x)]`, or the name without a `get_` / `set_` prefix) |
 | `accessor` | `getter` / `setter` for a `#[getter]` / `#[setter]` method |
+| argument / field `py_shape`, function / method `py_return` | what the value is to the Python-host bindings, resolved by the scan from the type's paths: `class` (a scanned `#[pyclass]`, `Self` resolved, through `Py` / `Bound` / `Borrowed` / `PyRef` / `PyRefMut`), `vec` / `option` (`std`'s, with an `inner` shape), `array` (pyo3-numpy, with `rank` and element `name`), `scalar`, `string`, `unit`, `injected` (`Python<'_>`, a `pass_module` module) or `opaque`. The host reads nothing else about a PyO3 type |
 | `return_kind` + `ok_type` / `err_type` / `inner_type` | on methods too, not just free functions: a `#[pymethods]` method returning `PyResult<T>` is `py_result` with `T`, so Phase 2 never re-reads the Rust type spelling |
 | field `abi = "vec"` + `vec_element` + `free_symbol` | schema 10's owned-vector contract: the exact Julia element layout and the export that must release this getter's `(ptr, len, cap)` buffer |
 | argument `python_default` + `python_kind` | schema 12's PyO3 call shape; defaults remain Rust expressions and are evaluated only by PyO3's original dispatcher |

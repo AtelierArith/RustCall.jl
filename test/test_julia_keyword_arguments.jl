@@ -185,9 +185,12 @@ end
     raw = RustCall.RustFunctionSignature("g", ["r#func_ptr"], ["i32"], "i32", false, String[])
     @test RustCall._generated_local("func_ptr", raw.arg_names) != :func_ptr
     # The PyO3 host reads the same names.
+    scalar = RustCall.PyO3Shape(:scalar, "i32")
     py = RustCall.RustFunctionSignature("h", ["end", "r#for"], ["i32", "i32"], "i32", false, String[];
-                                        attribute = :py_function)
-    @test first(RustCall._pyo3_host_args(py.arg_names, py.arg_types, py.python_defaults,
+                                        attribute = :py_function,
+                                        py_arg_shapes = Union{Nothing, RustCall.PyO3Shape}[scalar, scalar],
+                                        py_return_shape = scalar)
+    @test first(RustCall._pyo3_host_args(py.arg_names, py.py_arg_shapes, py.python_defaults,
                                          py.python_kinds, Dict{String, Any}())) == [:end_, :for_]
 end
 

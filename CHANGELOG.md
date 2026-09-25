@@ -71,17 +71,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the method argument plan (`RustCall._pyo3_host_arg_plan`, now the one
   per-argument decision `_pyo3_host_args` also reads), so a setter taking a
   class is handed the Python object the Julia handle holds and one taking a
-  numpy array gets `numpy.asarray` of the Julia array. `Self` is the enclosing
-  class wherever a spelling puts it — `Py<Self>`, `PyResult<Py<Self>>`,
-  `PyRef<'_, Self>`, `Bound<'_, Self>`, a `Vec` element — for methods and
-  properties alike: every class lookup goes through one function
-  (`_pyo3_host_class_of`), where only a bare `Self` was the class before.
-  A spelling is read by its layers (`_pyo3_host_class_shape`: references,
-  `Py` / `PyRef` / `Bound` / `Borrowed`, `Vec`, `Option`), not by its last
-  identifier, so an `Option` of a class is an optional class: a Julia
-  `nothing` argument or written value passes as `None` instead of reaching
-  `getfield`, and an `Option<Py<Self>>` return or getter reads back
-  `nothing` or the wrapped class. An identifier-form property name
+  numpy array gets `numpy.asarray` of the Julia array. **What a value is to
+  the host is now decided by the extractor, from the type's paths**, never
+  from its spelling in Julia (#264): every argument, return and field of a
+  scanned PyO3 item carries a `py_shape` / `py_return` in the manifest
+  (`rustcall_julia_core::manifest::PyShape`, additive within schema 0.7) — a
+  class (resolved to a scanned `#[pyclass]` as an impl header is, `Self` the
+  enclosing class, through pyo3's `Py` / `Bound` / `Borrowed` / `PyRef` /
+  `PyRefMut`), `std`'s `Vec` / `Option` of a shape, a pyo3-numpy array with
+  its rank and element, a scalar, a string, the unit, an interpreter-supplied
+  argument, or an opaque value. So `Py<Self>` and `PyResult<Py<Self>>` are the
+  class, an `Option` of a class maps `nothing` to `None` and back (a Julia
+  `nothing` no longer reaches `getfield`), and a crate's own `Option` — named
+  `crate::Option`, or shadowing the bare name — is not std's: its value
+  passes through as it is (a bare `Option` / `Vec` / `Py` is the standard or
+  pyo3 item only when the crate declares or imports none of that name). The
+  host reads only that description (`RustCall.PyO3Shape`); every spelling
+  parser it had — the class, numpy, injected-argument and value-type readers —
+  is gone, and a manifest from an extractor that predates the field is refused
+  with the instruction to rebuild it. An identifier-form property name
   (`#[getter(r#type)]`) is unrawed like every Rust name (`type`); a string
   `name = "..."` is taken as written. And
   a name the generated module or type defines for itself — the handle field
