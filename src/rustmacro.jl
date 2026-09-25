@@ -406,21 +406,35 @@ A caller that verifies the snapshot (`::T`) does so before publishing it.
         _resolution_seam(:restored)
         epoch = artifact_epoch()
 
-        for lib in own
-            # A generic row first only because it is a table read; one block
-            # never defines a function and a generic of one Julia name.
-            generic = get(GENERIC_FUNCTIONS_BY_LIB, (lib, func_name), nothing)
-            generic === nothing || return generic
-            target = resolve_call_target(lib, func_name; fallback = false)
+        # Whether each of the caller's own blocks defines the name is decided
+        # from ONE snapshot — loaded or not, its generation, its generic row
+        # and whether it exports the name, read in one transaction (#522). A
+        # library's rows are installed and dropped with it, so a loaded block
+        # with no row and no export does not define the name; an unloaded own
+        # block may, and what it defines is unknown until it is restored.
+        states = _own_definition_snapshot(own, func_name)
+        _resolution_seam(:owned_read)
+        for st in states
+            own_block = st.lib in blocks
+            if !st.loaded
+                own_block && return _OwnDefinitionVanished("`$func_name` in library '$(st.lib)'")
+                continue
+            end
+            # A generic first only because it is in hand; one block never
+            # defines a function and a generic of one Julia name.
+            st.generic === nothing || return st.generic
+            target = resolve_call_target(st.lib, func_name; fallback = false)
             target === nothing || return (epoch, target)
-            # A library's rows are installed and dropped with the library in
-            # one transaction, so a loaded block that answered nothing does
-            # not define the name. An unloaded one may: it was unloaded after
-            # the restore above, and what it defines is unknown until it is
-            # restored again.
-            lib in blocks && !_library_loaded(lib) &&
-                return _OwnDefinitionVanished("`$func_name` in library '$lib'")
+            # It exported the name when the snapshot was taken and does not
+            # now: its image went away in between.
+            own_block && st.exports &&
+                return _OwnDefinitionVanished("`$func_name` in library '$(st.lib)'")
         end
+        # Every own block was loaded and answered nothing — as long as each is
+        # still the image the snapshot saw; a symbol lookup that missed on a
+        # replaced image proves nothing.
+        _own_images_unchanged(states, blocks) ||
+            return _OwnDefinitionVanished("`$func_name` in the caller's own libraries")
 
         generic = get(GENERIC_FUNCTION_REGISTRY, func_name, nothing)
         generic === nothing || return generic
@@ -469,10 +483,6 @@ function _resolve_own_definition(attempt)
                     "not register it again"))
 end
 
-# Whether `lib` is loaded now.
-_library_loaded(lib::String) = lock(REGISTRY_LOCK) do
-    haskey(RUST_LIBRARIES, lib)
-end
 
 # Test seam: called with a stage from `resolve_rust_call`, outside STATE —
 # `:restored` right after the caller's blocks are restored and before anything

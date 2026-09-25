@@ -378,6 +378,58 @@ struct GenericStructSnapshot
 end
 
 """
+    OwnLibraryState
+
+What one of a caller's own libraries answers for one name, as one locked read
+saw it (`_own_definition_snapshot`, #522): whether it is loaded, the
+generation of its image, the generic it registered under the name, and
+whether it exports a function of the name (a symbol mapping). A library's
+rows are installed and dropped with the library in one transaction, so these
+fields are consistent with each other. Immutable.
+"""
+struct OwnLibraryState
+    lib::String
+    loaded::Bool
+    generation::Int
+    generic::Union{Nothing, GenericFunctionInfo}
+    exports::Bool
+end
+
+"""
+    _own_definition_snapshot(libs, name) -> Tuple{Vararg{OwnLibraryState}}
+
+The state of every library in `libs` for `name`, read in **one**
+`REGISTRY_LOCK` transaction. `resolve_rust_call` decides from this alone
+whether one of the caller's own blocks defines `name` — never from a row read
+and a liveness check made in separate transactions, which an unload and a
+restore landing between them could make disagree (PR #523 review).
+"""
+function _own_definition_snapshot(libs::Vector{String}, name::String)
+    return lock(REGISTRY_LOCK) do
+        Tuple(OwnLibraryState(lib, haskey(RUST_LIBRARIES, lib), get(ARTIFACT_GENERATIONS, lib, 0),
+                              get(GENERIC_FUNCTIONS_BY_LIB, (lib, name), nothing),
+                              haskey(FUNCTION_SYMBOLS_BY_LIB, (lib, name)))
+              for lib in libs)
+    end
+end
+
+"""
+    _own_images_unchanged(states, blocks) -> Bool
+
+Whether every own block in `states` is still the image the snapshot saw —
+loaded, at the same generation. Read in one transaction, after the
+resolution's cold symbol lookups: a lookup that found nothing proves nothing
+about a library that was unloaded, or replaced, while it ran.
+"""
+function _own_images_unchanged(states, blocks::Vector{String})
+    return lock(REGISTRY_LOCK) do
+        all(st -> !(st.lib in blocks) ||
+                  (haskey(RUST_LIBRARIES, st.lib) &&
+                   get(ARTIFACT_GENERATIONS, st.lib, 0) == st.generation), states)
+    end
+end
+
+"""
     _generic_snapshot_member(snapshot, name) -> Union{GenericStructSnapshot, Nothing}
 
 The member `name` of the group `snapshot` holds, as a snapshot of the same

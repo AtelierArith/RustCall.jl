@@ -93,7 +93,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one of the caller's own blocks is found unloaded after it was restored, the
   call restores it again (up to three times) or raises, and never falls
   through to another module's generic of the same name
-  (`RustCall._resolve_own_definition`, shared by both lookups). A
+  (`RustCall._resolve_own_definition`, shared by both lookups). Whether one
+  of the caller's blocks defines the name is decided from one snapshot of
+  their loaded state, generation and rows (`RustCall._own_definition_snapshot`),
+  so an unload and a restore between two separate reads cannot make it look
+  both missing and loaded. A
   hand-registered, ungrouped generic constructor keeps finding its separately
   registered `_free`. An instantiation's cache key is unchanged (the source,
   the bindings, the compiler and the struct's name, never the owner), so two

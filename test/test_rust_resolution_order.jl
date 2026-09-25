@@ -432,6 +432,41 @@ _ro_block(m::Module, rust::AbstractString) =
         @test _ro_eval(b, :(@rust ro522_vanish(Int32(7)))) === Int32(21)
     end
 
+    # The same, with the library restored again between the read of the
+    # caller's rows and the check of its liveness (an unload, then a restore:
+    # ABA). Deciding from two reads saw a missing row *and* a loaded library,
+    # and fell through to the other module's generic (PR #523 review).
+    @testset "an unload and a restore between the read and the liveness check" begin
+        a = _ro_module(:ResolutionOrderAbaA)
+        b = _ro_module(:ResolutionOrderAbaB)
+        lib_a = _ro_block(a, """
+            #[julia]
+            pub fn ro522_aba<T: Copy + std::ops::Add<Output = T>>(x: T) -> T { x }
+            """)
+        _ro_block(b, """
+            #[julia]
+            pub fn ro522_aba<T: Copy + std::ops::Add<Output = T>>(x: T) -> T { x + x + x }
+            """)
+        b_row = RustCall.GENERIC_FUNCTION_REGISTRY["ro522_aba"]
+        stages = Symbol[]
+        hook = function (stage)
+            push!(stages, stage)
+            if stage === :restored && count(==(:restored), stages) == 1
+                RustCall.unload_library(lib_a)           # A
+            elseif stage === :owned_read && count(==(:owned_read), stages) == 1
+                RustCall._resolve_lib(a, "")             # B: restored again
+                # ...while the bare name is B's again (B re-registered).
+                RustCall.GENERIC_FUNCTION_REGISTRY["ro522_aba"] = b_row
+            end
+        end
+        result = task_local_storage(RustCall._AFTER_RUST_RESOLUTION_RESTORE, hook) do
+            _ro_eval(a, :(@rust ro522_aba(Int32(5))))
+        end
+        @test :owned_read in stages
+        @test result === Int32(5)
+        @test _ro_eval(b, :(@rust ro522_aba(Int32(5)))) === Int32(15)
+    end
+
     @testset "one function decides, for every form" begin
         # Source-level: the four `@rust` entry points ask `resolve_rust_call`
         # and nothing else decides generic-or-function; it restores the

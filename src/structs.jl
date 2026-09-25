@@ -1607,6 +1607,9 @@ reads them.
 """
 function _read_generic_struct_snapshot(owner::Union{Nothing, String}, key::String)
     return lock(REGISTRY_LOCK) do
+        # A known owner answers only while it is loaded, in this same read —
+        # the rule `_own_definition_snapshot` applies to `@rust` (#522).
+        owner === nothing || haskey(RUST_LIBRARIES, owner) || return nothing
         member = owner === nothing ? get(GENERIC_FUNCTION_REGISTRY, key, nothing) :
                  get(GENERIC_FUNCTIONS_BY_LIB, (owner, key), nothing)
         member === nothing && return nothing

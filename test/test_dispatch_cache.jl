@@ -261,7 +261,7 @@ using RustCall
             resolver = code_of("resolve_rust_call")
             restore = findfirst("_resolve_lib(", resolver)[1]
             @test restore < findfirst("resolve_call_target(", resolver)[1]
-            @test restore < findfirst("GENERIC_FUNCTIONS_BY_LIB", resolver)[1]
+            @test restore < findfirst("_own_definition_snapshot(", resolver)[1]
             @test restore < findfirst("GENERIC_FUNCTION_REGISTRY", resolver)[1]
             @test !occursin("try", resolver)
         end
