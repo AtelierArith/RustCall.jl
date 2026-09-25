@@ -187,6 +187,16 @@ end
     members = filter(info -> info.group === Symbol("generic_struct:GenerationStableBox"),
                      collect(values(RustCall.GENERIC_FUNCTION_REGISTRY)))
     @test !isempty(members)
+    # The block's library owns the members, and the defining module resolves
+    # them through that library's rows (#522); a re-registration is simulated
+    # by replacing both, as `_publish_generic_struct_group!` does.
+    @test all(info -> !isempty(info.owner), members)
+    republish(infos) = lock(RustCall.REGISTRY_LOCK) do
+        for info in infos
+            RustCall.GENERIC_FUNCTION_REGISTRY[info.name] = info
+            RustCall.GENERIC_FUNCTIONS_BY_LIB[(info.owner, info.name)] = info
+        end
+    end
     stop = Threads.Atomic{Bool}(false)
     readers = Task[]
     objects = Any[old]
@@ -216,12 +226,9 @@ end
             replacements = [RustCall.GenericFunctionInfo(
                 info.name, replace(info.code, "111" => string(version)), info.type_params,
                 info.constraints, info.context, info.arg_types, info.return_type,
-                info.path, info.compiler, info.blocked, info.group) for info in members]
-            lock(RustCall.REGISTRY_LOCK) do
-                for info in replacements
-                    RustCall.GENERIC_FUNCTION_REGISTRY[info.name] = info
-                end
-            end
+                info.path, info.compiler, info.blocked, info.group, info.cargo,
+                info.owner) for info in members]
+            republish(replacements)
             current = GenerationStableBox{Int32}(Int32(version))
             push!(objects, current)
             @test Base.invokelatest(stable_stamp, current) == version
@@ -259,11 +266,7 @@ end
         for object in objects
             finalize(object)
         end
-        lock(RustCall.REGISTRY_LOCK) do
-            for info in members
-                RustCall.GENERIC_FUNCTION_REGISTRY[info.name] = info
-            end
-        end
+        republish(members)
     end
     @test RustCall.finalizer_failure_count() == before
     @test_throws RustCall.RustError Base.invokelatest(stable_stamp, old)
@@ -346,7 +349,7 @@ end
     # registered under the name any more, with a freshly invented "alive"
     # flag that nothing would ever flip (#249, #277).
     @testset "a generic struct is bound to the image that allocated it" begin
-        rust"""
+        boxed_lib = rust"""
         #[julia]
         pub struct Boxed<T> {
             value: T,
@@ -389,9 +392,16 @@ end
         # allocator (#291).
         lib = getfield(b, :lib_name)
         @test !isempty(lib)
-        free_info = only(filter(info -> occursin("Boxed_free", info.name),
-                                values(RustCall.MONOMORPHIZED_FUNCTIONS)))
+        # This module's own `Boxed_free` — another test file may define a
+        # generic `Boxed` of its own in the same worker, with its own
+        # instantiation, and the bare name would be whichever registered last
+        # (#522).
+        own_free = RustCall.GENERIC_FUNCTIONS_BY_LIB[(boxed_lib, "Boxed_free")]
+        free_info = RustCall.monomorphize_function(own_free, Dict{Symbol, Type}(:T => Int32))
         @test free_info.lib_name == lib
+        @test free_info.func_ptr == free_ptr
+        @test only(filter(info -> occursin("Boxed_free", info.name) && info.lib_name == lib,
+                          collect(values(RustCall.MONOMORPHIZED_FUNCTIONS)))) === free_info
 
         # ...and the object still frees exactly once, without raising.
         before = RustCall.finalizer_failure_count()

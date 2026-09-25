@@ -328,31 +328,31 @@ end
         @test call(get(:if_), w) == 10
 
         # A generic struct's raw method: its generic wrapper is registered
-        # under the unraw name (`KwBoxed514_match`) the extractor gives it, and the
+        # under the unraw name (`Boxed_match`) the extractor gives it, and the
         # Julia method is `match` (PR #515 review).
         g = Module(:KwInlineGeneric)
         Core.eval(g, :(using RustCall))
         Core.eval(g, Meta.parse("""rust\"\"\"
             #[julia]
-            pub struct KwBoxed514<T> { pub v: T }
-            impl<T: Copy> KwBoxed514<T> {
-                pub fn new(v: T) -> Self { KwBoxed514 { v } }
+            pub struct Boxed<T> { pub v: T }
+            impl<T: Copy> Boxed<T> {
+                pub fn new(v: T) -> Self { Boxed { v } }
                 pub fn r#match(&self) -> T { self.v }
                 pub fn r#end(&self) -> T { self.v }
             }
             \"\"\""""))
-        bx = call(call(getfield, g, :KwBoxed514){Int32}, Int32(6))
+        bx = call(call(getfield, g, :Boxed){Int32}, Int32(6))
         @test call(call(getfield, g, :match), bx) == 6
         @test call(call(getfield, g, :end_), bx) == 6
         # One instantiation registers each member once: the raw method adds no
-        # second destructor or wrapper under another spelling. (The name is
-        # unique to this file: the monomorphization registry is process-wide,
-        # and `test_generic_struct.jl` counts its own `Boxed_free` in the same
-        # test worker — a shared `Boxed` here was the CI failure of 503c6c60.)
+        # second destructor or wrapper under another spelling. Counted in this
+        # object's own image: `test_generic_struct.jl` defines a generic
+        # `Boxed` of its own, which may share the test worker; since #522 each
+        # module reaches its own, and the two sources are two instantiations.
         members = [info.name for info in values(RustCall.MONOMORPHIZED_FUNCTIONS)
-                   if occursin("KwBoxed514_", info.name)]
-        @test count(n -> occursin("KwBoxed514_free", n), members) == 1
-        @test count(n -> occursin("KwBoxed514_match", n), members) == 1
+                   if occursin("Boxed_", info.name) && info.lib_name == bx.lib_name]
+        @test count(n -> occursin("Boxed_free", n), members) == 1
+        @test count(n -> occursin("Boxed_match", n), members) == 1
         @test !any(n -> occursin("r#", n), members)
 
         # `r#for` beside `for_` is refused before anything is defined.

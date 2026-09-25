@@ -312,7 +312,18 @@ struct GenericFunctionInfo
     # allocator (#291).
     group::Union{Nothing, Symbol}
     cargo::Union{Nothing, GenericCargoContext}
+    # The library whose `rust"""` block registered this generic struct
+    # member; empty for a registration made without one (#522). A group is the
+    # members of one `group` **and** one owner: two modules' same-named
+    # structs share the group symbol and the wrapper names, never the owner.
+    # Not part of any artifact identity — the source already is.
+    owner::String
 end
+
+GenericFunctionInfo(name, code, type_params, constraints, context, arg_types,
+                    return_type, path, compiler, blocked, group, cargo) =
+    GenericFunctionInfo(name, code, type_params, constraints, context, arg_types,
+                        return_type, path, compiler, blocked, group, cargo, "")
 
 GenericFunctionInfo(name, code, type_params, constraints, context, arg_types,
                     return_type, path, compiler, blocked, group) =
@@ -349,6 +360,85 @@ Guarded by `REGISTRY_LOCK`.
 """
 const GENERIC_FUNCTIONS_BY_LIB = _state_view(:generic_functions_by_lib,
     Dict{Tuple{String, String}, GenericFunctionInfo}())
+
+"""
+    GenericStructSnapshot
+
+One generic struct member **and every member of its group**, as one locked
+read of the registries saw them (`_read_generic_struct_snapshot`, #522). An
+instantiation of the group uses only this: the members are never read again
+by name, so an unload that drops the owner's rows between the lookup and the
+instantiation cannot leave a constructor-only group (PR #523 review). `members`
+is sorted by name and includes `member`. Immutable, so it cannot be half
+updated.
+"""
+struct GenericStructSnapshot
+    member::GenericFunctionInfo
+    members::Tuple{Vararg{GenericFunctionInfo}}
+end
+
+"""
+    OwnLibraryState
+
+What one of a caller's own libraries answers for one name, as one locked read
+saw it (`_own_definition_snapshot`, #522): whether it is loaded, the
+generation of its image, the generic it registered under the name, and
+whether it exports a function of the name (a symbol mapping). A library's
+rows are installed and dropped with the library in one transaction, so these
+fields are consistent with each other. Immutable.
+"""
+struct OwnLibraryState
+    lib::String
+    loaded::Bool
+    generation::Int
+    generic::Union{Nothing, GenericFunctionInfo}
+    exports::Bool
+end
+
+"""
+    _own_definition_snapshot(libs, name) -> Tuple{Vararg{OwnLibraryState}}
+
+The state of every library in `libs` for `name`, read in **one**
+`REGISTRY_LOCK` transaction. `resolve_rust_call` decides from this alone
+whether one of the caller's own blocks defines `name` — never from a row read
+and a liveness check made in separate transactions, which an unload and a
+restore landing between them could make disagree (PR #523 review).
+"""
+function _own_definition_snapshot(libs::Vector{String}, name::String)
+    return lock(REGISTRY_LOCK) do
+        Tuple(OwnLibraryState(lib, haskey(RUST_LIBRARIES, lib), get(ARTIFACT_GENERATIONS, lib, 0),
+                              get(GENERIC_FUNCTIONS_BY_LIB, (lib, name), nothing),
+                              haskey(FUNCTION_SYMBOLS_BY_LIB, (lib, name)))
+              for lib in libs)
+    end
+end
+
+"""
+    _own_images_unchanged(states, blocks) -> Bool
+
+Whether every own block in `states` is still the image the snapshot saw —
+loaded, at the same generation. Read in one transaction, after the
+resolution's cold symbol lookups: a lookup that found nothing proves nothing
+about a library that was unloaded, or replaced, while it ran.
+"""
+function _own_images_unchanged(states, blocks::Vector{String})
+    return lock(REGISTRY_LOCK) do
+        all(st -> !(st.lib in blocks) ||
+                  (haskey(RUST_LIBRARIES, st.lib) &&
+                   get(ARTIFACT_GENERATIONS, st.lib, 0) == st.generation), states)
+    end
+end
+
+"""
+    _generic_snapshot_member(snapshot, name) -> Union{GenericStructSnapshot, Nothing}
+
+The member `name` of the group `snapshot` holds, as a snapshot of the same
+group — no registry read.
+"""
+function _generic_snapshot_member(snapshot::GenericStructSnapshot, name::AbstractString)
+    i = findfirst(info -> info.name == name, snapshot.members)
+    return i === nothing ? nothing : GenericStructSnapshot(snapshot.members[i], snapshot.members)
+end
 
 """
 Registry for monomorphized function instances.
@@ -652,8 +742,15 @@ monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Type}) =
 monomorphize_function(info::GenericFunctionInfo, type_params::Dict{Symbol, <:Type}) =
     _monomorphize_function(info.name, type_params, info)
 
+# A generic struct member together with its whole group, read in one
+# transaction (#522): the group is instantiated from exactly these members.
+monomorphize_function(snapshot::GenericStructSnapshot, type_params::Dict{Symbol, <:Type}) =
+    _monomorphize_function(snapshot.member.name, type_params, snapshot.member;
+                           members = snapshot.members)
+
 function _monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Type},
-                                registered::Union{Nothing, GenericFunctionInfo})
+                                registered::Union{Nothing, GenericFunctionInfo};
+                                members::Union{Nothing, Tuple{Vararg{GenericFunctionInfo}}} = nothing)
     # An attempt publishes nothing when the image it resolved against was
     # released between its `load_artifact!` and its publication (#397 review):
     # two tasks racing on one instantiation both end on the winner's handle,
@@ -676,7 +773,7 @@ function _monomorphize_function(func_name::String, type_params::Dict{Symbol, <:T
     deadline = Inf
     backoff = 0.001
     while true
-        info = _monomorphize_function_once(func_name, type_params; registered)
+        info = _monomorphize_function_once(func_name, type_params; registered, members)
         info === nothing || return info
         deadline = min(deadline, time() + _MONOMORPHIZE_SETTLE_SECONDS)
         time() < deadline ||
@@ -765,7 +862,8 @@ end
 # between the restore and the load (`_batch_copy_is_current`).
 function _monomorphize_function_once(func_name::String, type_params::Dict{Symbol, <:Type};
                                      restored_override = nothing,
-                                     registered::Union{Nothing, GenericFunctionInfo} = nothing)
+                                     registered::Union{Nothing, GenericFunctionInfo} = nothing,
+                                     members::Union{Nothing, Tuple{Vararg{GenericFunctionInfo}}} = nothing)
     if registered === nothing
         registered = lock(REGISTRY_LOCK) do
             get(GENERIC_FUNCTION_REGISTRY, func_name, nothing)
@@ -773,7 +871,7 @@ function _monomorphize_function_once(func_name::String, type_params::Dict{Symbol
     end
     registered === nothing && error("Function '$func_name' is not registered as a generic function")
     registered.group === nothing ||
-        return _monomorphize_generic_struct_group(registered.group, func_name, type_params)
+        return _monomorphize_generic_struct_group(registered, func_name, type_params; members)
 
     begin
         # Retain the registration snapshot, but do not hold STATE while
@@ -947,18 +1045,45 @@ function _monomorphize_function_once(func_name::String, type_params::Dict{Symbol
 end
 
 """
-    _monomorphize_generic_struct_group(group, func_name, type_params)
+    _monomorphize_generic_struct_group(registered, func_name, type_params)
 
 Compile every wrapper of one generic struct instantiation into one cdylib.
 The constructor and `free` wrapper therefore use the same allocator, and all
 methods share the same generation snapshot (#291).
+
+The members are those of `registered`'s own group **and owner**
+(`_generic_group_members`, #522): another module's struct of the same name has
+the same group symbol and the same wrapper names, and its members must not
+join this instantiation. The artifact identity is unchanged by that — it is the
+source, the bindings, the compiler and the group symbol, as before — so an
+unchanged struct keeps its cache key, and two same-named structs share an
+instantiation only when their sources are the same.
 """
-function _monomorphize_generic_struct_group(group::Symbol, func_name::String,
-                                             type_params::Dict{Symbol, <:Type})
-    members = lock(REGISTRY_LOCK) do
-        sort!([info for info in values(GENERIC_FUNCTION_REGISTRY)
-               if info.group === group]; by = info -> info.name)
+function _monomorphize_generic_struct_group(registered::GenericFunctionInfo, func_name::String,
+                                             type_params::Dict{Symbol, <:Type};
+                                             members::Union{Nothing, Tuple{Vararg{GenericFunctionInfo}}} = nothing)
+    # A snapshot's members are used as they are (#522); only a caller that
+    # holds a bare registration — the public `monomorphize_function(name, ...)`
+    # — reads its group here, once.
+    if members === nothing
+        members = lock(REGISTRY_LOCK) do
+            Tuple(_generic_group_members(registered))
+        end
     end
+    return _instantiate_generic_struct_group(registered.group, collect(members), func_name,
+                                             type_params)
+end
+
+"""
+    _instantiate_generic_struct_group(group, members, func_name, type_params)
+
+Build (or reuse) the instantiation of `members` — one owner's whole group, as
+the caller read it — and return `func_name`'s `FunctionInfo`. Reads no
+generic registration (#522): which members are in the group is decided by the
+caller's one read, never again here.
+"""
+function _instantiate_generic_struct_group(group::Symbol, members::Vector{GenericFunctionInfo},
+                                           func_name::String, type_params::Dict{Symbol, <:Type})
     begin
         isempty(members) && error("Generic struct group '$group' is not registered")
         target = findfirst(info -> info.name == func_name, members)
@@ -1678,7 +1803,8 @@ function _prepare_generic_function(
     compiler::Union{Nothing, RustCompiler}=nothing,
     blocked::String="",
     group::Union{Nothing, Symbol}=nothing,
-    cargo::Union{Nothing, GenericCargoContext}=nothing
+    cargo::Union{Nothing, GenericCargoContext}=nothing,
+    owner::String=""
 )
     # Manual registrations usually pass only the source. Recover the argument
     # and return types (and, when not given, the trait bounds) from the
@@ -1693,24 +1819,104 @@ function _prepare_generic_function(
         end
     end
     return GenericFunctionInfo(func_name, code, type_params, constraints, context, arg_types,
-                               return_type, path, compiler, blocked, group, cargo)
+                               return_type, path, compiler, blocked, group, cargo, owner)
 end
 
+"""
+    _publish_generic_struct_group!(group, members)
+
+Publish the member wrappers of one generic struct as one set, replacing
+whatever that group **of that owner** had before, in one transaction.
+
+A group is identified by its `group` symbol *and* its owner
+(`GenericFunctionInfo.owner`, the library whose block registered it, #522): two
+modules' same-named structs share both the symbol and every wrapper name, so
+the symbol alone would let one module's registration delete the other's
+members, and a lookup by bare name would build one module's object from the
+other module's source. Like a block's generic function (`_publish_library_generic!`),
+the members go to two places: the bare-name `GENERIC_FUNCTION_REGISTRY` (the
+process-wide fallback and the public API), and `GENERIC_FUNCTIONS_BY_LIB`
+under the owning library, which is what the defining module resolves through
+(`resolve_rust_call`) and which goes with the library (`clear_library_metadata!`).
+The owner-qualified rows are written only while the owner is still loaded.
+"""
 function _publish_generic_struct_group!(group::Symbol, members::Vector{GenericFunctionInfo})
     names = Set(info.name for info in members)
-    all(info -> info.group === group, members) || error("Inconsistent generic struct group")
+    owner = isempty(members) ? "" : first(members).owner
+    all(info -> info.group === group && info.owner == owner, members) ||
+        error("Inconsistent generic struct group")
     lock(REGISTRY_LOCK) do
-        obsolete = [name for (name, info) in GENERIC_FUNCTION_REGISTRY
-                    if info.group === group && !(name in names)]
-        for name in obsolete
-            delete!(GENERIC_FUNCTION_REGISTRY, name)
-        end
+        _drop_obsolete_group_members!(members)
         for info in members
             GENERIC_FUNCTION_REGISTRY[info.name] = info
+        end
+        if !isempty(owner) && haskey(RUST_LIBRARIES, owner)
+            for (key, info) in collect(GENERIC_FUNCTIONS_BY_LIB)
+                first(key) == owner && info.group === group && !(info.name in names) &&
+                    delete!(GENERIC_FUNCTIONS_BY_LIB, key)
+            end
+            for info in members
+                GENERIC_FUNCTIONS_BY_LIB[(owner, info.name)] = info
+            end
         end
     end
     return nothing
 end
+
+"""
+    _drop_obsolete_group_members!(members)
+
+Remove from the bare-name registry every member of a generic struct group that
+`members` publish anew — same group, same owner — whose name is no longer
+among them, so a struct that lost a method loses its registration too. Other
+owners' members of a same-named group are untouched (#522). Caller holds
+`REGISTRY_LOCK`.
+"""
+function _drop_obsolete_group_members!(members)
+    groups = Dict{Tuple{Symbol, String}, Set{String}}()
+    for info in members
+        info.group === nothing && continue
+        push!(get!(Set{String}, groups, (info.group, info.owner)), info.name)
+    end
+    isempty(groups) && return nothing
+    obsolete = [name for (name, info) in GENERIC_FUNCTION_REGISTRY
+                if info.group !== nothing &&
+                   (names = get(groups, (info.group, info.owner), nothing)) !== nothing &&
+                   !(name in names)]
+    for name in obsolete
+        delete!(GENERIC_FUNCTION_REGISTRY, name)
+    end
+    return nothing
+end
+
+"""
+    _generic_group_members(registered) -> Vector{GenericFunctionInfo}
+
+The members of the generic struct group `registered` belongs to: the same
+`group` symbol **and** the same owner (#522), sorted by name, `registered`
+itself included. The owner-qualified rows (`GENERIC_FUNCTIONS_BY_LIB`) come
+first — a reload alias holds the very same records — and the bare-name
+registry supplies the rest of the owner's members, for an owner whose rows
+went with an unloaded library. Another owner's same-named members are never
+among them.
+
+Caller holds `REGISTRY_LOCK`.
+"""
+function _generic_group_members(registered::GenericFunctionInfo)
+    group = registered.group
+    owner = registered.owner
+    found = Dict{String, GenericFunctionInfo}()
+    for info in values(GENERIC_FUNCTIONS_BY_LIB)
+        info.group === group && info.owner == owner && (found[info.name] = info)
+    end
+    for info in values(GENERIC_FUNCTION_REGISTRY)
+        info.group === group && info.owner == owner && get!(found, info.name, info)
+    end
+    found[registered.name] = registered
+    return sort!(collect(values(found)); by = info -> info.name)
+end
+
+
 
 # Backward compatibility: accept `Dict{Symbol, String}` bounds such as
 # `Dict(:T => "Copy + Add<Output = T>")`. The strings are parsed by the Rust-side

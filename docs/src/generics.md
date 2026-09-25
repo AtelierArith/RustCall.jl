@@ -73,6 +73,12 @@ other a plain `f`, and each module's `@rust f(x)` reaches its own.
 `call_generic_function("f", ...)` names no module and reads the process-wide
 registration: the one made last.
 
+A generic `#[julia]` struct's constructor, methods, accessors and destructor
+are not looked up by name at all: they are the members the block that defines
+the struct registered. Two modules may each define a generic `Boxed`, and each
+module's `Boxed{Int32}(x)` builds its own, from its own source; a later block
+exporting a plain function called `Boxed_new` does not change that.
+
 ### Manual Registration
 
 You can also register a generic function by hand, from source text that is not
@@ -293,7 +299,7 @@ from source text.
 ### Registries
 
 - `GENERIC_FUNCTION_REGISTRY` - Maps function names to `GenericFunctionInfo` (process-wide: the last registration of a name)
-- `GENERIC_FUNCTIONS_BY_LIB` - Maps `(library name, function name)` to the generic a `rust"""` block's library registered; what a call from that block's module resolves through
+- `GENERIC_FUNCTIONS_BY_LIB` - Maps `(library name, function name)` to the generic a `rust"""` block's library registered — its generic functions and its generic structs' wrappers (`GenericFunctionInfo.owner` names that library); what a call from that block's module resolves through
 - `MONOMORPHIZED_FUNCTIONS` - Maps `(function_name, type_params_tuple)` to `FunctionInfo`
 
 ## Examples

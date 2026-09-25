@@ -401,7 +401,13 @@ macro rust_str(code)
     # `for_` there.
     _check_julia_name_clashes(julia_func_signatures, struct_infos, "the rust\"\"\" block";
                               registry = _registry_signatures(expanded.manifest))
-    julia_defs, julia_func_wrappers = _inline_wrapper_exprs(julia_func_signatures, struct_infos)
+    # The block as the module records it below: a generic struct's generated
+    # code finds its defining library by it, whatever name a reload gives the
+    # library (#522).
+    block_record = RustBlockSnapshot(code_str, cfg_text, snapshot_compiler.target_triple,
+                                     snapshot_compiler.optimization_level, cargo_env)
+    julia_defs, julia_func_wrappers = _inline_wrapper_exprs(julia_func_signatures, struct_infos;
+                                                            block = block_record)
     # The symbols this block exports, known at macro-expansion time. They are
     # recorded per *module* so that a wrapper resolves through the library its
     # own block loaded — not through whichever block ran last anywhere in the
@@ -1074,6 +1080,14 @@ function _register_manifest(expanded, lib_name::String; compiler = nothing,
                 blocked, cargo = cargo_context))
         end
     end
+    # A generic struct's member wrappers are generics of this library too, and
+    # go in the same transaction (#522): the struct's generated code reads an
+    # owner's whole group in one read, which is only sound if the rows are
+    # published — and dropped — all together.
+    for info in manifest_struct_infos(manifest)
+        append!(generics, _prepare_generic_struct_wrappers(info, expanded.source; compiler,
+                                                           cargo = cargo_context, lib_name))
+    end
 
     registered = if load_path !== nothing
         load_artifact!(policy, load_path; lib_name, symbols, return_types, generics,
@@ -1090,9 +1104,6 @@ function _register_manifest(expanded, lib_name::String; compiler = nothing,
     registered || return false
     _manifest_seam(:registered, lib_name)
 
-    for info in manifest_struct_infos(manifest)
-        register_generic_struct_wrappers(info, expanded.source; compiler, cargo = cargo_context)
-    end
     for info in generics
         @debug "Registered generic function: $(info.name)" type_params = info.type_params
     end

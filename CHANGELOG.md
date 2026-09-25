@@ -97,6 +97,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directly (`_rust_call_symbol`) and never through this name resolution, so a
   generic free function whose Julia name equals that symbol cannot capture
   the method.
+- **Two modules' generic structs of one name are each their own**
+  ([#522](https://github.com/AtelierArith/RustCall.jl/issues/522)). A generic
+  `#[julia]` struct's wrappers (`Boxed_new`, `Boxed_tag`, `Boxed_free`, ...)
+  were registered by that bare name and grouped by the struct's name alone,
+  so a second module's `Boxed` replaced the first's registration, and
+  constructing the first module's `Boxed` built — and called — the second
+  module's source. The members are now owned by the library of the block
+  that defines them (`GenericFunctionInfo.owner`, rows in
+  `RustCall.GENERIC_FUNCTIONS_BY_LIB`, dropped with the library), a group is
+  one owner's members, and the generated constructor, methods, accessors and
+  destructor read them from the library of the block that emitted the struct
+  (found by the block's recorded content, so a reload that renames the
+  library is followed) — not by `@rust` name resolution, so a later block's
+  ordinary export of a member's name does not take them either. A member and
+  its whole group are read as one snapshot in one transaction
+  (`RustCall.GenericStructSnapshot`) and the instantiation uses only that, so
+  an unload racing a call can never leave a constructor-only group; a known
+  owner whose rows are gone is retried and then refused, never answered by
+  another module's registration of the name. A struct's group rows are
+  installed with the rest of its library's metadata, in the one transaction
+  that publishes the library. The same rule now holds for `@rust f(x)`: when
+  one of the caller's own blocks is found unloaded after it was restored, the
+  call restores it again (up to three times) or raises, and never falls
+  through to another module's generic of the same name
+  (`RustCall._resolve_own_definition`, shared by both lookups). Whether one
+  of the caller's blocks defines the name is decided from one snapshot of
+  their loaded state, generation and rows (`RustCall._own_definition_snapshot`),
+  so an unload and a restore between two separate reads cannot make it look
+  both missing and loaded. A
+  hand-registered, ungrouped generic constructor keeps finding its separately
+  registered `_free`. An instantiation's cache key is unchanged (the source,
+  the bindings, the compiler and the struct's name, never the owner), so two
+  same-named structs share an instantiation only when their sources are the
+  same.
 - **A return type that only ends in the impl header's name is not the struct**
   ([#518](https://github.com/AtelierArith/RustCall.jl/issues/518)). Whether
   a method returns its own type (and so is boxed as `*mut Struct`, and may be
