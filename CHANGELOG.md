@@ -44,6 +44,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `var"..."` must use the new name. Exported symbols do not change.
 
 ### Fixed
+- **A stale `write_bindings_to_file` module names the remedy that works**
+  ([#531](https://github.com/AtelierArith/RustCall.jl/issues/531)). When the
+  build environment a generated crate module recorded no longer matches — a
+  changed `RUSTFLAGS`, Cargo configuration or toolchain, or a RustCall whose
+  extractor sources moved (a file written by v0.7.1 loaded by a later
+  release) — `__init__` refused with a message telling the user to run
+  `Pkg.precompile(; force = true)`. That rebuilds a `@rust_crate` module, but a
+  file written by `write_bindings_to_file` records the environment in its own
+  source, so re-precompiling read the same record and failed again. The
+  message now comes from one function, `RustCall._build_env_changed_message`,
+  given the module's origin: each emitter's `__init__` passes its own
+  (`origin = :rust_crate` / `:bindings_file`, `_crate_init_prologue`), and a
+  file is told to be regenerated with `write_bindings_to_file` (the call is
+  spelled out with the crate's path). A file written before this change makes
+  the call without an origin, which is read as a written file: only such a
+  file can still carry the older call. `test/test_build_env_remedy.jl` checks
+  both emitters and the older call against a recorded toolchain that no longer
+  matches.
 - **A Rust parameter named like a name its wrapper uses no longer breaks the
   wrapper** ([#526](https://github.com/AtelierArith/RustCall.jl/issues/526)).
   A generated wrapper's parameters are named after the Rust ones, and its

@@ -169,11 +169,17 @@ _hrr_with(r::RustCall.CrateBuildRecord; kwargs...) =
             @test expr_record.python == python
             # Both `__init__`s begin with the same prologue — the strict
             # build-environment check, then the mirror registration — and the
-            # written file cannot skip the check (#474 review).
-            prologue = collect(RustCall._crate_init_prologue())
-            @test _hrr_init_body(ex)[1:length(prologue)] == prologue
-            @test _hrr_init_body(Meta.parseall(code))[1:length(prologue)] == prologue
-            @test prologue[1] == :(RustCall._warn_if_build_env_changed(_BUILD_RECORD; strict = true))
+            # written file cannot skip the check (#474 review). Each names its
+            # own origin, which decides the remedy the check names (#531).
+            expr_prologue = collect(RustCall._crate_init_prologue(:rust_crate))
+            code_prologue = collect(RustCall._crate_init_prologue(:bindings_file))
+            @test _hrr_init_body(ex)[1:length(expr_prologue)] == expr_prologue
+            @test _hrr_init_body(Meta.parseall(code))[1:length(code_prologue)] == code_prologue
+            @test expr_prologue[1] == :(RustCall._warn_if_build_env_changed(_BUILD_RECORD;
+                                            strict = true, origin = :rust_crate))
+            @test code_prologue[1] == :(RustCall._warn_if_build_env_changed(_BUILD_RECORD;
+                                            strict = true, origin = :bindings_file))
+            @test expr_prologue[2:end] == code_prologue[2:end]
             # `_LIB_NAME` is read from the record in both, never recorded twice.
             @test occursin("const _LIB_NAME = _BUILD_RECORD.lib_name", code)
             @test occursin("_LIB_NAME = _BUILD_RECORD.lib_name", string(ex))

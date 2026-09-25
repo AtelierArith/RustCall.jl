@@ -715,8 +715,15 @@ decide the artifact, and none of them is a file the image can track. Change one
 and every tracked file is still what it was, so the image stays valid even
 though the library path names a build under the previous values. The generated
 module records the values it was built under and refuses to load at `__init__`
-when they no longer match, naming the variables. Re-run `Pkg.precompile(; force
-= true)` (or touch a source file of the crate) under the desired environment.
+when they no longer match, naming the variables. For a `@rust_crate` module,
+re-run `Pkg.precompile(; force = true)` (or touch a source file of the crate)
+under the desired environment. A file written by `write_bindings_to_file`
+carries the record in its own source, so re-precompiling cannot help: write the
+file again with `write_bindings_to_file` under the desired environment (and
+RustCall), and a package that includes it re-precompiles on its own. The error
+names the remedy that fits the module (#531). The recorded toolchain includes
+RustCall's own extractor sources, so a RustCall release that changes them
+refuses files written by the previous one in the same way.
 
 Those recorded values describe the build exactly. `@rust_crate` and
 `write_bindings_to_file` take **one snapshot** of the environment when they
