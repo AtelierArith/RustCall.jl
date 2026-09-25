@@ -405,14 +405,14 @@ structs)` runs the emitter over the items and returns what it defines — an
 `Expr`, or the source text of the source-text emitter, which is parsed.
 
 It is run once on placeholder parameters (`rustcall′arg′<k>`, a name no Rust
-identifier spells), without
-logging and without recording anything for a boundary report (a throwaway
-collector, so a refusal is recorded rather than raised); for every definition
+identifier spells), with the emission's own options (`_probe_emission`: its
+strictness, and collecting only when it collects, into a throwaway
+collector), without logging; for every definition
 that takes a placeholder, each other symbol it contains — what it reads, calls
 or binds, its other parameters, its type variables — is reserved for that
 item. Each item's names are then `julia_parameter_names` of its own against
-its reserved set. An emitter that raises on the placeholders leaves the items
-as they are: it raises again on the real ones.
+its reserved set. A refusal the emitter raises is the emission's own and
+propagates.
 """
 function _rename_parameters(functions::AbstractVector, structs::AbstractVector, emit)
     owner = Dict{Symbol, Any}()
@@ -432,7 +432,6 @@ function _rename_parameters(functions::AbstractVector, structs::AbstractVector, 
                                   for (j, m) in enumerate(s.methods)])
                      for (i, s) in enumerate(structs)]
     probe = _probe_emission(() -> emit(probe_functions, probe_structs))
-    probe === nothing && return functions, structs
     probe isa AbstractString && (probe = Meta.parseall(probe))
     reserved = Dict{Any, Set{String}}()
     _parameter_scopes!(reserved, probe, owner)
@@ -446,20 +445,26 @@ function _rename_parameters(functions::AbstractVector, structs::AbstractVector, 
     return renamed_functions, renamed_structs
 end
 
-# Run an emitter for its output only: nothing logged, nothing recorded for a
-# boundary report being collected on this task, `nothing` when it raises.
+# Run an emitter for its output only, under exactly the options the emission
+# runs under (PR #527 review): the same strictness (`_ffi_strict()`, which the
+# caller's scope already answers), and collecting only when the emission
+# collects — into a throwaway collector, so the report being collected records
+# nothing twice. A refusal is therefore the emission's own refusal and
+# propagates; there is no fallback to unrenamed items. What the probe does not
+# share is a side effect: nothing is logged, and a `:warn` signature keeps its
+# one warning for the emission (`_EMISSION_PROBING`).
 function _probe_emission(f)
+    run() = Base.ScopedValues.with(_EMISSION_PROBING => true) do
+        Base.CoreLogging.with_logger(f, Base.CoreLogging.NullLogger())
+    end
+    _boundary_collecting() || return run()
     tls = task_local_storage()
-    saved = get(tls, _BOUNDARY_COLLECTOR_KEY, nothing)
+    saved = tls[_BOUNDARY_COLLECTOR_KEY]
     tls[_BOUNDARY_COLLECTOR_KEY] = BoundaryCollector()
     try
-        return Base.CoreLogging.with_logger(f, Base.CoreLogging.NullLogger())
-    catch err
-        err isa InterruptException && rethrow()
-        return nothing
+        return run()
     finally
-        saved === nothing ? delete!(tls, _BOUNDARY_COLLECTOR_KEY) :
-                            (tls[_BOUNDARY_COLLECTOR_KEY] = saved)
+        tls[_BOUNDARY_COLLECTOR_KEY] = saved
     end
 end
 

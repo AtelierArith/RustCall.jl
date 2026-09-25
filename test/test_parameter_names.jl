@@ -334,10 +334,24 @@ end
     end for sig in fs]...)
     renamed_h, _ = PN._rename_parameters([h], PN.RustStructInfo[], emit_h)
     @test only(renamed_h[1].arg_names) == "__rustcall_arg_1___"
-    # An emitter that raises leaves the names alone: it raises again.
+    # The probe runs the emitter exactly as the emission does (PR #527
+    # review): a refusal is the emission's own, and raises rather than
+    # leaving the items unrenamed ...
     failing(fs, ss) = error("refused")
-    same, _ = PN._rename_parameters([f], PN.RustStructInfo[], failing)
-    @test only(same[1].arg_names) == "Int64"
+    @test_throws ErrorException PN._rename_parameters([f], PN.RustStructInfo[], failing)
+    # ... at the emission's strictness, not the global one ...
+    seen = Symbol[]
+    strict_emit(fs, ss) = (push!(seen, PN._ffi_strict()); Expr(:block))
+    @test PN.FFI_STRICT[] === :error
+    PN._with_emission_strict(:warn) do
+        PN._rename_parameters([f], PN.RustStructInfo[], strict_emit)
+    end
+    @test seen == [:warn]
+    # ... and in collecting mode only when the emission collects.
+    modes = Bool[]
+    mode_emit(fs, ss) = (push!(modes, PN._boundary_collecting()); Expr(:block))
+    PN._rename_parameters([f], PN.RustStructInfo[], mode_emit)
+    @test modes == [false]
 end
 
 if !PN_HAVE_CARGO || !PN.check_rustc_available()
@@ -506,6 +520,36 @@ else
             Base.include(sandbox, path)
             mod = Base.invokelatest(getfield, sandbox, :PnWritten)
             exercise(name -> Base.invokelatest(getfield, mod, name))
+            try
+                PN.unload_library(Base.invokelatest(getfield, mod, :_LIB_NAME); close = true)
+            catch
+            end
+        end
+    end
+
+    @testset "the probe emits with the options the emission uses (#527 review)" begin
+        # `write_bindings_to_file(...; strict = :warn)` under the global
+        # `:error`: the probe used to run the expression emitter at the global
+        # setting, which refused the `Vec<f64>` return, and fell back to the
+        # unrenamed items, so `pick`'s parameter `call_rust_function`
+        # shadowed the helper its wrapper calls.
+        lib = """
+            use rustcall_julia_macros::julia;
+            #[julia] pub fn many(n: i32) -> Vec<f64> { vec![0.0; n as usize] }
+            #[julia] pub fn pick(call_rust_function: i32) -> i32 { call_rust_function + 1 }
+            """
+        @test PN.FFI_STRICT[] === :error
+        mktempdir() do dir
+            _pn_write_crate(dir, lib; name = "pn_strict")
+            path = joinpath(dir, "PnStrict.jl")
+            # The emission's one `:warn` warning is its own: the probe, which
+            # decides as it does, does not use it up.
+            @test_logs (:warn, r"cannot describe the return type") match_mode = :any PN.write_bindings_to_file(
+                dir, path; output_module_name = "PnStrict", strict = :warn)
+            sandbox = Module(:PnStrictSandbox)
+            Base.include(sandbox, path)
+            mod = Base.invokelatest(getfield, sandbox, :PnStrict)
+            @test Base.invokelatest(getfield(mod, :pick), Int32(2)) == 3
             try
                 PN.unload_library(Base.invokelatest(getfield, mod, :_LIB_NAME); close = true)
             catch

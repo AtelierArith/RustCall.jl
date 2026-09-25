@@ -85,6 +85,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `c_result`) keeps its name. `test/test_parameter_names.jl` checks every
   emitter: no definition that takes a parameter or is defined on a crate type
   binds a name a Rust identifier can spell.
+  The probe emits with exactly the options the emission uses (PR #527
+  review): the emission's strictness — `write_bindings_to_file(...; strict)`
+  is scoped over both crate emitters (`RustCall._ffi_strict()`, which every
+  contract decision's default now reads, `FFI_STRICT[]` outside an emission),
+  so the expression half no longer runs at the global setting — and
+  collecting mode only when the emission collects. A refusal it raises is the
+  emission's own and propagates; there is no longer a fallback that left every
+  item of a module unrenamed. The probe logs nothing and does not use up a
+  `:warn` signature's one warning.
 - **A PyO3 host property declared through `#[getter]` / `#[setter]` methods is
   read under its Julia name** ([#524](https://github.com/AtelierArith/RustCall.jl/issues/524)).
   `#[getter] fn r#for(&self)` is the Python attribute `for`, but

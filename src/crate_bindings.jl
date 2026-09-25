@@ -2109,16 +2109,20 @@ its module's items — the expressions `@rust_crate` evaluates and the source
 text `write_bindings_to_file` writes, parsed (#526) — so the two agree on every
 name, and each is free of every name the other's definitions use.
 """
-function _rename_crate_tree(tree::ModuleNode; strict::Symbol = FFI_STRICT[])
-    return _rename_tree_parameters(tree, (fs, ss) -> begin
-        colliding = _static_method_collisions(fs, ss)
-        text = join(vcat(String[_emit_function_code(f; strict = strict)
-                                for f in fs if !_function_skipped!(f)],
-                         String[_emit_struct_code(s; strict = strict, colliding = colliding)
-                                for s in ss]), "\n")
-        Expr(:block, _function_wrappers_expr(fs), _struct_wrappers_expr(ss, colliding),
-             Meta.parseall(text))
-    end)
+function _rename_crate_tree(tree::ModuleNode; strict::Symbol = _ffi_strict())
+    # Both halves at the emission's strictness: the expression emitter takes no
+    # keyword and reads `_ffi_strict()`, so it is scoped here (PR #527 review).
+    return _with_emission_strict(strict) do
+        _rename_tree_parameters(tree, (fs, ss) -> begin
+            colliding = _static_method_collisions(fs, ss)
+            text = join(vcat(String[_emit_function_code(f; strict = strict)
+                                    for f in fs if !_function_skipped!(f)],
+                             String[_emit_struct_code(s; strict = strict, colliding = colliding)
+                                    for s in ss]), "\n")
+            Expr(:block, _function_wrappers_expr(fs), _struct_wrappers_expr(ss, colliding),
+                 Meta.parseall(text))
+        end)
+    end
 end
 
 """
@@ -2187,7 +2191,7 @@ end
 
 Source-text twin of `_submodule_exprs` for `emit_crate_module_code`.
 """
-function _submodule_code(node::ModuleNode; strict::Symbol = FFI_STRICT[])
+function _submodule_code(node::ModuleNode; strict::Symbol = _ffi_strict())
     lines = String[]
     for child in node.children
         name = _julia_module_name(last(child.path))
@@ -2410,7 +2414,7 @@ the generated wrapper drops the `PyErr` without ever rendering it.
 """
 function _py_result_types(ok_type::AbstractString, ok_abi::AbstractString,
                           context::AbstractString;
-                          strict::Symbol = FFI_STRICT[])
+                          strict::Symbol = _ffi_strict())
     if isempty(strip(String(ok_type))) || strip(String(ok_type)) == "()"
         return (:Nothing, :UInt8, true)
     end
@@ -2778,7 +2782,7 @@ Source-text counterpart of `_crate_field_write` for the file emitter.
 function _crate_field_write_source(info::RustStructInfo, field_name::AbstractString,
                                    field_type::AbstractString, setter_symbol::AbstractString,
                                    self_ptr::String, value::String, cache::AbstractString;
-                                   strict::Symbol = FFI_STRICT[])
+                                   strict::Symbol = _ffi_strict())
     target = "(rustcall′fp, rustcall′channel) = _call_target($cache, \"$setter_symbol\")"
     if get(info.field_abis, field_name, "") == "vec"
         element_type = string(ffi_vec_element_type(get(info.field_vec_elements, field_name, "")))
@@ -2807,7 +2811,7 @@ Source-text counterpart of `_crate_field_read` for the file emitter.
 """
 function _crate_field_read_source(info::RustStructInfo, field_name::AbstractString,
                                   field_type::AbstractString, getter_symbol::AbstractString,
-                                  self_ptr::String, cache::AbstractString; strict::Symbol = FFI_STRICT[])
+                                  self_ptr::String, cache::AbstractString; strict::Symbol = _ffi_strict())
     c = _ffi_field_return(info, field_name, field_type)
     target = "(rustcall′fp, rustcall′channel) = _call_target($cache, \"$getter_symbol\")"
     if ffi_owned_string_return(c)
@@ -3118,7 +3122,7 @@ between the flavours. The caller takes it from the manifest
 """
 function _method_payload_plan(info::RustStructInfo, method::RustMethod,
                               helper_owner::AbstractString;
-                              strict::Symbol = FFI_STRICT[])
+                              strict::Symbol = _ffi_strict())
     ctx = _ffi_context(method, info.name)
     if method.return_kind === :result
         ok_t, ok_slot = ffi_payload_symbols(method.ok_type, method.ok_abi, ctx;
@@ -4519,7 +4523,7 @@ function write_bindings_to_file(crate_path::String, output_path::String;
     output_module_name::Union{String, Nothing} = nothing,
     build_release::Bool = true,
     relative_lib_path::Union{String, Nothing} = nothing,
-    strict::Symbol = FFI_STRICT[],
+    strict::Symbol = _ffi_strict(),
     features::Vector{String} = String[],
     default_features::Bool = true
 )
@@ -4714,7 +4718,7 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     module_name::Union{String, Nothing} = nothing,
     use_relative_path::Bool = false,
     build_release::Bool = true,
-    strict::Symbol = FFI_STRICT[],
+    strict::Symbol = _ffi_strict(),
     lib_name::Union{String, Nothing} = nothing,
     preload::Vector{String} = String[],
     pin_library::Bool = false,
@@ -5003,7 +5007,7 @@ end
 
 Generate Julia code for a function wrapper as a string.
 """
-function _emit_function_code(func::RustFunctionSignature; strict::Symbol = FFI_STRICT[])
+function _emit_function_code(func::RustFunctionSignature; strict::Symbol = _ffi_strict())
     # The item every position below is filed under (#454), named before the
     # argument plan, which records first.
     _boundary_item!(_boundary_label(func))
@@ -5070,7 +5074,7 @@ end
 
 function _emit_result_function_code(func::RustFunctionSignature, arg_syms::String, converted_args_str::String;
                                     prologue::String = "", preserve_str::String = "",
-                                    strict::Symbol = FFI_STRICT[], frame_str::String = "")
+                                    strict::Symbol = _ffi_strict(), frame_str::String = "")
     func_name = julia_function_name(func)
     ctx = _ffi_context(func)
     # The payload fields carry the C slot; see `_generate_result_function_wrapper`.
@@ -5125,7 +5129,7 @@ Phase 2).
 function _emit_py_result_function_code(func::RustFunctionSignature, arg_syms::String,
                                        converted_args_str::String;
                                        prologue::String = "", preserve_str::String = "",
-                                       strict::Symbol = FFI_STRICT[], frame_str::String = "")
+                                       strict::Symbol = _ffi_strict(), frame_str::String = "")
     func_name = julia_function_name(func)
     ok_type_str, ok_slot_str, is_unit =
         _py_result_types(func.ok_type, func.ok_abi, _ffi_context(func); strict = strict)
@@ -5168,7 +5172,7 @@ end
 
 function _emit_option_function_code(func::RustFunctionSignature, arg_syms::String, converted_args_str::String;
                                     prologue::String = "", preserve_str::String = "",
-                                    strict::Symbol = FFI_STRICT[], frame_str::String = "")
+                                    strict::Symbol = _ffi_strict(), frame_str::String = "")
     func_name = julia_function_name(func)
     inner_surface, inner_slot =
         ffi_payload_symbols(func.inner_type, func.inner_abi, _ffi_context(func);
@@ -5213,7 +5217,7 @@ end
 
 Generate Julia code for a struct wrapper as a string.
 """
-function _emit_struct_code(info::RustStructInfo; strict::Symbol = FFI_STRICT[],
+function _emit_struct_code(info::RustStructInfo; strict::Symbol = _ffi_strict(),
                            colliding::Set{String} = Set{String}())
     # A struct the Rust codegen refuses (a generic crate struct, #462) gets no
     # Julia type; the report names it at its entry point (#503).
@@ -5372,7 +5376,7 @@ end
 Generate Julia code for a method wrapper as a string.
 """
 function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
-                           strict::Symbol = FFI_STRICT[], bare::Bool = true)
+                           strict::Symbol = _ffi_strict(), bare::Bool = true)
     # The item every position below is filed under (#454), named before the
     # argument plan, which records first.
     _boundary_item!(_boundary_label(struct_info, method))
@@ -5531,7 +5535,7 @@ function _emit_py_result_method_code(info::RustStructInfo, method::RustMethod,
                                      wrapper_name::String;
                                      prologue::AbstractString = "",
                                      preserve_str::AbstractString = "",
-                                     strict::Symbol = FFI_STRICT[], bare::Bool = true,
+                                     strict::Symbol = _ffi_strict(), bare::Bool = true,
                                      frame_str::AbstractString = "")
     struct_name = julia_struct_name(info)
     method_name = julia_method_name(method)

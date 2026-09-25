@@ -1018,6 +1018,34 @@ const FFI_STRICT = _state_view(:ffi_strict, Ref{Symbol}(:error))
 
 const _FFI_WARNED_CONTEXTS = _state_view(:ffi_warned_contexts, Set{String}())
 
+# The strictness one emission runs at, when it names one (`strict` of
+# `write_bindings_to_file` / `emit_crate_module_code`): every emitter and every
+# contract decision it reaches reads `_ffi_strict()`, so the renaming probe and
+# the expression emitter a caller does not hand a keyword run at the same
+# setting as the emission itself (PR #527 review). Scoped, never global: two
+# concurrent emissions at different settings cannot see each other's.
+const _EMISSION_STRICT = Base.ScopedValues.ScopedValue{Union{Nothing, Symbol}}(nothing)
+
+"""
+    _ffi_strict() -> Symbol
+
+The strictness in force: the emission's own (`_with_emission_strict`), or
+`FFI_STRICT[]` outside one.
+"""
+_ffi_strict() = something(_EMISSION_STRICT[], FFI_STRICT[])
+
+"""
+    _with_emission_strict(f, strict)
+
+Run `f()` with `_ffi_strict()` answering `strict`.
+"""
+_with_emission_strict(f, strict::Symbol) = Base.ScopedValues.with(f, _EMISSION_STRICT => strict)
+
+# Set while the renaming probe emits (`_probe_emission`): a decision it makes
+# is the emission's, but its side effects are not — `:warn` warns once per
+# signature, and the probe must not use up the emission's warning.
+const _EMISSION_PROBING = Base.ScopedValues.ScopedValue{Bool}(false)
+
 # ============================================================================
 # The collecting mode of the wrapper generators (#454)
 # ============================================================================
@@ -1326,7 +1354,7 @@ type: Rust `char` arrives as a `UInt32` code point and must be converted, never
 reinterpreted as Julia's left-aligned UTF-8 `Char`.
 """
 function ffi_return_symbol_or_throw(rust_type::AbstractString, abi::AbstractString,
-                                    ctx::AbstractString; strict::Symbol = FFI_STRICT[],
+                                    ctx::AbstractString; strict::Symbol = _ffi_strict(),
                                     position::AbstractString = "return")
     c = ffi_return_contract(rust_type; abi = abi)
     if c.known && (c.abi === :void || c.abi === :by_value || c.abi === :pointer)
@@ -1361,7 +1389,7 @@ stored, and the conversion to the surface type happens after the call
 (`convert_return`).
 """
 function ffi_return_slot_symbol_or_throw(rust_type::AbstractString, abi::AbstractString,
-                                         ctx::AbstractString; strict::Symbol = FFI_STRICT[],
+                                         ctx::AbstractString; strict::Symbol = _ffi_strict(),
                                          position::AbstractString = "return")
     c = ffi_return_contract(rust_type; abi = abi)
     if c.known && (c.abi === :void || c.abi === :by_value || c.abi === :pointer)
@@ -1406,7 +1434,7 @@ a record.
 """
 function ffi_payload_symbols(rust_type::AbstractString, abi::AbstractString,
                              ctx::AbstractString; position::AbstractString,
-                             strict::Symbol = FFI_STRICT[])
+                             strict::Symbol = _ffi_strict())
     # Qualified: the spelling is spliced into code that lives in the user's
     # module or in a generated `@rust_crate` module, where only `RustCall`
     # itself is reliably in scope.
@@ -1431,7 +1459,7 @@ run time through a nine-entry table, which is how a `u16` struct field became
 `Any` (#245).
 """
 function ffi_return_type_or_throw(rust_type::AbstractString, abi::AbstractString,
-                                  ctx::AbstractString; strict::Symbol = FFI_STRICT[],
+                                  ctx::AbstractString; strict::Symbol = _ffi_strict(),
                                   position::AbstractString = "return")
     c = ffi_return_contract(rust_type; abi = abi)
     if c.known && (c.abi === :void || c.abi === :by_value || c.abi === :pointer)
@@ -1518,6 +1546,8 @@ function _ffi_unsupported_return(rust_type, abi, ctx, strict::Symbol, fallback;
         return fallback
     end
     strict === :none && return fallback
+    # The probe decides as the emission does, and leaves the warning to it.
+    strict === :warn && _EMISSION_PROBING[] && return fallback
     detail = ffi_describe(rust_type; direction = :return, abi = abi)
     if strict === :error
         throw(RustError(
