@@ -6,6 +6,30 @@
 # only emits the Julia definitions that call them.
 
 """
+    PyO3Shape(kind, name = "", rank = 0, inner = nothing)
+
+What a value of a PyO3 item's argument, return or property is to the
+Python-host bindings, as the extractor resolved it from the type's paths
+(manifest `py_shape` / `py_return`, `rustcall_julia_core::manifest::PyShape`;
+#264, PR #525 review). Julia never reads the Rust spelling for this.
+
+`kind` is `:class` (`name` the class's Rust name, `Self` already resolved),
+`:vec` / `:option` (`inner` the element), `:array` (a pyo3-numpy array, `name`
+the element primitive, `rank` its rank or `-1`), `:scalar` (`name` the
+primitive), `:string`, `:unit`, `:injected` (supplied by the interpreter) or
+`:opaque` (passed and returned as the Python object it is).
+"""
+struct PyO3Shape
+    kind::Symbol
+    name::String
+    rank::Int
+    inner::Union{Nothing, PyO3Shape}
+end
+
+PyO3Shape(kind::Symbol) = PyO3Shape(kind, "", 0, nothing)
+PyO3Shape(kind::Symbol, name::AbstractString) = PyO3Shape(kind, String(name), 0, nothing)
+
+"""
     RustMethod
 
 A method of a `#[julia]` struct as recorded in the manifest.
@@ -101,6 +125,11 @@ struct RustMethod
     # method sharing its name with another method of the struct is bound as
     # `<Trait>_<name>`. Empty otherwise; read it through `julia_method_name`.
     julia_name::String
+    # The PyO3-host shape of each argument and of the return (`Arg.py_shape`,
+    # `Method.py_return`, additive within schema 0.7; PR #525 review);
+    # `nothing` where the extractor described none (a `#[julia]` method).
+    py_arg_shapes::Vector{Union{Nothing, PyO3Shape}}
+    py_return_shape::Union{Nothing, PyO3Shape}
 end
 
 function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::Vector{String},
@@ -126,7 +155,10 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
                     callback_returns::Vector{String} = fill("", length(arg_names)),
                     is_classmethod::Bool = false,
                     generic_wrapper_name::String = "",
-                    trait_path::String = "", julia_name::String = "")
+                    trait_path::String = "", julia_name::String = "",
+                    py_arg_shapes::Vector{Union{Nothing, PyO3Shape}} =
+                        Union{Nothing, PyO3Shape}[nothing for _ in arg_names],
+                    py_return_shape::Union{Nothing, PyO3Shape} = nothing)
     length(python_defaults) == length(arg_names) ||
         throw(ArgumentError("python_defaults must have one entry per argument"))
     length(python_kinds) == length(arg_names) ||
@@ -140,7 +172,7 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
                return_kind, ok_type, err_type, inner_type, ok_abi, err_abi, inner_abi,
                string_owner, attribute, python_defaults, python_kinds,
                callback_args, callback_returns, is_classmethod, generic_wrapper_name,
-               trait_path, julia_name)
+               trait_path, julia_name, py_arg_shapes, py_return_shape)
 end
 
 # `julia_method_name(m)`, the name a method is bound under, is in `julia_names.jl` (#514).
@@ -274,6 +306,13 @@ struct RustStructInfo
     # dict is not exposed.
     field_pyo3_get::Dict{String, Bool}
     field_pyo3_set::Dict{String, Bool}
+    # The Python attribute of a `#[pyclass]` field, when it is not the Rust
+    # name as written (`#[pyo3(get, name = "...")]`, a raw `r#let` as `let`);
+    # a field absent from the dict is exposed under its Rust name (#524).
+    field_python_names::Dict{String, String}
+    # The PyO3-host shape of a `#[pyclass]` field's value (`Field.py_shape`,
+    # additive within schema 0.7; PR #525 review).
+    field_py_shapes::Dict{String, PyO3Shape}
     has_clone::Bool
     has_owned_string_helper::Bool
     has_borrowed_string_helper::Bool
@@ -319,6 +358,8 @@ function RustStructInfo(name::String, type_params::Vector{String}, methods::Vect
                         field_setters::Dict{String, String} = Dict{String, String}(),
                         field_pyo3_get::Dict{String, Bool} = Dict{String, Bool}(),
                         field_pyo3_set::Dict{String, Bool} = Dict{String, Bool}(),
+                        field_python_names::Dict{String, String} = Dict{String, String}(),
+                        field_py_shapes::Dict{String, PyO3Shape} = Dict{String, PyO3Shape}(),
                         has_clone::Bool = get(derive_options, "Clone", false),
                         has_owned_string_helper::Bool = false,
                         has_borrowed_string_helper::Bool = false,
@@ -337,7 +378,8 @@ function RustStructInfo(name::String, type_params::Vector{String}, methods::Vect
                    field_vec_elements, field_free_symbols,
                    has_derive_julia_struct,
                    derive_options, field_getters, field_setters,
-                   field_pyo3_get, field_pyo3_set, has_clone,
+                   field_pyo3_get, field_pyo3_set, field_python_names, field_py_shapes,
+                   has_clone,
                    has_owned_string_helper, has_borrowed_string_helper, generic_wrappers, constraints,
                    module_path, attribute, vis, skip_reason, python_name, python_path,
                    pyo3_extends, pyo3_options, python_owned_handle, cfg_features,

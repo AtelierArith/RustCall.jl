@@ -167,9 +167,14 @@ pub fn function_symbol(module_path: &[String], name: &str) -> String {
 }
 
 /// Exported symbol of the `extern "C"` wrapper of `Struct::method`, the struct
-/// living under `module_path`: `rustcall_<stem>_<method>`.
+/// living under `module_path`: `rustcall_<stem>_<method>`. The method part is
+/// [`method_stem`], so a raw method name (`r#match`) is spelled as the symbol
+/// the wrapper exports (`rustcall_S_match`, PR #517 review).
 pub fn method_symbol(module_path: &[String], struct_name: &str, method: &str) -> String {
-    method_symbol_of(&symbol_stem(module_path, struct_name), method)
+    method_symbol_of(
+        &symbol_stem(module_path, struct_name),
+        &method_stem(None, method),
+    )
 }
 
 /// The part of every per-method name after the struct stem (#506): the
@@ -207,14 +212,16 @@ pub fn trait_name_of(trait_path: &syn::Path) -> Option<String> {
         .map(|s| s.ident.unraw().to_string())
 }
 
-/// [`method_symbol`] from an already computed struct stem.
+/// [`method_symbol`] from an already computed struct stem and method stem.
+/// Like every public symbol helper it is total over a raw name: an `r#` handed
+/// in where a stem belongs is dropped, never spelled into a symbol (#514).
 pub fn method_symbol_of(struct_stem: &str, method: &str) -> String {
-    format!("{SYMBOL_PREFIX}{struct_stem}_{method}")
+    format!("{SYMBOL_PREFIX}{}_{}", unraw(struct_stem), unraw(method))
 }
 
 /// The destructor of a struct with FFI name `struct_stem`: `<stem>_free`.
 pub fn struct_free_symbol(struct_stem: &str) -> String {
-    format!("{struct_stem}_free")
+    format!("{}_free", unraw(struct_stem))
 }
 
 /// The stem a method's string buffers hang off when the wrapper **declares**
@@ -230,7 +237,7 @@ pub fn struct_free_symbol(struct_stem: &str) -> String {
 /// The manifest states which of the two a method uses (`Method.string_owner`)
 /// rather than leaving Julia to infer it from the flavour.
 pub fn method_string_owner(struct_stem: &str, method: &str) -> String {
-    format!("{struct_stem}_{method}")
+    format!("{}_{}", unraw(struct_stem), unraw(method))
 }
 
 /// The field accessors of a struct with FFI name `struct_stem`:
@@ -238,13 +245,11 @@ pub fn method_string_owner(struct_stem: &str, method: &str) -> String {
 /// loses its `r#`, as the accessor the proc macro exports does
 /// (`format_ident!` unraws an identifier argument, #514).
 pub fn field_getter_symbol(struct_stem: &str, field: &str) -> String {
-    let field = unraw(field);
-    format!("{struct_stem}_get_{field}")
+    format!("{}_get_{}", unraw(struct_stem), unraw(field))
 }
 
 pub fn field_setter_symbol(struct_stem: &str, field: &str) -> String {
-    let field = unraw(field);
-    format!("{struct_stem}_set_{field}")
+    format!("{}_set_{}", unraw(struct_stem), unraw(field))
 }
 
 // ============================================================================
@@ -723,7 +728,7 @@ pub const UNINSTALL_PANIC_HOOK_SYMBOL: &str = "__rustcall_uninstall_panic_hook";
 
 /// The panic-channel reader of the wrapper exported as `symbol`.
 pub fn panic_symbol(symbol: &str) -> String {
-    format!("{symbol}{PANIC_SYMBOL_SUFFIX}")
+    format!("{}{PANIC_SYMBOL_SUFFIX}", unraw(symbol))
 }
 
 /// The per-wrapper panic channel: a thread-local message slot and the
@@ -2959,7 +2964,7 @@ fn fn_source(func: ItemFn) -> String {
 /// [`method_stem`], so a raw method name (`r#match`) loses its `r#` exactly
 /// as it does in a concrete struct's symbol (#514).
 pub fn generic_method_wrapper_name(struct_stem: &str, method: &str) -> String {
-    format!("{struct_stem}_{}", method_stem(None, method))
+    format!("{}_{}", unraw(struct_stem), method_stem(None, method))
 }
 
 /// The refusals of a generic inline struct's methods that are generic in their

@@ -509,6 +509,7 @@ fn function_entry(func: &ItemFn, module_path: &[String]) -> Function {
         has_owned_string_helper: false,
         has_borrowed_string_helper: false,
         module_path: module_path.to_vec(),
+        py_return: None,
     }
 }
 

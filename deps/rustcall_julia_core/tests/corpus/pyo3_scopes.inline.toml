@@ -1,0 +1,246 @@
+schema_version = "0.7"
+mode = "inline"
+structs = []
+
+[[functions]]
+name = "in_a"
+ffi_name = "a__in_0a"
+symbol = "in_a"
+attribute = "none"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "i32"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 19
+module_path = ["a"]
+
+[[functions.args]]
+name = "x"
+rust_type = "Option<i32>"
+abi = ""
+
+[[functions]]
+name = "in_b"
+ffi_name = "b__in_0b"
+symbol = "in_b"
+attribute = "none"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "Option<i32>"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 32
+module_path = ["b"]
+
+[[functions.args]]
+name = "x"
+rust_type = "Option<i32>"
+abi = ""
+
+[[functions]]
+name = "total"
+ffi_name = "b__total"
+symbol = "total"
+attribute = "none"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "f64"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 37
+module_path = ["b"]
+
+[[functions.args]]
+name = "values"
+rust_type = "np::PyReadonlyArray1<'_, f64>"
+abi = ""
+
+[[functions]]
+name = "knot"
+ffi_name = "b__knot"
+symbol = "knot"
+attribute = "none"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "Handle<Knot>"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 43
+module_path = ["b"]
+
+[[functions.args]]
+name = "node"
+rust_type = "Handle<Knot>"
+abi = ""
+
+[[functions]]
+name = "anything"
+ffi_name = "b__anything"
+symbol = "anything"
+attribute = "none"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "Option<Py<PyAny>>"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 49
+module_path = ["b"]
+
+[[functions.args]]
+name = "x"
+rust_type = "Option<Py<PyAny>>"
+abi = ""
+
+[[functions]]
+name = "via_glob"
+ffi_name = "c__via_0glob"
+symbol = "via_glob"
+attribute = "none"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "i32"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 60
+module_path = ["c"]
+
+[[functions.args]]
+name = "x"
+rust_type = "Option<i32>"
+abi = ""
+
+[[functions]]
+name = "through"
+ffi_name = "c__through"
+symbol = "through"
+attribute = "none"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "i32"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 66
+module_path = ["c"]
+
+[[functions.args]]
+name = "x"
+rust_type = "super::a::Option<i32>"
+abi = ""
+
+[[functions.args]]
+name = "y"
+rust_type = "crate::b::Option<i32>"
+abi = ""

@@ -425,6 +425,7 @@ fn methods_of(
                     &m.enclosing_cfg,
                     &m.func.attrs,
                 )),
+                py_return: None,
             }
         })
         .collect()
@@ -451,6 +452,7 @@ fn fields_of(model: &StructModel, accessors: &[(String, String, String)]) -> Vec
                 pyo3_get: false,
                 pyo3_set: false,
                 precollision: None,
+                py_shape: None,
             }
         })
         .collect()

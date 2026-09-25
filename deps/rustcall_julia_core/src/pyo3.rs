@@ -41,7 +41,7 @@ use crate::attrs::{
 use crate::cfg::predicate_string;
 use crate::extract::fn_args;
 use crate::manifest::{
-    skip_reason, Attribute, Field, Function, Manifest, Method, ReturnKind, Struct,
+    skip_reason, Attribute, Field, Function, Manifest, Method, PyShape, ReturnKind, Struct,
 };
 use crate::paths::{
     import_of_type_alias, imports_of_use, locate, ImplHeader, Located, ScannedImport,
@@ -572,7 +572,7 @@ impl Pyo3Scan {
                         &self.classes[index].entry.name,
                         imp.header.target.span(),
                     );
-                    let entry = method_entry(
+                    let mut entry = method_entry(
                         &class_ident,
                         &class_path,
                         returns_self,
@@ -580,8 +580,37 @@ impl Pyo3Scan {
                         &owner_skip,
                         &imp.cfg,
                     );
+                    for arg in &mut entry.args {
+                        arg.py_shape = Some(shape_of(&arg.rust_type));
+                    }
+                    entry.py_return = Some(return_hint(
+                        entry.return_kind,
+                        &entry.ok_type,
+                        &entry.return_type,
+                    ));
                     self.classes[index].entry.methods.push(entry);
                 }
+            }
+        }
+
+        // Every PyO3 position's host hint, read off the type here so no
+        // consumer reads a type spelling (#264); see [`PyShape`].
+        for function in &mut manifest.functions {
+            if !function.attribute.is_pyo3_scan() {
+                continue;
+            }
+            for arg in &mut function.args {
+                arg.py_shape = Some(shape_of(&arg.rust_type));
+            }
+            function.py_return = Some(return_hint(
+                function.return_kind,
+                &function.ok_type,
+                &function.return_type,
+            ));
+        }
+        for class in &mut self.classes {
+            for field in &mut class.entry.fields {
+                field.py_shape = Some(shape_of(&field.rust_type));
             }
         }
 
@@ -592,6 +621,121 @@ impl Pyo3Scan {
         // `fn User()` refused for the class `User`'s name does not also cost the
         // class its `String` getters' helper (#307 review).
         mark_julia_surface_collisions(manifest, &Emitted::new());
+    }
+}
+
+const SCALARS: [&str; 15] = [
+    "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize", "f32",
+    "f64", "bool",
+];
+
+/// The host hint of a type the manifest spells as `spelling` (the scan's own
+/// `type_to_string`); a spelling syn does not read back is opaque.
+fn shape_of(spelling: &str) -> PyShape {
+    syn::parse_str::<Type>(spelling)
+        .map(|ty| shape(&ty))
+        .unwrap_or_else(|_| PyShape::of("opaque"))
+}
+
+/// The hint of a function's or method's return: of `T` for a `PyResult<T>`,
+/// of the whole return type otherwise.
+fn return_hint(kind: ReturnKind, ok_type: &str, return_type: &str) -> PyShape {
+    if kind == ReturnKind::PyResult {
+        shape_of(ok_type)
+    } else {
+        shape_of(return_type)
+    }
+}
+
+/// The host hint of `ty`, read off its spelling alone; see [`PyShape`]. No
+/// path is resolved: the hint only narrows what a value the host has already
+/// converted by its runtime type is read back as, so a spelling it misreads
+/// (a crate's own `Option`, an alias) costs a conversion, never a call.
+fn shape(ty: &Type) -> PyShape {
+    match unparen(ty) {
+        Type::Group(g) => shape(&g.elem),
+        Type::Tuple(t) if t.elems.is_empty() => PyShape::of("unit"),
+        Type::Reference(r) => shape(&r.elem),
+        Type::Path(p) if p.qself.is_none() => path_shape(&p.path),
+        _ => PyShape::of("opaque"),
+    }
+}
+
+fn path_shape(path: &syn::Path) -> PyShape {
+    use syn::ext::IdentExt;
+    let segments: Vec<String> = path
+        .segments
+        .iter()
+        .map(|s| s.ident.unraw().to_string())
+        .collect();
+    let Some(last) = segments.last().map(String::as_str) else {
+        return PyShape::of("opaque");
+    };
+    let args = type_arguments(path);
+    // `Vec`, `Option` and `String` bare (the prelude's) or under a std root;
+    // a primitive only bare.
+    let bare = segments.len() == 1 && path.leading_colon.is_none();
+    let std_spelled = bare || matches!(segments[0].as_str(), "std" | "core" | "alloc");
+    match last {
+        name if bare && SCALARS.contains(&name) => PyShape::named("scalar", name),
+        "str" if bare => PyShape::of("string"),
+        "String" if std_spelled && args.is_empty() => PyShape::of("string"),
+        "Vec" | "Option" if std_spelled && args.len() == 1 => {
+            let kind = if last == "Vec" { "vec" } else { "option" };
+            PyShape::wrapping(kind, shape(&args[0]))
+        }
+        name if numpy_rank(name).is_some() => {
+            let rank = numpy_rank(name).unwrap_or(0);
+            match args.last().map(shape) {
+                Some(e) if e.kind == "scalar" => PyShape {
+                    rank,
+                    ..PyShape::named("array", &e.name)
+                },
+                _ => PyShape::of("opaque"),
+            }
+        }
+        // PyO3's own rule: an argument whose type's last segment is `Python`
+        // is the interpreter token, whatever path spells it; the `PyModule` a
+        // `#[pyo3(pass_module)]` function gets is read the same way.
+        "Python" | "PyModule" => PyShape::of("injected"),
+        "Py" | "Bound" | "Borrowed" | "PyRef" | "PyRefMut" => match args.last().map(shape) {
+            Some(inner) if matches!(inner.kind.as_str(), "array" | "injected") => inner,
+            _ => PyShape::of("opaque"),
+        },
+        _ => PyShape::of("opaque"),
+    }
+}
+
+/// The type arguments of a path's last segment (lifetimes and consts left
+/// out): `f64` of `PyReadonlyArray1<'py, f64>`.
+fn type_arguments(path: &syn::Path) -> Vec<Type> {
+    let Some(last) = path.segments.last() else {
+        return Vec::new();
+    };
+    let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
+        return Vec::new();
+    };
+    args.args
+        .iter()
+        .filter_map(|a| match a {
+            syn::GenericArgument::Type(t) => Some(t.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The rank of a pyo3-numpy array type name — `PyArray1` 1, `PyReadonlyArrayDyn`
+/// -1 — or `None` for any other name.
+fn numpy_rank(name: &str) -> Option<i32> {
+    let rest = name
+        .strip_prefix("PyReadonlyArray")
+        .or_else(|| name.strip_prefix("PyArray"))?;
+    if rest == "Dyn" {
+        return Some(-1);
+    }
+    match rest.parse::<i32>() {
+        Ok(rank) if (0..=6).contains(&rank) && rest.len() == 1 => Some(rank),
+        _ => None,
     }
 }
 
@@ -1417,6 +1561,32 @@ fn python_name_of(attrs: &[syn::Attribute], rust_name: &str) -> String {
     }
 }
 
+/// The property a `#[getter]` / `#[setter]` method is exposed as, for the
+/// manifest's `python_name` (#524): the name the attribute gives
+/// (`#[getter(end)]`, `#[setter(name = "x")]`, `#[pyo3(name = "x")]`),
+/// otherwise the method's name without its `r#` and without a `get_` (getter)
+/// or `set_` (setter) prefix -- PyO3's own rule, so `fn get_x` and `fn set_x`
+/// are the property `x` and `fn r#for` is `for`. Empty when that is the
+/// method's name as written, so every consumer -- the wrapper crate's
+/// descriptor lookup and the PyO3 host's property table -- reads one decision.
+fn accessor_python_name(attrs: &[syn::Attribute], rust_name: &str, accessor: &str) -> String {
+    let named = pyo3_name(attrs);
+    if !named.is_empty() {
+        return named;
+    }
+    let bare = crate::codegen::unraw(rust_name);
+    let prefix = if accessor == "getter" { "get_" } else { "set_" };
+    let property = bare
+        .strip_prefix(prefix)
+        .filter(|rest| !rest.is_empty())
+        .unwrap_or(bare);
+    if property == rust_name {
+        String::new()
+    } else {
+        property.to_string()
+    }
+}
+
 /// The Python name of a raw Rust name (`r#for` -> `for`); empty for any other
 /// name, which Python sees as written.
 fn unraw_python_name(rust_name: &str) -> String {
@@ -1470,6 +1640,7 @@ fn module_entry(
         line: item.span().start().line,
         module_path: module_path.to_vec(),
         callable_path: Vec::new(),
+        py_return: None,
     }
 }
 
@@ -1532,6 +1703,7 @@ fn function_entry(
         line: func.span().start().line,
         module_path: module_path.to_vec(),
         callable_path: Vec::new(),
+        py_return: None,
     }
 }
 
@@ -1639,6 +1811,7 @@ fn class_entry(
                 // scan (#307 review).
                 cfg: predicate_string(&f.attrs),
                 precollision: None,
+                py_shape: None,
             });
         }
     }
@@ -1742,7 +1915,11 @@ fn method_entry(
         is_classmethod: has(Pyo3MethodMarker::ClassMethod),
         vis: visibility_string(&func.vis),
         skip_reason: reason,
-        python_name: python_name_of(&func.attrs, &func.sig.ident.to_string()),
+        python_name: if accessor.is_empty() {
+            python_name_of(&func.attrs, &name)
+        } else {
+            accessor_python_name(&func.attrs, &name, accessor)
+        },
         accessor: accessor.to_string(),
         attribute: Attribute::PyMethods,
         // A scanned `#[pymethods]` method has no wrapper and so no string
@@ -1770,6 +1947,7 @@ fn method_entry(
         generic_wrapper: String::new(),
         generic_wrapper_name: String::new(),
         cfg: predicate_string(&effective_cfg),
+        py_return: None,
     }
 }
 

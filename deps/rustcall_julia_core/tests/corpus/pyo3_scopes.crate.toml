@@ -1,0 +1,339 @@
+schema_version = "0.7"
+mode = "crate"
+
+[[functions]]
+name = "in_a"
+ffi_name = "a__in_0a"
+symbol = "rustcall_a__in_0a"
+attribute = "py_function"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "i32"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 19
+module_path = ["a"]
+
+[[functions.args]]
+name = "x"
+rust_type = "Option<i32>"
+abi = ""
+
+[functions.args.py_shape]
+kind = "option"
+
+[functions.args.py_shape.inner]
+kind = "scalar"
+name = "i32"
+
+[functions.py_return]
+kind = "scalar"
+name = "i32"
+
+[[functions]]
+name = "in_b"
+ffi_name = "b__in_0b"
+symbol = "rustcall_b__in_0b"
+attribute = "py_function"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "Option<i32>"
+return_kind = "option"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = "i32"
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 32
+module_path = ["b"]
+
+[[functions.args]]
+name = "x"
+rust_type = "Option<i32>"
+abi = ""
+
+[functions.args.py_shape]
+kind = "option"
+
+[functions.args.py_shape.inner]
+kind = "scalar"
+name = "i32"
+
+[functions.py_return]
+kind = "option"
+
+[functions.py_return.inner]
+kind = "scalar"
+name = "i32"
+
+[[functions]]
+name = "total"
+ffi_name = "b__total"
+symbol = "rustcall_b__total"
+attribute = "py_function"
+vis = "pub"
+skip_reason = "pyo3_type:np::PyReadonlyArray1<'_, f64>"
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "f64"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 37
+module_path = ["b"]
+
+[[functions.args]]
+name = "values"
+rust_type = "np::PyReadonlyArray1<'_, f64>"
+abi = ""
+
+[functions.args.py_shape]
+kind = "array"
+name = "f64"
+rank = 1
+
+[functions.py_return]
+kind = "scalar"
+name = "f64"
+
+[[functions]]
+name = "knot"
+ffi_name = "b__knot"
+symbol = "rustcall_b__knot"
+attribute = "py_function"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "Handle<Knot>"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 43
+module_path = ["b"]
+
+[[functions.args]]
+name = "node"
+rust_type = "Handle<Knot>"
+abi = ""
+
+[functions.args.py_shape]
+kind = "opaque"
+
+[functions.py_return]
+kind = "opaque"
+
+[[functions]]
+name = "anything"
+ffi_name = "b__anything"
+symbol = "rustcall_b__anything"
+attribute = "py_function"
+vis = "pub"
+skip_reason = "pyo3_type:Py<PyAny>"
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "Option<Py<PyAny>>"
+return_kind = "option"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = "Py<PyAny>"
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 49
+module_path = ["b"]
+
+[[functions.args]]
+name = "x"
+rust_type = "Option<Py<PyAny>>"
+abi = ""
+
+[functions.args.py_shape]
+kind = "option"
+
+[functions.args.py_shape.inner]
+kind = "opaque"
+
+[functions.py_return]
+kind = "option"
+
+[functions.py_return.inner]
+kind = "opaque"
+
+[[functions]]
+name = "via_glob"
+ffi_name = "c__via_0glob"
+symbol = "rustcall_c__via_0glob"
+attribute = "py_function"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "i32"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 60
+module_path = ["c"]
+
+[[functions.args]]
+name = "x"
+rust_type = "Option<i32>"
+abi = ""
+
+[functions.args.py_shape]
+kind = "option"
+
+[functions.args.py_shape.inner]
+kind = "scalar"
+name = "i32"
+
+[functions.py_return]
+kind = "scalar"
+name = "i32"
+
+[[functions]]
+name = "through"
+ffi_name = "c__through"
+symbol = "rustcall_c__through"
+attribute = "py_function"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+exported = false
+cfg = ""
+cfg_features = []
+is_generic = false
+type_params = []
+return_type = "i32"
+return_kind = "plain"
+return_abi = ""
+ok_type = ""
+err_type = ""
+inner_type = ""
+ok_abi = ""
+err_abi = ""
+inner_abi = ""
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+source = ""
+body_has_cfg = false
+line = 66
+module_path = ["c"]
+
+[[functions.args]]
+name = "x"
+rust_type = "super::a::Option<i32>"
+abi = ""
+
+[functions.args.py_shape]
+kind = "opaque"
+
+[[functions.args]]
+name = "y"
+rust_type = "crate::b::Option<i32>"
+abi = ""
+
+[functions.args.py_shape]
+kind = "opaque"
+
+[functions.py_return]
+kind = "scalar"
+name = "i32"
+
+[[structs]]
+name = "Node"
+ffi_name = "Node"
+attribute = "py_class"
+vis = "pub"
+skip_reason = ""
+python_name = ""
+cfg = ""
+cfg_features = []
+type_params = []
+fields = []
+methods = []
+derives = []
+has_clone = false
+has_owned_string_helper = false
+has_borrowed_string_helper = false
+context_source = ""
+generic_wrappers = []
+line = 8
+module_path = []

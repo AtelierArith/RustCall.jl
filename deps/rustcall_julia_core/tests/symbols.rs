@@ -26,6 +26,13 @@ fn a_root_item_keeps_its_bare_name() {
     // A raw identifier is spelled without its prefix, which is not a symbol
     // character.
     assert_eq!(symbol_stem(&[], "r#mod"), "mod");
+    // ... in the method part too: the wrapper of `S::r#match` exports
+    // `rustcall_S_match` (PR #517 review).
+    assert_eq!(method_symbol(&[], "S", "r#match"), "rustcall_S_match");
+    assert_eq!(
+        method_symbol(&[], "r#type", "r#match"),
+        "rustcall_type_match"
+    );
 }
 
 #[test]
