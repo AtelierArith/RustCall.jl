@@ -170,13 +170,21 @@ _hrr_with(r::RustCall.CrateBuildRecord; kwargs...) =
             @test expr_record.python == python
             # Both `__init__`s begin with the same prologue — the strict
             # build-environment check, then the mirror registration — and the
-            # written file cannot skip the check (#474 review).
-            prologue = collect(RustCall._crate_init_prologue())
-            @test _hrr_init_body(ex)[1:length(prologue)] == prologue
+            # written file cannot skip the check (#474 review). The in-memory
+            # module names its origin, which decides the remedy the check
+            # names; the written file makes the origin-less call every 0.7.x
+            # accepts, which is read as a written file's (#531).
+            expr_prologue = collect(RustCall._crate_init_prologue(:rust_crate))
+            code_prologue = collect(RustCall._crate_init_prologue(:bindings_file))
+            @test _hrr_init_body(ex)[1:length(expr_prologue)] == expr_prologue
             # The file spells the same statements through its aliases (#528).
-            written = [Meta.parse(RustCall._emitted_source(p)) for p in prologue]
-            @test _hrr_init_body(Meta.parseall(code))[1:length(prologue)] == written
-            @test prologue[1] == :($(GlobalRef(RustCall, :_warn_if_build_env_changed))(_BUILD_RECORD; strict = true))
+            written = [Meta.parse(RustCall._emitted_source(p)) for p in code_prologue]
+            @test _hrr_init_body(Meta.parseall(code))[1:length(code_prologue)] == written
+            @test expr_prologue[1] == :($(GlobalRef(RustCall, :_warn_if_build_env_changed))(
+                _BUILD_RECORD; strict = true, origin = :rust_crate))
+            @test code_prologue[1] == :($(GlobalRef(RustCall, :_warn_if_build_env_changed))(
+                _BUILD_RECORD; strict = true))
+            @test expr_prologue[2:end] == code_prologue[2:end]
             # `_LIB_NAME` is read from the record in both, never recorded twice.
             @test occursin("const _LIB_NAME = _BUILD_RECORD.lib_name", code)
             @test occursin("_LIB_NAME = _BUILD_RECORD.lib_name", string(ex))

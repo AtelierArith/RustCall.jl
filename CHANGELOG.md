@@ -44,6 +44,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `var"..."` must use the new name. Exported symbols do not change.
 
 ### Fixed
+- **A stale `write_bindings_to_file` module names the remedy that works**
+  ([#531](https://github.com/AtelierArith/RustCall.jl/issues/531)). When the
+  build environment a generated crate module recorded no longer matches — a
+  changed `RUSTFLAGS`, Cargo configuration or toolchain, or a RustCall whose
+  extractor sources moved (a file written by v0.7.1 loaded by a later
+  release) — `__init__` refused with a message telling the user to run
+  `Pkg.precompile(; force = true)`. That rebuilds a `@rust_crate` module, but a
+  file written by `write_bindings_to_file` records the environment in its own
+  source, so re-precompiling read the same record and failed again. The
+  message now comes from one function, `RustCall._build_env_changed_message`,
+  given the module's origin, and a written file is told to be regenerated with
+  `write_bindings_to_file` (the call is spelled out, with the crate's path as
+  a Julia string literal). The in-memory `@rust_crate` module passes
+  `origin = :rust_crate`; a written file keeps making the origin-less call
+  every 0.7.x makes, which is read as a written file's. So the fix reaches files
+  v0.7.1 wrote, and a file written now still loads under v0.7.0 / v0.7.1
+  (PR #532 review). `test/test_build_env_remedy.jl` checks both emitters and a
+  v0.7.1-spelled file against a recorded toolchain that no longer matches.
+  **A written file makes only calls the oldest release of its format line
+  accepts**: `test/fixtures/bindings_surface_0.7.0.txt` records every name
+  v0.7.0 defines with each method's positional arity and keywords
+  (`test/record_bindings_surface.jl`), and the #528 option sweep checks every
+  `RustCall` reference of every file it emits against it
+  (`test/bindings_surface.jl`), so a keyword or helper a later patch adds
+  cannot reach a written file.
 - **A crate item named like something the generated code uses no longer
   replaces it** ([#528](https://github.com/AtelierArith/RustCall.jl/issues/528)).
   Generated modules spelled `Base.show`, `getfield(x, :ptr)`, `RustCall.StateView`,

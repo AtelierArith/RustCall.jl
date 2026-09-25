@@ -18,6 +18,10 @@ end
 
 const _MNS_FIXTURES = joinpath(@__DIR__, "fixtures")
 
+# A written file must also make only calls the oldest release of its format
+# line accepts (#531): checked on every text module the sweep emits.
+include(joinpath(@__DIR__, "bindings_surface.jl"))
+
 # ---------------------------------------------------------------------------
 # What emitted code references, read off the code by lowering it
 # ---------------------------------------------------------------------------
@@ -221,9 +225,11 @@ _mns_subsets(n, k) = k == 0 ? [()] :
 Run `emit(kwargs)` for the combinations (`_mns_combinations`) of the keyword
 arguments `f` declares (plus `:strict`, applied as the emission's scope when
 `f` does not declare it) and return the findings of each distinct emitted
-module. A refusal is accepted only under `strict = :error`.
+module — `_mns_findings`, plus `also(module)` (the written file's
+`_bindings_surface_findings`). A refusal is accepted only under
+`strict = :error`.
 """
-function _mns_sweep(emit, f, values; module_of = identity)
+function _mns_sweep(emit, f, values; module_of = identity, also = modex -> String[])
     declared = only(unique(Base.kwarg_decl(m) for m in methods(f)))
     missing_values = setdiff(declared, keys(values))
     @test isempty(missing_values)
@@ -252,7 +258,7 @@ function _mns_sweep(emit, f, values; module_of = identity)
         key = string(Base.remove_linenums!(deepcopy(modex)))
         key in seen && continue
         push!(seen, key)
-        for finding in _mns_findings(modex)
+        for finding in vcat(_mns_findings(modex), also(modex))
             push!(findings, "$finding with $(kw)")
         end
     end
@@ -266,7 +272,8 @@ function _mns_crate_findings(info, crate)
     ex = _mns_sweep(kw -> RustCall.emit_crate_module(info, "/tmp/libmns528.dylib"; kw...),
                     RustCall.emit_crate_module, values)
     text = _mns_sweep(kw -> RustCall.emit_crate_module_code(info, "lib/libmns528.dylib"; kw...),
-                      RustCall.emit_crate_module_code, values; module_of = _mns_text_module)
+                      RustCall.emit_crate_module_code, values; module_of = _mns_text_module,
+                      also = _bindings_surface_findings)
     return vcat(ex, text)
 end
 

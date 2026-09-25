@@ -996,13 +996,67 @@ function _python_selection(snapshot::BuildEnvSnapshot)
     return _python_executable_on_path(snapshot)
 end
 
+# Where a generated crate module came from: the two emitters (#531).
+const _BUILD_ENV_ORIGINS = (:rust_crate, :bindings_file)
+
+_check_build_env_origin(origin::Symbol) =
+    origin in _BUILD_ENV_ORIGINS ||
+        throw(ArgumentError("unknown module origin $(repr(origin)); expected one of $(_BUILD_ENV_ORIGINS)"))
+
 """
-    _warn_if_build_env_changed(recorded, crate_path, lib_name; strict = false)
+    _build_env_changed_message(lib_name, crate_path, changed, origin) -> String
+
+The one diagnostic for a generated crate module whose recorded build environment
+no longer matches (#531). What went wrong is the same for both origins; the
+remedy is not. A `@rust_crate` module is rebuilt when its package is precompiled
+again. A file written by `write_bindings_to_file` records the environment in its
+own source (`_BUILD_RECORD`), so re-precompiling reads the same record and fails
+the same way: the file must be written again, after which a package that
+includes it re-precompiles on its own.
+"""
+function _build_env_changed_message(lib_name::AbstractString, crate_path::AbstractString,
+                                    changed, origin::Symbol)
+    _check_build_env_origin(origin)
+    what = "Variables: $(join(changed, ", "))."
+    if origin === :bindings_file
+        return """
+        RustCall: the build environment changed since `$(lib_name)` was built for this bindings
+        file, written by `write_bindings_to_file`. The file records the environment it was
+        written under, and the library it names was built under those values. $(what)
+
+        Re-precompiling cannot help: the record is part of the file. Regenerate the file under
+        the current environment and RustCall:
+
+            RustCall.write_bindings_to_file($(repr(String(crate_path))), "<this file>")
+
+        A package that includes the file is precompiled again on its own once the file changes.
+        """
+    end
+    return """
+    RustCall: the build environment changed since `$(lib_name)` was compiled into this package's
+    precompile image, and Julia cannot see that — it invalidates an image from files, and these
+    are not files. The library that is about to load was built under the previous values.
+
+    $(what) Force a rebuild with `Pkg.precompile(; force = true)`, or
+    touch a source file of the crate.
+    """
+end
+
+"""
+    _warn_if_build_env_changed(recorded, crate_path, lib_name; strict = false,
+                               origin = :rust_crate)
 
 Check whether the environment that decides this crate's artifact is the one it
 was built under. The generated `@rust_crate` module uses `strict = true` and
 refuses to load a precompiled image whose non-file inputs changed; the default
 is retained for diagnostic callers and emits the historical warning.
+
+`origin` says where the module came from, and so which remedy the message names
+(`_build_env_changed_message`, #531): `:rust_crate` for the module `@rust_crate`
+builds, `:bindings_file` for a file `write_bindings_to_file` wrote. The
+in-memory module's `__init__` names its origin; a written file makes the
+origin-less record call, which is read as `:bindings_file`
+(`_crate_init_prologue`).
 
 Julia invalidates a precompile image from *files*, and
 `Base.include_dependency` is the only lever a generated module has. Part of the
@@ -1016,27 +1070,24 @@ Python preload plan to match (#339 review).
 Nothing here can invalidate the image; what it can do is refuse to be silent.
 The module records the values it was generated under and compares them at load
 time, which is cheap — the allowlist is read from one snapshot of `ENV` taken
-here, no probe, no build. The fix it names is the one that works: force the
-package to be precompiled again.
+here, no probe, no build. The fix it names is the one that works for the
+module's origin: re-precompiling a package rebuilds a `@rust_crate` module under
+the current environment, but a written file carries its record in its own
+source, so it must be written again.
 """
 function _warn_if_build_env_changed(recorded, crate_path::AbstractString, lib_name::AbstractString,
                                     recorded_cargo_config::AbstractString = "",
                                     recorded_toolchain::AbstractString = "";
                                     python::Bool = false,
-                                    strict::Bool = false)
+                                    strict::Bool = false,
+                                    origin::Symbol = :rust_crate)
+    _check_build_env_origin(origin)
     # A load, not a build: the check takes its own one snapshot (#481).
     changed = _build_env_changes(recorded, crate_path, recorded_cargo_config,
                                  recorded_toolchain; python = python,
                                  snapshot = BuildEnvSnapshot())
     (changed === nothing || isempty(changed)) && return nothing
-    message = """
-    RustCall: the build environment changed since `$(lib_name)` was compiled into this package's
-    precompile image, and Julia cannot see that — it invalidates an image from files, and these
-    are not files. The library that is about to load was built under the previous values.
-
-    Variables: $(join(changed, ", ")). Force a rebuild with `Pkg.precompile(; force = true)`, or
-    touch a source file of the crate.
-    """
+    message = _build_env_changed_message(lib_name, crate_path, changed, origin)
     if strict
         throw(RustError(String(strip(message))))
     end
@@ -1262,9 +1313,16 @@ function _build_record_mismatch(r::CrateBuildRecord, snapshot::BuildEnvSnapshot)
 end
 
 # The module's `__init__` check (`_warn_if_build_env_changed`), from its record.
-_warn_if_build_env_changed(r::CrateBuildRecord; strict::Bool = false) =
+# The call that names no `origin` is a written file's, from any 0.7.x
+# (`_crate_init_prologue` keeps writing it, so the file loads under every
+# RustCall of its format line, #531 review). An in-memory `@rust_crate` module
+# names `:rust_crate`: it is always emitted by the RustCall that loads it (Julia
+# re-precompiles a package whose RustCall changed).
+_warn_if_build_env_changed(r::CrateBuildRecord; strict::Bool = false,
+                           origin::Symbol = :bindings_file) =
     _warn_if_build_env_changed(r.build_env, r.crate_dir, r.lib_name, r.cargo_config,
-                               r.toolchain; python = r.python, strict = strict)
+                               r.toolchain; python = r.python, strict = strict,
+                               origin = origin)
 
 """
     _record_build_subprocess_env(record::CrateBuildRecord, snapshot) -> Dict{String, String}
@@ -1409,20 +1467,35 @@ _record_named(r::CrateBuildRecord, lib_name::AbstractString) =
                      r.build_env, r.cargo_config, r.toolchain, r.python)
 
 """
-    _crate_init_prologue()
+    _crate_init_prologue(origin::Symbol)
 
 What a generated crate module's `__init__` does before it loads its library, in
 order, shared by both emitters: the in-memory module splices these expressions
-and `emit_crate_module_code` prints them, so a written file cannot drift from
-`@rust_crate` (#474 review). First the strict build-environment check against
-`_BUILD_RECORD` — a precompiled module refuses to load a library built under
-another `RUSTFLAGS`, `PYO3_PYTHON`, Cargo configuration or toolchain (#339,
-#355) — then the mirror registration, which must precede the load (#277).
+(`origin = :rust_crate`) and `emit_crate_module_code` prints them
+(`:bindings_file`), so a written file cannot drift from `@rust_crate` (#474
+review). Only the in-memory check names its origin: a written file is loaded by
+every RustCall of its format line, so it makes only calls the oldest of them
+accepts — the origin-less one, which the check reads as a written file's
+(#531). First the strict
+build-environment check against `_BUILD_RECORD` — a precompiled module refuses
+to load a library built under another `RUSTFLAGS`, `PYO3_PYTHON`, Cargo
+configuration or toolchain (#339, #355) — then the mirror registration, which
+must precede the load (#277).
 """
-_crate_init_prologue() = (
-    @_emitted(:(RustCall._warn_if_build_env_changed(_BUILD_RECORD; strict = true))),
-    @_emitted(:(RustCall.register_handle_mirror!(_LIB_NAME, _LIB_GEN))),
-)
+function _crate_init_prologue(origin::Symbol)
+    _check_build_env_origin(origin)
+    # A written file makes only calls every RustCall of its format line
+    # accepts (#531 review): a file written here is loaded by any 0.7.x, and an
+    # older one has no `origin` keyword. The origin-less call is the written
+    # file's (`_warn_if_build_env_changed(::CrateBuildRecord)` reads it as
+    # `:bindings_file`), so only the in-memory module, which is always emitted
+    # by the RustCall that loads it, names its origin.
+    check = origin === :rust_crate ?
+        @_emitted(:(RustCall._warn_if_build_env_changed(_BUILD_RECORD; strict = true,
+                                                        origin = :rust_crate))) :
+        @_emitted(:(RustCall._warn_if_build_env_changed(_BUILD_RECORD; strict = true)))
+    return (check, @_emitted(:(RustCall.register_handle_mirror!(_LIB_NAME, _LIB_GEN))))
+end
 
 """
     emit_crate_module(info::CrateInfo, lib_path::String; module_name::Union{String, Nothing}=nothing) -> Expr
@@ -1582,7 +1655,7 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
             # assignment after it would overwrite a newer generation that a
             # concurrent reload had already published, and calls through this
             # module would go back to entering the retired image (#277).
-            $(_crate_init_prologue()...)
+            $(_crate_init_prologue(:rust_crate)...)
             # A private generation copy, never `_LIB_PATH` itself: that file is
             # Cargo's output or the cache copy, and an image mapped in place
             # cannot be overwritten on Windows — the next `cargo build` of the
@@ -4813,7 +4886,7 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     push!(lines, "    # concurrent reload had already published. The prologue is the in-memory")
     push!(lines, "    # module's, statement for statement (`_crate_init_prologue`): the build")
     push!(lines, "    # environment is checked against `_BUILD_RECORD` first (#474).")
-    for statement in _crate_init_prologue()
+    for statement in _crate_init_prologue(:bindings_file)
         push!(lines, "    " * _emitted_source(statement))
     end
     push!(lines, "    # A private generation copy, never `_LIB_PATH` itself: that file is")
