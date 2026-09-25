@@ -411,11 +411,12 @@ end
     bindings, preserved, call_args = RustCall._string_arg_plan(by_name["join_repeat"], identity)
     @test length(bindings) == 3 && length(preserved) == 3 && length(call_args) == 7
 
-    # A temporary never shadows an argument that happens to use the prefix.
+    # A temporary never shadows an argument that happens to use the old
+    # prefix: temporaries are `rustcall′str′...`, which no Rust name spells.
     collide = RustCall.RustFunctionSignature("f", ["s", "__rustcall_str_s"], ["&str", "i32"], "usize",
                                              false, String[]; arg_abis = ["str", ""])
     _, preserved_c, call_args_c = RustCall._string_arg_plan(collide, identity)
-    @test preserved_c == [Symbol("__rustcall_str__s")]
+    @test preserved_c == [Symbol("rustcall′str′s")]
     @test call_args_c[end] == :(Int32(__rustcall_str_s))
 
     if RustCall.check_rustc_available()
@@ -516,10 +517,12 @@ end
     # The wrappers introduce locals (`func_ptr`, `lib_name`, `c_result`,
     # `c_option`); a Rust argument may carry any of those names and must not be
     # shadowed by them.
-    @test RustCall._generated_local("func_ptr", ["s"]) === :func_ptr
-    @test RustCall._generated_local("func_ptr", ["func_ptr"]) === Symbol("__rustcall_func_ptr")
+    # They are named `rustcall′<name>` (PR #527 review), whatever the
+    # arguments are called: no Rust argument can spell one.
+    @test RustCall._generated_local("func_ptr", ["s"]) === Symbol("rustcall′func_ptr")
+    @test RustCall._generated_local("func_ptr", ["func_ptr"]) === Symbol("rustcall′func_ptr")
     @test RustCall._generated_local("c_result", ["c_result", "__rustcall_x"]) ===
-          Symbol("__rustcall__c_result")
+          Symbol("rustcall′c_result")
 
     if RustCall.check_rustc_available()
         rust"""

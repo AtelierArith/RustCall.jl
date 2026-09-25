@@ -44,6 +44,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `var"..."` must use the new name. Exported symbols do not change.
 
 ### Fixed
+- **A Rust parameter named like a name its wrapper uses no longer breaks the
+  wrapper** ([#526](https://github.com/AtelierArith/RustCall.jl/issues/526)).
+  A generated wrapper's parameters are named after the Rust ones, and its
+  body calls names of its own without qualification. So
+  `#[julia] fn echo(pointer: &str)` made the `@rust_crate` and
+  `write_bindings_to_file` wrapper call its own argument (`objects of type
+  String are not callable`), a method parameter `getfield` did the same to
+  `getfield(self, :ptr)`, and a PyO3 host method `fn m(&self, obj: i32)` gave
+  its wrapper two parameters named `obj`, which Julia refuses to define; so
+  did `Int64: i64` beside the `Int64(x)` the wrapper converts through, and a
+  generic struct's type variable (`G<obj_>` with `obj: obj_`). No list of
+  such names can be complete, so every emitter now names its parameters
+  against its own output (`RustCall._rename_parameters`): it emits its items
+  once with a unique placeholder for each parameter (nothing logged, nothing
+  recorded for a boundary report) — a name no Rust identifier can spell
+  (`rustcall′arg′1`: the prime is a Julia identifier character and no
+  `XID_Continue` one), recognised by identity against the set the probe made,
+  so a crate's `struct __rustcall_arg_1__` or parameter of that name is an
+  ordinary name and never taken for one (PR #527 review) — collects every other name of each
+  definition taking one — what it reads, calls or binds, its other
+  parameters, its type variables — and gives the parameter a name outside
+  that set through the one allocator, `RustCall.julia_parameter_names`
+  (`pointer_`, `obj_`, `Int64_`). `rust"""`, both `@rust_crate` emitters
+  (the source text parsed) and the PyO3 host do this. `test/test_parameter_names.jl`
+  checks every emitter: a corpus whose parameter is spelled like any name its
+  definitions use must emit, up to the parameter's final name, exactly what
+  the same corpus emits with an unused spelling.
+  Every name an emitter binds itself inside a definition it generates is in
+  that namespace too (PR #527 review): the receiver (`rustcall′self`), the
+  pointer / panic-channel / payload locals (`rustcall′func_ptr`,
+  `rustcall′c_result`, ...), the string and callback temporaries
+  (`rustcall′str′<param>`, `rustcall′cb′frame`, formerly
+  `__rustcall_str_<param>`), a struct constructor's arguments, the
+  `getproperty` / `setproperty!` / `show` locals and the PyO3 host's
+  (`rustcall′obj`, `rustcall′p`, ...). A crate item and a wrapper's local are
+  therefore disjoint by construction — a `struct __rustcall_str_s` whose
+  constructor takes `s: &str` used to have its type shadowed by the string
+  temporary — and a parameter spelled like a former local (`func_ptr`,
+  `c_result`) keeps its name. `test/test_parameter_names.jl` checks every
+  emitter: no definition that takes a parameter or is defined on a crate type
+  binds a name a Rust identifier can spell.
+  The probe emits with exactly the options the emission uses (PR #527
+  review): the emission's strictness — `write_bindings_to_file(...; strict)`
+  is scoped over both crate emitters (`RustCall._ffi_strict()`, which every
+  contract decision's default now reads, `FFI_STRICT[]` outside an emission),
+  so the expression half no longer runs at the global setting — and
+  collecting mode only when the emission collects. A refusal it raises is the
+  emission's own and propagates; there is no longer a fallback that left every
+  item of a module unrenamed. The probe logs nothing and does not use up a
+  `:warn` signature's one warning.
 - **A PyO3 host property declared through `#[getter]` / `#[setter]` methods is
   read under its Julia name** ([#524](https://github.com/AtelierArith/RustCall.jl/issues/524)).
   `#[getter] fn r#for(&self)` is the Python attribute `for`, but

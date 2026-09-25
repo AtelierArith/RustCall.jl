@@ -639,16 +639,16 @@ const PYO3_MIXED_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_mixed
         # as `getproperty` / `setproperty!` do: after `finalize(obj)` the
         # pointer is `C_NULL`, and handing it to Rust is a crash where the
         # others raise (#307 review).
-        @test occursin("_check_not_freed(self, \"Knob\")", accessor)
+        @test occursin("_check_not_freed(rustcall′self, \"Knob\")", accessor)
         both = string(RustCall._generate_crate_field_accessor(info, "level", "f64"))
-        @test count("_check_not_freed(self, \"Knob\")", both) == 2
+        @test count("_check_not_freed(rustcall′self, \"Knob\")", both) == 2
         @test occursin("get_level", both) && occursin("set_level!", both)
         # Every setter converts the value to the field's type before the
         # call, in all three emitters, so the `ccall` signature is the field's
         # slot and not the runtime type of what was passed (#307 review).
-        @test occursin("convert(Float64, value)", accessor)
-        @test occursin("convert(Float64, value)", text)
-        @test occursin("convert(Float64, value)", code)
+        @test occursin("convert(Float64, rustcall′value)", accessor)
+        @test occursin("convert(Float64, rustcall′value)", text)
+        @test occursin("convert(Float64, rustcall′value)", code)
         @test !occursin("getfield(self, :ptr), value)", code)
     end
 

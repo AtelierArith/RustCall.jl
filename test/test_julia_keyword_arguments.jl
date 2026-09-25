@@ -257,7 +257,7 @@ end
                 @test _kwarg_params(content, "add") == ["function add(end_, for_)"]
                 @test _kwarg_params(content, "both") == ["function both(end__, end_)"]
                 @test _kwarg_params(content, "apply") == ["function apply(quote_, begin_)"]
-                @test _kwarg_params(content, "bump") == ["function bump(self::Acc, end__, end_)"]
+                @test _kwarg_params(content, "bump") == ["function bump(rustcall′self::Acc, end__, end_)"]
                 @test all(l -> startswith(lstrip(l), "#") || !occursin("r#", l),
                           split(content, '\n'))
                 # `apply` takes a callback *followed by* another argument: the

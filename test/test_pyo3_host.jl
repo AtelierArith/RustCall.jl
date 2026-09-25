@@ -433,12 +433,12 @@ end
           [("x", "x", true, true), ("y", "y", true, true)]
 
     text = string(Base.remove_linenums!(RustCall._pyo3_host_property_expr(:Gate, gate)))
-    @test occursin("s === :for_ && (s = :for)", text)
-    @test occursin("s === :end_ && (s = :end)", text)
-    @test !occursin("s === :plain && (s =", text)
+    @test occursin("rustcall′s === :for_ && (rustcall′s = :for)", text)
+    @test occursin("rustcall′s === :end_ && (rustcall′s = :end)", text)
+    @test !occursin("rustcall′s === :plain && (rustcall′s =", text)
     @test occursin("(:for_, :end_, :plain, :anchor, :samples, :twin, :maybe_twin, :type)", text)
     # The getter's hint types the read, as a field's does.
-    @test occursin("s === :for && return _pyo3_from_python(v, Int32)", text)
+    @test occursin("rustcall′s === :for && return _pyo3_from_python(rustcall′v, Int32)", text)
     @test occursin("property `end_` is read-only", text)
     @test !occursin("property `for_` is read-only", text)
 
@@ -447,10 +447,10 @@ end
     # object of a bound class its handle — and a write through
     # `_pyo3_to_python` — a handle is its Python object, a numeric array a
     # numpy array. No branch depends on the setter's argument type.
-    @test occursin("return _pyo3_from_python(v)", text)
-    @test occursin("PythonCall.pysetattr(getfield(p, :_rustcall_py), String(s), _pyo3_to_python(v))",
+    @test occursin("return _pyo3_from_python(rustcall′v)", text)
+    @test occursin("PythonCall.pysetattr(getfield(rustcall′p, :_rustcall_py), String(rustcall′s), _pyo3_to_python(rustcall′v))",
                    text)
-    @test !occursin("s === :anchor", text) && !occursin("s === :twin", text)
+    @test !occursin("rustcall′s === :anchor", text) && !occursin("rustcall′s === :twin", text)
 
     # The hint only types what the value conversion left: an `Option` is its
     # payload's hint, an opaque one reads whatever comes back.
@@ -471,9 +471,9 @@ end
     method_text(name) = string(Base.remove_linenums!(Expr(:block,
         RustCall._pyo3_host_method_expr(:Gate, class_base,
                                         only(filter(m -> m.name == name, gate.methods)))...)))
-    @test occursin("function copied(obj::Gate)", method_text("copied"))
-    @test occursin("_pyo3_from_python((getfield(obj, :_rustcall_py)).copied())", method_text("copied"))
-    @test occursin("function level_of(obj::Gate, other)", method_text("level_of"))
+    @test occursin("function copied(rustcall′obj::Gate)", method_text("copied"))
+    @test occursin("_pyo3_from_python((getfield(rustcall′obj, :_rustcall_py)).copied())", method_text("copied"))
+    @test occursin("function level_of(rustcall′obj::Gate, other)", method_text("level_of"))
     @test occursin("level_of(_pyo3_to_python(other))", method_text("level_of"))
     # A constructor wraps what `#[new]` returns.
     @test occursin("Gate((_pyo3_module()).Gate(_pyo3_to_python(level)))", method_text("new"))

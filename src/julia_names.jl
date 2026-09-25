@@ -103,13 +103,17 @@ source-text emitters, and the PyO3 host.
   position;
 - a name another parameter already has gets further underscores (`end` beside
   `end_` is `end__`). Names that need no change are claimed first, so they are
-  never the ones renamed.
+  never the ones renamed;
+- a name in `reserved` gets underscores too: the emitters pass every other
+  name the wrapper's own definition contains (`_rename_parameters`, #526), so
+  `fn echo(pointer: &str)` is `echo(pointer_)` where the wrapper calls
+  `pointer`, and `Int64: i64` is `Int64_` where it converts through `Int64`.
 
 Every result is a plain, readable identifier and distinct from the others, and
 applying the function to its own result changes nothing. The locals a wrapper
 introduces are chosen against this list (`_generated_local`).
 """
-function julia_parameter_names(rust_names)
+function julia_parameter_names(rust_names; reserved = ())
     names = String[String(n) for n in rust_names]
     readable(n) = _is_plain_julia_identifier(n) && !all(==('_'), n)
     wanted = map(enumerate(names)) do (i, n)
@@ -125,14 +129,14 @@ function julia_parameter_names(rust_names)
     taken = Set{String}()
     # Names kept as written first, so a renamed one yields to them.
     for (i, (n, w)) in enumerate(zip(names, wanted))
-        if n == w && !(w in taken)
+        if n == w && !(w in taken) && !(w in reserved)
             result[i] = w
             push!(taken, w)
         end
     end
     for (i, w) in enumerate(wanted)
         isassigned(result, i) && continue
-        while w in taken
+        while w in taken || w in reserved
             w *= "_"
         end
         result[i] = w
@@ -354,3 +358,156 @@ _check_julia_name_clashes(functions, structs, where_::AbstractString;
                           modules = String[], accessors::Bool = false, registry = nothing) =
     _check_julia_definitions(julia_definitions(functions, structs; modules, accessors, registry),
                              where_)
+
+# ----------------------------------------------------------------------------
+# Parameter names against the emitted wrapper itself (#526)
+# ----------------------------------------------------------------------------
+#
+# A wrapper's body names things of its own without qualification — the
+# generated module's helpers, Base functions, the types it converts through
+# (`Int64(x)`), its type variables, the PyO3 host's receiver `obj` — and a
+# parameter spelled like one of them shadows it. No list of those names can be
+# complete (PR #527 review), so the names are read off the wrapper: every
+# emitter's items are first emitted with a unique placeholder for each
+# parameter, every other symbol of each definition taking one is collected,
+# and the parameter is named against that set.
+#
+# A placeholder is a name no Rust identifier can spell, so no item or
+# parameter of a crate is ever taken for one (PR #527 review): it carries a
+# prime (`′`, U+2032), which Julia admits in an identifier — the source-text
+# emitter writes names as they are, and `Meta.parse` reads the text back to
+# the same `Symbol` — and which is no `XID_Continue` character, so it occurs in
+# no Rust identifier. The placeholders are recognised by identity against the
+# set the probe made, never by their spelling.
+_parameter_placeholder(k::Integer) = string("rustcall′arg′", k)
+
+# The names an emitter binds itself inside a definition it generates — a
+# receiver, a pointer, a panic channel, a string temporary — are in the same
+# namespace (PR #527 review): `rustcall′<name>`. A crate's items and a
+# wrapper's parameters are Rust identifiers and cannot spell one, so no local
+# of a wrapper ever shadows a crate item the wrapper reads, and no parameter
+# meets a local, by construction rather than by allocation. The source-text
+# emitter writes them as they are; `Meta.parse` reads them back unchanged.
+const _EMITTER_LOCAL_PREFIX = "rustcall′"
+_emitter_local(name) = Symbol(_EMITTER_LOCAL_PREFIX, name)
+
+# A copy of a function / method record with other parameter names, or of a
+# struct record with other methods; every other field as it is.
+_with_field(item, field::Symbol, value) =
+    typeof(item)((f === field ? value : getfield(item, f) for f in fieldnames(typeof(item)))...)
+
+"""
+    _rename_parameters(functions, structs, emit) -> (functions, structs)
+
+The items with each parameter named so that no definition an emitter makes
+from them reads a name its parameter would shadow (#526). `emit(functions,
+structs)` runs the emitter over the items and returns what it defines — an
+`Expr`, or the source text of the source-text emitter, which is parsed.
+
+It is run once on placeholder parameters (`rustcall′arg′<k>`, a name no Rust
+identifier spells), with the emission's own options (`_probe_emission`: its
+strictness, and collecting only when it collects, into a throwaway
+collector), without logging; for every definition
+that takes a placeholder, each other symbol it contains — what it reads, calls
+or binds, its other parameters, its type variables — is reserved for that
+item. Each item's names are then `julia_parameter_names` of its own against
+its reserved set. A refusal the emitter raises is the emission's own and
+propagates.
+"""
+function _rename_parameters(functions::AbstractVector, structs::AbstractVector, emit)
+    owner = Dict{Symbol, Any}()
+    counter = Ref(0)
+    function placeholder!(key)
+        counter[] += 1
+        p = _parameter_placeholder(counter[])
+        owner[Symbol(p)] = key
+        return p
+    end
+    placeholders!(key, n) = String[placeholder!(key) for _ in 1:n]
+    probe_functions = [_with_field(f, :arg_names, placeholders!((:f, i), length(f.arg_names)))
+                       for (i, f) in enumerate(functions)]
+    probe_structs = [_with_field(s, :methods,
+                                 [_with_field(m, :arg_names,
+                                              placeholders!((:m, i, j), length(m.arg_names)))
+                                  for (j, m) in enumerate(s.methods)])
+                     for (i, s) in enumerate(structs)]
+    probe = _probe_emission(() -> emit(probe_functions, probe_structs))
+    probe isa AbstractString && (probe = Meta.parseall(probe))
+    reserved = Dict{Any, Set{String}}()
+    _parameter_scopes!(reserved, probe, owner)
+    named(item, key) = haskey(reserved, key) ?
+        _with_field(item, :arg_names, julia_parameter_names(item.arg_names; reserved = reserved[key])) :
+        item
+    renamed_functions = [named(f, (:f, i)) for (i, f) in enumerate(functions)]
+    renamed_structs = [_with_field(s, :methods,
+                                   [named(m, (:m, i, j)) for (j, m) in enumerate(s.methods)])
+                       for (i, s) in enumerate(structs)]
+    return renamed_functions, renamed_structs
+end
+
+# Run an emitter for its output only, under exactly the options the emission
+# runs under (PR #527 review): the same strictness (`_ffi_strict()`, which the
+# caller's scope already answers), and collecting only when the emission
+# collects — into a throwaway collector, so the report being collected records
+# nothing twice. A refusal is therefore the emission's own refusal and
+# propagates; there is no fallback to unrenamed items. What the probe does not
+# share is a side effect: nothing is logged, and a `:warn` signature keeps its
+# one warning for the emission (`_EMISSION_PROBING`).
+function _probe_emission(f)
+    run() = Base.ScopedValues.with(_EMISSION_PROBING => true) do
+        Base.CoreLogging.with_logger(f, Base.CoreLogging.NullLogger())
+    end
+    _boundary_collecting() || return run()
+    tls = task_local_storage()
+    saved = tls[_BOUNDARY_COLLECTOR_KEY]
+    tls[_BOUNDARY_COLLECTOR_KEY] = BoundaryCollector()
+    try
+        return run()
+    finally
+        tls[_BOUNDARY_COLLECTOR_KEY] = saved
+    end
+end
+
+# Every symbol of an expression, quoted ones included.
+function _expr_symbols!(out::Set{Symbol}, x)
+    if x isa Symbol
+        push!(out, x)
+    elseif x isa QuoteNode
+        _expr_symbols!(out, x.value)
+    elseif x isa Expr
+        foreach(a -> _expr_symbols!(out, a), x.args)
+    end
+    return out
+end
+
+# Whether `x` defines a function: `function f(...)`, `f(...) = ...`, with any
+# `where` / return annotation.
+function _is_function_definition(x)
+    x isa Expr && x.head in (:function, :(=)) && length(x.args) == 2 || return false
+    sig = x.args[1]
+    while sig isa Expr && sig.head in (:where, :(::))
+        sig = sig.args[1]
+    end
+    return sig isa Expr && sig.head === :call
+end
+
+function _parameter_scopes!(reserved::AbstractDict, x, owner::AbstractDict)
+    x isa Expr || return reserved
+    if _is_function_definition(x)
+        symbols = _expr_symbols!(Set{Symbol}(), x)
+        keys_here = Set{Any}()
+        others = Set{String}()
+        for name in symbols
+            # A placeholder the probe made is its item's parameter; every
+            # other symbol — a local derived from one included, which no real
+            # name can equal — is a name the definition uses.
+            key = get(owner, name, nothing)
+            key === nothing ? push!(others, String(name)) : push!(keys_here, key)
+        end
+        for key in keys_here
+            union!(get!(reserved, key, Set{String}()), others)
+        end
+    end
+    foreach(a -> _parameter_scopes!(reserved, a, owner), x.args)
+    return reserved
+end
