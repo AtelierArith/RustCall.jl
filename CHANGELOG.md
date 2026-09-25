@@ -44,6 +44,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `var"..."` must use the new name. Exported symbols do not change.
 
 ### Fixed
+- **A Rust parameter named like a name its wrapper uses no longer breaks the
+  wrapper** ([#526](https://github.com/AtelierArith/RustCall.jl/issues/526)).
+  A generated wrapper's parameters are named after the Rust ones, and its
+  body calls names of its own without qualification. So
+  `#[julia] fn echo(pointer: &str)` made the `@rust_crate` and
+  `write_bindings_to_file` wrapper call its own argument (`objects of type
+  String are not callable`), a method parameter `getfield` did the same to
+  `getfield(self, :ptr)`, and a PyO3 host method `fn m(&self, obj: i32)` gave
+  its wrapper two parameters named `obj`, which Julia refuses to define. The
+  one allocator, `RustCall.julia_parameter_names`, now reserves those names:
+  `RustCall._JULIA_EMITTER_NAMES` (the generated module's helpers, the Base
+  functions the wrappers call, `nothing`, the host's `obj` and
+  `_pyo3_module`) get an underscore, and a capitalised name, which is how a
+  wrapper spells a type, has its first letter lowered (`S` → `s`).
+  `test/test_parameter_names.jl` derives the set from what every emitter emits:
+  it fails, naming the name, when a wrapper reads a name that is not reserved
+  or when a reserved name is no longer used. `rust"""` was not affected: its
+  wrappers are a hygienic macro expansion. The PyO3 host's own locals (its
+  `catch` variable and a comprehension variable) are no longer identifiers a
+  parameter can spell.
 - **`@rust f(x)` reaches the caller's own block first, whatever the form**
   ([#520](https://github.com/AtelierArith/RustCall.jl/issues/520)). The
   typed `@rust f(x)::T` tried every loaded library's exports before the

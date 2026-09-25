@@ -745,7 +745,8 @@ function _pyo3_host_args(arg_names, arg_types, python_defaults, python_kinds,
             if isvector
                 push!(sig, :($sym::AbstractVector))
                 push!(conv,
-                      :([x isa PythonCall.Py ? x : getfield(x, :_rustcall_py) for x in $sym]))
+                      :([var"#item" isa PythonCall.Py ? var"#item" :
+                         getfield(var"#item", :_rustcall_py) for var"#item" in $sym]))
             else
                 push!(sig, :($sym))
                 push!(conv,
@@ -781,9 +782,9 @@ function _pyo3_host_single_def(name::Symbol, sig::Vector{Any}, call::Expr, retur
         body = quote
             try
                 return RustCall.RustResult{$jt, String}(true, $valued)
-            catch err
-                err isa PythonCall.PyException || rethrow()
-                return RustCall.RustResult{$jt, String}(false, sprint(showerror, err))
+            catch var"#err"
+                var"#err" isa PythonCall.PyException || rethrow()
+                return RustCall.RustResult{$jt, String}(false, sprint(showerror, var"#err"))
             end
         end
         return Expr(:function, Expr(:call, name, sig...), body)
