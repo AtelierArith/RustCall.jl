@@ -684,3 +684,334 @@ fn locate_with_fallback<T: Located>(
         )),
     }
 }
+
+/// The type-namespace items each module declares itself — `struct`, `enum`,
+/// `union`, `trait`, and its child `mod`s — by module path. A `type` alias is
+/// not here: it is an import ([`import_of_type_alias`]), followed like one.
+#[derive(Debug, Default, Clone)]
+pub struct ModuleItems {
+    declared: std::collections::BTreeMap<Vec<String>, std::collections::BTreeSet<String>>,
+}
+
+impl ModuleItems {
+    /// Record the declarations of one level of items, written in `module_path`.
+    pub fn record(&mut self, items: &[syn::Item], module_path: &[String]) {
+        use syn::ext::IdentExt;
+        let names = self.declared.entry(module_path.to_vec()).or_default();
+        for item in items {
+            let ident = match item {
+                syn::Item::Struct(i) => &i.ident,
+                syn::Item::Enum(i) => &i.ident,
+                syn::Item::Union(i) => &i.ident,
+                syn::Item::Trait(i) => &i.ident,
+                syn::Item::Mod(i) => &i.ident,
+                _ => continue,
+            };
+            names.insert(ident.unraw().to_string());
+        }
+    }
+
+    /// Whether `module_path` declares an item named `name`.
+    pub fn declares(&self, module_path: &[String], name: &str) -> bool {
+        self.declared
+            .get(module_path)
+            .is_some_and(|names| names.contains(name))
+    }
+}
+
+/// What a written type path names, decided from the module it is written in
+/// ([`resolve_type_path`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathTarget {
+    /// An item the crate declares: its module and its name (without `r#`).
+    Local {
+        module_path: Vec<String>,
+        name: String,
+    },
+    /// An item of another crate, by the path written or imported, crate root
+    /// first (`["numpy", "PyReadonlyArray1"]`, `["std", "option", "Option"]`).
+    Extern(Vec<String>),
+    /// A bare name only glob imports of other crates can supply: the paths
+    /// it would have through each (`use pyo3::prelude::*` → `pyo3::prelude::Py`).
+    Globbed(Vec<Vec<String>>),
+    /// A primitive type (`i32`, `bool`, ...).
+    Primitive(String),
+    /// Anything the resolver cannot decide: a qualified `<T as Tr>::X`, a name
+    /// a glob of an unindexed crate could shadow, a re-export chain too long.
+    Unknown,
+}
+
+const PRIMITIVE_TYPES: [&str; 17] = [
+    "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize", "f32",
+    "f64", "bool", "char", "str",
+];
+
+/// The std prelude's types, by their canonical path.
+const STD_PRELUDE_TYPES: [(&str, &str); 5] = [
+    ("Option", "option"),
+    ("Result", "result"),
+    ("Vec", "vec"),
+    ("String", "string"),
+    ("Box", "boxed"),
+];
+
+/// Crates whose glob imports are known not to supply any std prelude type:
+/// a bare `Option` beside `use pyo3::prelude::*;` is still std's. A glob of
+/// any other crate might, so a prelude name under one is undecided.
+const PRELUDE_SAFE_GLOB_ROOTS: [&str; 5] = ["std", "core", "alloc", "pyo3", "numpy"];
+
+/// Resolve a type path written in `module_path` the way rustc does, as far as
+/// the scan can see (PR #525 review): the module's own declarations
+/// ([`ModuleItems`]), its `use` items — `as` renames, and globs of the crate's
+/// own modules followed into them — then `crate::` / `self::` / `super::`,
+/// the extern crate roots, the primitive types and the std prelude. Local
+/// names are followed through re-exports to the module that declares them.
+/// Nothing is inherited from a parent module, as since edition 2018; a name
+/// the scan cannot decide is [`PathTarget::Unknown`], never a guess.
+pub fn resolve_type_path(
+    path: &syn::TypePath,
+    module_path: &[String],
+    imports: &[ScannedImport],
+    items: &ModuleItems,
+    edition_2015: bool,
+) -> PathTarget {
+    use syn::ext::IdentExt;
+    if path.qself.is_some() {
+        return PathTarget::Unknown;
+    }
+    let segments: Vec<String> = path
+        .path
+        .segments
+        .iter()
+        .map(|s| s.ident.unraw().to_string())
+        .collect();
+    if path.path.leading_colon.is_some() {
+        return if edition_2015 {
+            settle_local(&[], &segments, imports, items, edition_2015, 0)
+        } else {
+            PathTarget::Extern(segments)
+        };
+    }
+    resolve_segments(
+        &segments,
+        module_path,
+        imports,
+        items,
+        edition_2015,
+        0,
+        true,
+    )
+}
+
+const MAX_RESOLVE_DEPTH: usize = 8;
+
+fn resolve_segments(
+    segments: &[String],
+    module_path: &[String],
+    imports: &[ScannedImport],
+    items: &ModuleItems,
+    edition_2015: bool,
+    depth: usize,
+    prelude_in_scope: bool,
+) -> PathTarget {
+    if depth > MAX_RESOLVE_DEPTH || segments.is_empty() {
+        return PathTarget::Unknown;
+    }
+    let first = segments[0].as_str();
+    match first {
+        "crate" => return settle_local(&[], &segments[1..], imports, items, edition_2015, depth),
+        "self" => {
+            return settle_local(
+                module_path,
+                &segments[1..],
+                imports,
+                items,
+                edition_2015,
+                depth,
+            )
+        }
+        "super" => {
+            let levels = segments.iter().take_while(|s| *s == "super").count();
+            if levels > module_path.len() {
+                return PathTarget::Unknown;
+            }
+            let base = &module_path[..module_path.len() - levels];
+            return settle_local(
+                base,
+                &segments[levels..],
+                imports,
+                items,
+                edition_2015,
+                depth,
+            );
+        }
+        _ => {}
+    }
+    // The module's own item of that name.
+    if items.declares(module_path, first) {
+        return settle_local(module_path, segments, imports, items, edition_2015, depth);
+    }
+    // A `use` in this module that binds it (a rename included).
+    if let Some(import) = imports
+        .iter()
+        .find(|i| i.module_path == module_path && !i.glob && i.alias == first)
+    {
+        let mut rebuilt = import.path.clone();
+        rebuilt.extend(segments[1..].iter().cloned());
+        return match import.qualifier.anchor {
+            PathAnchor::Crate => settle_local(&[], &rebuilt, imports, items, edition_2015, depth),
+            PathAnchor::SelfModule => {
+                settle_local(module_path, &rebuilt, imports, items, edition_2015, depth)
+            }
+            PathAnchor::Super(levels) if levels <= module_path.len() => settle_local(
+                &module_path[..module_path.len() - levels],
+                &rebuilt,
+                imports,
+                items,
+                edition_2015,
+                depth,
+            ),
+            PathAnchor::Relative => {
+                let root = rebuilt.first().map(String::as_str).unwrap_or_default();
+                if items.declares(module_path, root) {
+                    settle_local(module_path, &rebuilt, imports, items, edition_2015, depth)
+                } else if edition_2015 {
+                    settle_local(&[], &rebuilt, imports, items, edition_2015, depth)
+                } else {
+                    PathTarget::Extern(rebuilt)
+                }
+            }
+            _ => PathTarget::Unknown,
+        };
+    }
+    if segments.len() > 1 {
+        // A path through a module no item of this module names: an extern
+        // crate root (edition 2018), or the crate root (2015).
+        return if edition_2015 {
+            settle_local(&[], segments, imports, items, edition_2015, depth)
+        } else {
+            PathTarget::Extern(segments.to_vec())
+        };
+    }
+    // A bare name: what the module's globs bring in, then the prelude.
+    let mut local_hits = Vec::new();
+    let mut extern_globs = Vec::new();
+    for import in imports
+        .iter()
+        .filter(|i| i.module_path == module_path && i.glob)
+    {
+        let module = match import.qualifier.anchor {
+            PathAnchor::Crate => Some(import.path.clone()),
+            PathAnchor::SelfModule => Some([module_path, &import.path[..]].concat()),
+            PathAnchor::Super(levels) if levels <= module_path.len() => {
+                Some([&module_path[..module_path.len() - levels], &import.path[..]].concat())
+            }
+            PathAnchor::Relative => {
+                let root = import.path.first().map(String::as_str).unwrap_or_default();
+                if items.declares(module_path, root) {
+                    Some([module_path, &import.path[..]].concat())
+                } else {
+                    extern_globs.push(import.path.clone());
+                    None
+                }
+            }
+            _ => return PathTarget::Unknown,
+        };
+        if let Some(module) = module {
+            // What the glob brings in: the module's own items and the names
+            // its `use` items bind (a `pub use` re-export among them). A glob
+            // inside it is not followed: its visibility is not recorded.
+            let reexported = imports
+                .iter()
+                .any(|i| i.module_path == module && !i.glob && i.alias == first);
+            if items.declares(&module, first) || reexported {
+                local_hits.push(module);
+            }
+        }
+    }
+    match local_hits.as_slice() {
+        [] => {}
+        [module] => {
+            return resolve_segments(
+                &[first.to_string()],
+                module,
+                imports,
+                items,
+                edition_2015,
+                depth + 1,
+                false,
+            )
+        }
+        _ => return PathTarget::Unknown,
+    }
+    // A name reached through another module's path (`crate::a::Option`) is
+    // that module's item or import, never the prelude.
+    if !prelude_in_scope {
+        return PathTarget::Unknown;
+    }
+    let prelude = PRIMITIVE_TYPES.contains(&first)
+        || STD_PRELUDE_TYPES.iter().any(|(name, _)| *name == first);
+    if prelude {
+        let safe = extern_globs.iter().all(|glob| {
+            glob.first()
+                .is_some_and(|root| PRELUDE_SAFE_GLOB_ROOTS.contains(&root.as_str()))
+        });
+        if !safe {
+            return PathTarget::Unknown;
+        }
+        if PRIMITIVE_TYPES.contains(&first) {
+            return PathTarget::Primitive(first.to_string());
+        }
+        let module = STD_PRELUDE_TYPES
+            .iter()
+            .find(|(name, _)| *name == first)
+            .map(|(_, module)| *module)
+            .unwrap_or_default();
+        return PathTarget::Extern(vec!["std".into(), module.into(), first.to_string()]);
+    }
+    if extern_globs.is_empty() {
+        return PathTarget::Unknown;
+    }
+    PathTarget::Globbed(
+        extern_globs
+            .into_iter()
+            .map(|mut glob| {
+                glob.push(first.to_string());
+                glob
+            })
+            .collect(),
+    )
+}
+
+/// `segments`, rooted at the crate's module `base`: the item they name,
+/// followed through a re-export when the module they end in only imports it.
+fn settle_local(
+    base: &[String],
+    segments: &[String],
+    imports: &[ScannedImport],
+    items: &ModuleItems,
+    edition_2015: bool,
+    depth: usize,
+) -> PathTarget {
+    let Some((name, modules)) = segments.split_last() else {
+        return PathTarget::Unknown;
+    };
+    let module: Vec<String> = base.iter().chain(modules).cloned().collect();
+    if items.declares(&module, name) {
+        return PathTarget::Local {
+            module_path: module,
+            name: name.clone(),
+        };
+    }
+    // Not declared there: an import of that module brings it in, or it is
+    // nothing the scan can see.
+    resolve_segments(
+        std::slice::from_ref(name),
+        &module,
+        imports,
+        items,
+        edition_2015,
+        depth + 1,
+        false,
+    )
+}

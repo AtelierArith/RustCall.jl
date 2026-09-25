@@ -635,6 +635,45 @@ end
         own = only(filter(f -> f.name == "own", shadowed.pyo3_functions))
         @test own.py_arg_shapes[1] == RustCall.PyO3Shape(:opaque)
 
+        # A path means what it means in the module it is written in (PR #525
+        # review): a `struct Option` in `a` shadows the bare name in `a` only,
+        # an aliased crate root (`use numpy as np`) is that crate, and a path
+        # nothing decides stays opaque.
+        write(joinpath(dir, "src", "lib.rs"), """
+            use pyo3::prelude::*;
+            pub mod a {
+                pub struct Option<T>(pub T);
+                #[pyo3::pyfunction] pub fn in_a(x: Option<i32>) -> i32 { x.0 }
+            }
+            pub mod b {
+                use pyo3::prelude::*;
+                use numpy as np;
+                #[pyfunction] pub fn in_b(x: Option<i32>) -> Option<i32> { x }
+                #[pyfunction] pub fn total(v: np::PyReadonlyArray1<'_, f64>) -> f64 { 0.0 }
+                #[pyfunction] pub fn anything(x: Option<Py<PyAny>>) -> Option<Py<PyAny>> { x }
+            }
+            pub mod c {
+                use pyo3::prelude::*;
+                use crate::a::*;
+                #[pyfunction] pub fn via_glob(x: Option<i32>) -> i32 { x.0 }
+            }
+            """)
+        scoped = RustCall.scan_crate(dir)
+        sfn(name) = only(filter(f -> f.name == name, scoped.pyo3_functions))
+        scalar = RustCall.PyO3Shape(:scalar, "i32")
+        optional_i32 = RustCall.PyO3Shape(:option, "", 0, scalar)
+        @test sfn("in_a").py_arg_shapes[1] == RustCall.PyO3Shape(:opaque)
+        @test sfn("in_b").py_arg_shapes[1] == optional_i32
+        @test sfn("in_b").py_return_shape == optional_i32
+        @test sfn("total").py_arg_shapes[1] == RustCall.PyO3Shape(:array, "f64", 1, nothing)
+        @test sfn("via_glob").py_arg_shapes[1] == RustCall.PyO3Shape(:opaque)
+        # An `Option` maps `None` to `nothing` whatever its payload is.
+        opaque_option = RustCall.PyO3Shape(:option, "", 0, RustCall.PyO3Shape(:opaque))
+        @test sfn("anything").py_return_shape == opaque_option
+        anything_text = string(Base.remove_linenums!(Expr(:block,
+            RustCall._pyo3_host_function_expr(sfn("anything"), RustCall._pyo3_host_classes(scoped))...)))
+        @test occursin("PythonCall.pybuiltins.None", anything_text)
+
         # A name the generated module or type defines for itself is taken:
         # an item bound under it is refused with both named, by the same
         # one-namespace check (PR #525 review), rather than shadowing the
@@ -852,6 +891,9 @@ end
     @test GM.level_of(raw_gate, GM.Gate(Int32(6))) == 6
     # An optional class: `nothing` in and out, a present value wrapped.
     @test GM.level_or_zero(raw_gate, nothing) == 0
+    # `Option<Py<PyAny>>`: `None` is `nothing` although the payload is opaque.
+    @test GM.maybe_any(GM.Gate(Int32(0))) === nothing
+    @test GM.maybe_any(GM.Gate(Int32(3))) isa PythonCall.Py
     @test GM.level_or_zero(raw_gate, GM.Gate(Int32(4))) == 4
     @test raw_gate.maybe_twin isa GM.Gate
     raw_gate.maybe_twin = nothing

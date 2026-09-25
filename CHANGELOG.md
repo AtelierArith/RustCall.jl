@@ -81,11 +81,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PyRefMut`), `std`'s `Vec` / `Option` of a shape, a pyo3-numpy array with
   its rank and element, a scalar, a string, the unit, an interpreter-supplied
   argument, or an opaque value. So `Py<Self>` and `PyResult<Py<Self>>` are the
-  class, an `Option` of a class maps `nothing` to `None` and back (a Julia
-  `nothing` no longer reaches `getfield`), and a crate's own `Option` — named
-  `crate::Option`, or shadowing the bare name — is not std's: its value
-  passes through as it is (a bare `Option` / `Vec` / `Py` is the standard or
-  pyo3 item only when the crate declares or imports none of that name). The
+  class, an `Option` maps `None` to `nothing` and back whatever its payload
+  is (`Option<Py<PyAny>>` too; a Julia `nothing` no longer reaches
+  `getfield`), and a crate's own `Option` — named `crate::Option`, or
+  shadowing the bare name — is not std's: its value passes through as it is.
+  Every path is decided by one module-scoped resolver
+  (`rustcall_julia_core::paths::resolve_type_path`): the module's own
+  declarations, its `use` items (`as` renames — `use numpy as np` makes
+  `np::PyReadonlyArray1` numpy's — and globs of the crate's own modules),
+  `crate::` / `self::` / `super::`, the extern crate roots, then the prelude
+  for a bare name nothing else binds, so a `struct Option` in module `a`
+  shadows the bare name in `a` only. A path the scan cannot decide (a glob of
+  an unindexed crate over a prelude name, a qualified `<T as Tr>::X`) stays
+  opaque. The
   host reads only that description (`RustCall.PyO3Shape`); every spelling
   parser it had — the class, numpy, injected-argument and value-type readers —
   is gone, and a manifest from an extractor that predates the field is refused

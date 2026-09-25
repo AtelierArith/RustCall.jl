@@ -44,7 +44,8 @@ use crate::manifest::{
     skip_reason, Attribute, Field, Function, Manifest, Method, PyShape, ReturnKind, Struct,
 };
 use crate::paths::{
-    import_of_type_alias, imports_of_use, locate, locate_type, ImplHeader, Located, ScannedImport,
+    import_of_type_alias, imports_of_use, locate, resolve_type_path, ImplHeader, Located,
+    ModuleItems, PathTarget, ScannedImport,
 };
 use crate::types::{
     extract_option_type, extract_result_type, generics_to_type_params, has_impl_trait,
@@ -112,11 +113,9 @@ pub struct Pyo3Scan {
     routes: crate::public_routes::PublicRoutes,
     edition_2015: bool,
     intrinsic_skips: std::collections::BTreeMap<(Vec<String>, String, usize, String), String>,
-    /// Every type-namespace item the crate declares (`struct`, `enum`,
-    /// `union`, `type`, `trait`), by name: a bare `Option` or `Py` is the
-    /// standard / pyo3 item only when the crate declares none of that name
-    /// (`ShapeScope`, PR #525 review).
-    local_types: std::collections::BTreeSet<String>,
+    /// Every module's own type-namespace declarations, which the one path
+    /// resolver reads (`paths::resolve_type_path`, PR #525 review).
+    items: ModuleItems,
 }
 
 impl Pyo3Scan {
@@ -268,18 +267,8 @@ impl Pyo3Scan {
         python_path: &[String],
         inside_pymodule: bool,
     ) {
+        self.items.record(items, module_path);
         for item in items {
-            let declared = match item {
-                Item::Struct(i) => Some(&i.ident),
-                Item::Enum(i) => Some(&i.ident),
-                Item::Union(i) => Some(&i.ident),
-                Item::Type(i) => Some(&i.ident),
-                Item::Trait(i) => Some(&i.ident),
-                _ => None,
-            };
-            if let Some(ident) = declared {
-                self.local_types.insert(ident.unraw().to_string());
-            }
             match item {
                 Item::Type(alias) => {
                     if let Some(import) =
@@ -668,7 +657,7 @@ impl Pyo3Scan {
         ShapeScope {
             classes: &self.classes,
             imports: &self.imports,
-            local_types: &self.local_types,
+            items: &self.items,
             module_path,
             self_class,
             edition_2015: self.edition_2015,
@@ -677,22 +666,19 @@ impl Pyo3Scan {
 }
 
 /// Where a PyO3 item's type is written, for [`ShapeScope::shape`]: the scanned
-/// classes and imports, the crate's own type names, the module the type is
-/// written in and the class `Self` names there.
+/// classes, and what [`resolve_type_path`] needs to decide a path from the
+/// module it is written in — that module, the crate's imports and
+/// declarations — and the class `Self` names there.
 struct ShapeScope<'a> {
     classes: &'a [ScannedClass],
     imports: &'a [ScannedImport],
-    local_types: &'a std::collections::BTreeSet<String>,
+    items: &'a ModuleItems,
     module_path: &'a [String],
     self_class: Option<&'a str>,
     edition_2015: bool,
 }
 
-/// The roots whose items a crate's own name cannot be: a `use` from one of
-/// them binds the standard (or pyo3 / numpy) item itself.
-const FOREIGN_ROOTS: [&str; 5] = ["std", "core", "alloc", "pyo3", "numpy"];
-
-const PRIMITIVES: [&str; 15] = [
+const SCALARS: [&str; 15] = [
     "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize", "f32",
     "f64", "bool",
 ];
@@ -716,167 +702,107 @@ impl ShapeScope<'_> {
         }
     }
 
-    /// Whether the crate binds `name` itself — declares a type of that name,
-    /// or imports one from anywhere but `std` / `core` / `alloc` / `pyo3` /
-    /// `numpy`. Crate-wide, so a shadowing item anywhere makes the bare name
-    /// the crate's own everywhere: the fail-safe side, an opaque value.
-    fn shadowed(&self, name: &str) -> bool {
-        self.local_types.contains(name)
-            || self.imports.iter().any(|import| {
-                import.alias == name
-                    && !import
-                        .path
-                        .first()
-                        .is_some_and(|root| FOREIGN_ROOTS.contains(&root.as_str()))
-            })
-    }
-
-    /// Whether `path` names the item `std::<module>::<name>` (or its `core` /
-    /// `alloc` twin): the full path, or the bare name when the crate does not
-    /// shadow it.
-    fn std_item(&self, path: &syn::Path, module: &str, name: &str) -> bool {
-        let segments = path_names(path);
-        if path.leading_colon.is_none() && segments.len() == 1 {
-            return segments[0] == name && !self.shadowed(name);
-        }
-        segments.len() == 3
-            && ["std", "core", "alloc"].contains(&segments[0].as_str())
-            && segments[1] == module
-            && segments[2] == name
-    }
-
-    /// The item of `crate_root` (`pyo3`, `numpy`) `path` names, when its last
-    /// segment is accepted by `accept`: `crate_root::...::Name`, or the bare
-    /// name when the crate does not shadow it.
-    fn foreign_item(
-        &self,
-        path: &syn::Path,
-        crate_root: &str,
-        accept: impl Fn(&str) -> bool,
-    ) -> Option<String> {
-        let segments = path_names(path);
-        let last = segments.last()?;
-        if !accept(last) {
-            return None;
-        }
-        let named = if path.leading_colon.is_none() && segments.len() == 1 {
-            !self.shadowed(last)
-        } else {
-            segments[0] == crate_root
-        };
-        named.then(|| last.clone())
-    }
-
-    /// The scanned class a path resolves to, as an impl header's does.
-    fn class(&self, path: &syn::TypePath) -> Option<String> {
-        let qualifier = crate::paths::edition_type_qualifier(path, self.edition_2015)?;
-        let target = path.path.segments.last()?;
-        if !target.arguments.is_none() {
-            return None;
-        }
-        let header = ImplHeader {
-            target: target.ident.clone(),
-            qualifier,
-            module_path: self.module_path.to_vec(),
-        };
-        locate_type(self.classes, &header, self.imports)
-            .ok()
-            .map(|index| crate::codegen::unraw(&self.classes[index].entry.name).to_string())
-    }
-
     /// The host shape of `ty`; see [`PyShape`].
     fn shape(&self, ty: &Type) -> PyShape {
         match unparen(ty) {
             Type::Group(g) => self.shape(&g.elem),
             Type::Tuple(t) if t.elems.is_empty() => PyShape::of("unit"),
-            Type::Reference(r) => {
-                if let Type::Path(p) = unparen(&r.elem) {
-                    if p.qself.is_none() && p.path.is_ident("str") {
-                        return PyShape::of("string");
-                    }
-                }
-                self.shape(&r.elem)
-            }
-            Type::Path(p) if p.qself.is_none() => self.path_shape(p),
+            Type::Reference(r) => self.shape(&r.elem),
+            Type::Path(p) => self.path_shape(p),
             _ => PyShape::of("opaque"),
         }
     }
 
     fn path_shape(&self, p: &syn::TypePath) -> PyShape {
-        let path = &p.path;
-        if path.is_ident("Self") {
+        if p.qself.is_none() && p.path.is_ident("Self") {
             return match self.self_class {
                 Some(class) => PyShape::named("class", class),
                 None => PyShape::of("opaque"),
             };
         }
-        let segments = path_names(path);
-        if path.leading_colon.is_none() && segments.len() == 1 {
-            let name = segments[0].as_str();
-            if PRIMITIVES.contains(&name) && !self.shadowed(name) {
-                return PyShape::named("scalar", name);
+        let args = type_arguments(&p.path);
+        match resolve_type_path(
+            p,
+            self.module_path,
+            self.imports,
+            self.items,
+            self.edition_2015,
+        ) {
+            PathTarget::Primitive(name) if name == "str" => PyShape::of("string"),
+            PathTarget::Primitive(name) if SCALARS.contains(&name.as_str()) => {
+                PyShape::named("scalar", &name)
             }
-        }
-        if self.std_item(path, "string", "String") {
-            return PyShape::of("string");
-        }
-        let args = type_arguments(path);
-        if self.std_item(path, "vec", "Vec") {
-            return match args.as_slice() {
-                [inner] => PyShape::wrapping("vec", self.shape(inner)),
-                _ => PyShape::of("opaque"),
-            };
-        }
-        if self.std_item(path, "option", "Option") {
-            return match args.as_slice() {
-                [inner] => PyShape::wrapping("option", self.shape(inner)),
-                _ => PyShape::of("opaque"),
-            };
-        }
-        if let Some(stem) = self.foreign_item(path, "numpy", |name| numpy_rank(name).is_some()) {
-            let rank = numpy_rank(&stem).unwrap_or(0);
-            let element = args.last().map(|t| self.shape(t));
-            return match element {
-                Some(e) if e.kind == "scalar" => PyShape {
-                    rank,
-                    ..PyShape::named("array", &e.name)
-                },
-                _ => PyShape::of("opaque"),
-            };
-        }
-        if self
-            .foreign_item(path, "pyo3", |name| matches!(name, "Python" | "PyModule"))
-            .is_some()
-        {
-            return PyShape::of("injected");
-        }
-        if self
-            .foreign_item(path, "pyo3", |name| {
-                matches!(name, "Py" | "Bound" | "Borrowed" | "PyRef" | "PyRefMut")
-            })
-            .is_some()
-        {
-            let inner = args.last().map(|t| self.shape(t));
-            return match inner {
-                Some(inner) if matches!(inner.kind.as_str(), "class" | "array" | "injected") => {
-                    inner
+            PathTarget::Extern(path) => self.extern_shape(&path, &args, true),
+            // A glob of another crate supplies the name: pyo3's or numpy's
+            // items are recognised through it, and only when one glob agrees.
+            PathTarget::Globbed(candidates) => {
+                let shapes: Vec<PyShape> = candidates
+                    .iter()
+                    .map(|path| self.extern_shape(path, &args, false))
+                    .filter(|shape| shape.kind != "opaque")
+                    .collect();
+                match shapes.as_slice() {
+                    [one] => one.clone(),
+                    _ => PyShape::of("opaque"),
                 }
-                _ => PyShape::of("opaque"),
-            };
-        }
-        match self.class(p) {
-            Some(class) => PyShape::named("class", &class),
-            None => PyShape::of("opaque"),
+            }
+            PathTarget::Local { module_path, name } => {
+                if !args.is_empty() {
+                    return PyShape::of("opaque");
+                }
+                self.classes
+                    .iter()
+                    .find(|c| {
+                        c.module_path == module_path && crate::codegen::unraw(&c.entry.name) == name
+                    })
+                    .map(|_| PyShape::named("class", &name))
+                    .unwrap_or_else(|| PyShape::of("opaque"))
+            }
+            _ => PyShape::of("opaque"),
         }
     }
-}
 
-/// A path's segment names without `r#`.
-fn path_names(path: &syn::Path) -> Vec<String> {
-    path.segments
-        .iter()
-        .map(|s| s.ident.unraw().to_string())
-        .collect()
+    /// The shape of another crate's item, by its path (crate root first).
+    /// `std` / `core` / `alloc` items are recognised only by a written or
+    /// prelude path (`std_paths`), never through a glob.
+    fn extern_shape(&self, path: &[String], args: &[Type], std_paths: bool) -> PyShape {
+        let (Some(root), Some(last)) = (path.first(), path.last()) else {
+            return PyShape::of("opaque");
+        };
+        let std_root = matches!(root.as_str(), "std" | "core" | "alloc");
+        match (root.as_str(), last.as_str()) {
+            _ if std_root && std_paths && last == "String" => PyShape::of("string"),
+            _ if std_root && std_paths && (last == "Vec" || last == "Option") => {
+                let kind = if last == "Vec" { "vec" } else { "option" };
+                match args {
+                    [inner] => PyShape::wrapping(kind, self.shape(inner)),
+                    _ => PyShape::of("opaque"),
+                }
+            }
+            ("numpy", name) if numpy_rank(name).is_some() => {
+                let rank = numpy_rank(name).unwrap_or(0);
+                match args.last().map(|t| self.shape(t)) {
+                    Some(e) if e.kind == "scalar" => PyShape {
+                        rank,
+                        ..PyShape::named("array", &e.name)
+                    },
+                    _ => PyShape::of("opaque"),
+                }
+            }
+            ("pyo3", "Python" | "PyModule") => PyShape::of("injected"),
+            ("pyo3", "Py" | "Bound" | "Borrowed" | "PyRef" | "PyRefMut") => {
+                match args.last().map(|t| self.shape(t)) {
+                    Some(inner)
+                        if matches!(inner.kind.as_str(), "class" | "array" | "injected") =>
+                    {
+                        inner
+                    }
+                    _ => PyShape::of("opaque"),
+                }
+            }
+            _ => PyShape::of("opaque"),
+        }
+    }
 }
 
 /// The type arguments of a path's last segment (lifetimes and consts left

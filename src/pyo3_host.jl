@@ -572,8 +572,10 @@ function _pyo3_host_read_type(shape::PyO3Shape, classes::AbstractDict)
         shape.rank == 2 && return :(Matrix{$element})
         return :(Array{$element})
     elseif kind === :option
+        # A layer of its own: `None` is `nothing` whatever the payload is, so
+        # an unconverted payload reads as `Union{Nothing, PythonCall.Py}`.
         inner = _pyo3_host_read_type(shape.inner, classes)
-        return inner === nothing ? nothing : :(Union{Nothing, $inner})
+        return :(Union{Nothing, $(something(inner, :(PythonCall.Py)))})
     end
     return nothing
 end
@@ -590,7 +592,9 @@ host reads: a function's or a method's return and a property's read
 function _pyo3_host_value_expr(call, shape::PyO3Shape, classes::AbstractDict)
     class = _pyo3_host_class_type(shape, classes)
     class === nothing || return :($class($call))
-    if shape.kind === :option && _pyo3_host_read_type(shape, classes) !== nothing
+    if shape.kind === :option
+        # `None` is `nothing` whatever the payload is (PR #525 review); only
+        # a present value's conversion depends on it.
         value = Symbol("#rustcall_optional")
         present = _pyo3_host_value_expr(value, shape.inner, classes)
         return :(let $value = $call

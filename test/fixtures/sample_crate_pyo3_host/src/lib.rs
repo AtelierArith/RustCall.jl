@@ -239,6 +239,12 @@ impl Gate {
         other.map(|o| o.level).unwrap_or(0)
     }
 
+    /// An optional opaque value: `None` is Julia's `nothing` whatever the
+    /// payload is (PR #525 review).
+    fn maybe_any(&self, py: Python<'_>) -> Option<Py<PyAny>> {
+        (self.level > 0).then(|| self.level.into_pyobject(py).unwrap().into_any().unbind())
+    }
+
     /// A getter named by a raw identifier: the property is `type`.
     #[getter(r#type)]
     fn kind(&self) -> i32 {
