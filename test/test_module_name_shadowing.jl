@@ -129,12 +129,153 @@ end
 _mns_text_module(code::AbstractString) =
     only(filter(x -> x isa Expr && x.head === :module, Meta.parseall(code).args))
 
-# The two crate emitters over one crate's items.
-function _mns_crate_emissions(info)
-    ex = RustCall.emit_crate_module(info, "/tmp/libmns528.dylib"; lib_name = "mns528")
-    code = RustCall.emit_crate_module_code(info, "/tmp/libmns528.dylib"; lib_name = "mns528")
-    return ex, _mns_text_module(code)
+# ---------------------------------------------------------------------------
+# Every option an emitter takes (#528 review)
+# ---------------------------------------------------------------------------
+#
+# An option can change what an emitter writes — `use_relative_path` wrote a
+# bare `joinpath(...)` that a crate's `fn joinpath` took over — so the
+# derivation runs every emitter under every combination of its options. The
+# options are the emitter's own keyword arguments (`Base.kwarg_decl`), read
+# off its method: a keyword with no entry in `_mns_option_values` fails the
+# sweep, so a new option cannot go unexercised. The strictness is a keyword of
+# the source-text emitter and the scope the expression emitter reads
+# (`_with_emission_strict`); it is swept for both.
+
+# The values each option takes. A keyword that selects no code has one value,
+# and says why.
+function _mns_option_values(crate::AbstractString, snapshot)
+    return Dict{Symbol, Vector{Any}}(
+        :module_name => Any[nothing, "MnsOptions528"],
+        :use_relative_path => Any[false, true],
+        :build_release => Any[true, false],
+        :strict => Any[:error, :warn, :none],
+        :lib_name => Any[nothing, "mns_options_528"],
+        :preload => Any[String[], ["/tmp/libmns_preload_528.dylib"]],
+        :extra_inputs => Any[String[], [joinpath(crate, "Cargo.toml")]],
+        :pin_library => Any[false, true],
+        :python => Any[false, true],
+        :build_options => Any[RustCall.crate_build_options(),
+                              RustCall.crate_build_options(release = false, features = ["extra"],
+                                                           default_features = false,
+                                                           kind = :pyo3_wrapper)],
+        # A caller's own record replaces the one the options above make; the
+        # emitter writes either one the same way.
+        :build_record => Any[nothing],
+        # The environment the build ran in: an input of the record, not code.
+        :snapshot => Any[snapshot],
+    )
 end
+
+# The PyO3 host's options.
+_mns_host_option_values() = Dict{Symbol, Vector{Any}}(
+    :module_name => Any[nothing, "MnsHost528"],
+    :features => Any[String[], ["mns_absent_feature_528"]],
+    :default_features => Any[true, false],
+    :release => Any[true, false],
+    # The interpreter the crate's `#[cfg]`s are probed for: a scan input.
+    :python => Any[RustCall._pyo3_host_default_python()],
+    # The host hands every value to Python and consults no FFI contract.
+    :strict => Any[:error],
+)
+
+"""
+    _mns_combinations(values, names; strength = 3) -> Vector{Tuple}
+
+The option combinations a sweep runs. Every combination when there are at most
+`_MNS_FULL_PRODUCT` of them; otherwise a covering set built greedily from the
+full product, in which every combination of values of any `strength` options
+occurs at least once. The crate emitters take nine options (768 combinations,
+an hour of emission per crate); the covering set is a few dozen and still puts
+every option value next to every value of any two other options.
+"""
+const _MNS_FULL_PRODUCT = 64
+function _mns_combinations(values, names; strength::Int = 3)
+    all_combos = vec(collect(Iterators.product((values[n] for n in names)...)))
+    length(all_combos) <= _MNS_FULL_PRODUCT && return all_combos
+    k = min(strength, length(names))
+    # Values are compared by position, so any value (a snapshot, a vector)
+    # can be an option value.
+    index(c) = Tuple(findfirst(v -> v === c[i] || isequal(v, c[i]), values[names[i]])
+                     for i in eachindex(names))
+    tuples(ix) = Set((cols, map(j -> ix[j], cols))
+                     for cols in _mns_subsets(length(names), k))
+    covers = map(c -> tuples(index(c)), all_combos)
+    uncovered = union(covers...)
+    chosen = Tuple[]
+    while !isempty(uncovered)
+        best = argmax(i -> count(in(uncovered), covers[i]), eachindex(covers))
+        push!(chosen, all_combos[best])
+        setdiff!(uncovered, covers[best])
+    end
+    return chosen
+end
+
+# Every `k`-element subset of `1:n`, as sorted tuples.
+_mns_subsets(n, k) = k == 0 ? [()] :
+    [(rest..., j) for j in k:n for rest in _mns_subsets(j - 1, k - 1)]
+
+"""
+    _mns_sweep(emit, f, values; module_of) -> Vector{String}
+
+Run `emit(kwargs)` for the combinations (`_mns_combinations`) of the keyword
+arguments `f` declares (plus `:strict`, applied as the emission's scope when
+`f` does not declare it) and return the findings of each distinct emitted
+module. A refusal is accepted only under `strict = :error`.
+"""
+function _mns_sweep(emit, f, values; module_of = identity)
+    declared = only(unique(Base.kwarg_decl(m) for m in methods(f)))
+    missing_values = setdiff(declared, keys(values))
+    @test isempty(missing_values)
+    isempty(missing_values) || @info "an emitter option the sweep does not exercise" f missing_values
+    names = union(declared, [:strict])
+    findings = String[]
+    seen = Set{String}()
+    combinations = 0
+    for combo in _mns_combinations(values, names)
+        options = Dict(zip(names, combo))
+        strict = options[:strict]
+        kw = NamedTuple(n => options[n] for n in declared if n in keys(options))
+        out = try
+            RustCall._with_emission_strict(strict) do
+                Base.CoreLogging.with_logger(Base.CoreLogging.NullLogger()) do
+                    emit(kw)
+                end
+            end
+        catch e
+            (e isa RustCall.RustError && strict === :error) || rethrow()
+            nothing
+        end
+        out === nothing && continue
+        combinations += 1
+        modex = module_of(out)
+        key = string(Base.remove_linenums!(deepcopy(modex)))
+        key in seen && continue
+        push!(seen, key)
+        for finding in _mns_findings(modex)
+            push!(findings, "$finding with $(kw)")
+        end
+    end
+    @test combinations > 0
+    return findings
+end
+
+# The two crate emitters over one crate's items, under every option.
+function _mns_crate_findings(info, crate)
+    values = _mns_option_values(crate, RustCall.BuildEnvSnapshot())
+    ex = _mns_sweep(kw -> RustCall.emit_crate_module(info, "/tmp/libmns528.dylib"; kw...),
+                    RustCall.emit_crate_module, values)
+    text = _mns_sweep(kw -> RustCall.emit_crate_module_code(info, "lib/libmns528.dylib"; kw...),
+                      RustCall.emit_crate_module_code, values; module_of = _mns_text_module)
+    return vcat(ex, text)
+end
+
+# A signature whose return the FFI contract does not describe: refused under
+# `strict = :error`, emitted as `Any` otherwise, so the sweep reaches the
+# fallback the other modes write.
+_mns_unsupported_signature() = RustCall.RustFunctionSignature(
+    "mns_unsupported", ["x"], ["i32"], "Vec<f64>", false, String[];
+    symbol = "rustcall_mns_unsupported")
 
 # A crate of every shape the crate emitters have a branch for: scalars,
 # strings in and out, `Option` / `Result` returns of both, callbacks, raw
@@ -303,6 +444,8 @@ pub fn GC(s: &str) -> std::string::String { s.to_uppercase() }
 pub fn Libdl() -> i32 { 4 }
 #[julia]
 pub fn apply(f: extern "C" fn(i64) -> i64, x: i64) -> i64 { f(x) * 10 }
+#[julia]
+pub fn joinpath(a: i32, b: i32) -> i32 { a * 100 + b }
 
 #[julia]
 pub mod nested {
@@ -384,12 +527,15 @@ end
             crates = [corpus, shadowing, joinpath(_MNS_FIXTURES, "sample_crate")]
             for crate in crates
                 info = RustCall.scan_crate(crate)
-                ex, text = _mns_crate_emissions(info)
-                @test isempty(_mns_findings(ex))
-                @test isempty(_mns_findings(text))
-                for f in (_mns_findings(ex)..., _mns_findings(text)...)
-                    @info "a free global a Rust item can take" crate f
+                if crate == corpus
+                    # With an item only a lenient strictness emits.
+                    info = RustCall.CrateInfo(info.name, info.path, info.version, info.dependencies,
+                                              vcat(info.julia_functions, _mns_unsupported_signature()),
+                                              info.julia_structs, info.source_files)
                 end
+                findings = _mns_crate_findings(info, crate)
+                @test isempty(findings)
+                foreach(f -> @info("a free global a Rust item can take", crate, f), unique(findings))
             end
             # The crate emitters over PyO3 items (`PyResult` wrappers,
             # `#[pyclass]` handles), as the PyO3 wrapper crate binds them:
@@ -406,20 +552,18 @@ end
                 @test !isempty(functions) || !isempty(structs)
                 pyo3 = RustCall.CrateInfo(info.name, info.path, info.version, info.dependencies,
                                           functions, structs, info.source_files)
-                ex, text = _mns_crate_emissions(pyo3)
-                @test isempty(_mns_findings(ex))
-                @test isempty(_mns_findings(text))
-                for f in (_mns_findings(ex)..., _mns_findings(text)...)
-                    @info "a free global a Rust item can take" fixture f
-                end
+                findings = _mns_crate_findings(pyo3, path)
+                @test isempty(findings)
+                foreach(f -> @info("a free global a Rust item can take", fixture, f), unique(findings))
             end
             # The PyO3 host, over its fixture (numpy arrays, properties,
-            # classes, `PyResult`s) and the declarative one.
+            # classes, `PyResult`s) and the declarative one, under every option.
             for fixture in ("sample_crate_pyo3_host", "sample_crate_pyo3_declarative")
-                ex = RustCall.generate_pyo3_host_bindings(joinpath(_MNS_FIXTURES, fixture))
-                findings = _mns_findings(ex)
+                path = joinpath(_MNS_FIXTURES, fixture)
+                findings = _mns_sweep(kw -> RustCall.generate_pyo3_host_bindings(path; kw...),
+                                      RustCall.generate_pyo3_host_bindings, _mns_host_option_values())
                 @test isempty(findings)
-                foreach(f -> @info("a free global a Rust item can take", fixture, f), findings)
+                foreach(f -> @info("a free global a Rust item can take", fixture, f), unique(findings))
             end
         end
     end
@@ -496,6 +640,7 @@ end
                 @test Base.invokelatest(getproperty(m, :GC), "abc") == "ABC"
                 @test Base.invokelatest(getproperty(m, :Libdl)) == 4
                 @test Base.invokelatest(m.apply, x -> x + 1, 4) == 50
+                @test Base.invokelatest(m.joinpath, Int32(3), Int32(4)) == 304
                 n = Base.invokelatest(getproperty(m.nested, :Base), Int32(2))
                 @test Base.invokelatest(m.nested.tripled, n) == 6
                 @test Base.invokelatest(m.nested.getfield, Int32(1)) == 11
@@ -512,6 +657,16 @@ end
             @test !occursin(r"^import RustCall$"m, written)
             m = Core.eval(Main, :(include($out)))
             Base.invokelatest(check, m)
+            # A file that finds its library beside itself (`relative_lib_path`)
+            # spells that path with `joinpath` too, which the crate's
+            # `fn joinpath` must not take (#528 review).
+            relative = joinpath(dir, "relative", "bindings.jl")
+            RustCall.write_bindings_to_file(crate, relative; output_module_name = "MnsShadowRelative528",
+                                            relative_lib_path = "lib")
+            @test occursin("const _LIB_PATH = rustcall′Base.joinpath(@__DIR__, ", read(relative, String))
+            rel = Core.eval(Main, :(include($relative)))
+            Base.invokelatest(check, rel)
+            RustCall.unload_library(Base.invokelatest(getproperty, rel, :_LIB_NAME))
             RustCall.unload_library(Base.invokelatest(getproperty, m, :_LIB_NAME))
             RustCall.unload_library(Base.invokelatest(getproperty, bindings.module_ref, :_LIB_NAME))
         end

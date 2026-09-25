@@ -629,7 +629,7 @@ end
 
         # Test with relative path
         code_rel = RustCall.emit_crate_module_code(info, "lib/libtest.so", use_relative_path=true)
-        @test occursin("const _LIB_PATH = joinpath(@__DIR__, \"lib/libtest.so\")", code_rel)
+        @test occursin("const _LIB_PATH = rustcall′Base.joinpath(@__DIR__, \"lib/libtest.so\")", code_rel)
 
         # Test with custom module name
         code_named = RustCall.emit_crate_module_code(info, "/tmp/lib.so", module_name="CustomModule")

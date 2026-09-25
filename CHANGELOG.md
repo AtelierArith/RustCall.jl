@@ -69,8 +69,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every module — are refused. `rust"""` was already hygienic; the one name its
   expansion took from the caller, the `Vararg` lowering spells for an
   `args...` closure, is now RustCall's. `test/test_module_name_shadowing.jl`
-  lowers the output of every emitter and requires each free global a Rust
-  identifier could spell to be one of that module's own definitions. A
+  lowers the output of every emitter, under a covering set of every
+  combination of its keyword options (read off the emitter's method, so a new
+  option fails the test until it is swept; any three options' values occur
+  together), and requires each free global a Rust identifier could spell to be
+  one of that module's own definitions. That sweep found the written file's
+  `relative_lib_path` spelling `joinpath(@__DIR__, ...)` bare, which a crate's
+  `fn joinpath` took over; it goes through the alias too. A
   written file no longer imports `RustCall`'s helpers under their names;
   regenerate an older file to get the fix.
 - **A Rust parameter named like a name its wrapper uses no longer breaks the

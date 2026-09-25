@@ -4774,7 +4774,9 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
 
     # Library path constant
     if use_relative_path
-        push!(lines, "const _LIB_PATH = joinpath(@__DIR__, $(repr(lib_path)))")
+        # Through the alias, like every other name the file takes from Base: a
+        # crate's `fn joinpath` is bound in this module too (#528 review).
+        push!(lines, "const _LIB_PATH = rustcall′Base.joinpath(@__DIR__, $(repr(lib_path)))")
     else
         push!(lines, "const _LIB_PATH = $(repr(lib_path))")
     end
