@@ -387,6 +387,86 @@ _ro_block(m::Module, rust::AbstractString) =
         @test !haskey(RustCall.GENERIC_FUNCTIONS_BY_LIB, (lib, "ro520_gone"))
     end
 
+    # A caller whose own library is unloaded between the restore and the read
+    # does not know whether that block defines the name, so the process-wide
+    # registration — here another module's generic of the same name — must
+    # not answer: the resolution restores again, or fails (PR #523 review).
+    @testset "a caller's library unloaded mid-resolution is never answered by another module" begin
+        a = _ro_module(:ResolutionOrderVanishA)
+        b = _ro_module(:ResolutionOrderVanishB)
+        lib_a = _ro_block(a, """
+            #[julia]
+            pub fn ro522_vanish<T: Copy + std::ops::Add<Output = T>>(x: T) -> T { x }
+            """)
+        _ro_block(b, """
+            #[julia]
+            pub fn ro522_vanish<T: Copy + std::ops::Add<Output = T>>(x: T) -> T { x + x + x }
+            """)
+        # B registered last: the bare name is B's.
+        @test RustCall.GENERIC_FUNCTION_REGISTRY["ro522_vanish"] !==
+              RustCall.GENERIC_FUNCTIONS_BY_LIB[(lib_a, "ro522_vanish")]
+        # Unloaded once, right after the restore: the next attempt restores it.
+        unloads = Ref(0)
+        once = function (stage)
+            stage === :restored && unloads[] == 0 || return
+            unloads[] += 1
+            RustCall.unload_library(lib_a)
+        end
+        result = task_local_storage(RustCall._AFTER_RUST_RESOLUTION_RESTORE, once) do
+            _ro_eval(a, :(@rust ro522_vanish(Int32(5))))
+        end
+        @test unloads[] == 1
+        @test result === Int32(5)
+        # Unloaded after every restore: an error, never B's `15`.
+        always = stage -> stage === :restored && RustCall.unload_library(lib_a)
+        err = try
+            task_local_storage(RustCall._AFTER_RUST_RESOLUTION_RESTORE, always) do
+                _ro_eval(a, :(@rust ro522_vanish(Int32(6))))
+            end
+        catch caught
+            caught
+        end
+        @test err isa RustCall.RustError
+        @test occursin("ro522_vanish", sprint(showerror, err))
+        @test _ro_eval(a, :(@rust ro522_vanish(Int32(7)))) === Int32(7)
+        @test _ro_eval(b, :(@rust ro522_vanish(Int32(7)))) === Int32(21)
+    end
+
+    # The same, with the library restored again between the read of the
+    # caller's rows and the check of its liveness (an unload, then a restore:
+    # ABA). Deciding from two reads saw a missing row *and* a loaded library,
+    # and fell through to the other module's generic (PR #523 review).
+    @testset "an unload and a restore between the read and the liveness check" begin
+        a = _ro_module(:ResolutionOrderAbaA)
+        b = _ro_module(:ResolutionOrderAbaB)
+        lib_a = _ro_block(a, """
+            #[julia]
+            pub fn ro522_aba<T: Copy + std::ops::Add<Output = T>>(x: T) -> T { x }
+            """)
+        _ro_block(b, """
+            #[julia]
+            pub fn ro522_aba<T: Copy + std::ops::Add<Output = T>>(x: T) -> T { x + x + x }
+            """)
+        b_row = RustCall.GENERIC_FUNCTION_REGISTRY["ro522_aba"]
+        stages = Symbol[]
+        hook = function (stage)
+            push!(stages, stage)
+            if stage === :restored && count(==(:restored), stages) == 1
+                RustCall.unload_library(lib_a)           # A
+            elseif stage === :owned_read && count(==(:owned_read), stages) == 1
+                RustCall._resolve_lib(a, "")             # B: restored again
+                # ...while the bare name is B's again (B re-registered).
+                RustCall.GENERIC_FUNCTION_REGISTRY["ro522_aba"] = b_row
+            end
+        end
+        result = task_local_storage(RustCall._AFTER_RUST_RESOLUTION_RESTORE, hook) do
+            _ro_eval(a, :(@rust ro522_aba(Int32(5))))
+        end
+        @test :owned_read in stages
+        @test result === Int32(5)
+        @test _ro_eval(b, :(@rust ro522_aba(Int32(5)))) === Int32(15)
+    end
+
     @testset "one function decides, for every form" begin
         # Source-level: the four `@rust` entry points ask `resolve_rust_call`
         # and nothing else decides generic-or-function; it restores the
