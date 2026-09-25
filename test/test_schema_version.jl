@@ -53,7 +53,10 @@ const _PUBLISHED_CRATES = ("rustcall_julia_core", "rustcall_julia_macros",
         # Likewise 0.2.0 is on crates.io and #503 removed `pub` items it
         # exports (`codegen::method_skip_reason`, `codegen::method_is_unsafe`,
         # ...) and changed `extract::function_entry`: never back at 0.2.
-        @test shared >= v"0.3.0"
+        # And 0.3.0 is on crates.io while #511 turned `MethodModel`'s
+        # `is_static` / `is_mutable` fields into methods and #506 / #525
+        # changed what `codegen::method_symbol` returns: never back at 0.3.
+        @test shared >= v"0.4.0"
         for (crate, below) in (("rustcall_julia_macros", "rustcall_julia_macros_impl"),
                                ("rustcall_julia_macros_impl", "rustcall_julia_core"))
             toml = TOML.parsefile(joinpath(_ROOT, "deps", crate, "Cargo.toml"))

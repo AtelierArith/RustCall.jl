@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Breaking
+- **Regenerate every file written by `write_bindings_to_file` under an
+  earlier RustCall.** The bindings format is still `0.7`, so a file written by
+  v0.7.1 passes `check_bindings_format`, but its `__init__` refuses to load
+  with a `RustError` that says the build environment changed since the
+  library was compiled and names the variable `<Rust toolchain>`.
+  The file records the `toolchain_fingerprint()` it was built under, which
+  folds in the source digest of `rustcall_julia_core`, and this release
+  changes those sources (the entries below), so the digest moved
+  (`79c40787…` in v0.7.1, `8f4209e2…` now) and the module's `__init__` check
+  (`_warn_if_build_env_changed(...; strict = true)`) refuses the library it
+  was built with. The message suggests `Pkg.precompile(; force = true)`,
+  which does not help a written file. Run `write_bindings_to_file` again with
+  this RustCall. Nothing else in a v0.7.1-written file breaks: with only the
+  recorded fingerprint changed to the current one, a `sample_crate` file
+  written by v0.7.1 loads under v0.7.2, and its functions, constructors,
+  methods, field properties, `Result` / `Option` returns, caught panics and
+  finalizers behave exactly as under v0.7.1. `@rust_crate` modules and
+  `rust"""` blocks are rebuilt as usual; a cache written by v0.7.1 only misses.
 - **A trait impl's `#[julia]` method exports a symbol that carries its
   trait** ([#506](https://github.com/AtelierArith/RustCall.jl/issues/506)).
   `#[julia] impl tr::Far for Buf { #[julia] fn m }` exported
@@ -433,6 +451,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `is_mutable` fields are methods, `skip_reason::TRAIT_RECEIVER` is
   `RECEIVER_TYPE`), so the next publish of the Rust crates is a minor bump,
   to 0.4.0.
+
+### Rust crates
+- **`rustcall_julia_core`, `rustcall_julia_macros_impl` and
+  `rustcall_julia_macros` are `0.4.0`**. The published `0.3.0` (v0.7.1)
+  exports items that #511 removed and structs that #513 and #525 gave new
+  public fields, and #513 changes the symbol `#[julia]` exports for a trait
+  impl's method, so for a `0.x` crate set this is a minor bump; each crate
+  still pins the one below it exactly (`version = "=0.4.0"`), and a `#[julia]`
+  crate depending on the release writes `rustcall_julia_macros = "0.4"`. The
+  bump moves no cache key: the crates' `[package] version` and the exact
+  requirements stay out of every artifact identity, and the extractor's source
+  digest (`8f4209e2…`) and `toolchain_fingerprint()` are the same before and
+  after it.
+  - Removed from `rustcall_julia_core` (#511): the public fields
+    `model::MethodModel::{is_static, is_mutable}`; they are methods of the
+    same names now, read from the method's `receiver()`.
+  - Changed in `rustcall_julia_core`: new public fields on public structs, so
+    a struct literal of them no longer compiles without the field —
+    `manifest::Method::julia_name` (#513), `manifest::Arg::py_shape`,
+    `manifest::Field::py_shape`, `manifest::Function::py_return`,
+    `manifest::Method::py_return` (#525), and
+    `model::MethodModel::returns_own_type_resolved` (#519).
+    `codegen::method_symbol` and every public symbol helper of `codegen` drop
+    an `r#` they are handed (#525), and a trait impl's method symbol carries
+    the trait (`rustcall_Buf_3Far_m`, #513).
+  - Added to `rustcall_julia_core`: the `receiver` module (`Receiver`,
+    `Layer`, `Receiver::{of, reference, is_single_reference, is_static,
+    is_mutable, is_readable}`), `MethodModel::receiver`,
+    `manifest::skip_reason::{RECEIVER_TYPE, LEGACY_CODEGEN_REFUSALS}` (#511);
+    `codegen::{method_stem, trait_name_of, returns_own_type}`,
+    `manifest::Method::{julia_name, method_stem}`,
+    `MethodModel::{method_stem, returns_boxed_struct, is_constructor}` (#513);
+    `codegen::{unraw, source_ident}` (#515); `model::attach_impl_resolving`,
+    `paths::{edition_type_qualifier, names_struct}` (#519);
+    `manifest::PyShape` (`kind`, `name`, `rank`, `inner`; `of`, `named`,
+    `wrapping`) (#525).
 
 ## [0.7.1] - 2026-09-24
 
