@@ -19,6 +19,9 @@ using Test
     try
         Core.eval(scope, quote
             import RustCall: call_rust_function
+            # The aliases a written file binds; its accessors go through them (#528).
+            import Base as rustcall′Base
+            import RustCall as rustcall′RustCall
             const library = $lib
             const cache = RustCall.CrateTargetCache()
             # The emitters now pass the call site's snapshot cache first
@@ -77,6 +80,9 @@ end
             Core.eval(scope, quote
                 using RustCall
                 import RustCall: call_rust_function
+                # The aliases a written file binds (#528).
+                import Base as rustcall′Base
+                import RustCall as rustcall′RustCall
                 const library = $lib
                 function _call_target(::RustCall.CrateTargetCache, name, release = "")
                     # This fixture has only one String producer. The emitter

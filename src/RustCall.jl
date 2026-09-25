@@ -251,6 +251,9 @@ include("state_filter.jl")
 include("types.jl")
 include("typetranslation.jl")
 include("ffi_contract.jl")
+# How emitted code names Base, Core and RustCall without a name a crate item
+# could take (#528): `@_emitted`, `_emitted_type`, `_emitted_source`.
+include("emitted_names.jl")
 # rustc's `--error-format=json` diagnostics, read as data rather than as text
 # (#348). Depends on nothing; must precede compiler.jl, which probes with it.
 include("rustc_json.jl")

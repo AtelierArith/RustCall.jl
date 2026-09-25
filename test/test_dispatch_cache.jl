@@ -474,7 +474,7 @@ const CRATE_SHAPE = Tuple{Ptr{Cvoid}, Ptr{Cvoid}}
                 end
                 used = Set(m.match for m in eachmatch(r"var\"#TC#[A-Za-z0-9_#]+\"", text))
                 declared = Set(m.captures[1]
-                               for m in eachmatch(r"const (var\"#TC#[A-Za-z0-9_#]+\") = RustCall\.CrateTargetCache\(\)", text))
+                               for m in eachmatch(r"const (var\"#TC#[A-Za-z0-9_#]+\") = (?:rustcall′)?RustCall\.CrateTargetCache\(\)", text))
                 @test !isempty(used)
                 @test isempty(setdiff(used, declared))
                 # A `#` cannot occur in a Rust identifier, so no name the crate
@@ -507,7 +507,8 @@ const CRATE_SHAPE = Tuple{Ptr{Cvoid}, Ptr{Cvoid}}
                 # The user's item keeps its own name...
                 @test occursin("function _TC_fn_rustcall_foo(", text)
                 # ...and `foo`'s cache is not it.
-                @test occursin("const var\"#TC#fn#rustcall_foo\" = RustCall.CrateTargetCache()", text)
+                # (Through the file's alias, #528.)
+                @test occursin(r"const var\"#TC#fn#rustcall_foo\" = (rustcall′)?RustCall\.CrateTargetCache\(\)", text)
             end
             # The file emitter's output still parses — before this it declared
             # one binding twice.

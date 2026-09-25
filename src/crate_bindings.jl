@@ -1420,8 +1420,8 @@ another `RUSTFLAGS`, `PYO3_PYTHON`, Cargo configuration or toolchain (#339,
 #355) — then the mirror registration, which must precede the load (#277).
 """
 _crate_init_prologue() = (
-    :(RustCall._warn_if_build_env_changed(_BUILD_RECORD; strict = true)),
-    :(RustCall.register_handle_mirror!(_LIB_NAME, _LIB_GEN)),
+    @_emitted(:(RustCall._warn_if_build_env_changed(_BUILD_RECORD; strict = true))),
+    @_emitted(:(RustCall.register_handle_mirror!(_LIB_NAME, _LIB_GEN))),
 )
 
 """
@@ -1500,18 +1500,13 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
         "the build record names `$(build_record.lib_name)`, not `$(lib_key)`"))
     @debug "Recording generated crate build" lib_key build_record.toolchain
 
-    # Build the module body as a block
-    module_body = quote
-        import RustCall
-        import RustCall: call_rust_function, get_function_pointer_from_lib, RustResult, RustOption, _check_not_freed,
-                         _call_rust_owned_string_ptr, _call_rust_borrowed_string_ptr, convert_return,
-                         _result_payload, FFIByValue
-        # Through RustCall, not `import Libdl`: this module is evaluated inside
-        # the caller, and `import Libdl` would be resolved in the *caller's*
-        # environment — a package that uses `@rust_crate` would then need
-        # `Libdl` among its own dependencies to precompile (#339).
-        import RustCall.Libdl
-
+    # Build the module body as a block. Nothing is imported: every name the
+    # body takes from Base, Core or RustCall is a `GlobalRef` (`@_emitted`), so
+    # a crate item bound here under such a name — `struct Base`,
+    # `fn getfield`, `struct RustCall` — cannot capture it (#528). `Libdl` is
+    # reached through RustCall, never imported by the caller's environment
+    # (#339).
+    module_body = @_emitted quote
         # The bindings format this module was generated for, checked by the
         # RustCall that loads it (#489). Both emitters declare it, so the
         # check `__init__` repeats (`register_handle_mirror!`) finds it here too.
@@ -1754,6 +1749,7 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
         _guard_panic(value, channel::Ptr{Cvoid}, name::String, free_ptr::Ptr{Cvoid}) =
             RustCall.guard_rust_panic_ptr(value, channel, name, free_ptr)
 
+        $(_function_declarations_expr(tree))
         $func_defs
         $struct_defs
         # One Julia submodule per Rust module: `bindings.a.run()` for
@@ -1869,10 +1865,14 @@ that takes the whole bindings module down (#300 review). Every child module
 name is therefore checked against everything its parent binds: free functions,
 struct types, every method name (static or instance — both become functions of
 the parent), field accessors (`get_<f>`, `set_<f>!`), the helpers every
-generated module defines (`_call_target`, `_LIB_GEN`, ...), the names it
-imports (`RustCall`, `Libdl`, the `import RustCall: ...` prelude) and the
-exports of `Base` / `Core` it implicitly uses. Within one node a struct's type
-name must not repeat a function-like binding either (`fn C` + `struct C`).
+generated module defines (`_call_target`, `_LIB_GEN`, ...) and the `eval` /
+`include` Julia defines in every module (`_JULIA_MODULE_OWN_NAMES`). Within one
+node a struct's type name must not repeat a function-like binding either
+(`fn C` + `struct C`).
+
+Nothing else is reserved: the generated code reaches Base, Core and RustCall
+through `GlobalRef`s or `rustcall′` aliases no Rust name can spell (#528), so an
+item named `Base`, `RustCall`, `String` or `getfield` shadows nothing it uses.
 Module segments must also spell a Julia identifier (`_julia_module_name`). The
 error names both sides and the fix.
 """
@@ -1887,22 +1887,15 @@ function _check_module_names(tree::ModuleNode)
     for name in _CRATE_MODULE_ROOT_CONSTANTS
         taken[String(name)] = "a constant every generated module defines"
     end
-    for name in _CRATE_MODULE_PRELUDE
-        taken[String(name)] = "a name every generated module imports from RustCall"
-    end
-    for name in _CRATE_MODULE_IMPORTED_MODULES
-        taken[String(name)] = "a module every generated module imports"
-    end
-    # Every generated module implicitly `using Base`, and the wrappers name
-    # `String`, `Int32`, `convert`, ...: a module or type of such a name would
-    # replace the binding they resolve (#300 review).
-    for base_name in _BASE_EXPORTED_NAMES
-        get!(taken, base_name, "a name exported by Base")
+    for name in _JULIA_MODULE_OWN_NAMES
+        taken[String(name)] = "Julia's own `$name` of every module"
     end
     # A function-like binding may not take a name the module itself defines —
     # the build record, the library path, a snapshot helper: the wrapper would
-    # redefine a `const` or add a method to RustCall's own helper (#463).
-    reserved = Set{String}(String.((_CRATE_MODULE_HELPERS..., _CRATE_MODULE_ROOT_CONSTANTS...)))
+    # redefine a `const` or add a method to RustCall's own helper (#463) — nor
+    # the `eval` / `include` Julia gives every module, which it would replace.
+    reserved = Set{String}(String.((_CRATE_MODULE_HELPERS..., _CRATE_MODULE_ROOT_CONSTANTS...,
+                                    _JULIA_MODULE_OWN_NAMES...)))
     refuse_reserved(name, what) = name in reserved && error(
         "cannot lay out the bindings of $where_: $what binds `$name`, which every " *
         "generated module defines itself (#463). Rename it.")
@@ -2071,10 +2064,10 @@ _target_cache_ref(kind::Symbol, symbol::AbstractString) =
 # for the source-text one. Two spellings of one declaration, next to each other
 # so they cannot drift.
 _target_cache_const(kind::Symbol, symbol::AbstractString) =
-    Expr(:const, Expr(:(=), _target_cache_name(kind, symbol), :(RustCall.CrateTargetCache())))
+    Expr(:const, Expr(:(=), _target_cache_name(kind, symbol), @_emitted(:(RustCall.CrateTargetCache()))))
 
 _target_cache_source(kind::Symbol, symbol::AbstractString) =
-    "const $(_target_cache_ref(kind, symbol)) = RustCall.CrateTargetCache()"
+    "const $(_target_cache_ref(kind, symbol)) = rustcall′RustCall.CrateTargetCache()"
 
 # `import ..name, ..name2, ...` — every helper from the enclosing module. A
 # submodule two levels down imports from *its* parent, which imported them
@@ -2084,22 +2077,6 @@ _parent_helper_imports_expr() =
 
 _parent_helper_imports_source() =
     "import " * join(("..$(name)" for name in _CRATE_MODULE_HELPERS), ", ")
-
-# The names the `import RustCall: ...` prelude of every generated module — root
-# or submodule — brings in, and the modules imported next to them. A child
-# module cannot take any of these names either (`_check_module_names`).
-const _CRATE_MODULE_PRELUDE = (:call_rust_function, :get_function_pointer_from_lib, :RustResult,
-                               :RustOption, :_check_not_freed, :_call_rust_owned_string_ptr,
-                               :_call_rust_borrowed_string_ptr, :convert_return, :_result_payload,
-                               :FFIByValue)
-const _CRATE_MODULE_IMPORTED_MODULES = (:RustCall, :Libdl, :Base, :Core)
-# What the implicit `using Base` of every generated module brings into scope
-# (plus `Core`'s exports), computed once: a child module or struct of such a
-# name would shadow the binding the wrappers themselves use (#300 review).
-const _BASE_EXPORTED_NAMES = Tuple(unique(String(n) for n in vcat(names(Base), names(Core))))
-const _CRATE_MODULE_PRELUDE_NAMES = "call_rust_function, get_function_pointer_from_lib, RustResult, RustOption, _check_not_freed,\n" *
-    "                 _call_rust_owned_string_ptr, _call_rust_borrowed_string_ptr, convert_return,\n" *
-    "                 _result_payload, FFIByValue"
 
 """
     _rename_crate_tree(tree; strict) -> ModuleNode
@@ -2153,11 +2130,10 @@ function _submodule_exprs(node::ModuleNode)
         func_defs = _function_wrappers_expr(child.functions)
         struct_defs = _struct_wrappers_expr(child.structs, colliding)
         body = quote
-            import RustCall
-            import RustCall: call_rust_function, get_function_pointer_from_lib, RustResult, RustOption, _check_not_freed,
-                             _call_rust_owned_string_ptr, _call_rust_borrowed_string_ptr, convert_return,
-                             _result_payload, FFIByValue
+            # No prelude: the wrappers reach Base and RustCall through
+            # `GlobalRef`s (#528), and the helpers come from the parent.
             $(_parent_helper_imports_expr())
+            $(_function_declarations_expr(child))
             $func_defs
             $struct_defs
             $(_submodule_exprs(child)...)
@@ -2165,6 +2141,39 @@ function _submodule_exprs(node::ModuleNode)
         push!(exprs, Expr(:module, true, Symbol(_julia_module_name(last(child.path))), body))
     end
     return exprs
+end
+
+"""
+    _function_declarations(node::ModuleNode; accessors) -> Vector{String}
+
+Every function name the emitters define in `node`'s module that is not a type
+or a submodule (free functions, static and instance methods, and with
+`accessors` the expression emitter's `get_<f>` / `set_<f>!`), read off
+`julia_definitions`. Each is declared `function <name> end` before any method,
+so it is a new function of this module whatever it is called: a method defined
+under a name the module only sees through `using Base` — `fn Int32`,
+`fn String` — would otherwise extend Base's constructor (#528).
+"""
+function _function_declarations(node::ModuleNode; accessors::Bool)
+    defs = julia_definitions(node.functions, node.structs; accessors = accessors)
+    types = Set(d.name for d in defs if d.scope === :binding)
+    names = String[]
+    for d in defs
+        (d.scope === :binding || (d.scope isa Tuple && first(d.scope) === :prop)) && continue
+        d.name in types && continue
+        d.name in names || push!(names, d.name)
+    end
+    return names
+end
+
+_function_declarations_expr(node::ModuleNode) =
+    Expr(:block, (Expr(:function, Symbol(n)) for n in _function_declarations(node; accessors = true))...)
+
+function _function_declarations_source(node::ModuleNode)
+    names = _function_declarations(node; accessors = false)
+    isempty(names) && return String[]
+    return vcat("# Every function this module defines is its own (#528).",
+                ["function $n end" for n in names], "")
 end
 
 """
@@ -2198,10 +2207,10 @@ function _submodule_code(node::ModuleNode; strict::Symbol = _ffi_strict())
         push!(lines, "# Rust module `$(join(child.path, "::"))` (#300)")
         push!(lines, "module $name")
         push!(lines, "")
-        push!(lines, "import RustCall")
-        push!(lines, "import RustCall: " * _CRATE_MODULE_PRELUDE_NAMES)
+        append!(lines, _emitted_aliases_source())
         push!(lines, _parent_helper_imports_source())
         push!(lines, "")
+        append!(lines, _function_declarations_source(child))
         for func in child.functions
             _function_skipped!(func) && continue
             push!(lines, _emit_function_code(func; strict = strict))
@@ -2250,13 +2259,13 @@ function _generate_crate_function_wrapper(func::RustFunctionSignature)
         return _generate_string_function_wrapper(func, arg_syms)
     else
         # Standard function wrapper. The one return decision (#276).
-        julia_ret_type = ffi_return_symbol_or_throw(func.return_type, func.return_abi,
-                                                    _ffi_context(func))
+        julia_ret_type = _emitted_type(ffi_return_symbol_or_throw(func.return_type, func.return_abi,
+                                                    _ffi_context(func)))
 
         ptr_sym = _generated_local("func_ptr", func.arg_names)
         channel_sym = _generated_local("panic_channel", func.arg_names)
         cache_sym = _target_cache_name(:fn, symbol_str)
-        quote
+        @_emitted quote
             $(_target_cache_const(:fn, symbol_str))
             function $func_name($(arg_syms...))
                 $ptr_sym, $channel_sym = _call_target($cache_sym, $symbol_str)
@@ -2294,30 +2303,30 @@ function _generate_string_function_wrapper(func::RustFunctionSignature, arg_syms
     cache_sym = _target_cache_name(:fn, symbol_str)
     # The owned-string branch snapshots the release function with the call; see
     # `_call_target`'s three-argument arm.
-    target = :(($ptr_sym, $channel_sym) = _call_target($cache_sym, $symbol_str))
+    target = @_emitted(:(($ptr_sym, $channel_sym) = _call_target($cache_sym, $symbol_str)))
     call = if ffi_owned_string_return(c)
-        target = :(($ptr_sym, $channel_sym, $free_sym) = _call_target($cache_sym, $symbol_str, $(c.free_symbol)))
-        :(_call_rust_owned_string_ptr($ptr_sym, $free_sym, $(call_args...)))
+        target = @_emitted(:(($ptr_sym, $channel_sym, $free_sym) = _call_target($cache_sym, $symbol_str, $(c.free_symbol))))
+        @_emitted(:(_call_rust_owned_string_ptr($ptr_sym, $free_sym, $(call_args...))))
     elseif ffi_borrowed_string_return(c)
-        :(_call_rust_borrowed_string_ptr($ptr_sym, $(call_args...)))
+        @_emitted(:(_call_rust_borrowed_string_ptr($ptr_sym, $(call_args...))))
     else
-        ret = ffi_return_symbol_or_throw(func.return_type, func.return_abi,
-                                         _ffi_context(func))
-        :(call_rust_function($ptr_sym, $ret, $(call_args...)))
+        ret = _emitted_type(ffi_return_symbol_or_throw(func.return_type, func.return_abi,
+                                         _ffi_context(func)))
+        @_emitted(:(call_rust_function($ptr_sym, $ret, $(call_args...))))
     end
     # The string paths return a buffer the wrapper filled; on a panic it is the
     # empty sentinel, which would decode to `""`, so the channel is read before
     # the value is used — and resolved, with the pointer, before the call
     # (#244, #277).
-    call = :(_guard_panic($call, $channel_sym, $func_name_str))
-    quote
+    call = @_emitted(:(_guard_panic($call, $channel_sym, $func_name_str)))
+    @_emitted quote
         $(_target_cache_const(:fn, symbol_str))
         function $func_name($(arg_syms...))
             $target
             $(bindings...)
-            $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) begin
+            $(_in_callback_frame(frame, @_emitted(:(GC.@preserve $(preserved...) begin
                 $call
-            end)))
+            end))))
         end
         export $func_name
     end
@@ -2342,10 +2351,10 @@ function _generate_result_function_wrapper(func::RustFunctionSignature, arg_syms
     # slot Rust stored, converted to the surface type after the call. They
     # differ for `char`, whose slot is a `UInt32` code point (#245).
     ctx = _ffi_context(func)
-    ok_julia_type, ok_slot_type = ffi_payload_symbols(func.ok_type, func.ok_abi, ctx;
-                                                      position = "Ok payload")
-    err_julia_type, err_slot_type = ffi_payload_symbols(func.err_type, func.err_abi, ctx;
-                                                        position = "Err payload")
+    ok_julia_type, ok_slot_type = _emitted_type(ffi_payload_symbols(func.ok_type, func.ok_abi, ctx;
+                                                      position = "Ok payload"))
+    err_julia_type, err_slot_type = _emitted_type(ffi_payload_symbols(func.err_type, func.err_abi, ctx;
+                                                        position = "Err payload"))
     # An owned-string payload is released through the function's own
     # `<fn>_free_rust_string`, snapshotted with the call pointer (#268, #277);
     # `<fn>` is the FFI name (#300).
@@ -2359,11 +2368,11 @@ function _generate_result_function_wrapper(func::RustFunctionSignature, arg_syms
     free_sym = _generated_local("free_ptr", func.arg_names)
     cache_sym = _target_cache_name(:fn, symbol_str)
     target = isempty(free_str) ?
-        :(($ptr_sym, $channel_sym) = _call_target($cache_sym, $symbol_str)) :
-        :(($ptr_sym, $channel_sym, $free_sym) = _call_target($cache_sym, $symbol_str, $free_str))
-    free_expr = isempty(free_str) ? :(C_NULL) : free_sym
+        @_emitted(:(($ptr_sym, $channel_sym) = _call_target($cache_sym, $symbol_str))) :
+        @_emitted(:(($ptr_sym, $channel_sym, $free_sym) = _call_target($cache_sym, $symbol_str, $free_str)))
+    free_expr = isempty(free_str) ? @_emitted(:(C_NULL)) : free_sym
 
-    quote
+    @_emitted quote
         $(_target_cache_const(:fn, symbol_str))
         # Define the C-compatible struct for this function's result
         # RustCall's own mirror of the extractor's `#[repr(C)]` aggregate, so
@@ -2381,7 +2390,7 @@ function _generate_result_function_wrapper(func::RustFunctionSignature, arg_syms
             # `func_ptr`, so the pointer local is resolved only afterwards.
             $(bindings...)
             $target
-            $c_sym = $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) call_rust_function($ptr_sym, $c_result_struct_name, $(converted_args...)))))
+            $c_sym = $(_in_callback_frame(frame, @_emitted(:(GC.@preserve $(preserved...) call_rust_function($ptr_sym, $c_result_struct_name, $(converted_args...))))))
             # A panic returns `CResult::panicked()` — the Err discriminant with
             # an uninitialized payload — so the channel is read before the
             # payload is decoded, and resolved before the call (#244).
@@ -2418,8 +2427,8 @@ function _py_result_types(ok_type::AbstractString, ok_abi::AbstractString,
     if isempty(strip(String(ok_type))) || strip(String(ok_type)) == "()"
         return (:Nothing, :UInt8, true)
     end
-    surface, slot = ffi_payload_symbols(String(ok_type), String(ok_abi), context;
-                                        position = "Ok payload", strict = strict)
+    surface, slot = _emitted_type(ffi_payload_symbols(String(ok_type), String(ok_abi), context;
+                                        position = "Ok payload", strict = strict))
     return (surface, slot, false)
 end
 
@@ -2440,7 +2449,7 @@ function _generate_py_result_function_wrapper(func::RustFunctionSignature, arg_s
     func_name_str = String(func_name)
     symbol_str = func.symbol
     ok_julia_type, ok_slot_type, is_unit =
-        _py_result_types(func.ok_type, func.ok_abi, _ffi_context(func))
+        _emitted_type(_py_result_types(func.ok_type, func.ok_abi, _ffi_context(func)))
 
     c_result_struct_name = Symbol("CResult_", func.ffi_name)
     ptr_sym = _generated_local("func_ptr", func.arg_names)
@@ -2450,13 +2459,13 @@ function _generate_py_result_function_wrapper(func::RustFunctionSignature, arg_s
     free_str = _payload_free_symbol(func.ffi_name, (func.ok_abi,))
     cache_sym = _target_cache_name(:fn, symbol_str)
     target = isempty(free_str) ?
-        :(($ptr_sym, $channel_sym) = _call_target($cache_sym, $symbol_str)) :
-        :(($ptr_sym, $channel_sym, $free_sym) = _call_target($cache_sym, $symbol_str, $free_str))
-    free_expr = isempty(free_str) ? :(C_NULL) : free_sym
+        @_emitted(:(($ptr_sym, $channel_sym) = _call_target($cache_sym, $symbol_str))) :
+        @_emitted(:(($ptr_sym, $channel_sym, $free_sym) = _call_target($cache_sym, $symbol_str, $free_str)))
+    free_expr = isempty(free_str) ? @_emitted(:(C_NULL)) : free_sym
     ok_value = is_unit ? :nothing :
-        :(_result_payload($ok_julia_type, $c_sym.ok_value, $free_expr))
+        @_emitted(:(_result_payload($ok_julia_type, $c_sym.ok_value, $free_expr)))
 
-    quote
+    @_emitted quote
         $(_target_cache_const(:fn, symbol_str))
         # `<: FFIByValue` is RustCall's own by-value layout assertion about a
         # mirror it generated (#245): the wrapper crate declares this aggregate
@@ -2472,7 +2481,7 @@ function _generate_py_result_function_wrapper(func::RustFunctionSignature, arg_s
         function $func_name($(arg_syms...))
             $(bindings...)
             $target
-            $c_sym = $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) call_rust_function($ptr_sym, $c_result_struct_name, $(converted_args...)))))
+            $c_sym = $(_in_callback_frame(frame, @_emitted(:(GC.@preserve $(preserved...) call_rust_function($ptr_sym, $c_result_struct_name, $(converted_args...))))))
             # A panic returns the Err discriminant with an uninitialized
             # payload, so the channel is read before anything is decoded (#244).
             _guard_panic($c_sym, $channel_sym, $func_name_str, $free_expr)
@@ -2504,8 +2513,8 @@ function _generate_option_function_wrapper(func::RustFunctionSignature, arg_syms
     # See `_generate_result_function_wrapper`: the payload field holds the C
     # slot, the surface type is what the caller sees.
     inner_julia_type, inner_slot_type =
-        ffi_payload_symbols(func.inner_type, func.inner_abi, _ffi_context(func);
-                            position = "Some payload")
+        _emitted_type(ffi_payload_symbols(func.inner_type, func.inner_abi, _ffi_context(func);
+                            position = "Some payload"))
     free_str = _payload_free_symbol(func.ffi_name, (func.inner_abi,))
 
     # The C-compatible struct name generated by the proc-macro
@@ -2516,11 +2525,11 @@ function _generate_option_function_wrapper(func::RustFunctionSignature, arg_syms
     free_sym = _generated_local("free_ptr", func.arg_names)
     cache_sym = _target_cache_name(:fn, symbol_str)
     target = isempty(free_str) ?
-        :(($ptr_sym, $channel_sym) = _call_target($cache_sym, $symbol_str)) :
-        :(($ptr_sym, $channel_sym, $free_sym) = _call_target($cache_sym, $symbol_str, $free_str))
-    free_expr = isempty(free_str) ? :(C_NULL) : free_sym
+        @_emitted(:(($ptr_sym, $channel_sym) = _call_target($cache_sym, $symbol_str))) :
+        @_emitted(:(($ptr_sym, $channel_sym, $free_sym) = _call_target($cache_sym, $symbol_str, $free_str)))
+    free_expr = isempty(free_str) ? @_emitted(:(C_NULL)) : free_sym
 
-    quote
+    @_emitted quote
         $(_target_cache_const(:fn, symbol_str))
         # Define the C-compatible struct for this function's option
         # See the Result wrapper: RustCall's own mirror (#245).
@@ -2534,7 +2543,7 @@ function _generate_option_function_wrapper(func::RustFunctionSignature, arg_syms
             # `func_ptr`, so the pointer local is resolved only afterwards.
             $(bindings...)
             $target
-            $c_sym = $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) call_rust_function($ptr_sym, $c_option_struct_name, $(converted_args...)))))
+            $c_sym = $(_in_callback_frame(frame, @_emitted(:(GC.@preserve $(preserved...) call_rust_function($ptr_sym, $c_option_struct_name, $(converted_args...))))))
             _guard_panic($c_sym, $channel_sym, $func_name_str, $free_expr)
             # Convert to RustOption
             if $c_sym.is_some == 1
@@ -2589,7 +2598,7 @@ function _generate_crate_struct_wrapper(info::RustStructInfo;
     end
     struct_name_str = julia_struct_name(info)
     struct_name = Symbol(struct_name_str)
-    release_alive = _python_owned_handle(info) ? :(Ref(true)) : _emitter_local("alive")
+    release_alive = _python_owned_handle(info) ? @_emitted(:(Ref(true))) : _emitter_local("alive")
 
     # Start with struct definition
     exprs = Expr[]
@@ -2598,7 +2607,7 @@ function _generate_crate_struct_wrapper(info::RustStructInfo;
     free_cache = _target_cache_name(:free, free_symbol)
 
     # Define the wrapper struct
-    push!(exprs, quote
+    push!(exprs, @_emitted quote
         $(_target_cache_const(:free, free_symbol))
         mutable struct $struct_name
             ptr::Ptr{Cvoid}
@@ -2684,7 +2693,7 @@ function _crate_field_read(info::RustStructInfo, field_name::AbstractString,
     if ffi_owned_string_return(c)
         # Getter and release function from one snapshot: separately resolved,
         # a reload between them freed the buffer through the wrong image (#277).
-        return quote
+        return @_emitted quote
             let (rustcall′fp, rustcall′channel, rustcall′freep) = _call_target($cache, $name, $(c.free_symbol))
                 rustcall′raw = _guard_panic(call_rust_function(rustcall′fp, RustCall.CRustString, $self_ptr_expr), rustcall′channel, $name, rustcall′freep)
                 RustCall._take_owned_string(rustcall′raw, rustcall′freep)
@@ -2692,24 +2701,24 @@ function _crate_field_read(info::RustStructInfo, field_name::AbstractString,
         end
     elseif ffi_owned_vec_return(c)
         element_type = c.surface_type.parameters[1]
-        return quote
+        return @_emitted quote
             let (rustcall′fp, rustcall′channel, rustcall′freep, rustcall′alive) = _vec_target($cache, $name, $(c.free_symbol))
                 rustcall′raw = _guard_panic(call_rust_function(rustcall′fp, RustCall.CRustVec, $self_ptr_expr), rustcall′channel, $name)
                 RustCall.RustVec{$element_type}(rustcall′raw.ptr, rustcall′raw.len, rustcall′raw.cap, (rustcall′freep, rustcall′alive))
             end
         end
     elseif ffi_borrowed_string_return(c)
-        return quote
+        return @_emitted quote
             let (rustcall′fp, rustcall′channel) = _call_target($cache, $name)
                 rustcall′raw = _guard_panic(call_rust_function(rustcall′fp, RustCall.CRustStr, $self_ptr_expr), rustcall′channel, $name)
                 RustCall._crust_str_to_julia(rustcall′raw)
             end
         end
     end
-    julia_type = ffi_return_symbol_or_throw(field_type, get(info.field_abis, field_name, ""),
+    julia_type = _emitted_type(ffi_return_symbol_or_throw(field_type, get(info.field_abis, field_name, ""),
                                             _ffi_field_context(info, field_name, field_type);
-                                            position = _ffi_field_position(info, field_name))
-    return quote
+                                            position = _ffi_field_position(info, field_name)))
+    return @_emitted quote
         let (rustcall′fp, rustcall′channel) = _call_target($cache, $name)
             _guard_panic(call_rust_function(rustcall′fp, $julia_type, $self_ptr_expr), rustcall′channel, $name)
         end
@@ -2734,7 +2743,7 @@ function _crate_field_write(info::RustStructInfo, field_name::AbstractString,
     name = String(setter_symbol)
     if get(info.field_abis, field_name, "") == "vec"
         element_type = ffi_vec_element_type(get(info.field_vec_elements, field_name, ""))
-        return quote
+        return @_emitted quote
             let rustcall′values = collect($element_type, $value_expr),
                 (rustcall′fp, rustcall′channel) = _call_target($cache, $name)
                 GC.@preserve rustcall′values begin
@@ -2749,7 +2758,7 @@ function _crate_field_write(info::RustStructInfo, field_name::AbstractString,
     if ffi_owned_string_return(c)
         # Match the wrapper's byte pointer/length input; never pass Rust String
         # by value or truncate an embedded NUL through a C string.
-        return quote
+        return @_emitted quote
             let rustcall′text = RustCall.ffi_string_argument($value_expr, "value", $name),
                 (rustcall′fp, rustcall′channel) = _call_target($cache, $name)
                 GC.@preserve rustcall′text begin
@@ -2758,16 +2767,16 @@ function _crate_field_write(info::RustStructInfo, field_name::AbstractString,
             end
         end
     elseif ffi_borrowed_string_return(c)
-        return quote
+        return @_emitted quote
             let (rustcall′fp, rustcall′channel) = _call_target($cache, $name)
                 _guard_panic(call_rust_function(rustcall′fp, Cvoid, $self_ptr_expr, $value_expr), rustcall′channel, $name)
             end
         end
     end
-    julia_type = ffi_return_symbol_or_throw(field_type, get(info.field_abis, field_name, ""),
+    julia_type = _emitted_type(ffi_return_symbol_or_throw(field_type, get(info.field_abis, field_name, ""),
                                             _ffi_field_context(info, field_name, field_type);
-                                            position = _ffi_field_position(info, field_name))
-    return quote
+                                            position = _ffi_field_position(info, field_name)))
+    return @_emitted quote
         let rustcall′value = convert($julia_type, $value_expr), (rustcall′fp, rustcall′channel) = _call_target($cache, $name)
             _guard_panic(call_rust_function(rustcall′fp, Cvoid, $self_ptr_expr, rustcall′value), rustcall′channel, $name)
         end
@@ -2785,23 +2794,23 @@ function _crate_field_write_source(info::RustStructInfo, field_name::AbstractStr
                                    strict::Symbol = _ffi_strict())
     target = "(rustcall′fp, rustcall′channel) = _call_target($cache, \"$setter_symbol\")"
     if get(info.field_abis, field_name, "") == "vec"
-        element_type = string(ffi_vec_element_type(get(info.field_vec_elements, field_name, "")))
-        return "let rustcall′values = collect($element_type, $value), $target; " *
-               "GC.@preserve rustcall′values begin _guard_panic(call_rust_function(rustcall′fp, Cvoid, $self_ptr, pointer(rustcall′values), Csize_t(length(rustcall′values))), rustcall′channel, \"$setter_symbol\"); end; end"
+        element_type = _emitted_type_source(ffi_type_expr(ffi_vec_element_type(get(info.field_vec_elements, field_name, ""))))
+        return "let rustcall′values = rustcall′Base.collect($element_type, $value), $target; " *
+               "rustcall′Base.GC.@preserve rustcall′values begin _guard_panic(rustcall′RustCall.call_rust_function(rustcall′fp, rustcall′Base.Cvoid, $self_ptr, rustcall′Base.pointer(rustcall′values), rustcall′Base.Csize_t(rustcall′Base.length(rustcall′values))), rustcall′channel, \"$setter_symbol\"); end; end"
     end
     c = _ffi_field_return(info, field_name, field_type)
     if ffi_owned_string_return(c)
-        return "let rustcall′text = RustCall.ffi_string_argument($value, \"value\", \"$setter_symbol\"), $target; " *
-               "GC.@preserve rustcall′text begin _guard_panic(call_rust_function(rustcall′fp, Cvoid, $self_ptr, pointer(rustcall′text), Csize_t(ncodeunits(rustcall′text))), rustcall′channel, \"$setter_symbol\"); end; end"
+        return "let rustcall′text = rustcall′RustCall.ffi_string_argument($value, \"value\", \"$setter_symbol\"), $target; " *
+               "rustcall′Base.GC.@preserve rustcall′text begin _guard_panic(rustcall′RustCall.call_rust_function(rustcall′fp, rustcall′Base.Cvoid, $self_ptr, rustcall′Base.pointer(rustcall′text), rustcall′Base.Csize_t(rustcall′Base.ncodeunits(rustcall′text))), rustcall′channel, \"$setter_symbol\"); end; end"
     elseif ffi_borrowed_string_return(c)
-        return "let $target; _guard_panic(call_rust_function(rustcall′fp, Cvoid, $self_ptr, $value), rustcall′channel, \"$setter_symbol\"); end"
+        return "let $target; _guard_panic(rustcall′RustCall.call_rust_function(rustcall′fp, rustcall′Base.Cvoid, $self_ptr, $value), rustcall′channel, \"$setter_symbol\"); end"
     end
-    julia_type = ffi_return_symbol_or_throw(field_type, get(info.field_abis, field_name, ""),
+    julia_type = _emitted_type(ffi_return_symbol_or_throw(field_type, get(info.field_abis, field_name, ""),
                                             _ffi_field_context(info, field_name, field_type);
                                             strict = strict,
-                                            position = _ffi_field_position(info, field_name))
-    return "let rustcall′converted_value = convert($julia_type, $value), $target; " *
-           "_guard_panic(call_rust_function(rustcall′fp, Cvoid, $self_ptr, rustcall′converted_value), rustcall′channel, \"$setter_symbol\"); end"
+                                            position = _ffi_field_position(info, field_name)))
+    return "let rustcall′converted_value = rustcall′Base.convert($(_emitted_source(julia_type)), $value), $target; " *
+           "_guard_panic(rustcall′RustCall.call_rust_function(rustcall′fp, rustcall′Base.Cvoid, $self_ptr, rustcall′converted_value), rustcall′channel, \"$setter_symbol\"); end"
 end
 
 """
@@ -2817,22 +2826,22 @@ function _crate_field_read_source(info::RustStructInfo, field_name::AbstractStri
     if ffi_owned_string_return(c)
         # Getter and release function from one snapshot (#277).
         return "let (rustcall′fp, rustcall′channel, rustcall′freep) = _call_target($cache, \"$getter_symbol\", \"$(c.free_symbol)\"); " *
-               "rustcall′raw = _guard_panic(call_rust_function(rustcall′fp, RustCall.CRustString, $self_ptr), rustcall′channel, \"$getter_symbol\", rustcall′freep); " *
-               "RustCall._take_owned_string(rustcall′raw, rustcall′freep); end"
+               "rustcall′raw = _guard_panic(rustcall′RustCall.call_rust_function(rustcall′fp, rustcall′RustCall.CRustString, $self_ptr), rustcall′channel, \"$getter_symbol\", rustcall′freep); " *
+               "rustcall′RustCall._take_owned_string(rustcall′raw, rustcall′freep); end"
     elseif ffi_owned_vec_return(c)
-        element_type = string(c.surface_type.parameters[1])
+        element_type = _emitted_type_source(ffi_type_expr(c.surface_type.parameters[1]))
         return "let (rustcall′fp, rustcall′channel, rustcall′freep, rustcall′alive) = _vec_target($cache, \"$getter_symbol\", \"$(c.free_symbol)\"); " *
-               "rustcall′raw = _guard_panic(call_rust_function(rustcall′fp, RustCall.CRustVec, $self_ptr), rustcall′channel, \"$getter_symbol\"); " *
-               "RustCall.RustVec{$element_type}(rustcall′raw.ptr, rustcall′raw.len, rustcall′raw.cap, (rustcall′freep, rustcall′alive)); end"
+               "rustcall′raw = _guard_panic(rustcall′RustCall.call_rust_function(rustcall′fp, rustcall′RustCall.CRustVec, $self_ptr), rustcall′channel, \"$getter_symbol\"); " *
+               "rustcall′RustCall.RustVec{$element_type}(rustcall′raw.ptr, rustcall′raw.len, rustcall′raw.cap, (rustcall′freep, rustcall′alive)); end"
     elseif ffi_borrowed_string_return(c)
-        return "let $target; rustcall′raw = _guard_panic(call_rust_function(rustcall′fp, RustCall.CRustStr, $self_ptr), rustcall′channel, \"$getter_symbol\"); " *
-               "RustCall._crust_str_to_julia(rustcall′raw); end"
+        return "let $target; rustcall′raw = _guard_panic(rustcall′RustCall.call_rust_function(rustcall′fp, rustcall′RustCall.CRustStr, $self_ptr), rustcall′channel, \"$getter_symbol\"); " *
+               "rustcall′RustCall._crust_str_to_julia(rustcall′raw); end"
     end
-    julia_type = ffi_return_symbol_or_throw(field_type, get(info.field_abis, field_name, ""),
+    julia_type = _emitted_type(ffi_return_symbol_or_throw(field_type, get(info.field_abis, field_name, ""),
                                             _ffi_field_context(info, field_name, field_type);
                                             strict = strict,
-                                            position = _ffi_field_position(info, field_name))
-    return "let $target; _guard_panic(call_rust_function(rustcall′fp, $julia_type, $self_ptr), rustcall′channel, \"$getter_symbol\"); end"
+                                            position = _ffi_field_position(info, field_name)))
+    return "let $target; _guard_panic(rustcall′RustCall.call_rust_function(rustcall′fp, $(_emitted_source(julia_type)), $self_ptr), rustcall′channel, \"$getter_symbol\"); end"
 end
 
 """
@@ -2871,8 +2880,8 @@ function _generate_property_accessors(info::RustStructInfo)
         # A `String` field getter hands back an owned buffer, on the crate path
         # too since manifest schema 4 — it used to be read as `Any` (#246).
         read = _crate_field_read(info, field_name, field_type, getter_fn,
-                                 :(getfield(rustcall′self, :ptr)), _target_cache_name(:prop, getter_fn))
-        push!(getprop_branches, quote
+                                 @_emitted(:(getfield(rustcall′self, :ptr))), _target_cache_name(:prop, getter_fn))
+        push!(getprop_branches, @_emitted quote
             if rustcall′field === $field_sym
                 return $read
             end
@@ -2887,9 +2896,9 @@ function _generate_property_accessors(info::RustStructInfo)
         push!(caches, _target_cache_const(:prop, setter_fn))
 
         write = _crate_field_write(info, field_name, field_type, setter_fn,
-                                   :(getfield(rustcall′self, :ptr)), _emitter_local("value"),
+                                   @_emitted(:(getfield(rustcall′self, :ptr))), _emitter_local("value"),
                                    _target_cache_name(:prop, setter_fn))
-        push!(setprop_branches, quote
+        push!(setprop_branches, @_emitted quote
             if rustcall′field === $field_sym
                 $write
                 return rustcall′value
@@ -2900,7 +2909,7 @@ function _generate_property_accessors(info::RustStructInfo)
     # Generate the field names tuple for propertynames
     field_symbols = [QuoteNode(Symbol(julia_field_name(name))) for (name, _) in property_fields]
 
-    quote
+    @_emitted quote
         $(caches...)
         function Base.getproperty(rustcall′self::$struct_name, rustcall′field::Symbol)
             # Allow access to internal ptr field
@@ -2975,16 +2984,16 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     c = _ffi_method_return(method, helper_owner)
 
     all_args = Any[]
-    method.is_static || push!(all_args, :(getfield(rustcall′self, :ptr)))
+    method.is_static || push!(all_args, @_emitted(:(getfield(rustcall′self, :ptr))))
     append!(all_args, converted_args)
 
     channel_sym = _generated_local("panic_channel", method.arg_names)
     free_sym = _generated_local("free_ptr", method.arg_names)
     free_channel_sym = _generated_local("free_panic_channel", method.arg_names)
     cache_sym = _target_cache_name(:m, wrapper_name)
-    target = :(($ptr_sym, $channel_sym) = _call_target($cache_sym, $wrapper_name))
+    target = @_emitted(:(($ptr_sym, $channel_sym) = _call_target($cache_sym, $wrapper_name)))
     alive_sym = _generated_local("alive", method.arg_names)
-    release_alive = _python_owned_handle(info) ? :(Ref(true)) : alive_sym
+    release_alive = _python_owned_handle(info) ? @_emitted(:(Ref(true))) : alive_sym
     # A `PyResult` method needs a C struct declared next to the wrapper, so it
     # is built whole rather than as one `call` expression (#275 Phase 2).
     if method.return_kind === :py_result
@@ -2999,17 +3008,17 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
         plan = _method_payload_plan(info, method, helper_owner)
         push!(predefs, plan.definition)
         payload_target = isempty(plan.free_symbol) ?
-            :(($ptr_sym, $channel_sym) = _call_target($cache_sym, $wrapper_name)) :
-            :(($ptr_sym, $channel_sym, $free_sym) = _call_target($cache_sym, $wrapper_name, $(plan.free_symbol)))
-        free_expr = isempty(plan.free_symbol) ? :(C_NULL) : free_sym
+            @_emitted(:(($ptr_sym, $channel_sym) = _call_target($cache_sym, $wrapper_name))) :
+            @_emitted(:(($ptr_sym, $channel_sym, $free_sym) = _call_target($cache_sym, $wrapper_name, $(plan.free_symbol))))
+        free_expr = isempty(plan.free_symbol) ? @_emitted(:(C_NULL)) : free_sym
         c_sym = _generated_local("c_payload", method.arg_names)
         method.is_static || pushfirst!(preserved, _emitter_local("self"))
-        payload_body = quote
+        payload_body = @_emitted quote
             $(bindings...)
             $payload_target
             $c_sym = $(_in_callback_frame(frame, _quote_preserved(preserved,
-                                        :(call_rust_function($ptr_sym, $(plan.struct_name),
-                                                             $(all_args...))))))
+                                        @_emitted(:(call_rust_function($ptr_sym, $(plan.struct_name),
+                                                             $(all_args...)))))))
             # A panic returns the `panicked()` sentinel — the Err / None
             # discriminant with an uninitialized payload — so the channel is
             # read *before* anything is decoded (#244).
@@ -3024,26 +3033,26 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     elseif method.returns_boxed_struct
         # Constructors and `Self`-returning methods allocate, so the object is
         # bound to the generation that ran the call (#277).
-        target = :(($ptr_sym, $channel_sym, $free_sym, $alive_sym, $free_channel_sym) =
-                       _ctor_target($cache_sym, $wrapper_name, $(ffi_struct_free_symbol(info.ffi_name))))
-        :($struct_name(call_rust_function($ptr_sym, Ptr{Cvoid}, $(all_args...)),
-                       $free_sym, $release_alive, $free_channel_sym))
+        target = @_emitted(:(($ptr_sym, $channel_sym, $free_sym, $alive_sym, $free_channel_sym) =
+                       _ctor_target($cache_sym, $wrapper_name, $(ffi_struct_free_symbol(info.ffi_name)))))
+        @_emitted(:($struct_name(call_rust_function($ptr_sym, Ptr{Cvoid}, $(all_args...)),
+                       $free_sym, $release_alive, $free_channel_sym)))
     elseif ffi_owned_string_return(c)
-        target = :(($ptr_sym, $channel_sym, $free_sym) = _call_target($cache_sym, $wrapper_name, $(c.free_symbol)))
-        :(_call_rust_owned_string_ptr($ptr_sym, $free_sym, $(all_args...)))
+        target = @_emitted(:(($ptr_sym, $channel_sym, $free_sym) = _call_target($cache_sym, $wrapper_name, $(c.free_symbol))))
+        @_emitted(:(_call_rust_owned_string_ptr($ptr_sym, $free_sym, $(all_args...))))
     elseif ffi_borrowed_string_return(c)
-        :(_call_rust_borrowed_string_ptr($ptr_sym, $(all_args...)))
+        @_emitted(:(_call_rust_borrowed_string_ptr($ptr_sym, $(all_args...))))
     else
-        julia_ret_type = ffi_return_symbol_or_throw(method.return_type, method.return_abi,
-                                                    _ffi_context(method, struct_name_str))
-        :(call_rust_function($ptr_sym, $julia_ret_type, $(all_args...)))
+        julia_ret_type = _emitted_type(ffi_return_symbol_or_throw(method.return_type, method.return_abi,
+                                                    _ffi_context(method, struct_name_str)))
+        @_emitted(:(call_rust_function($ptr_sym, $julia_ret_type, $(all_args...))))
     end
     # The wrapper object itself is kept alive for the whole call as well: a
     # borrowed `&str` result points into the Rust object, which the finalizer
     # of a temporary `self` could otherwise free mid-call.
     payload_body === nothing && !method.is_static && pushfirst!(preserved, _emitter_local("self"))
     method_label = "$(struct_name_str)::$(method_name)"
-    body = payload_body !== nothing ? payload_body : quote
+    body = payload_body !== nothing ? payload_body : @_emitted quote
         $(bindings...)
         $target
         _guard_panic($(_in_callback_frame(frame, _quote_preserved(preserved, call))), $channel_sym, $method_label)
@@ -3051,7 +3060,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
 
     definition = if method.is_static && method.is_constructor
         # Static constructor - returns the wrapper struct
-        quote
+        @_emitted quote
             function $struct_name($(arg_syms...))
                 $body
             end
@@ -3066,9 +3075,9 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
         # the function or the type inside the forwarding body.
         dargs = [_emitter_local(string("arg", i)) for i in eachindex(arg_syms)]
         bare_def = bare ?
-            :($method_name($(dargs...)) = $method_name($struct_name, $(dargs...))) :
+            @_emitted(:($method_name($(dargs...)) = $method_name($struct_name, $(dargs...)))) :
             nothing
-        quote
+        @_emitted quote
             function $method_name(::Type{$struct_name}, $(arg_syms...))
                 $body
             end
@@ -3076,7 +3085,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
             export $method_name
         end
     else
-        quote
+        @_emitted quote
             function $method_name(rustcall′self::$struct_name, $(arg_syms...))
                 _check_not_freed(rustcall′self, $struct_name_str)
                 $body
@@ -3125,12 +3134,12 @@ function _method_payload_plan(info::RustStructInfo, method::RustMethod,
                               strict::Symbol = _ffi_strict())
     ctx = _ffi_context(method, info.name)
     if method.return_kind === :result
-        ok_t, ok_slot = ffi_payload_symbols(method.ok_type, method.ok_abi, ctx;
-                                            position = "Ok payload", strict = strict)
-        err_t, err_slot = ffi_payload_symbols(method.err_type, method.err_abi, ctx;
-                                              position = "Err payload", strict = strict)
+        ok_t, ok_slot = _emitted_type(ffi_payload_symbols(method.ok_type, method.ok_abi, ctx;
+                                            position = "Ok payload", strict = strict))
+        err_t, err_slot = _emitted_type(ffi_payload_symbols(method.err_type, method.err_abi, ctx;
+                                              position = "Err payload", strict = strict))
         name = Symbol("CResult_", julia_struct_name(info), "_", julia_method_name(method))
-        definition = quote
+        definition = @_emitted quote
             # RustCall's own mirror of the extractor's `#[repr(C)]` aggregate,
             # so it carries the by-value layout assertion in its supertype
             # (#245).
@@ -3141,28 +3150,28 @@ function _method_payload_plan(info::RustStructInfo, method::RustMethod,
             end
         end
         source = """
-struct $name <: FFIByValue
-    is_ok::UInt8
-    ok_value::$ok_slot
-    err_value::$err_slot
+struct $name <: rustcall′RustCall.FFIByValue
+    is_ok::rustcall′Base.UInt8
+    ok_value::$(_emitted_source(ok_slot))
+    err_value::$(_emitted_source(err_slot))
 end"""
         free = _payload_free_symbol(helper_owner, (method.ok_abi, method.err_abi))
         return MethodPayloadPlan(:result, name, definition, source, (ok_t, err_t), free)
     end
     inner_t, inner_slot =
-        ffi_payload_symbols(method.inner_type, method.inner_abi, ctx;
-                            position = "Some payload", strict = strict)
+        _emitted_type(ffi_payload_symbols(method.inner_type, method.inner_abi, ctx;
+                            position = "Some payload", strict = strict))
     name = Symbol("COption_", julia_struct_name(info), "_", julia_method_name(method))
-    definition = quote
+    definition = @_emitted quote
         struct $name <: FFIByValue
             is_some::UInt8
             value::$inner_slot
         end
     end
     source = """
-struct $name <: FFIByValue
-    is_some::UInt8
-    value::$inner_slot
+struct $name <: rustcall′RustCall.FFIByValue
+    is_some::rustcall′Base.UInt8
+    value::$(_emitted_source(inner_slot))
 end"""
     free = _payload_free_symbol(helper_owner, (method.inner_abi,))
     return MethodPayloadPlan(:option, name, definition, source, (inner_t, nothing), free)
@@ -3174,7 +3183,7 @@ end
 function _payload_decode_expr(plan::MethodPayloadPlan, c_sym::Symbol, free_expr)
     if plan.kind === :result
         ok_t, err_t = plan.surface
-        return quote
+        return @_emitted quote
             if $c_sym.is_ok == 1
                 RustResult{$ok_t, $err_t}(true, _result_payload($ok_t, $c_sym.ok_value, $free_expr))
             else
@@ -3183,7 +3192,7 @@ function _payload_decode_expr(plan::MethodPayloadPlan, c_sym::Symbol, free_expr)
         end
     end
     inner_t, _ = plan.surface
-    return quote
+    return @_emitted quote
         if $c_sym.is_some == 1
             RustOption{$inner_t}(true, _result_payload($inner_t, $c_sym.value, $free_expr))
         else
@@ -3210,9 +3219,9 @@ function _generate_py_result_method_wrapper(info::RustStructInfo, method::RustMe
     method_name = Symbol(julia_method_name(method))
     boxed = method.returns_boxed_struct
     ok_julia_type, ok_slot_type, is_unit = boxed ?
-        (struct_name, :(Ptr{Cvoid}), false) :
-        _py_result_types(method.ok_type, method.ok_abi,
-                         _ffi_context(method, struct_name_str))
+        (struct_name, @_emitted(:(Ptr{Cvoid})), false) :
+        _emitted_type(_py_result_types(method.ok_type, method.ok_abi,
+                         _ffi_context(method, struct_name_str)))
 
     helper_owner = _method_string_owner(method, "$(info.ffi_name)_$(rust_name(method.name))")
     c_result_struct_name = Symbol("CResult_", helper_owner)
@@ -3222,39 +3231,39 @@ function _generate_py_result_method_wrapper(info::RustStructInfo, method::RustMe
     free_sym = _generated_local("free_ptr", method.arg_names)
     alive_sym = _generated_local("alive", method.arg_names)
     free_channel_sym = _generated_local("free_panic_channel", method.arg_names)
-    release_alive = _python_owned_handle(info) ? :(Ref(true)) : alive_sym
+    release_alive = _python_owned_handle(info) ? @_emitted(:(Ref(true))) : alive_sym
 
     all_args = Any[]
-    method.is_static || push!(all_args, :(getfield(rustcall′self, :ptr)))
+    method.is_static || push!(all_args, @_emitted(:(getfield(rustcall′self, :ptr))))
     append!(all_args, converted_args)
     method.is_static || pushfirst!(preserved, _emitter_local("self"))
     method_label = "$(struct_name_str)::$(method_name)"
     payload_free = _payload_free_symbol(helper_owner, (method.ok_abi,))
     cache_sym = _target_cache_name(:m, wrapper_name)
     target = if boxed
-        :(($ptr_sym, $channel_sym, $free_sym, $alive_sym, $free_channel_sym) =
-              _ctor_target($cache_sym, $wrapper_name, $(ffi_struct_free_symbol(info.ffi_name))))
+        @_emitted(:(($ptr_sym, $channel_sym, $free_sym, $alive_sym, $free_channel_sym) =
+              _ctor_target($cache_sym, $wrapper_name, $(ffi_struct_free_symbol(info.ffi_name)))))
     elseif !isempty(payload_free)
-        :(($ptr_sym, $channel_sym, $free_sym) =
-              _call_target($cache_sym, $wrapper_name, $payload_free))
+        @_emitted(:(($ptr_sym, $channel_sym, $free_sym) =
+              _call_target($cache_sym, $wrapper_name, $payload_free)))
     else
-        :(($ptr_sym, $channel_sym) = _call_target($cache_sym, $wrapper_name))
+        @_emitted(:(($ptr_sym, $channel_sym) = _call_target($cache_sym, $wrapper_name)))
     end
-    free_expr = isempty(payload_free) ? :(C_NULL) : free_sym
+    free_expr = isempty(payload_free) ? @_emitted(:(C_NULL)) : free_sym
     ok_value = if is_unit
         :nothing
     elseif boxed
-        :($struct_name($c_sym.ok_value, $free_sym, $release_alive, $free_channel_sym))
+        @_emitted(:($struct_name($c_sym.ok_value, $free_sym, $release_alive, $free_channel_sym)))
     else
-        :(_result_payload($ok_julia_type, $c_sym.ok_value, $free_expr))
+        @_emitted(:(_result_payload($ok_julia_type, $c_sym.ok_value, $free_expr)))
     end
 
-    body = quote
+    body = @_emitted quote
         $(bindings...)
         $target
         $c_sym = $(_in_callback_frame(frame, _quote_preserved(preserved,
-                                    :(call_rust_function($ptr_sym, $c_result_struct_name,
-                                                         $(all_args...))))))
+                                    @_emitted(:(call_rust_function($ptr_sym, $c_result_struct_name,
+                                                         $(all_args...)))))))
         _guard_panic($c_sym, $channel_sym, $method_label, $free_expr)
         if $c_sym.is_ok == 1
             RustResult{$ok_julia_type, String}(true, $ok_value)
@@ -3263,7 +3272,7 @@ function _generate_py_result_method_wrapper(info::RustStructInfo, method::RustMe
         end
     end
 
-    declaration = quote
+    declaration = @_emitted quote
         # The call site's snapshot cache, beside the wrapper that uses it (#253).
         $(_target_cache_const(:m, wrapper_name))
         # RustCall's own mirror of a `#[repr(C)]` aggregate it generated (#245).
@@ -3275,7 +3284,7 @@ function _generate_py_result_method_wrapper(info::RustStructInfo, method::RustMe
     end
 
     if method.is_static && method.is_constructor
-        quote
+        @_emitted quote
             $declaration
             function $struct_name($(arg_syms...))
                 $body
@@ -3289,9 +3298,9 @@ function _generate_py_result_method_wrapper(info::RustStructInfo, method::RustMe
         # the function or the type inside the forwarding body.
         dargs = [_emitter_local(string("arg", i)) for i in eachindex(arg_syms)]
         bare_def = bare ?
-            :($method_name($(dargs...)) = $method_name($struct_name, $(dargs...))) :
+            @_emitted(:($method_name($(dargs...)) = $method_name($struct_name, $(dargs...)))) :
             nothing
-        quote
+        @_emitted quote
             $declaration
             function $method_name(::Type{$struct_name}, $(arg_syms...))
                 $body
@@ -3300,7 +3309,7 @@ function _generate_py_result_method_wrapper(info::RustStructInfo, method::RustMe
             export $method_name
         end
     else
-        quote
+        @_emitted quote
             $declaration
             function $method_name(rustcall′self::$struct_name, $(arg_syms...))
                 _check_not_freed(rustcall′self, $struct_name_str)
@@ -3327,8 +3336,8 @@ function _generate_crate_field_accessor(info::RustStructInfo, field_name::String
     if field_is_accessible(info, field_name)
         getter_name = info.field_getters[field_name]
         read = _crate_field_read(info, field_name, field_type, getter_name,
-                                 :(rustcall′self.ptr), _target_cache_name(:acc, getter_name))
-        push!(exprs, quote
+                                 @_emitted(:(rustcall′self.ptr)), _target_cache_name(:acc, getter_name))
+        push!(exprs, @_emitted quote
             $(_target_cache_const(:acc, getter_name))
             function $(Symbol("get_", julia_field_name(field_name)))(rustcall′self::$struct_name)
                 _check_not_freed(rustcall′self, $struct_name_str)
@@ -3338,10 +3347,10 @@ function _generate_crate_field_accessor(info::RustStructInfo, field_name::String
     end
     if field_is_writable(info, field_name)
         setter_name = info.field_setters[field_name]
-        write = _crate_field_write(info, field_name, field_type, setter_name, :(rustcall′self.ptr),
+        write = _crate_field_write(info, field_name, field_type, setter_name, @_emitted(:(rustcall′self.ptr)),
                                    _emitter_local("value"),
                                    _target_cache_name(:acc, setter_name))
-        push!(exprs, quote
+        push!(exprs, @_emitted quote
             $(_target_cache_const(:acc, setter_name))
             function $(Symbol("set_", julia_field_name(field_name), "!"))(rustcall′self::$struct_name, rustcall′value)
                 _check_not_freed(rustcall′self, $struct_name_str)
@@ -4096,10 +4105,9 @@ end
 Get a function pointer from a loaded library.
 
 No generated wrapper calls it — they resolve through their module's generation
-snapshot. It stays because the `import RustCall: ...` prelude of every
-generated module names it, including every file an older RustCall wrote with
-`write_bindings_to_file`, and such a file must keep loading
-(`BINDINGS_FORMAT_VERSION`).
+snapshot. It stays because the `import RustCall: ...` prelude of every file an
+older RustCall wrote with `write_bindings_to_file` names it, and such a file of
+this `MAJOR.MINOR` must keep loading (`BINDINGS_FORMAT_VERSION`).
 """
 function get_function_pointer_from_lib(lib_handle::Ptr{Cvoid}, func_name::String)
     Libdl.dlsym(lib_handle, func_name)
@@ -4751,18 +4759,17 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     push!(lines, "module $mod_name")
     push!(lines, "")
 
-    # Imports
-    push!(lines, "import RustCall")
-    push!(lines, "import RustCall: call_rust_function, get_function_pointer_from_lib, RustResult, RustOption, _check_not_freed,")
-    push!(lines, "                 _call_rust_owned_string_ptr, _call_rust_borrowed_string_ptr, convert_return,")
-    push!(lines, "                 _result_payload, FFIByValue")
-    # Through RustCall, as the in-memory module does (#339): a written file is
-    # loaded into the user's project, which need not have `Libdl` among its
-    # dependencies (#461).
-    push!(lines, "import RustCall.Libdl")
+    # The only names this file gives Base and RustCall: aliases no Rust item
+    # can be bound under (#528). Every reference below goes through them, so a
+    # crate item named `Base`, `RustCall` or `getfield` shadows nothing the
+    # wrappers use. `Libdl` is reached through RustCall, as the in-memory
+    # module does (#339): a written file is loaded into the user's project,
+    # which need not have `Libdl` among its dependencies (#461).
+    push!(lines, "# Base and RustCall under names no Rust item can take (#528).")
+    append!(lines, _emitted_aliases_source())
     push!(lines, "")
     push!(lines, "# Refused by a RustCall of another MAJOR.MINOR: regenerate the file (#489).")
-    push!(lines, "const _BINDINGS_FORMAT = RustCall.check_bindings_format($(repr(BINDINGS_FORMAT_VERSION)))")
+    push!(lines, "const _BINDINGS_FORMAT = rustcall′RustCall.check_bindings_format($(repr(BINDINGS_FORMAT_VERSION)))")
     push!(lines, "")
 
     # Library path constant
@@ -4781,7 +4788,9 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
                            python = python, snapshot = snapshot))
     build_record.lib_name == record_name || throw(ArgumentError(
         "the build record names `$(build_record.lib_name)`, not `$(record_name)`"))
-    push!(lines, "const _BUILD_RECORD = $(repr(build_record))")
+    # `repr` spells the record `RustCall.CrateBuildRecord(...)`; the file names
+    # RustCall only through its alias (#528).
+    push!(lines, "const _BUILD_RECORD = rustcall′" * repr(build_record))
     push!(lines, "const _LIB_NAME = _BUILD_RECORD.lib_name")
     if !isempty(preload)
         push!(lines, "# Libraries the image imports by name that the loader would not find on")
@@ -4794,7 +4803,7 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     push!(lines, "# Everything this module knows about the image it calls -- handle, liveness")
     push!(lines, "# flag and generation -- as one immutable value, published by the loader in")
     push!(lines, "# the transaction that swaps the registry entry (#277).")
-    push!(lines, "const _LIB_GEN = RustCall.StateView(:crate_generation, @__MODULE__)")
+    push!(lines, "const _LIB_GEN = rustcall′RustCall.StateView(:crate_generation, @__MODULE__)")
     push!(lines, "")
     push!(lines, "function __init__()")
     push!(lines, "    # Register before loading, and do not assign afterwards: an assignment")
@@ -4803,16 +4812,16 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     push!(lines, "    # module's, statement for statement (`_crate_init_prologue`): the build")
     push!(lines, "    # environment is checked against `_BUILD_RECORD` first (#474).")
     for statement in _crate_init_prologue()
-        push!(lines, "    " * string(statement))
+        push!(lines, "    " * _emitted_source(statement))
     end
     push!(lines, "    # A private generation copy, never `_LIB_PATH` itself: that file is")
     push!(lines, "    # Cargo's output (or the copy `write_bindings_to_file` made of it), and")
     push!(lines, "    # an image mapped in place cannot be overwritten on Windows -- the next")
     push!(lines, "    # `cargo build` of the crate, and the next regeneration, would fail")
     push!(lines, "    # (#309). The in-memory `@rust_crate` path does the same.")
-    push!(lines, "    rustcall_process_image = RustCall.loadable_library_copy(_LIB_PATH)")
-    push!(lines, "    _PIN_LIBRARY && RustCall.preload_dependency!(RustCall.crate_direct_policy(), rustcall_process_image)")
-    push!(lines, "    RustCall.load_artifact!(RustCall.crate_direct_policy(), rustcall_process_image;")
+    push!(lines, "    rustcall_process_image = rustcall′RustCall.loadable_library_copy(_LIB_PATH)")
+    push!(lines, "    _PIN_LIBRARY && rustcall′RustCall.preload_dependency!(rustcall′RustCall.crate_direct_policy(), rustcall_process_image)")
+    push!(lines, "    rustcall′RustCall.load_artifact!(rustcall′RustCall.crate_direct_policy(), rustcall_process_image;")
     if isempty(preload)
         push!(lines, "                            lib_name = _LIB_NAME)")
     else
@@ -4822,123 +4831,123 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     push!(lines, "")
     push!(lines, "# Resolved symbols, memoized per handle: a reload swaps the image under the")
     push!(lines, "# same module. Negative answers are cached too.")
-    push!(lines, "const _SYMBOLS = RustCall.StateView(:crate_symbols, @__MODULE__)")
+    push!(lines, "const _SYMBOLS = rustcall′RustCall.StateView(:crate_symbols, @__MODULE__)")
     push!(lines, "")
     push!(lines, "# Declared `::Ptr{Cvoid}`: the memo is a StateView and hands back an `Any`,")
     push!(lines, "# and an untyped symbol would box every snapshot element below.")
-    push!(lines, "function _symbol(handle::Ptr{Cvoid}, name::String)::Ptr{Cvoid}")
+    push!(lines, "function _symbol(handle::rustcall′Base.Ptr{rustcall′Base.Cvoid}, name::rustcall′Base.String)::rustcall′Base.Ptr{rustcall′Base.Cvoid}")
     push!(lines, "    get!(_SYMBOLS, (handle, name)) do")
-    push!(lines, "        ptr = Libdl.dlsym(handle, name; throw_error = false)")
-    push!(lines, "        ptr === nothing ? C_NULL : ptr")
+    push!(lines, "        ptr = rustcall′RustCall.Libdl.dlsym(handle, name; throw_error = false)")
+    push!(lines, "        ptr === rustcall′Base.nothing ? rustcall′Base.C_NULL : ptr")
     push!(lines, "    end")
     push!(lines, "end")
     push!(lines, "")
-    push!(lines, "function _required_symbol(handle::Ptr{Cvoid}, name::String)::Ptr{Cvoid}")
+    push!(lines, "function _required_symbol(handle::rustcall′Base.Ptr{rustcall′Base.Cvoid}, name::rustcall′Base.String)::rustcall′Base.Ptr{rustcall′Base.Cvoid}")
     push!(lines, "    ptr = _symbol(handle, name)")
-    push!(lines, "    ptr == C_NULL && error(\"The Rust library '\" * _LIB_NAME *")
+    push!(lines, "    ptr == rustcall′Base.C_NULL && rustcall′Base.error(\"The Rust library '\" * _LIB_NAME *")
     push!(lines, "                           \"' does not export '\" * name * \"'.\")")
     push!(lines, "    ptr")
     push!(lines, "end")
     push!(lines, "")
-    push!(lines, "function _live_handle(gen::RustCall.CrateGeneration)")
-    push!(lines, "    gen.handle == C_NULL &&")
-    push!(lines, "        error(\"The Rust library backing this module is not loaded. \" *")
+    push!(lines, "function _live_handle(gen::rustcall′RustCall.CrateGeneration)")
+    push!(lines, "    gen.handle == rustcall′Base.C_NULL &&")
+    push!(lines, "        rustcall′Base.error(\"The Rust library backing this module is not loaded. \" *")
     push!(lines, "              \"It was either never initialised, or unloaded with \" *")
     push!(lines, "              \"RustCall.unload_library(\\\"\" * _LIB_NAME * \"\\\").\")")
     push!(lines, "    gen.handle")
     push!(lines, "end")
     push!(lines, "")
-    push!(lines, "_get_func_ptr(name::String) = _required_symbol(_live_handle(_LIB_GEN[]), name)")
+    push!(lines, "_get_func_ptr(name::rustcall′Base.String) = _required_symbol(_live_handle(_LIB_GEN[]), name)")
     push!(lines, "")
     push!(lines, "# What each arm below yields, named once so the cached answer and the")
     push!(lines, "# freshly resolved one cannot disagree about its shape.")
-    push!(lines, "const _CALL_TARGET = Tuple{Ptr{Cvoid}, Ptr{Cvoid}}")
-    push!(lines, "const _STRING_TARGET = Tuple{Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}}")
-    push!(lines, "const _VEC_TARGET = Tuple{Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}, Base.RefValue{Bool}}")
-    push!(lines, "const _CTOR_TARGET = Tuple{Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}, Base.RefValue{Bool}, Ptr{Cvoid}}")
-    push!(lines, "const _FREE_TARGET = Tuple{Ptr{Cvoid}, Base.RefValue{Bool}, Ptr{Cvoid}}")
+    push!(lines, "const _CALL_TARGET = rustcall′Base.Tuple{rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.Ptr{rustcall′Base.Cvoid}}")
+    push!(lines, "const _STRING_TARGET = rustcall′Base.Tuple{rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.Ptr{rustcall′Base.Cvoid}}")
+    push!(lines, "const _VEC_TARGET = rustcall′Base.Tuple{rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.RefValue{rustcall′Base.Bool}}")
+    push!(lines, "const _CTOR_TARGET = rustcall′Base.Tuple{rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.RefValue{rustcall′Base.Bool}, rustcall′Base.Ptr{rustcall′Base.Cvoid}}")
+    push!(lines, "const _FREE_TARGET = rustcall′Base.Tuple{rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.RefValue{rustcall′Base.Bool}, rustcall′Base.Ptr{rustcall′Base.Cvoid}}")
     push!(lines, "")
     push!(lines, "# One snapshot per call, from ONE deref of `_LIB_GEN` (#277). `cache` is")
     push!(lines, "# the call site's own cache: the snapshot is kept in it and handed back")
     push!(lines, "# whole while the artifact epoch and the session token say it is still")
     push!(lines, "# this process's current answer (#253). A hit returns the very tuple one")
     push!(lines, "# deref produced, so nothing is ever reassembled from pieces.")
-    push!(lines, "function _call_target(cache::RustCall.CrateTargetCache, symbol::String)")
-    push!(lines, "    hit = RustCall.crate_target_hit(cache, _CALL_TARGET)")
-    push!(lines, "    hit === nothing || return hit")
+    push!(lines, "function _call_target(cache::rustcall′RustCall.CrateTargetCache, symbol::rustcall′Base.String)")
+    push!(lines, "    hit = rustcall′RustCall.crate_target_hit(cache, _CALL_TARGET)")
+    push!(lines, "    hit === rustcall′Base.nothing || return hit")
     push!(lines, "    # Sampled BEFORE the snapshot: a state write landing in between leaves")
     push!(lines, "    # this entry stamped with the older epoch and it is resolved again.")
-    push!(lines, "    epoch = RustCall.artifact_epoch()")
+    push!(lines, "    epoch = rustcall′RustCall.artifact_epoch()")
     push!(lines, "    handle = _live_handle(_LIB_GEN[])")
-    push!(lines, "    return RustCall.publish_crate_target!(cache, epoch,")
+    push!(lines, "    return rustcall′RustCall.publish_crate_target!(cache, epoch,")
     push!(lines, "        (_required_symbol(handle, symbol),")
-    push!(lines, "         _symbol(handle, RustCall.ffi_panic_symbol(symbol))))")
+    push!(lines, "         _symbol(handle, rustcall′RustCall.ffi_panic_symbol(symbol))))")
     push!(lines, "end")
     push!(lines, "")
     push!(lines, "# ...and the owned-`String` arm, release function included.")
-    push!(lines, "function _call_target(cache::RustCall.CrateTargetCache, symbol::String, free_symbol::String)")
-    push!(lines, "    hit = RustCall.crate_target_hit(cache, _STRING_TARGET)")
-    push!(lines, "    hit === nothing || return hit")
-    push!(lines, "    epoch = RustCall.artifact_epoch()")
+    push!(lines, "function _call_target(cache::rustcall′RustCall.CrateTargetCache, symbol::rustcall′Base.String, free_symbol::rustcall′Base.String)")
+    push!(lines, "    hit = rustcall′RustCall.crate_target_hit(cache, _STRING_TARGET)")
+    push!(lines, "    hit === rustcall′Base.nothing || return hit")
+    push!(lines, "    epoch = rustcall′RustCall.artifact_epoch()")
     push!(lines, "    handle = _live_handle(_LIB_GEN[])")
-    push!(lines, "    return RustCall.publish_crate_target!(cache, epoch,")
+    push!(lines, "    return rustcall′RustCall.publish_crate_target!(cache, epoch,")
     push!(lines, "        (_required_symbol(handle, symbol),")
-    push!(lines, "         _symbol(handle, RustCall.ffi_panic_symbol(symbol)),")
+    push!(lines, "         _symbol(handle, rustcall′RustCall.ffi_panic_symbol(symbol)),")
     push!(lines, "         _required_symbol(handle, free_symbol)))")
     push!(lines, "end")
     push!(lines, "")
     push!(lines, "# Owned Vec getter and release export from one generation (#303).")
-    push!(lines, "function _vec_target(cache::RustCall.CrateTargetCache, symbol::String, free_symbol::String)")
-    push!(lines, "    hit = RustCall.crate_target_hit(cache, _VEC_TARGET)")
-    push!(lines, "    hit === nothing || return hit")
-    push!(lines, "    epoch = RustCall.artifact_epoch()")
+    push!(lines, "function _vec_target(cache::rustcall′RustCall.CrateTargetCache, symbol::rustcall′Base.String, free_symbol::rustcall′Base.String)")
+    push!(lines, "    hit = rustcall′RustCall.crate_target_hit(cache, _VEC_TARGET)")
+    push!(lines, "    hit === rustcall′Base.nothing || return hit")
+    push!(lines, "    epoch = rustcall′RustCall.artifact_epoch()")
     push!(lines, "    gen = _LIB_GEN[]")
     push!(lines, "    handle = _live_handle(gen)")
-    push!(lines, "    return RustCall.publish_crate_target!(cache, epoch,")
+    push!(lines, "    return rustcall′RustCall.publish_crate_target!(cache, epoch,")
     push!(lines, "        (_required_symbol(handle, symbol),")
-    push!(lines, "         _symbol(handle, RustCall.ffi_panic_symbol(symbol)),")
+    push!(lines, "         _symbol(handle, rustcall′RustCall.ffi_panic_symbol(symbol)),")
     push!(lines, "         _required_symbol(handle, free_symbol),")
     push!(lines, "         gen.alive))")
     push!(lines, "end")
     push!(lines, "")
     push!(lines, "# The constructor arm: the allocating wrapper, its channel, and the")
     push!(lines, "# destructor and flag the resulting object carries -- one deref (#277).")
-    push!(lines, "function _ctor_target(cache::RustCall.CrateTargetCache, symbol::String, free_symbol::String)")
-    push!(lines, "    hit = RustCall.crate_target_hit(cache, _CTOR_TARGET)")
-    push!(lines, "    hit === nothing || return hit")
-    push!(lines, "    epoch = RustCall.artifact_epoch()")
+    push!(lines, "function _ctor_target(cache::rustcall′RustCall.CrateTargetCache, symbol::rustcall′Base.String, free_symbol::rustcall′Base.String)")
+    push!(lines, "    hit = rustcall′RustCall.crate_target_hit(cache, _CTOR_TARGET)")
+    push!(lines, "    hit === rustcall′Base.nothing || return hit")
+    push!(lines, "    epoch = rustcall′RustCall.artifact_epoch()")
     push!(lines, "    gen = _LIB_GEN[]")
     push!(lines, "    handle = _live_handle(gen)")
-    push!(lines, "    return RustCall.publish_crate_target!(cache, epoch,")
+    push!(lines, "    return rustcall′RustCall.publish_crate_target!(cache, epoch,")
     push!(lines, "        (_required_symbol(handle, symbol),")
-    push!(lines, "         _symbol(handle, RustCall.ffi_panic_symbol(symbol)),")
+    push!(lines, "         _symbol(handle, rustcall′RustCall.ffi_panic_symbol(symbol)),")
     push!(lines, "         _symbol(handle, free_symbol),")
     push!(lines, "         gen.alive,")
-    push!(lines, "         _symbol(handle, RustCall.ffi_panic_symbol(free_symbol))))")
+    push!(lines, "         _symbol(handle, rustcall′RustCall.ffi_panic_symbol(free_symbol))))")
     push!(lines, "end")
     push!(lines, "")
     push!(lines, "# A struct's destructor and the liveness flag of the image that exports it,")
     push!(lines, "# from the same deref (#249, #277).")
-    push!(lines, "function _struct_generation(cache::RustCall.CrateTargetCache, free_symbol::String)")
-    push!(lines, "    hit = RustCall.crate_target_hit(cache, _FREE_TARGET)")
-    push!(lines, "    hit === nothing || return hit")
-    push!(lines, "    epoch = RustCall.artifact_epoch()")
+    push!(lines, "function _struct_generation(cache::rustcall′RustCall.CrateTargetCache, free_symbol::rustcall′Base.String)")
+    push!(lines, "    hit = rustcall′RustCall.crate_target_hit(cache, _FREE_TARGET)")
+    push!(lines, "    hit === rustcall′Base.nothing || return hit")
+    push!(lines, "    epoch = rustcall′RustCall.artifact_epoch()")
     push!(lines, "    gen = _LIB_GEN[]")
     push!(lines, "    # Not published: an unloaded module has no snapshot to keep.")
-    push!(lines, "    gen.handle == C_NULL && return (Ptr{Cvoid}(C_NULL), gen.alive, Ptr{Cvoid}(C_NULL))")
-    push!(lines, "    return RustCall.publish_crate_target!(cache, epoch,")
+    push!(lines, "    gen.handle == rustcall′Base.C_NULL && return (rustcall′Base.Ptr{rustcall′Base.Cvoid}(rustcall′Base.C_NULL), gen.alive, rustcall′Base.Ptr{rustcall′Base.Cvoid}(rustcall′Base.C_NULL))")
+    push!(lines, "    return rustcall′RustCall.publish_crate_target!(cache, epoch,")
     push!(lines, "        (_symbol(gen.handle, free_symbol),")
     push!(lines, "         gen.alive,")
-    push!(lines, "         _symbol(gen.handle, RustCall.ffi_panic_symbol(free_symbol))))")
+    push!(lines, "         _symbol(gen.handle, rustcall′RustCall.ffi_panic_symbol(free_symbol))))")
     push!(lines, "end")
     push!(lines, "")
     # The channel is resolved by the caller, before the wrapper call: it is a
     # thread-local in the image, so nothing may yield between the two (#244).
-    push!(lines, "_guard_panic(value, channel::Ptr{Cvoid}, name::String) =")
-    push!(lines, "    RustCall.guard_rust_panic_ptr(value, channel, name)")
+    push!(lines, "_guard_panic(value, channel::rustcall′Base.Ptr{rustcall′Base.Cvoid}, name::rustcall′Base.String) =")
+    push!(lines, "    rustcall′RustCall.guard_rust_panic_ptr(value, channel, name)")
     # For a call that returned an owned buffer still to be decoded (#460).
-    push!(lines, "_guard_panic(value, channel::Ptr{Cvoid}, name::String, free_ptr::Ptr{Cvoid}) =")
-    push!(lines, "    RustCall.guard_rust_panic_ptr(value, channel, name, free_ptr)")
+    push!(lines, "_guard_panic(value, channel::rustcall′Base.Ptr{rustcall′Base.Cvoid}, name::rustcall′Base.String, free_ptr::rustcall′Base.Ptr{rustcall′Base.Cvoid}) =")
+    push!(lines, "    rustcall′RustCall.guard_rust_panic_ptr(value, channel, name, free_ptr)")
     push!(lines, "")
 
     # Generate function wrappers of the crate root; items inside modules go
@@ -4947,6 +4956,7 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     _check_module_names(tree)
     # Every parameter named against the definitions it lands in (#526).
     tree = _rename_crate_tree(tree; strict = strict)
+    append!(lines, _function_declarations_source(tree))
     for func in tree.functions
         _function_skipped!(func) && continue
         code = _emit_function_code(func; strict = strict)
@@ -4979,14 +4989,14 @@ functions and struct methods alike).
 """
 function _emit_string_arg_plan(func::Union{RustFunctionSignature, RustMethod})
     bindings, preserved, call_args, frame = _string_arg_plan(func, identity)
-    bindings_str = join(("    " * string(b) for b in bindings), "\n")
-    preserve_str = join(string.(preserved), " ")
+    bindings_str = join(("    " * _emitted_source(b) for b in bindings), "\n")
+    preserve_str = join(_emitted_source.(preserved), " ")
     # Printed as one argument list, not argument by argument: a lone
     # `Base.@cfunction` prints in its space-separated form, which inside a
     # call swallows every argument after it (a callback argument followed by
     # another one did not load from a written file). Inside a call Julia's
     # printer gives it parentheses.
-    converted_args_str = String(chop(string(Expr(:call, :f, call_args...)); head = 2, tail = 1))
+    converted_args_str = String(chop(_emitted_source(Expr(:call, :f, call_args...)); head = 2, tail = 1))
     frame_str = frame === nothing ? "" : string(frame)
     return bindings_str, preserve_str, converted_args_str, frame_str
 end
@@ -4999,7 +5009,7 @@ Source-text twin of `_in_callback_frame` (#296): `code`, or `code` inside a
 """
 function _emit_in_callback_frame(frame_str::AbstractString, code::AbstractString)
     isempty(frame_str) && return String(code)
-    return "(try $(code) finally RustCall._pop_callback_frame!($(frame_str)) end)"
+    return "(try $(code) finally rustcall′RustCall._pop_callback_frame!($(frame_str)) end)"
 end
 
 """
@@ -5047,7 +5057,7 @@ function _emit_function_code(func::RustFunctionSignature; strict::Symbol = _ffi_
 $(_target_cache_source(:fn, sym))
 function $func_name($arg_syms)
 $(prologue)    $ptr_var, $channel_var, $free_var = _call_target($cache_var, "$sym", "$(_ffi_function_return(func).free_symbol)")
-    _guard_panic($(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "_call_rust_owned_string_ptr($ptr_var, $free_var, $converted_args_str)"))), $channel_var, "$func_name")
+    _guard_panic($(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "rustcall′RustCall._call_rust_owned_string_ptr($ptr_var, $free_var, $converted_args_str)"))), $channel_var, "$func_name")
 end
 export $func_name"""
     elseif ffi_borrowed_string_return(_ffi_function_return(func))
@@ -5055,18 +5065,18 @@ export $func_name"""
 $(_target_cache_source(:fn, sym))
 function $func_name($arg_syms)
 $(prologue)    $ptr_var, $channel_var = _call_target($cache_var, "$sym")
-    _guard_panic($(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "_call_rust_borrowed_string_ptr($ptr_var, $converted_args_str)"))), $channel_var, "$func_name")
+    _guard_panic($(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "rustcall′RustCall._call_rust_borrowed_string_ptr($ptr_var, $converted_args_str)"))), $channel_var, "$func_name")
 end
 export $func_name"""
     else
         # Standard function
-        ret_type_str = string(ffi_return_symbol_or_throw(func.return_type, func.return_abi,
-                                                         _ffi_context(func); strict = strict))
+        ret_type_str = _emitted_type_source(ffi_return_symbol_or_throw(func.return_type, func.return_abi,
+                                                                       _ffi_context(func); strict = strict))
         return """
 $(_target_cache_source(:fn, sym))
 function $func_name($arg_syms)
 $(prologue)    $ptr_var, $channel_var = _call_target($cache_var, "$sym")
-    _guard_panic($(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "call_rust_function($ptr_var, $ret_type_str, $converted_args_str)"))), $channel_var, "$func_name")
+    _guard_panic($(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "rustcall′RustCall.call_rust_function($ptr_var, $ret_type_str, $converted_args_str)"))), $channel_var, "$func_name")
 end
 export $func_name"""
     end
@@ -5082,10 +5092,10 @@ function _emit_result_function_code(func::RustFunctionSignature, arg_syms::Strin
                                               position = "Ok payload", strict = strict)
     err_surface, err_slot = ffi_payload_symbols(func.err_type, func.err_abi, ctx;
                                                 position = "Err payload", strict = strict)
-    ok_type_str = string(ok_surface)
-    err_type_str = string(err_surface)
-    ok_slot_str = string(ok_slot)
-    err_slot_str = string(err_slot)
+    ok_type_str = _emitted_type_source(ok_surface)
+    err_type_str = _emitted_type_source(err_surface)
+    ok_slot_str = _emitted_type_source(ok_slot)
+    err_slot_str = _emitted_type_source(err_slot)
     sym = func.symbol
     c_result_struct_name = "CResult_$(func.ffi_name)"
     ptr_var = _generated_local("func_ptr", func.arg_names)
@@ -5097,24 +5107,24 @@ function _emit_result_function_code(func::RustFunctionSignature, arg_syms::Strin
     target = isempty(free_str) ?
         "$ptr_var, $channel_var = _call_target($cache_var, \"$sym\")" :
         "$ptr_var, $channel_var, $free_var = _call_target($cache_var, \"$sym\", \"$free_str\")"
-    free_expr = isempty(free_str) ? "C_NULL" : string(free_var)
+    free_expr = isempty(free_str) ? "rustcall′Base.C_NULL" : string(free_var)
 
     return """
 $(_target_cache_source(:fn, sym))
-struct $c_result_struct_name <: FFIByValue
-    is_ok::UInt8
+struct $c_result_struct_name <: rustcall′RustCall.FFIByValue
+    is_ok::rustcall′Base.UInt8
     ok_value::$ok_slot_str
     err_value::$err_slot_str
 end
 
 function $func_name($arg_syms)
 $(prologue)    $target
-    $c_var = $(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "call_rust_function($ptr_var, $c_result_struct_name, $converted_args_str)")))
+    $c_var = $(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "rustcall′RustCall.call_rust_function($ptr_var, $c_result_struct_name, $converted_args_str)")))
     _guard_panic($c_var, $channel_var, "$func_name", $free_expr)
     if $c_var.is_ok == 1
-        RustResult{$ok_type_str, $err_type_str}(true, _result_payload($ok_type_str, $c_var.ok_value, $free_expr))
+        rustcall′RustCall.RustResult{$ok_type_str, $err_type_str}(true, rustcall′RustCall._result_payload($ok_type_str, $c_var.ok_value, $free_expr))
     else
-        RustResult{$ok_type_str, $err_type_str}(false, _result_payload($err_type_str, $c_var.err_value, $free_expr))
+        rustcall′RustCall.RustResult{$ok_type_str, $err_type_str}(false, rustcall′RustCall._result_payload($err_type_str, $c_var.err_value, $free_expr))
     end
 end
 export $func_name"""
@@ -5133,6 +5143,7 @@ function _emit_py_result_function_code(func::RustFunctionSignature, arg_syms::St
     func_name = julia_function_name(func)
     ok_type_str, ok_slot_str, is_unit =
         _py_result_types(func.ok_type, func.ok_abi, _ffi_context(func); strict = strict)
+    ok_type_str, ok_slot_str = _emitted_type_source(ok_type_str), _emitted_type_source(ok_slot_str)
     sym = func.symbol
     c_result_struct_name = "CResult_$(func.ffi_name)"
     ptr_var = _generated_local("func_ptr", func.arg_names)
@@ -5144,27 +5155,27 @@ function _emit_py_result_function_code(func::RustFunctionSignature, arg_syms::St
     target = isempty(free_str) ?
         "$ptr_var, $channel_var = _call_target($cache_var, \"$sym\")" :
         "$ptr_var, $channel_var, $free_var = _call_target($cache_var, \"$sym\", \"$free_str\")"
-    free_expr = isempty(free_str) ? "C_NULL" : string(free_var)
-    ok_value = is_unit ? "nothing" :
-        "_result_payload($ok_type_str, $c_var.ok_value, $free_expr)"
+    free_expr = isempty(free_str) ? "rustcall′Base.C_NULL" : string(free_var)
+    ok_value = is_unit ? "rustcall′Base.nothing" :
+        "rustcall′RustCall._result_payload($ok_type_str, $c_var.ok_value, $free_expr)"
 
     return """
 $(_target_cache_source(:fn, sym))
 # RustCall's own mirror of a `#[repr(C)]` aggregate it generated (#245).
-struct $c_result_struct_name <: FFIByValue
-    is_ok::UInt8
+struct $c_result_struct_name <: rustcall′RustCall.FFIByValue
+    is_ok::rustcall′Base.UInt8
     ok_value::$ok_slot_str
-    err_value::Int32
+    err_value::rustcall′Base.Int32
 end
 
 function $func_name($arg_syms)
 $(prologue)    $target
-    $c_var = $(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "call_rust_function($ptr_var, $c_result_struct_name, $converted_args_str)")))
+    $c_var = $(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "rustcall′RustCall.call_rust_function($ptr_var, $c_result_struct_name, $converted_args_str)")))
     _guard_panic($c_var, $channel_var, "$func_name", $free_expr)
     if $c_var.is_ok == 1
-        RustResult{$ok_type_str, String}(true, $ok_value)
+        rustcall′RustCall.RustResult{$ok_type_str, rustcall′Base.String}(true, $ok_value)
     else
-        RustResult{$ok_type_str, String}(false, RustCall.PYO3_OPAQUE_ERROR)
+        rustcall′RustCall.RustResult{$ok_type_str, rustcall′Base.String}(false, rustcall′RustCall.PYO3_OPAQUE_ERROR)
     end
 end
 export $func_name"""
@@ -5177,8 +5188,8 @@ function _emit_option_function_code(func::RustFunctionSignature, arg_syms::Strin
     inner_surface, inner_slot =
         ffi_payload_symbols(func.inner_type, func.inner_abi, _ffi_context(func);
                             position = "Some payload", strict = strict)
-    inner_type_str = string(inner_surface)
-    inner_slot_str = string(inner_slot)
+    inner_type_str = _emitted_type_source(inner_surface)
+    inner_slot_str = _emitted_type_source(inner_slot)
     sym = func.symbol
     c_option_struct_name = "COption_$(func.ffi_name)"
     ptr_var = _generated_local("func_ptr", func.arg_names)
@@ -5190,23 +5201,23 @@ function _emit_option_function_code(func::RustFunctionSignature, arg_syms::Strin
     target = isempty(free_str) ?
         "$ptr_var, $channel_var = _call_target($cache_var, \"$sym\")" :
         "$ptr_var, $channel_var, $free_var = _call_target($cache_var, \"$sym\", \"$free_str\")"
-    free_expr = isempty(free_str) ? "C_NULL" : string(free_var)
+    free_expr = isempty(free_str) ? "rustcall′Base.C_NULL" : string(free_var)
 
     return """
 $(_target_cache_source(:fn, sym))
-struct $c_option_struct_name <: FFIByValue
-    is_some::UInt8
+struct $c_option_struct_name <: rustcall′RustCall.FFIByValue
+    is_some::rustcall′Base.UInt8
     value::$inner_slot_str
 end
 
 function $func_name($arg_syms)
 $(prologue)    $target
-    $c_var = $(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "call_rust_function($ptr_var, $c_option_struct_name, $converted_args_str)")))
+    $c_var = $(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "rustcall′RustCall.call_rust_function($ptr_var, $c_option_struct_name, $converted_args_str)")))
     _guard_panic($c_var, $channel_var, "$func_name", $free_expr)
     if $c_var.is_some == 1
-        RustOption{$inner_type_str}(true, _result_payload($inner_type_str, $c_var.value, $free_expr))
+        rustcall′RustCall.RustOption{$inner_type_str}(true, rustcall′RustCall._result_payload($inner_type_str, $c_var.value, $free_expr))
     else
-        RustOption{$inner_type_str}(false, nothing)
+        rustcall′RustCall.RustOption{$inner_type_str}(false, rustcall′Base.nothing)
     end
 end
 export $func_name"""
@@ -5227,7 +5238,7 @@ function _emit_struct_code(info::RustStructInfo; strict::Symbol = _ffi_strict(),
         return ""
     end
     struct_name = julia_struct_name(info)
-    release_alive = _python_owned_handle(info) ? "Ref(true)" : "rustcall′alive"
+    release_alive = _python_owned_handle(info) ? "rustcall′Base.Ref(true)" : "rustcall′alive"
     free_symbol = ffi_struct_free_symbol(info.ffi_name)
     free_cache = _target_cache_ref(:free, free_symbol)
 
@@ -5236,33 +5247,33 @@ function _emit_struct_code(info::RustStructInfo; strict::Symbol = _ffi_strict(),
     # Struct definition
     push!(lines, _target_cache_source(:free, free_symbol))
     push!(lines, "mutable struct $struct_name")
-    push!(lines, "    ptr::Ptr{Cvoid}")
+    push!(lines, "    ptr::rustcall′Base.Ptr{rustcall′Base.Cvoid}")
     # Captured at construction: the destructor, and the flag that says whether
     # the library is still loaded. A finalizer must take no lock, resolve no
     # symbol and log nothing (#249).
-    push!(lines, "    free_ptr::Ptr{Cvoid}")
-    push!(lines, "    alive::Base.RefValue{Bool}")
-    push!(lines, "    free_channel::Ptr{Cvoid}")
+    push!(lines, "    free_ptr::rustcall′Base.Ptr{rustcall′Base.Cvoid}")
+    push!(lines, "    alive::rustcall′Base.RefValue{rustcall′Base.Bool}")
+    push!(lines, "    free_channel::rustcall′Base.Ptr{rustcall′Base.Cvoid}")
     push!(lines, "")
-    push!(lines, "    function $struct_name(rustcall′ptr::Ptr{Cvoid}, rustcall′free_ptr::Ptr{Cvoid}, rustcall′alive::Base.RefValue{Bool}, rustcall′free_channel::Ptr{Cvoid} = C_NULL)")
+    push!(lines, "    function $struct_name(rustcall′ptr::rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′free_ptr::rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′alive::rustcall′Base.RefValue{rustcall′Base.Bool}, rustcall′free_channel::rustcall′Base.Ptr{rustcall′Base.Cvoid} = rustcall′Base.C_NULL)")
     push!(lines, "        rustcall′obj = new(rustcall′ptr, rustcall′free_ptr, rustcall′alive, rustcall′free_channel)")
-    push!(lines, "        finalizer(RustCall.finalize_rust_object!, rustcall′obj)")
+    push!(lines, "        rustcall′Base.finalizer(rustcall′RustCall.finalize_rust_object!, rustcall′obj)")
     push!(lines, "        return rustcall′obj")
     push!(lines, "    end")
     push!(lines, "")
-    push!(lines, "    function $struct_name(rustcall′ptr::Ptr{Cvoid})")
+    push!(lines, "    function $struct_name(rustcall′ptr::rustcall′Base.Ptr{rustcall′Base.Cvoid})")
     push!(lines, "        rustcall′free_ptr, rustcall′alive, rustcall′free_channel = _struct_generation($free_cache, $(repr(free_symbol)))")
     push!(lines, "        return $struct_name(rustcall′ptr, rustcall′free_ptr, $release_alive, rustcall′free_channel)")
     push!(lines, "    end")
     push!(lines, "end")
     push!(lines, "export $struct_name")
-    push!(lines, "function Base.show(rustcall′io::IO, rustcall′self::$struct_name)")
-    push!(lines, "    print(rustcall′io, nameof(@__MODULE__), \".$struct_name(\")")
-    push!(lines, "    show(rustcall′io, getfield(rustcall′self, :ptr))")
-    push!(lines, "    print(rustcall′io, \")\")")
+    push!(lines, "function rustcall′Base.show(rustcall′io::rustcall′Base.IO, rustcall′self::$struct_name)")
+    push!(lines, "    rustcall′Base.print(rustcall′io, rustcall′Base.nameof(@__MODULE__), \".$struct_name(\")")
+    push!(lines, "    rustcall′Base.show(rustcall′io, rustcall′Base.getfield(rustcall′self, :ptr))")
+    push!(lines, "    rustcall′Base.print(rustcall′io, \")\")")
     push!(lines, "end")
-    push!(lines, "function Base.show(rustcall′io::IO, ::MIME\"text/plain\", rustcall′self::$struct_name)")
-    push!(lines, "    Base.show(rustcall′io, rustcall′self)")
+    push!(lines, "function rustcall′Base.show(rustcall′io::rustcall′Base.IO, ::MIME\"text/plain\", rustcall′self::$struct_name)")
+    push!(lines, "    rustcall′Base.show(rustcall′io, rustcall′self)")
     push!(lines, "end")
     push!(lines, "")
 
@@ -5293,47 +5304,47 @@ function _emit_struct_code(info::RustStructInfo; strict::Symbol = _ffi_strict(),
         end
         push!(lines, "")
         # getproperty
-        push!(lines, "function Base.getproperty(rustcall′self::$struct_name, rustcall′field::Symbol)")
+        push!(lines, "function rustcall′Base.getproperty(rustcall′self::$struct_name, rustcall′field::rustcall′Base.Symbol)")
         push!(lines, "    if rustcall′field === :ptr")
-        push!(lines, "        return getfield(rustcall′self, :ptr)")
+        push!(lines, "        return rustcall′Base.getfield(rustcall′self, :ptr)")
         push!(lines, "    end")
-        push!(lines, "    _check_not_freed(rustcall′self, \"$struct_name\")")
+        push!(lines, "    rustcall′RustCall._check_not_freed(rustcall′self, \"$struct_name\")")
         for (field_name, field_type) in readable_fields
             getter_fn = info.field_getters[field_name]
             read = _crate_field_read_source(info, field_name, field_type, getter_fn,
-                                            "getfield(rustcall′self, :ptr)",
+                                            "rustcall′Base.getfield(rustcall′self, :ptr)",
                                             _target_cache_ref(:prop, getter_fn); strict = strict)
             push!(lines, "    if rustcall′field === $(repr(Symbol(julia_field_name(field_name))))")
             push!(lines, "        return $read")
             push!(lines, "    end")
         end
-        push!(lines, "    error(\"type $struct_name has no field \$rustcall′field\")")
+        push!(lines, "    rustcall′Base.error(\"type $struct_name has no field \$rustcall′field\")")
         push!(lines, "end")
         push!(lines, "")
 
         # setproperty!
-        push!(lines, "function Base.setproperty!(rustcall′self::$struct_name, rustcall′field::Symbol, rustcall′value)")
+        push!(lines, "function rustcall′Base.setproperty!(rustcall′self::$struct_name, rustcall′field::rustcall′Base.Symbol, rustcall′value)")
         push!(lines, "    if rustcall′field === :ptr")
-        push!(lines, "        error(\"cannot set internal field :ptr\")")
+        push!(lines, "        rustcall′Base.error(\"cannot set internal field :ptr\")")
         push!(lines, "    end")
-        push!(lines, "    _check_not_freed(rustcall′self, \"$struct_name\")")
+        push!(lines, "    rustcall′RustCall._check_not_freed(rustcall′self, \"$struct_name\")")
         for (field_name, field_type) in writable_fields
             setter_fn = info.field_setters[field_name]
             write = _crate_field_write_source(info, field_name, field_type, setter_fn,
-                                              "getfield(rustcall′self, :ptr)", "rustcall′value",
+                                              "rustcall′Base.getfield(rustcall′self, :ptr)", "rustcall′value",
                                               _target_cache_ref(:prop, setter_fn); strict = strict)
             push!(lines, "    if rustcall′field === $(repr(Symbol(julia_field_name(field_name))))")
             push!(lines, "        $write")
             push!(lines, "        return rustcall′value")
             push!(lines, "    end")
         end
-        push!(lines, "    error(\"type $struct_name has no field \$rustcall′field\")")
+        push!(lines, "    rustcall′Base.error(\"type $struct_name has no field \$rustcall′field\")")
         push!(lines, "end")
         push!(lines, "")
 
         # propertynames
         field_syms = join([repr(Symbol(julia_field_name(name))) for (name, _) in property_fields], ", ")
-        push!(lines, "function Base.propertynames(rustcall′self::$struct_name)")
+        push!(lines, "function rustcall′Base.propertynames(rustcall′self::$struct_name)")
         push!(lines, "    ($field_syms,)")
         push!(lines, "end")
     end
@@ -5349,14 +5360,15 @@ The expression twin of `_emit_preserved`: `GC.@preserve` needs at least one
 object, so an empty list must not produce the macro call at all.
 """
 _quote_preserved(preserved, call) =
-    isempty(preserved) ? call : Expr(:macrocall, Expr(:., :GC, QuoteNode(Symbol("@preserve"))),
+    isempty(preserved) ? call : Expr(:macrocall, Expr(:., GlobalRef(Base, :GC), QuoteNode(Symbol("@preserve"))),
                                      nothing, preserved..., call)
 
 """
     _emit_preserved(preserve_str, call) -> String
 
-`GC.@preserve <objects>, <call>` as source text, or just `<call>` when there is
-nothing to preserve.
+`GC.@preserve <objects>, <call>` as source text (through the file's
+`rustcall′Base` alias, #528), or just `<call>` when there is nothing to
+preserve.
 
 `GC.@preserve` takes at least one object followed by the expression, so the
 empty case has to omit the macro entirely rather than emit
@@ -5367,7 +5379,7 @@ where the statement form separates them by spaces.
 function _emit_preserved(preserve_str::AbstractString, call::AbstractString)
     objects = filter(!isempty, split(strip(preserve_str)))
     isempty(objects) && return call
-    return "GC.@preserve($(join(objects, ", ")), $call)"
+    return "rustcall′Base.GC.@preserve($(join(objects, ", ")), $call)"
 end
 
 """
@@ -5405,7 +5417,7 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
     c = _ffi_method_return(method, helper_owner)
 
     all_args = String[]
-    method.is_static || push!(all_args, "getfield(rustcall′self, :ptr)")
+    method.is_static || push!(all_args, "rustcall′Base.getfield(rustcall′self, :ptr)")
     isempty(converted_args_str) || push!(all_args, converted_args_str)
     args_str = join(all_args, ", ")
 
@@ -5415,7 +5427,7 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
     cache_var = _target_cache_ref(:m, wrapper_name)
     target = "$ptr_var, $channel_var = _call_target($cache_var, \"$wrapper_name\")"
     alive_var = _generated_local("alive", method.arg_names)
-    release_alive = _python_owned_handle(struct_info) ? "Ref(true)" : string(alive_var)
+    release_alive = _python_owned_handle(struct_info) ? "rustcall′Base.Ref(true)" : string(alive_var)
     if method.return_kind === :py_result
         return _emit_py_result_method_code(struct_info, method, arg_syms, converted_args_str,
                                            wrapper_name; prologue, preserve_str, strict, bare, frame_str)
@@ -5430,10 +5442,10 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
         payload_target = isempty(plan.free_symbol) ?
             "$ptr_var, $channel_var = _call_target($cache_var, \"$wrapper_name\")" :
             "$ptr_var, $channel_var, $free_var = _call_target($cache_var, \"$wrapper_name\", \"$(plan.free_symbol)\")"
-        free_expr = isempty(plan.free_symbol) ? "C_NULL" : string(free_var)
+        free_expr = isempty(plan.free_symbol) ? "rustcall′Base.C_NULL" : string(free_var)
         payload_body = """
 $(prologue)    $payload_target
-    $c_var = $(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "call_rust_function($ptr_var, $(plan.struct_name), $args_str)")))
+    $c_var = $(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "rustcall′RustCall.call_rust_function($ptr_var, $(plan.struct_name), $args_str)")))
     _guard_panic($c_var, $channel_var, "$method_label", $free_expr)
 $(_emit_payload_decode(plan, c_var, free_expr))"""
         return _emit_method_definition(struct_name, method, arg_syms, payload_body;
@@ -5443,17 +5455,17 @@ $(_emit_payload_decode(plan, c_var, free_expr))"""
     call = if method.returns_boxed_struct
         target = "$ptr_var, $channel_var, $free_var, $alive_var, $free_channel_var = " *
                  "_ctor_target($cache_var, \"$wrapper_name\", \"$(ffi_struct_free_symbol(struct_info.ffi_name))\")"
-        "$struct_name(call_rust_function($ptr_var, Ptr{Cvoid}, $args_str), $free_var, $release_alive, $free_channel_var)"
+        "$struct_name(rustcall′RustCall.call_rust_function($ptr_var, rustcall′Base.Ptr{rustcall′Base.Cvoid}, $args_str), $free_var, $release_alive, $free_channel_var)"
     elseif ffi_owned_string_return(c)
         target = "$ptr_var, $channel_var, $free_var = _call_target($cache_var, \"$wrapper_name\", \"$(c.free_symbol)\")"
-        "_call_rust_owned_string_ptr($ptr_var, $free_var, $args_str)"
+        "rustcall′RustCall._call_rust_owned_string_ptr($ptr_var, $free_var, $args_str)"
     elseif ffi_borrowed_string_return(c)
-        "_call_rust_borrowed_string_ptr($ptr_var, $args_str)"
+        "rustcall′RustCall._call_rust_borrowed_string_ptr($ptr_var, $args_str)"
     else
-        ret_type_str = string(ffi_return_symbol_or_throw(method.return_type, method.return_abi,
+        ret_type_str = _emitted_type_source(ffi_return_symbol_or_throw(method.return_type, method.return_abi,
                                                          _ffi_context(method, struct_name);
                                                          strict = strict))
-        "call_rust_function($ptr_var, $ret_type_str, $args_str)"
+        "rustcall′RustCall.call_rust_function($ptr_var, $ret_type_str, $args_str)"
     end
     body = """
 $(prologue)    $target
@@ -5489,7 +5501,7 @@ end"""
         dcomma = isempty(dargs) ? "" : ", $dargs"
         bare_def = bare ? "\n$method_name($dargs) = $method_name($struct_name$dcomma)" : ""
         """
-function $method_name(::Type{$struct_name}$comma_args)
+function $method_name(::rustcall′Base.Type{$struct_name}$comma_args)
 $body
 end$bare_def
 export $method_name"""
@@ -5497,7 +5509,7 @@ export $method_name"""
         self_args = isempty(arg_syms) ? "" : ", $arg_syms"
         """
 function $method_name(rustcall′self::$struct_name$self_args)
-    _check_not_freed(rustcall′self, "$struct_name")
+    rustcall′RustCall._check_not_freed(rustcall′self, "$struct_name")
 $body
 end
 export $method_name"""
@@ -5508,20 +5520,20 @@ end
 # The source-text counterpart of `_payload_decode_expr`.
 function _emit_payload_decode(plan::MethodPayloadPlan, c_var, free_expr::AbstractString)
     if plan.kind === :result
-        ok_t, err_t = plan.surface
+        ok_t, err_t = map(_emitted_source, plan.surface)
         return """
     if $c_var.is_ok == 1
-        RustResult{$ok_t, $err_t}(true, _result_payload($ok_t, $c_var.ok_value, $free_expr))
+        rustcall′RustCall.RustResult{$ok_t, $err_t}(true, rustcall′RustCall._result_payload($ok_t, $c_var.ok_value, $free_expr))
     else
-        RustResult{$ok_t, $err_t}(false, _result_payload($err_t, $c_var.err_value, $free_expr))
+        rustcall′RustCall.RustResult{$ok_t, $err_t}(false, rustcall′RustCall._result_payload($err_t, $c_var.err_value, $free_expr))
     end"""
     end
-    inner_t, _ = plan.surface
+    inner_t = _emitted_source(first(plan.surface))
     return """
     if $c_var.is_some == 1
-        RustOption{$inner_t}(true, _result_payload($inner_t, $c_var.value, $free_expr))
+        rustcall′RustCall.RustOption{$inner_t}(true, rustcall′RustCall._result_payload($inner_t, $c_var.value, $free_expr))
     else
-        RustOption{$inner_t}(false, nothing)
+        rustcall′RustCall.RustOption{$inner_t}(false, rustcall′Base.nothing)
     end"""
 end
 
@@ -5541,9 +5553,10 @@ function _emit_py_result_method_code(info::RustStructInfo, method::RustMethod,
     method_name = julia_method_name(method)
     boxed = method.returns_boxed_struct
     ok_type_str, ok_slot_str, is_unit = boxed ?
-        (struct_name, "Ptr{Cvoid}", false) :
+        (struct_name, "rustcall′Base.Ptr{rustcall′Base.Cvoid}", false) :
         _py_result_types(method.ok_type, method.ok_abi,
                          _ffi_context(method, struct_name); strict = strict)
+    ok_type_str, ok_slot_str = _emitted_type_source(ok_type_str), _emitted_type_source(ok_slot_str)
     helper_owner = _method_string_owner(method, "$(info.ffi_name)_$(rust_name(method.name))")
     c_result_struct_name = "CResult_$helper_owner"
     ptr_var = _generated_local("func_ptr", method.arg_names)
@@ -5551,11 +5564,11 @@ function _emit_py_result_method_code(info::RustStructInfo, method::RustMethod,
     channel_var = _generated_local("panic_channel", method.arg_names)
     free_var = _generated_local("free_ptr", method.arg_names)
     alive_var = _generated_local("alive", method.arg_names)
-    release_alive = _python_owned_handle(info) ? "Ref(true)" : string(alive_var)
+    release_alive = _python_owned_handle(info) ? "rustcall′Base.Ref(true)" : string(alive_var)
     free_channel_var = _generated_local("free_panic_channel", method.arg_names)
 
     all_args = String[]
-    method.is_static || push!(all_args, "getfield(rustcall′self, :ptr)")
+    method.is_static || push!(all_args, "rustcall′Base.getfield(rustcall′self, :ptr)")
     isempty(converted_args_str) || push!(all_args, converted_args_str)
     args_str = join(all_args, ", ")
     method_label = "$(struct_name)::$(method_name)"
@@ -5570,33 +5583,33 @@ function _emit_py_result_method_code(info::RustStructInfo, method::RustMethod,
     else
         "$ptr_var, $channel_var = _call_target($cache_var, \"$wrapper_name\")"
     end
-    free_expr = isempty(payload_free) ? "C_NULL" : string(free_var)
+    free_expr = isempty(payload_free) ? "rustcall′Base.C_NULL" : string(free_var)
     ok_value = if is_unit
-        "nothing"
+        "rustcall′Base.nothing"
     elseif boxed
         "$struct_name($c_var.ok_value, $free_var, $release_alive, $free_channel_var)"
     else
-        "_result_payload($ok_type_str, $c_var.ok_value, $free_expr)"
+        "rustcall′RustCall._result_payload($ok_type_str, $c_var.ok_value, $free_expr)"
     end
 
     body = """
 $(prologue)    $target
-    $c_var = $(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "call_rust_function($ptr_var, $c_result_struct_name, $args_str)")))
+    $c_var = $(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "rustcall′RustCall.call_rust_function($ptr_var, $c_result_struct_name, $args_str)")))
     _guard_panic($c_var, $channel_var, "$method_label", $free_expr)
     if $c_var.is_ok == 1
-        RustResult{$ok_type_str, String}(true, $ok_value)
+        rustcall′RustCall.RustResult{$ok_type_str, rustcall′Base.String}(true, $ok_value)
     else
-        RustResult{$ok_type_str, String}(false, RustCall.PYO3_OPAQUE_ERROR)
+        rustcall′RustCall.RustResult{$ok_type_str, rustcall′Base.String}(false, rustcall′RustCall.PYO3_OPAQUE_ERROR)
     end"""
 
     declaration = """
 # The call site's snapshot cache, beside the wrapper that uses it (#253).
 $(_target_cache_source(:m, wrapper_name))
 # RustCall's own mirror of a `#[repr(C)]` aggregate it generated (#245).
-struct $c_result_struct_name <: FFIByValue
-    is_ok::UInt8
+struct $c_result_struct_name <: rustcall′RustCall.FFIByValue
+    is_ok::rustcall′Base.UInt8
     ok_value::$ok_slot_str
-    err_value::Int32
+    err_value::rustcall′Base.Int32
 end
 """
 
@@ -5615,7 +5628,7 @@ end"""
         dcomma = isempty(dargs) ? "" : ", $dargs"
         bare_def = bare ? "\n$method_name($dargs) = $method_name($struct_name$dcomma)" : ""
         return """$declaration
-function $method_name(::Type{$struct_name}$comma_args)
+function $method_name(::rustcall′Base.Type{$struct_name}$comma_args)
 $body
 end$bare_def
 export $method_name"""
@@ -5623,7 +5636,7 @@ export $method_name"""
     self_args = isempty(arg_syms) ? "" : ", $arg_syms"
     return """$declaration
 function $method_name(rustcall′self::$struct_name$self_args)
-    _check_not_freed(rustcall′self, "$struct_name")
+    rustcall′RustCall._check_not_freed(rustcall′self, "$struct_name")
 $body
 end
 export $method_name"""

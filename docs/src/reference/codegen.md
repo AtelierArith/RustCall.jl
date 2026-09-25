@@ -28,3 +28,16 @@ Pages = [joinpath("src", "rustc_json.jl")]
 Modules = [RustCall]
 Pages = [joinpath("src", "codegen.jl")]
 ```
+
+## Names the generated code uses (`src/emitted_names.jl`)
+
+A generated module binds the crate's items under their own names, so the code
+it emits reaches Base, Core, RustCall and PythonCall only through names no Rust
+identifier can spell: a `GlobalRef` in `@rust_crate` and the PyO3 host, a
+`rustcall′Base` / `rustcall′RustCall` alias in a file written by
+`write_bindings_to_file` (#528).
+
+```@autodocs
+Modules = [RustCall]
+Pages = [joinpath("src", "emitted_names.jl")]
+```

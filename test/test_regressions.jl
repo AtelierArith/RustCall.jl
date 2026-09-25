@@ -439,7 +439,7 @@ end
         # generated finalizer, and it *counts* the failure instead of logging
         # it: `@warn` allocates and can yield, and a finalizer may run while
         # the thread holds `REGISTRY_LOCK` (#249).
-        @test occursin("finalizer(RustCall.finalize_rust_object!, rustcall′obj)", code)
+        @test occursin("rustcall′Base.finalizer(rustcall′RustCall.finalize_rust_object!, rustcall′obj)", code)
         src = read(joinpath(dirname(dirname(pathof(RustCall))), "src", "structs.jl"), String)
         i = findfirst("function finalize_rust_object!", src)
         @test i !== nothing
@@ -1361,15 +1361,19 @@ end
         # Both crate-path generators check the raw buffer's panic channel before
         # copying it and release it through the contract's symbol. Previously this branch read
         # `call_rust_function(ptr, Any, ...)` and leaked.
-        emitted = RustCall._emit_struct_code(info)
-        @test occursin("_guard_panic(call_rust_function(rustcall′fp, RustCall.CRustString", emitted)
-        @test occursin("RustCall._take_owned_string(rustcall′raw, rustcall′freep)", emitted)
+        # Both spell Base and RustCall through names no crate item can take
+        # (#528); compared here without them.
+        unqualified(s) = replace(s, "rustcall′Base." => "", "rustcall′RustCall." => "",
+                                 "Base." => "", "RustCall." => "")
+        emitted = unqualified(RustCall._emit_struct_code(info))
+        @test occursin("_guard_panic(call_rust_function(rustcall′fp, CRustString", emitted)
+        @test occursin("_take_owned_string(rustcall′raw, rustcall′freep)", emitted)
         @test occursin("Rc246Counter_free_rust_string", emitted)
         @test !occursin("call_rust_function(func_ptr, Any", emitted)
 
-        generated = string(RustCall._generate_property_accessors(info))
-        @test occursin("_guard_panic(call_rust_function(rustcall′fp, RustCall.CRustString", generated)
-        @test occursin("RustCall._take_owned_string(rustcall′raw, rustcall′freep)", generated)
+        generated = unqualified(string(RustCall._generate_property_accessors(info)))
+        @test occursin("_guard_panic(call_rust_function(rustcall′fp, CRustString", generated)
+        @test occursin("_take_owned_string(rustcall′raw, rustcall′freep)", generated)
         @test occursin("Rc246Counter_free_rust_string", generated)
 
         # A plain field is unaffected.
@@ -2025,14 +2029,18 @@ end
         res = only(f for f in sigs if f.name == "rc276_crate_res")
         opt = only(f for f in sigs if f.name == "rc276_crate_opt")
 
-        for emitted in (RustCall._emit_function_code(res),
-                        string(RustCall._generate_crate_function_wrapper(res)))
+        # Compared without the qualification every emitter spells Base and
+        # RustCall with (#528).
+        unqualified(s) = replace(s, "rustcall′Base." => "", "rustcall′RustCall." => "",
+                                 "Base." => "", "RustCall." => "")
+        for emitted in unqualified.((RustCall._emit_function_code(res),
+                                     string(RustCall._generate_crate_function_wrapper(res))))
             @test occursin("ok_value::UInt32", replace(emitted, " " => ""))
             @test occursin("_result_payload(Char", replace(emitted, " " => ""))
             @test occursin("RustResult{Char,Int32}", replace(emitted, " " => ""))
         end
-        for emitted in (RustCall._emit_function_code(opt),
-                        string(RustCall._generate_crate_function_wrapper(opt)))
+        for emitted in unqualified.((RustCall._emit_function_code(opt),
+                                     string(RustCall._generate_crate_function_wrapper(opt))))
             @test occursin("value::UInt32", replace(emitted, " " => ""))
             @test occursin("_result_payload(Char", replace(emitted, " " => ""))
         end

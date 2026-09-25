@@ -264,17 +264,17 @@ end
 
     code = RustCall.emit_crate_module_code(info, "/tmp/libsample_268.so")
     # The mirror of the Rust aggregate, with the owned buffer in the payload slot.
-    @test occursin("struct CResult_Divider_checked_div <: FFIByValue", code)
-    @test occursin("err_value::RustCall.CRustString", code)
-    @test occursin("struct COption_Divider_ratio <: FFIByValue", code)
+    @test occursin("struct CResult_Divider_checked_div <: rustcall′RustCall.FFIByValue", code)
+    @test occursin("err_value::rustcall′RustCall.CRustString", code)
+    @test occursin("struct COption_Divider_ratio <: rustcall′RustCall.FFIByValue", code)
     # The release function is snapshotted with the call pointer: a crate method
     # names its buffer after `<Struct>_<method>` (#268, #277).
     @test occursin("rustcall′func_ptr, rustcall′panic_channel, rustcall′free_ptr = _call_target(var\"#TC#m#rustcall_Divider_checked_div\", \"rustcall_Divider_checked_div\", \"Divider_checked_div_free_rust_string\")",
                    code)
-    @test occursin("_result_payload(String, rustcall′c_payload.err_value, rustcall′free_ptr)", code)
+    @test occursin("_result_payload(rustcall′Base.String, rustcall′c_payload.err_value, rustcall′free_ptr)", code)
     # No payload is a string here, so nothing is resolved to release.
     @test occursin("rustcall′func_ptr, rustcall′panic_channel = _call_target(var\"#TC#m#rustcall_Divider_ratio\", \"rustcall_Divider_ratio\")", code)
-    @test occursin("_result_payload(Float64, rustcall′c_payload.value, C_NULL)", code)
+    @test occursin("_result_payload(rustcall′Base.Float64, rustcall′c_payload.value, rustcall′Base.C_NULL)", code)
     # The channel is read before either payload is decoded (#244).
     at = findfirst("function checked_div(rustcall′self::Divider, d)", code)
     @test at !== nothing
@@ -288,7 +288,7 @@ end
     # The in-memory emitter emits the same aggregate and decoding.
     expr = string(RustCall._generate_crate_method_wrapper(divider, methods["describe"]))
     @test occursin("CResult_Divider_describe", expr)
-    @test occursin("_result_payload(String,", expr)
+    @test occursin("_result_payload(Base.String,", expr)
     @test occursin("Divider_describe_free_rust_string", expr)
 end
 
@@ -345,7 +345,7 @@ end
             RustCall.write_bindings_to_file(MRO_SAMPLE_CRATE, path;
                                             output_module_name = "Bindings268")
             text = read(path, String)
-            @test occursin("struct CResult_Divider_checked_div <: FFIByValue", text)
+            @test occursin("struct CResult_Divider_checked_div <: rustcall′RustCall.FFIByValue", text)
             @test occursin("_result_payload", text)
             @test occursin("# Bindings format: $(RustCall.BINDINGS_FORMAT_VERSION)", text)
 

@@ -160,7 +160,8 @@ _hrr_with(r::RustCall.CrateBuildRecord; kwargs...) =
             lines = filter(l -> startswith(l, "const _BUILD_RECORD = "), split(code, '\n'))
             @test length(lines) == 1
             m = Module(:HrrCode474)
-            Core.eval(m, :(import RustCall))
+            # The file names RustCall through its alias (#528).
+            Core.eval(m, Meta.parse("import RustCall as rustcall′RustCall"))
             code_record = Core.eval(m, Meta.parse(chopprefix(only(lines), "const _BUILD_RECORD = ")))
             @test code_record == expr_record
             @test expr_record.lib_name == "rust_crate_hrr_474"
@@ -172,8 +173,10 @@ _hrr_with(r::RustCall.CrateBuildRecord; kwargs...) =
             # written file cannot skip the check (#474 review).
             prologue = collect(RustCall._crate_init_prologue())
             @test _hrr_init_body(ex)[1:length(prologue)] == prologue
-            @test _hrr_init_body(Meta.parseall(code))[1:length(prologue)] == prologue
-            @test prologue[1] == :(RustCall._warn_if_build_env_changed(_BUILD_RECORD; strict = true))
+            # The file spells the same statements through its aliases (#528).
+            written = [Meta.parse(RustCall._emitted_source(p)) for p in prologue]
+            @test _hrr_init_body(Meta.parseall(code))[1:length(prologue)] == written
+            @test prologue[1] == :($(GlobalRef(RustCall, :_warn_if_build_env_changed))(_BUILD_RECORD; strict = true))
             # `_LIB_NAME` is read from the record in both, never recorded twice.
             @test occursin("const _LIB_NAME = _BUILD_RECORD.lib_name", code)
             @test occursin("_LIB_NAME = _BUILD_RECORD.lib_name", string(ex))
@@ -481,7 +484,7 @@ _hrr_with(r::RustCall.CrateBuildRecord; kwargs...) =
         @test only(_hrr_record_in(ex)) == named
         code = RustCall.emit_crate_module_code(info, "/tmp/libsnap474.dylib";
                                                lib_name = "rust_crate_snap_474", build_record = named)
-        @test occursin("const _BUILD_RECORD = " * repr(named), code)
+        @test occursin("const _BUILD_RECORD = rustcall′" * repr(named), code)
         @test _hrr_error(() -> RustCall.emit_crate_module(info, "/tmp/x.dylib";
                              lib_name = "other", build_record = named)) isa ArgumentError
         # Both entry points build under the snapshot they record.

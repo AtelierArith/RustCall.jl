@@ -417,7 +417,8 @@ end
                                              false, String[]; arg_abis = ["str", ""])
     _, preserved_c, call_args_c = RustCall._string_arg_plan(collide, identity)
     @test preserved_c == [Symbol("rustcall′str′s")]
-    @test call_args_c[end] == :(Int32(__rustcall_str_s))
+    # `Int32` is the `GlobalRef` every emitted conversion carries (#528).
+    @test call_args_c[end] == :($(GlobalRef(Base, :Int32))(__rustcall_str_s))
 
     if RustCall.check_rustc_available()
         # Struct methods use the same ABI decision: a `&str` return of a method
