@@ -1490,11 +1490,25 @@ function manifest_function_signatures(manifest::Dict; only_attributed::Bool = tr
             python_name = _mstr(f, "python_name"),
             python_path = String[String(p) for p in _mvec(f, "python_path")],
             cfg_features = String[String(c) for c in _mvec(f, "cfg_features")],
-            reserved_names = types,
+            reserved_names = _wrapper_scope(types, manifest_type_params(f)),
         ))
     end
     return sigs
 end
+
+"""
+    _wrapper_scope(reserved, type_params) -> Set{String}
+
+Every name in scope in a generated wrapper besides its parameters, as the
+allocator (`julia_parameter_names`) is given it: the module's definitions
+(`_manifest_reserved_names`) and the type variables the wrapper declares —
+its item's generic parameters, which a generic struct's method wrappers bind
+with `where {T...}` (PR #527 review: `G<obj_>` with `obj: obj_` renamed the
+argument onto `obj_`). Method-level generic parameters are refused by the
+codegen (#471, #477), so an item's are all there are.
+"""
+_wrapper_scope(reserved, type_params) =
+    union(Set{String}(reserved), Set{String}(String(t) for t in type_params))
 
 """
     _manifest_reserved_names(manifest) -> Set{String}
@@ -1647,7 +1661,8 @@ function manifest_struct_infos(manifest::Dict; origins = nothing, reserved_names
         push!(infos, RustStructInfo(
             _mstr(s, "name"),
             manifest_type_params(s),
-            RustMethod[_manifest_method(m, reserved) for m in _mvec(s, "methods")],
+            RustMethod[_manifest_method(m, _wrapper_scope(reserved, manifest_type_params(s)))
+                       for m in _mvec(s, "methods")],
             _mstr(s, "context_source"),
             fields,
             true,

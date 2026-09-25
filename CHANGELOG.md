@@ -62,8 +62,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   functions, types, constructors, methods, accessors and submodules, read from
   the same one-namespace definitions the #514 layout check uses
   (`julia_definitions`, `_pyo3_host_definitions`), which the manifest
-  conversion hands the constructors. So a struct `foo` makes a parameter `foo`
-  `foo_`, while a parameter `Foo` is kept. `julia_definitions` now files a
+  conversion hands the constructors — together with the wrapper's own type
+  variables, the generic parameters a generic struct's method wrappers bind
+  with `where {T...}` (`G<obj_>` with `obj: obj_` no longer renames the
+  argument onto `obj_`). So a struct `foo` makes a parameter `foo` `foo_`,
+  while a parameter `Foo` is kept. `julia_definitions` now files a
   method with a receiver that returns its struct under the method's name, as
   every emitter binds it, not as a constructor. `test/test_parameter_names.jl`
   derives all of it from what every emitter emits: it fails, naming the name,

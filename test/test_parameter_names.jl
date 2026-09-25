@@ -58,14 +58,23 @@ function _pn_params(call::Expr)
 end
 
 # Every `function` definition in `x` whose signature is a call, with its body.
-function _pn_defs(x, out = Tuple{Expr, Any}[])
+function _pn_defs(x, out = Tuple{Expr, Any, Vector{Symbol}}[])
     x isa Expr || return out
     if x.head in (:function, :(=)) && length(x.args) == 2
         sig = x.args[1]
+        # The type variables the definition introduces (`where {T}`).
+        typevars = Symbol[]
         while sig isa Expr && sig.head in (:where, :(::))
+            if sig.head === :where
+                for v in sig.args[2:end]
+                    v = _pn_unesc(v)
+                    v isa Expr && v.head === :(<:) && (v = _pn_unesc(v.args[1]))
+                    v isa Symbol && push!(typevars, v)
+                end
+            end
             sig = sig.args[1]
         end
-        sig isa Expr && sig.head === :call && push!(out, (sig, x.args[2]))
+        sig isa Expr && sig.head === :call && push!(out, (sig, x.args[2], typevars))
     end
     foreach(a -> _pn_defs(a, out), x.args)
     return out
@@ -126,12 +135,12 @@ end
 # `(parameters, names bound, names read)` of every definition that takes `name`.
 function _pn_wrappers(expr, name::Symbol)
     out = []
-    for (sig, body) in _pn_defs(expr)
+    for (sig, body, typevars) in _pn_defs(expr)
         params = _pn_params(sig)
         name in params || continue
         bound, read = Set{Symbol}(), Set{Symbol}()
         _pn_hygienic(sig) ? _pn_escaped_body!(body, bound, read) : _pn_body!(body, bound, read)
-        push!(out, (sig, params, bound, read))
+        push!(out, (sig, params, bound, read, typevars))
     end
     return out
 end
@@ -313,6 +322,19 @@ _pn_identifier(s::Symbol) = Base.isidentifier(s) && Meta.parse(String(s); raise 
         @test !any(n -> n in PN._JULIA_EMITTER_NAMES || n == "S", out)
         @test allunique(out)
     end
+    # A generic struct's type variables are in scope in its method wrappers
+    # (`where {obj_}`): a parameter renamed onto one is renamed again (PR #527
+    # review).
+    generic = PN.extract_manifest("""
+        #[julia] pub struct G<obj_> { pub v: obj_ }
+        impl<obj_: Copy> G<obj_> {
+            pub fn new(obj: obj_) -> Self { G { v: obj } }
+            pub fn pick(&self, obj: obj_, obj_2: obj_) -> obj_ { obj }
+        }
+        """; mode = "inline")
+    for m in only(PN.manifest_struct_infos(generic)).methods
+        @test !("obj_" in m.arg_names) && allunique(m.arg_names)
+    end
     # The manifest's own types are what the constructors are given.
     m = PN.extract_manifest("""
         #[julia] pub struct foo { pub v: i32 }
@@ -394,7 +416,7 @@ else
         # reserved name is renamed, and no wrapper then has two parameters of
         # one name or a parameter spelled like a name it reads.
         probes = vcat(collect(PN._JULIA_EMITTER_NAMES),
-                      ["S", "P", "m", "st", "f_plain", "CResult_f_result"])
+                      ["S", "P", "m", "st", "f_plain", "CResult_f_result", "T"])
         for (label, gen) in emitters
             # The parameters a wrapper has of its own (the PyO3 host's `obj`).
             own = Dict(sig.args[1] => setdiff(params, [:zqx])
@@ -406,8 +428,11 @@ else
                 taken = n in PN._JULIA_EMITTER_NAMES || n in reserved ||
                         PN._reserved_aggregate_name(n)
                 taken && @test renamed !== Symbol(n)
-                for (sig, params, bound, read) in _pn_wrappers(gen(n), renamed)
+                for (sig, params, bound, read, typevars) in _pn_wrappers(gen(n), renamed)
+                    # Never a type variable of the wrapper itself (PR #527
+                    # review: `G<obj_>` with `obj: obj_`).
                     ok = allunique(params) && renamed in params &&
+                         isempty(intersect(params, typevars)) &&
                          (!taken || !(Symbol(n) in params) ||
                           Symbol(n) in get(own, sig.args[1], Symbol[]))
                     ok || @info "$label: `$n` meets the wrapper" sig
@@ -469,6 +494,19 @@ else
             catch
             end
         end
+    end
+
+    @testset "a generic struct's type variable is no parameter (#527 review)" begin
+        # `rust\"\"\"` defines the generic struct's method wrappers with
+        # `where {obj_}`; a parameter `obj_` beside it does not define.
+        sandbox = Module(:PnGenericSandbox)
+        Core.eval(sandbox, :(using RustCall))
+        @test (Core.eval(sandbox, Meta.parse("""rust\"\"\"
+            #[julia] pub struct G<obj_> { pub v: obj_ }
+            impl<obj_: Copy> G<obj_> {
+                pub fn pick(&self, obj: obj_) -> obj_ { obj }
+            }
+            \"\"\"""")); true)
     end
 
     @testset "a PyO3 host method whose parameter is `obj` defines (#526)" begin
