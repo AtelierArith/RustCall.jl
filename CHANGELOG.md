@@ -72,8 +72,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   extracts from nothing else, and PyO3 reads a `Vec` from one as from any
   sequence), another array or a tuple element by element, and anything else
   as it is (`nothing` is `None`); `_pyo3_from_python` reads `None` back as
-  `nothing` and an object whose Python type is one of the module's classes
-  (a table built once from the class objects) as that class's Julia handle.
+  `nothing` and an object as the Julia handle of the most derived of the
+  module's classes in its type's MRO (a table built once from the class
+  objects), so a `#[pyclass(extends = ...)]` object stays itself and an
+  instance of a Python-defined subclass of a `#[pyclass(subclass)]` is its
+  nearest bound base.
   So a type alias of a class handle (`type Handle = Py<Point>`), an optional
   one, a bare `Option` beside a glob of a module whose `Option` is private,
   a crate's own `Option` (by path or shadowing the bare name), `Py<Self>`,

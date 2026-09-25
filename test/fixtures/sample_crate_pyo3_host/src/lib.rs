@@ -415,6 +415,43 @@ fn points(n: usize) -> Vec<Point> {
         .collect()
 }
 
+/// A subclassable class, a Rust subclass of it, and a function that hands back
+/// whatever `Shape` it is given: an object is read back as the most derived
+/// bound class in its type's MRO (PR #525 review), so a `Square` stays a
+/// `Square` and a Python-defined subclass of `Shape` is a `Shape`.
+#[pyclass(subclass)]
+struct Shape {
+    #[pyo3(get)]
+    tag: i32,
+}
+
+#[pymethods]
+impl Shape {
+    #[new]
+    fn new(tag: i32) -> Self {
+        Shape { tag }
+    }
+}
+
+#[pyclass(extends = Shape)]
+struct Square {
+    #[pyo3(get)]
+    extra: i32,
+}
+
+#[pymethods]
+impl Square {
+    #[new]
+    fn new(tag: i32, extra: i32) -> (Self, Shape) {
+        (Square { extra }, Shape { tag })
+    }
+}
+
+#[pyfunction]
+fn echo_shape(shape: Py<Shape>) -> Py<Shape> {
+    shape
+}
+
 #[pymodule]
 fn sample_crate_pyo3_host(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(add, m)?)?;
@@ -440,6 +477,9 @@ fn sample_crate_pyo3_host(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(vec_sum, m)?)?;
     m.add_function(wrap_pyfunction!(count_true, m)?)?;
     m.add_function(wrap_pyfunction!(points, m)?)?;
+    m.add_function(wrap_pyfunction!(echo_shape, m)?)?;
+    m.add_class::<Shape>()?;
+    m.add_class::<Square>()?;
     m.add_class::<Point>()?;
     m.add_class::<Wrapper>()?;
     m.add_class::<Gate>()?;

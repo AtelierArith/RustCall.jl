@@ -1049,9 +1049,13 @@ the value conversions every binding goes through (PR #525 review):
   (pyo3-numpy extracts from nothing else, #424, and PyO3 reads a `Vec` from one
   as from any sequence); another array or a tuple is converted element by
   element; anything else is passed as it is (`nothing` is `None`).
-* `_pyo3_from_python(v[, T])` — `None` is `nothing`; an object whose type is one
-  of the module's classes (`_pyo3_class_pairs`, emitted after them) is that
-  class's Julia handle; anything else is `pyconvert`ed to the hint `T` when it
+* `_pyo3_from_python(v[, T])` — `None` is `nothing`; an object is the Julia
+  handle of the most derived of the module's classes (`_pyo3_class_pairs`,
+  emitted after them) in its type's MRO — its own class first, so a
+  `#[pyclass(extends = ...)]` object stays itself and an instance of a
+  Python-defined subclass is its nearest bound base. The walk is not cached:
+  a cache keyed by the type object would keep every type it saw alive, and
+  the walk is a few identity comparisons; anything else is `pyconvert`ed to the hint `T` when it
   fits and stays the Python object when it does not. A list read as
   `Vector{T}` is read element by element, so a list of class objects is a
   vector of handles.
@@ -1130,9 +1134,15 @@ function _pyo3_host_prelude_exprs(path::AbstractString, features::Vector{String}
         function _pyo3_from_python(v)
             v isa PythonCall.Py || return v
             PythonCall.pyis(v, PythonCall.pybuiltins.None) && return nothing
-            t = PythonCall.pytype(v)
-            for (T, cls) in _pyo3_classes()
-                PythonCall.pyis(t, cls) && return T(v)
+            # The most derived bound class in the type's MRO: the type itself
+            # first, then its bases in order, so a Rust subclass stays itself
+            # and a subclass defined in Python is its nearest bound base.
+            classes = _pyo3_classes()
+            isempty(classes) && return v
+            for t in PythonCall.pytype(v).__mro__
+                for (T, cls) in classes
+                    PythonCall.pyis(t, cls) && return T(v)
+                end
             end
             return v
         end

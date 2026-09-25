@@ -877,6 +877,18 @@ end
     @test pts isa Vector{M.Point}
     @test [p.x for p in pts] == [0.0, 1.0, 2.0]
     @test M.points(0) == []
+    # An object is read back as the most derived bound class in its type's
+    # MRO (PR #525 review): a Rust subclass stays itself, and a subclass
+    # defined in Python is its nearest bound base.
+    square = M.Square(Int32(1), Int32(2))
+    @test square isa M.Square
+    @test M.echo_shape(square) isa M.Square
+    @test M.echo_shape(M.Shape(Int32(3))) isa M.Shape
+    Sub = PythonCall.pytype("Sub", (getfield(M.Shape(Int32(0)), :_rustcall_py).__class__,),
+                            PythonCall.pydict())
+    back = M.echo_shape(Sub(Int32(5)))
+    @test back isa M.Shape
+    @test back.tag == 5
 
     if _numpy_available()
         # The typed binding converts the Julia array and the numpy return.
