@@ -152,7 +152,11 @@ pub fn pyo3_name(attrs: &[Attribute]) -> String {
                 }
                 if let Meta::List(list) = &meta {
                     if let Ok(id) = syn::parse2::<syn::Ident>(list.tokens.clone()) {
-                        return id.to_string();
+                        // An identifier is a Rust name: `#[getter(r#type)]`
+                        // is the attribute `type`, through the one unraw
+                        // rule (PR #525 review). A string `name = "..."`
+                        // above is taken as written.
+                        return crate::codegen::unraw(&id.to_string()).to_string();
                     }
                 }
             }

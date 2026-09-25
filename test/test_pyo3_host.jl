@@ -438,7 +438,8 @@ end
     @test summary(RustCall._pyo3_host_bound_properties(gate)) ==
           [("for", "for_", true, true), ("end", "end_", true, false),
            ("plain", "plain", true, false), ("anchor", "anchor", true, true),
-           ("samples", "samples", true, true), ("twin", "twin", true, true)]
+           ("samples", "samples", true, true), ("twin", "twin", true, true),
+           ("maybe_twin", "maybe_twin", true, true), ("type", "type", true, false)]
     point = only(filter(s -> s.name == "Point", info.pyo3_structs))
     @test summary(RustCall._pyo3_host_bound_properties(point)) ==
           [("x", "x", true, true), ("y", "y", true, true)]
@@ -448,7 +449,7 @@ end
     @test occursin("s === :for_ && (s = :for)", text)
     @test occursin("s === :end_ && (s = :end)", text)
     @test !occursin("s === :plain && (s =", text)
-    @test occursin("(:for_, :end_, :plain, :anchor, :samples, :twin)", text)
+    @test occursin("(:for_, :end_, :plain, :anchor, :samples, :twin, :maybe_twin, :type)", text)
     # The getter types the read, as a field's Rust type does.
     @test occursin("s === :for && return PythonCall.pyconvert(Int32, v)", text)
     @test occursin("property `end_` is read-only", text)
@@ -494,10 +495,28 @@ end
     @test occursin("Gate((getfield(obj, :_rustcall_py)).copied())", method_text("copied"))
     @test occursin("getfield(other, :_rustcall_py)", method_text("level_of"))
 
+    # An `Option` of a class is read by its layers, not by its last
+    # identifier: `nothing` passes as `nothing` (no `getfield` on it) and a
+    # Python `None` reads back as `nothing`, for arguments, returns, methods
+    # and properties alike (PR #525 review).
+    optional_write = write_of("Option<PyRef<'_, Point>>")
+    @test occursin("v === nothing", optional_write)
+    @test occursin("getfield(v, :_rustcall_py)", optional_write)
+    optional_read = read_of("Option<Py<Point>>")
+    @test occursin("PythonCall.pybuiltins.None", optional_read) && occursin("Point(", optional_read)
+    @test occursin("Gate(", read_of("Option<Py<Self>>"))
+    @test occursin("v === nothing", string(Base.remove_linenums!(
+        RustCall._pyo3_host_arg_plan(:v, "Option<PyRef<'_, Self>>", classes, :Gate)[2])))
+    @test occursin("other === nothing", method_text("level_or_zero"))
+    @test occursin(squash("s === :maybe_twin && (w = $(write_of("Option<PyRef<'_, Gate>>")))"),
+                   squash(text))
+    # `Vec<Option<…>>` or `Option<Vec<…>>` is not a class argument either.
+    @test !occursin("getfield", write_of("Option<Vec<i32>>"))
+
     # One definition per property, under its Julia name — after the handle
     # field the generated type itself defines (PR #525 review).
     props = [d.name for d in RustCall._pyo3_host_definitions(info) if d.scope == (:prop, "Gate")]
-    @test props == ["_rustcall_py", "for_", "end_", "plain", "anchor", "samples", "twin"]
+    @test props == ["_rustcall_py", "for_", "end_", "plain", "anchor", "samples", "twin", "maybe_twin", "type"]
 
     mktempdir() do dir
         mkpath(joinpath(dir, "src"))
@@ -752,7 +771,7 @@ end
     @test gate.for_ == 8
     @test gate.end_ == 16
     @test gate.plain == 9
-    @test propertynames(gate) == (:for_, :end_, :plain, :anchor, :samples, :twin)
+    @test propertynames(gate) == (:for_, :end_, :plain, :anchor, :samples, :twin, :maybe_twin, :type)
     @test_throws ArgumentError (gate.end_ = Int32(1))
     # A getter returning another class is wrapped into it, and a setter taking
     # one is handed the Python object the handle holds (PR #525 review).
@@ -772,6 +791,17 @@ end
     @test raw_gate.for_ == 11
     @test GM.copied(raw_gate) isa GM.Gate
     @test GM.level_of(raw_gate, GM.Gate(Int32(6))) == 6
+    # An optional class: `nothing` in and out, a present value wrapped.
+    @test GM.level_or_zero(raw_gate, nothing) == 0
+    @test GM.level_or_zero(raw_gate, GM.Gate(Int32(4))) == 4
+    @test raw_gate.maybe_twin isa GM.Gate
+    raw_gate.maybe_twin = nothing
+    @test raw_gate.for_ == 0
+    @test raw_gate.maybe_twin === nothing
+    raw_gate.maybe_twin = GM.Gate(Int32(9))
+    @test raw_gate.maybe_twin.for_ == 9
+    # `#[getter(r#type)]` is the Python attribute `type`.
+    @test raw_gate.type == 9
     if _numpy_available()
         # A numpy setter converts the Julia array with `numpy.asarray`.
         raw_gate.samples = [1.0, 2.0, 4.0]

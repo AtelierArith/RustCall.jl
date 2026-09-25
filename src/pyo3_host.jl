@@ -674,57 +674,119 @@ _pyo3_host_attr(base, name::AbstractString) = Expr(:., base, QuoteNode(Symbol(na
 _pyo3_host_python_name(name, python_name) =
     isempty(python_name) ? rust_name(name) : String(python_name)
 
-# The last identifier of a type spelling: `Py` in `Py<T>`, `T` in
-# `Bound<'_, T>`, `PyIndex` in `PyRef<'_, PyIndex>`.
-function _pyo3_host_last_ident(text::AbstractString)
-    found = match(r"([A-Za-z_][A-Za-z0-9_]*)\s*>?\s*$", strip(text))
-    return found === nothing ? nothing : String(found.captures[1])
-end
-
 # The Julia class a class name in a type spelling denotes, or `nothing`: the
 # one lookup every spelling goes through, so `Self` is the enclosing class
 # (`jstruct`) wherever it sits — bare, `Py<Self>`, `PyRef<'_, Self>`,
-# `Bound<'_, Self>`, a `PyResult`'s `Ok` type, a `Vec` element — for a
-# method and a property alike (PR #525 review). Outside a class (`jstruct ===
+# `Bound<'_, Self>`, a `PyResult`'s `Ok` type, a `Vec` / `Option` element — for
+# a method and a property alike (PR #525 review). Outside a class (`jstruct ===
 # nothing`) `Self` names nothing.
 _pyo3_host_class_of(name::AbstractString, classes::AbstractDict,
                     jstruct::Union{Symbol, Nothing}) =
     name == "Self" ? jstruct : get(classes, String(name), nothing)
 
-# The Julia class a value of this Rust type corresponds to, or `nothing`:
-# `Self` (the enclosing class), the class's Rust name, or `Py<T>` /
-# `Bound<'_, T>` / `PyRef<T>` around it. A `Vec`/`Option` is not a single
-# class and is left alone.
-function _pyo3_host_struct_target(rust_type::AbstractString, classes::AbstractDict,
-                                  jstruct::Union{Symbol, Nothing} = nothing)
-    t = rust_name(strip(rust_type))
-    direct = _pyo3_host_class_of(t, classes, jstruct)
-    direct === nothing || return direct
-    (startswith(t, "Vec<") || startswith(t, "Option<")) && return nothing
-    name = _pyo3_host_last_ident(t)
-    name === nothing && return nothing
-    return _pyo3_host_class_of(name, classes, jstruct)
+# A type spelling as its outermost layer: `(head, generic arguments)`, with
+# reference layers (`&`, `&'a`, `&mut`) dropped, the head reduced to its last
+# path segment without `r#`, and the arguments split at the top level —
+# `PyRef<'_, r#type>` is `("PyRef", ["'_", "r#type"])`, `Point` is
+# `("Point", [])`. `nothing` when the spelling is not one layer (`(A, B)`,
+# `[T; 3]`, trailing text after the `>`).
+function _pyo3_host_type_layer(rust_type::AbstractString)
+    t = strip(rust_type)
+    while startswith(t, "&")
+        t = lstrip(t[nextind(t, 1):end])
+        if startswith(t, "'")
+            cut = findfirst(isspace, t)
+            cut === nothing && return nothing
+            t = lstrip(t[cut:end])
+        end
+        startswith(t, "mut ") && (t = lstrip(t[5:end]))
+    end
+    isempty(t) && return nothing
+    chars = collect(t)
+    open = findfirst(==('<'), chars)
+    head_chars = open === nothing ? chars : chars[1:(open - 1)]
+    all(c -> Base.is_id_char(c) || c in (':', '#'), head_chars) || return nothing
+    head = String(head_chars)
+    segment = last(split(head, "::"))
+    isempty(segment) && return nothing
+    open === nothing && return (rust_name(segment), String[])
+    body = _pyo3_host_generic_body(chars, open)
+    body === nothing && return nothing
+    # The layer must end where its `<...>` does.
+    length(body) + open + 1 == length(chars) || return nothing
+    args = String[]
+    depth = 0
+    current = Char[]
+    for c in body
+        if c == ',' && depth == 0
+            push!(args, strip(String(current)))
+            empty!(current)
+            continue
+        end
+        c == '<' && (depth += 1)
+        c == '>' && (depth -= 1)
+        push!(current, c)
+    end
+    push!(args, strip(String(current)))
+    return (rust_name(segment), filter(!isempty, args))
 end
 
-# For an argument: `(class, is_vector)` when it names a scanned `#[pyclass]` (a
-# direct reference or a `Vec` of them), otherwise `nothing`. A class argument is
-# passed as the Python object the Julia handle holds, not as the handle.
+# The class a spelling holds as one Python object: the class itself (`T`,
+# `Self`, `&T`), or behind one of PyO3's smart-pointer layers — `Py<T>`,
+# `PyRef<'_, T>`, `PyRefMut<'_, T>`, `Bound<'_, T>`, `Borrowed<'_, '_, T>`,
+# whose last argument is the type. Anything else (`Vec`, `Option`, `Py<PyAny>`)
+# is not a single class.
+function _pyo3_host_single_class(rust_type::AbstractString, classes::AbstractDict,
+                                 jstruct::Union{Symbol, Nothing})
+    layer = _pyo3_host_type_layer(rust_type)
+    layer === nothing && return nothing
+    head, args = layer
+    isempty(args) && return _pyo3_host_class_of(head, classes, jstruct)
+    head in ("Py", "PyRef", "PyRefMut", "Bound", "Borrowed") || return nothing
+    return _pyo3_host_single_class(last(args), classes, jstruct)
+end
+
+"""
+    _pyo3_host_class_shape(rust_type, classes, jstruct = nothing)
+
+How a spelling carries a scanned `#[pyclass]`, read layer by layer
+(`_pyo3_host_type_layer`), never from a trailing identifier: `(:class, T)` for
+one object (`_pyo3_host_single_class`), `(:vector, T)` for a `Vec` of them,
+`(:optional, T)` for an `Option` of one, `nothing` for anything else — so
+`Option<PyRef<'_, Self>>` is an optional class (a Julia `nothing` passes as
+`None`), not a class (PR #525 review). The one reading the argument plan
+(`_pyo3_host_arg_plan`) and the return conversion (`_pyo3_host_value_expr`)
+share, for functions, methods and properties.
+"""
+function _pyo3_host_class_shape(rust_type::AbstractString, classes::AbstractDict,
+                                jstruct::Union{Symbol, Nothing} = nothing)
+    layer = _pyo3_host_type_layer(rust_type)
+    layer === nothing && return nothing
+    head, args = layer
+    if head in ("Vec", "Option") && length(args) == 1
+        class = _pyo3_host_single_class(only(args), classes, jstruct)
+        class === nothing && return nothing
+        return (head == "Vec" ? :vector : :optional, class)
+    end
+    class = _pyo3_host_single_class(rust_type, classes, jstruct)
+    return class === nothing ? nothing : (:class, class)
+end
+
+# The Julia class a value of this Rust type is wrapped into, or `nothing`: a
+# single class only (`_pyo3_host_class_shape`).
+function _pyo3_host_struct_target(rust_type::AbstractString, classes::AbstractDict,
+                                  jstruct::Union{Symbol, Nothing} = nothing)
+    shape = _pyo3_host_class_shape(rust_type, classes, jstruct)
+    return shape !== nothing && shape[1] === :class ? shape[2] : nothing
+end
+
+# For an argument: `(class, is_vector)` when it is one class or a `Vec` of
+# them (`_pyo3_host_class_shape`), otherwise `nothing`.
 function _pyo3_host_struct_arg(rust_type::AbstractString, classes::AbstractDict,
                                jstruct::Union{Symbol, Nothing} = nothing)
-    t = rust_name(strip(rust_type))
-    if startswith(t, "Vec<") && endswith(t, ">")
-        inner = strip(t[nextind(t, 5):prevind(t, lastindex(t))])
-        name = _pyo3_host_last_ident(inner)
-        name === nothing && return nothing
-        class = _pyo3_host_class_of(name, classes, jstruct)
-        return class === nothing ? nothing : (class, true)
-    end
-    class = _pyo3_host_class_of(t, classes, jstruct)
-    class === nothing || return (class, false)
-    name = _pyo3_host_last_ident(t)
-    name === nothing && return nothing
-    class = _pyo3_host_class_of(name, classes, jstruct)
-    return class === nothing ? nothing : (class, false)
+    shape = _pyo3_host_class_shape(rust_type, classes, jstruct)
+    (shape === nothing || shape[1] === :optional) && return nothing
+    return (shape[2], shape[1] === :vector)
 end
 
 # `(arg symbols, typed signature entries, call expressions, has-default flags)`
@@ -767,19 +829,30 @@ as the Python object its Julia handle holds, anything else as it is.
 """
 function _pyo3_host_arg_plan(sym::Symbol, rust_type::AbstractString, classes::AbstractDict,
                              jstruct::Union{Symbol, Nothing} = nothing)
-    target = _pyo3_host_struct_arg(rust_type, classes, jstruct)
     if _pyo3_host_numpy_arg(rust_type)
         # pyo3-numpy extracts from a real `numpy.ndarray`, not the
         # `juliacall.VectorValue` a Julia array becomes by default (#424).
         return :($sym::$(_pyo3_host_arg_type(rust_type))), :(_pyo3_asarray($sym))
-    elseif target === nothing
-        return :($sym::$(_pyo3_host_arg_type(rust_type))), sym
     end
-    _, isvector = target
-    isvector && return :($sym::AbstractVector),
-                       :([x isa PythonCall.Py ? x : getfield(x, $(QuoteNode(_PYO3_HOST_HANDLE_FIELD)))
-                          for x in $sym])
-    return sym, :($sym isa PythonCall.Py ? $sym : getfield($sym, $(QuoteNode(_PYO3_HOST_HANDLE_FIELD))))
+    shape = _pyo3_host_class_shape(rust_type, classes, jstruct)
+    shape === nothing && return :($sym::$(_pyo3_host_arg_type(rust_type))), sym
+    handle = QuoteNode(_PYO3_HOST_HANDLE_FIELD)
+    unwrap(x) = :($x isa PythonCall.Py ? $x : getfield($x, $handle))
+    kind = shape[1]
+    kind === :vector && return :($sym::AbstractVector), :([$(unwrap(:x)) for x in $sym])
+    # `None` is `nothing`; a present value is unwrapped as a class is.
+    kind === :optional && return sym, :($sym === nothing ? nothing : $(unwrap(sym)))
+    return sym, unwrap(sym)
+end
+
+# The Julia type a read of this Rust type produces, when the host decides it:
+# a class, an optional class (`Union{Nothing, T}`), or a converted value.
+function _pyo3_host_read_type(rust_type::AbstractString, classes::AbstractDict,
+                              jstruct::Union{Symbol, Nothing})
+    shape = _pyo3_host_class_shape(rust_type, classes, jstruct)
+    shape !== nothing && shape[1] === :class && return shape[2]
+    shape !== nothing && shape[1] === :optional && return :(Union{Nothing, $(shape[2])})
+    return _pyo3_host_value_type(rust_type)
 end
 
 # The call's result, converted, or wrapped into the class it belongs to — the
@@ -788,8 +861,16 @@ end
 # expression that produces the Python value.
 function _pyo3_host_value_expr(call, rust_type::AbstractString,
                                jstruct::Union{Symbol, Nothing}, classes::AbstractDict)
-    target = _pyo3_host_struct_target(rust_type, classes, jstruct)
-    target !== nothing && return :($target($call))
+    shape = _pyo3_host_class_shape(rust_type, classes, jstruct)
+    if shape !== nothing && shape[1] === :class
+        return :($(shape[2])($call))
+    elseif shape !== nothing && shape[1] === :optional
+        # A Python `None` is `nothing`; the call is evaluated once.
+        value = Symbol("#rustcall_optional")
+        return :(let $value = $call
+                     PythonCall.pyis($value, PythonCall.pybuiltins.None) ? nothing : $(shape[2])($value)
+                 end)
+    end
     jt = _pyo3_host_value_type(rust_type)
     jt === nothing && return call
     return :(PythonCall.pyconvert($jt, $call))
@@ -801,9 +882,8 @@ function _pyo3_host_single_def(name::Symbol, sig::Vector{Any}, call::Expr, retur
                                rust_type::AbstractString, jstruct::Union{Symbol, Nothing},
                                classes::AbstractDict)
     if return_kind === :py_result
-        target = _pyo3_host_struct_target(rust_type, classes, jstruct)
         valued = _pyo3_host_value_expr(call, rust_type, jstruct, classes)
-        jt = target !== nothing ? target : _pyo3_host_value_type(rust_type)
+        jt = _pyo3_host_read_type(rust_type, classes, jstruct)
         jt === nothing && (jt = :Any)
         body = quote
             try

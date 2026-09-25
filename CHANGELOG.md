@@ -75,7 +75,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   class wherever a spelling puts it — `Py<Self>`, `PyResult<Py<Self>>`,
   `PyRef<'_, Self>`, `Bound<'_, Self>`, a `Vec` element — for methods and
   properties alike: every class lookup goes through one function
-  (`_pyo3_host_class_of`), where only a bare `Self` was the class before. And
+  (`_pyo3_host_class_of`), where only a bare `Self` was the class before.
+  A spelling is read by its layers (`_pyo3_host_class_shape`: references,
+  `Py` / `PyRef` / `Bound` / `Borrowed`, `Vec`, `Option`), not by its last
+  identifier, so an `Option` of a class is an optional class: a Julia
+  `nothing` argument or written value passes as `None` instead of reaching
+  `getfield`, and an `Option<Py<Self>>` return or getter reads back
+  `nothing` or the wrapped class. An identifier-form property name
+  (`#[getter(r#type)]`) is unrawed like every Rust name (`type`); a string
+  `name = "..."` is taken as written. And
   a name the generated module or type defines for itself — the handle field
   `_rustcall_py`, `_pyo3_module`, `_PYO3_MODULE`, `_pyo3_asarray`, the
   imports — is part of the one-namespace clash check: a crate item bound under

@@ -218,6 +218,32 @@ impl Gate {
     fn level_of(&self, other: PyRef<'_, Self>) -> i32 {
         other.level
     }
+
+    /// An optional class, returned and taken: `None` is `nothing` on the
+    /// Julia side, a present value the class (PR #525 review).
+    #[getter]
+    fn maybe_twin(&self, py: Python<'_>) -> PyResult<Option<Py<Self>>> {
+        if self.level > 0 {
+            Ok(Some(Py::new(py, Gate { level: self.level })?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    #[setter]
+    fn set_maybe_twin(&mut self, other: Option<PyRef<'_, Self>>) {
+        self.level = other.map(|o| o.level).unwrap_or(0);
+    }
+
+    fn level_or_zero(&self, other: Option<PyRef<'_, Self>>) -> i32 {
+        other.map(|o| o.level).unwrap_or(0)
+    }
+
+    /// A getter named by a raw identifier: the property is `type`.
+    #[getter(r#type)]
+    fn kind(&self) -> i32 {
+        self.level
+    }
 }
 
 #[pymethods]

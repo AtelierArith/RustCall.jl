@@ -179,6 +179,9 @@ fn a_pyo3_accessor_method_records_the_property_python_exposes() {
             #[getter] fn plain_too(&self) -> i32 { self.v }
             #[getter] fn get_(&self) -> i32 { self.v }
             fn get_value(&self) -> i32 { self.v }
+            #[getter(r#type)] fn kind(&self) -> i32 { self.v }
+            #[setter(r#type)] fn put_kind(&mut self, x: i32) { self.v = x; }
+            #[getter(name = "r#literal")] fn lit(&self) -> i32 { self.v }
         }
         "#,
         Mode::Crate,
@@ -205,6 +208,11 @@ fn a_pyo3_accessor_method_records_the_property_python_exposes() {
     assert_eq!(python("get_"), "");
     // Not an accessor: a method keeps its name, prefix and all.
     assert_eq!(python("get_value"), "");
+    // An identifier override is a Rust name, unrawed as every name is (PR
+    // #525 review); a string `name = "..."` is taken as written.
+    assert_eq!(python("kind"), "type");
+    assert_eq!(python("put_kind"), "type");
+    assert_eq!(python("lit"), "r#literal");
 }
 
 #[test]
