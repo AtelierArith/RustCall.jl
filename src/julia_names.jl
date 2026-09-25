@@ -371,8 +371,15 @@ _check_julia_name_clashes(functions, structs, where_::AbstractString;
 # emitter's items are first emitted with a unique placeholder for each
 # parameter, every other symbol of each definition taking one is collected,
 # and the parameter is named against that set.
-
-const _PARAMETER_PLACEHOLDER_PREFIX = "__rustcall_arg_"
+#
+# A placeholder is a name no Rust identifier can spell, so no item or
+# parameter of a crate is ever taken for one (PR #527 review): it carries a
+# prime (`′`, U+2032), which Julia admits in an identifier — the source-text
+# emitter writes names as they are, and `Meta.parse` reads the text back to
+# the same `Symbol` — and which is no `XID_Continue` character, so it occurs in
+# no Rust identifier. The placeholders are recognised by identity against the
+# set the probe made, never by their spelling.
+_parameter_placeholder(k::Integer) = string("rustcall′arg′", k)
 
 # A copy of a function / method record with other parameter names, or of a
 # struct record with other methods; every other field as it is.
@@ -387,7 +394,8 @@ from them reads a name its parameter would shadow (#526). `emit(functions,
 structs)` runs the emitter over the items and returns what it defines — an
 `Expr`, or the source text of the source-text emitter, which is parsed.
 
-It is run once on placeholder parameters (`__rustcall_arg_<k>__`), without
+It is run once on placeholder parameters (`rustcall′arg′<k>`, a name no Rust
+identifier spells), without
 logging and without recording anything for a boundary report (a throwaway
 collector, so a refusal is recorded rather than raised); for every definition
 that takes a placeholder, each other symbol it contains — what it reads, calls
@@ -397,12 +405,12 @@ its reserved set. An emitter that raises on the placeholders leaves the items
 as they are: it raises again on the real ones.
 """
 function _rename_parameters(functions::AbstractVector, structs::AbstractVector, emit)
-    owner = Dict{String, Any}()
+    owner = Dict{Symbol, Any}()
     counter = Ref(0)
     function placeholder!(key)
         counter[] += 1
-        p = string(_PARAMETER_PLACEHOLDER_PREFIX, counter[], "__")
-        owner[p] = key
+        p = _parameter_placeholder(counter[])
+        owner[Symbol(p)] = key
         return p
     end
     placeholders!(key, n) = String[placeholder!(key) for _ in 1:n]
@@ -445,15 +453,10 @@ function _probe_emission(f)
     end
 end
 
-# The placeholders a symbol carries: a parameter's own, or a local derived
-# from it (`__rustcall_str___rustcall_arg_3__`).
-_parameter_placeholders(name::AbstractString) =
-    [m.match for m in eachmatch(r"__rustcall_arg_\d+__", name)]
-
 # Every symbol of an expression, quoted ones included.
-function _expr_symbols!(out::Set{String}, x)
+function _expr_symbols!(out::Set{Symbol}, x)
     if x isa Symbol
-        push!(out, String(x))
+        push!(out, x)
     elseif x isa QuoteNode
         _expr_symbols!(out, x.value)
     elseif x isa Expr
@@ -476,16 +479,15 @@ end
 function _parameter_scopes!(reserved::AbstractDict, x, owner::AbstractDict)
     x isa Expr || return reserved
     if _is_function_definition(x)
-        symbols = _expr_symbols!(Set{String}(), x)
+        symbols = _expr_symbols!(Set{Symbol}(), x)
         keys_here = Set{Any}()
         others = Set{String}()
         for name in symbols
-            found = _parameter_placeholders(name)
-            if isempty(found)
-                push!(others, name)
-            else
-                foreach(p -> haskey(owner, p) && push!(keys_here, owner[p]), found)
-            end
+            # A placeholder the probe made is its item's parameter; every
+            # other symbol — a local derived from one included, which no real
+            # name can equal — is a name the definition uses.
+            key = get(owner, name, nothing)
+            key === nothing ? push!(others, String(name)) : push!(keys_here, key)
         end
         for key in keys_here
             union!(get!(reserved, key, Set{String}()), others)

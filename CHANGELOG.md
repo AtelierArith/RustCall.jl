@@ -58,7 +58,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   such names can be complete, so every emitter now names its parameters
   against its own output (`RustCall._rename_parameters`): it emits its items
   once with a unique placeholder for each parameter (nothing logged, nothing
-  recorded for a boundary report), collects every other name of each
+  recorded for a boundary report) — a name no Rust identifier can spell
+  (`rustcall′arg′1`: the prime is a Julia identifier character and no
+  `XID_Continue` one), recognised by identity against the set the probe made,
+  so a crate's `struct __rustcall_arg_1__` or parameter of that name is an
+  ordinary name and never taken for one (PR #527 review) — collects every other name of each
   definition taking one — what it reads, calls or binds, its other
   parameters, its type variables — and gives the parameter a name outside
   that set through the one allocator, `RustCall.julia_parameter_names`

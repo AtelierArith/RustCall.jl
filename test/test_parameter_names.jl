@@ -288,7 +288,9 @@ _pn_text_of(x) = replace(string(Base.remove_linenums!(deepcopy(x))), r"##(\w+)#\
 _pn_rust_parameter(n::Symbol) =
     occursin(r"^[A-Za-z_][A-Za-z0-9_]*$", String(n)) &&
     !(String(n) in ("self", "Self", "super", "crate", "_")) &&
-    !startswith(String(n), "__rustcall_")
+    # The string / callback temporaries move their own prefix off a parameter
+    # that starts with it, so the wrapper is not the same up to renaming.
+    !startswith(String(n), "__rustcall_str_") && !startswith(String(n), "__rustcall_cb_")
 
 # Every symbol of an expression.
 _pn_symbols(x, out = Set{Symbol}()) =
@@ -322,6 +324,19 @@ end
     renamed, _ = PN._rename_parameters([f, g], PN.RustStructInfo[], emit)
     @test only(renamed[1].arg_names) == "Int64_"
     @test only(renamed[2].arg_names) == "Int64"
+    # A placeholder is a Julia identifier the source text reads back as
+    # itself, and no Rust identifier: a crate's own name spelled like an old
+    # placeholder is an ordinary name the definition uses (PR #527 review).
+    placeholder = PN._parameter_placeholder(1)
+    @test Base.isidentifier(placeholder) && Meta.parse(placeholder) === Symbol(placeholder)
+    @test !all(c -> isascii(c) && (isletter(c) || isdigit(c) || c == '_'), placeholder)
+    h = PN.RustFunctionSignature("h", ["__rustcall_arg_1__"], ["i64"], "i64", false, String[])
+    emit_h(fs, ss) = Expr(:block, [begin
+        q = Symbol(only(sig.arg_names))
+        :(function h($q) __rustcall_arg_1__($q) end)
+    end for sig in fs]...)
+    renamed_h, _ = PN._rename_parameters([h], PN.RustStructInfo[], emit_h)
+    @test only(renamed_h[1].arg_names) == "__rustcall_arg_1___"
     # An emitter that raises leaves the names alone: it raises again.
     failing(fs, ss) = error("refused")
     same, _ = PN._rename_parameters([f], PN.RustStructInfo[], failing)
@@ -352,7 +367,8 @@ else
                 union!(used, _pn_symbols(sig), _pn_symbols(body))
             end
             probes = sort!(collect(setdiff(union(used, Symbol.(["Int64", "Float32", "Char",
-                                                                 "Cint", "obj", "T", "pointer"])),
+                                                                 "Cint", "obj", "T", "pointer",
+                                                                 "__rustcall_arg_1__"])),
                                            Set([:zqx, Symbol("__rustcall_str_zqx")]))))
             base_defs = _pn_defs(base)
             failures = String[]
@@ -406,6 +422,16 @@ else
                 #[julia] pub fn new(getfield: i32) -> Self { Acc { v: getfield } }
                 #[julia] pub fn add(&self, getfield: i32) -> i32 { self.v + getfield }
             }
+            // An item and a parameter spelled like the renaming probe's own
+            // placeholders: the probe must not take them for its own (PR #527
+            // review).
+            #[allow(non_camel_case_types)]
+            #[julia] pub struct __rustcall_arg_1__ { pub v: i32 }
+            #[julia] impl __rustcall_arg_1__ {
+                #[julia] pub fn new(__rustcall_arg_1__: i32, __rustcall_arg_2__: i32) -> Self {
+                    __rustcall_arg_1__ { v: __rustcall_arg_1__ * 10 + __rustcall_arg_2__ }
+                }
+            }
             """
         exercise(get) = begin
             call = Base.invokelatest
@@ -416,6 +442,8 @@ else
             @test call(get(:add), acc, Int32(5)) == 9
             f = call(get(:foo), Int32(1), Int32(2))
             @test call(getproperty, f, :v) == 12
+            a = call(get(:__rustcall_arg_1__), Int32(3), Int32(4))
+            @test call(getproperty, a, :v) == 34
         end
         mktempdir() do dir
             _pn_write_crate(dir, lib; name = "pn_crate")
