@@ -71,6 +71,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checks every emitter: a corpus whose parameter is spelled like any name its
   definitions use must emit, up to the parameter's final name, exactly what
   the same corpus emits with an unused spelling.
+  Every name an emitter binds itself inside a definition it generates is in
+  that namespace too (PR #527 review): the receiver (`rustcall′self`), the
+  pointer / panic-channel / payload locals (`rustcall′func_ptr`,
+  `rustcall′c_result`, ...), the string and callback temporaries
+  (`rustcall′str′<param>`, `rustcall′cb′frame`, formerly
+  `__rustcall_str_<param>`), a struct constructor's arguments, the
+  `getproperty` / `setproperty!` / `show` locals and the PyO3 host's
+  (`rustcall′obj`, `rustcall′p`, ...). A crate item and a wrapper's local are
+  therefore disjoint by construction — a `struct __rustcall_str_s` whose
+  constructor takes `s: &str` used to have its type shadowed by the string
+  temporary — and a parameter spelled like a former local (`func_ptr`,
+  `c_result`) keeps its name. `test/test_parameter_names.jl` checks every
+  emitter: no definition that takes a parameter or is defined on a crate type
+  binds a name a Rust identifier can spell.
 - **`@rust f(x)` reaches the caller's own block first, whatever the form**
   ([#520](https://github.com/AtelierArith/RustCall.jl/issues/520)). The
   typed `@rust f(x)::T` tried every loaded library's exports before the

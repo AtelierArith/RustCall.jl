@@ -745,7 +745,8 @@ function _pyo3_host_args(arg_names, arg_types, python_defaults, python_kinds,
             if isvector
                 push!(sig, :($sym::AbstractVector))
                 push!(conv,
-                      :([x isa PythonCall.Py ? x : getfield(x, :_rustcall_py) for x in $sym]))
+                      :([rustcall′x isa PythonCall.Py ? rustcall′x : getfield(rustcall′x, :_rustcall_py)
+                        for rustcall′x in $sym]))
             else
                 push!(sig, :($sym))
                 push!(conv,
@@ -781,9 +782,9 @@ function _pyo3_host_single_def(name::Symbol, sig::Vector{Any}, call::Expr, retur
         body = quote
             try
                 return RustCall.RustResult{$jt, String}(true, $valued)
-            catch err
-                err isa PythonCall.PyException || rethrow()
-                return RustCall.RustResult{$jt, String}(false, sprint(showerror, err))
+            catch rustcall′err
+                rustcall′err isa PythonCall.PyException || rethrow()
+                return RustCall.RustResult{$jt, String}(false, sprint(showerror, rustcall′err))
             end
         end
         return Expr(:function, Expr(:call, name, sig...), body)
@@ -867,9 +868,9 @@ function _pyo3_host_method_expr(jname::Symbol, class_base::Expr, m::RustMethod,
         # An instance method: the object is the first Julia argument, and the
         # Python object it holds is the receiver. A `&mut self` method mutates
         # that same object, so no extra step is needed.
-        receiver = _pyo3_host_attr(:(getfield(obj, :_rustcall_py)), python)
+        receiver = _pyo3_host_attr(:(getfield(rustcall′obj, :_rustcall_py)), python)
         callof = convs -> Expr(:call, receiver, convs...)
-        return _pyo3_host_defs(Symbol(julia_method_name(m)), Any[:(obj::$jname)], sig, conv, defaults,
+        return _pyo3_host_defs(Symbol(julia_method_name(m)), Any[:(rustcall′obj::$jname)], sig, conv, defaults,
                                callof, m.return_kind, rust_type, jname, classes)
     end
 end
@@ -908,8 +909,8 @@ function _pyo3_host_property_expr(jname::Symbol, s::RustStructInfo)
         jt = _pyo3_host_value_type(rust_type)
         jt === nothing && continue
         push!(conversions,
-              :(s === $(QuoteNode(Symbol(rust_name(field)))) &&
-                return PythonCall.pyconvert($jt, v)))
+              :(rustcall′s === $(QuoteNode(Symbol(rust_name(field)))) &&
+                return PythonCall.pyconvert($jt, rustcall′v)))
     end
     # A field is a property under its Julia name (`julia_field_name`, #514);
     # the Python attribute keeps the Rust spelling, so a renamed one is mapped
@@ -922,8 +923,8 @@ function _pyo3_host_property_expr(jname::Symbol, s::RustStructInfo)
     for field in _pyo3_host_bound_fields(s)
         jfield = julia_field_name(field)
         jfield == rust_name(field) && continue
-        push!(renamed, :(s === $(QuoteNode(Symbol(jfield))) &&
-                         (s = $(QuoteNode(Symbol(rust_name(field)))))))
+        push!(renamed, :(rustcall′s === $(QuoteNode(Symbol(jfield))) &&
+                         (rustcall′s = $(QuoteNode(Symbol(rust_name(field)))))))
     end
     # A read-only field raises a Julia error naming it instead of the raw
     # Python `AttributeError` a descriptor would.
@@ -931,28 +932,28 @@ function _pyo3_host_property_expr(jname::Symbol, s::RustStructInfo)
     for (field, _) in s.fields
         _pyo3_host_field_writable(s, field) && continue
         push!(read_only,
-              :(s === $(QuoteNode(Symbol(rust_name(field)))) &&
+              :(rustcall′s === $(QuoteNode(Symbol(rust_name(field)))) &&
                 throw(ArgumentError($(string("field `", julia_field_name(field), "` is read-only"))))))
     end
     getbody = quote
-        s === :_rustcall_py && return getfield(p, :_rustcall_py)
+        rustcall′s === :_rustcall_py && return getfield(rustcall′p, :_rustcall_py)
         $(renamed...)
-        v = PythonCall.pygetattr(getfield(p, :_rustcall_py), String(s))
+        rustcall′v = PythonCall.pygetattr(getfield(rustcall′p, :_rustcall_py), String(rustcall′s))
         $(conversions...)
-        return v
+        return rustcall′v
     end
     setbody = quote
-        s === :_rustcall_py && throw(ArgumentError("_rustcall_py is not assignable"))
+        rustcall′s === :_rustcall_py && throw(ArgumentError("_rustcall_py is not assignable"))
         $(renamed...)
         $(read_only...)
-        PythonCall.pysetattr(getfield(p, :_rustcall_py), String(s), v)
-        return v
+        PythonCall.pysetattr(getfield(rustcall′p, :_rustcall_py), String(rustcall′s), rustcall′v)
+        return rustcall′v
     end
     return quote
-        function Base.getproperty(p::$jname, s::Symbol)
+        function Base.getproperty(rustcall′p::$jname, rustcall′s::Symbol)
             $getbody
         end
-        function Base.setproperty!(p::$jname, s::Symbol, v)
+        function Base.setproperty!(rustcall′p::$jname, rustcall′s::Symbol, rustcall′v)
             $setbody
         end
         Base.propertynames(::$jname) = $(Tuple(names))
@@ -980,8 +981,11 @@ function _pyo3_host_struct_exprs(s::RustStructInfo, classes::AbstractDict)
     # inner constructor also means any outer constructor the emitter adds is a
     # new method rather than a redefinition.
     field = Expr(:(::), :_rustcall_py, :(PythonCall.Py))
-    inner = Expr(:(=), Expr(:call, jname, field),
-                 Expr(:call, :new, :_rustcall_py))
+    # The constructor's parameter is a local of the emitter's own (PR #527
+    # review); the field keeps its name.
+    handle = _emitter_local("py")
+    inner = Expr(:(=), Expr(:call, jname, Expr(:(::), handle, :(PythonCall.Py))),
+                 Expr(:call, :new, handle))
     out = Any[Expr(:struct, false, jname, Expr(:block, field, inner))]
     # The methods the host binds (`_pyo3_host_bound_methods`, the list its
     # definitions are read from): constructors first. `#[getter]`/`#[setter]`

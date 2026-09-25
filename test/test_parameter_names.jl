@@ -269,8 +269,8 @@ end
 # derived from it), every string `from` exactly, replaced. Parsed text and
 # expressions both; line numbers dropped.
 function _pn_alpha(x, from::Symbol, to::Symbol)
-    local_from = Symbol("__rustcall_str_", from)
-    local_to = Symbol("__rustcall_str_", to)
+    local_from = Symbol("rustcall′str′", from)
+    local_to = Symbol("rustcall′str′", to)
     swap(y) = y === from ? to : y === local_from ? local_to :
               y isa String && y == String(from) ? String(to) :
               y isa QuoteNode ? QuoteNode(swap(y.value)) :
@@ -282,15 +282,12 @@ end
 # differ between two emissions of the same definition.
 _pn_text_of(x) = replace(string(Base.remove_linenums!(deepcopy(x))), r"##(\w+)#\d+" => s"##\1#")
 
-# A name a Rust function can take as a parameter: a plain identifier, not a
-# keyword, and not in RustCall's own `__rustcall_` namespace, which the
-# emitters' locals use (`_generated_local`).
+# A name a Rust function can take as a parameter: a plain identifier and not
+# a keyword. Every name an emitter binds itself is `rustcall′...`, which no
+# such name spells (PR #527 review), so none is excluded.
 _pn_rust_parameter(n::Symbol) =
     occursin(r"^[A-Za-z_][A-Za-z0-9_]*$", String(n)) &&
-    !(String(n) in ("self", "Self", "super", "crate", "_")) &&
-    # The string / callback temporaries move their own prefix off a parameter
-    # that starts with it, so the wrapper is not the same up to renaming.
-    !startswith(String(n), "__rustcall_str_") && !startswith(String(n), "__rustcall_cb_")
+    !(String(n) in ("self", "Self", "super", "crate", "_"))
 
 # Every symbol of an expression.
 _pn_symbols(x, out = Set{Symbol}()) =
@@ -368,8 +365,9 @@ else
             end
             probes = sort!(collect(setdiff(union(used, Symbol.(["Int64", "Float32", "Char",
                                                                  "Cint", "obj", "T", "pointer",
-                                                                 "__rustcall_arg_1__"])),
-                                           Set([:zqx, Symbol("__rustcall_str_zqx")]))))
+                                                                 "__rustcall_arg_1__", "__rustcall_str_zqx",
+                                                                 "__rustcall_cb_frame"])),
+                                           Set([:zqx]))))
             base_defs = _pn_defs(base)
             failures = String[]
             for n in probes
@@ -394,6 +392,41 @@ else
                 end
             end
             @test isempty(failures) || (@info "$label: a parameter meets its definition" failures; false)
+        end
+    end
+
+    @testset "a wrapper binds no name a Rust identifier spells (PR #527 review)" begin
+        # Every name a generated definition binds itself — a receiver, a
+        # pointer, a panic channel, a string temporary, a constructor's
+        # arguments — is `rustcall′...`, a namespace no Rust identifier (so no
+        # crate item and no parameter) can spell: a local never shadows a
+        # crate item its definition reads. Checked for every definition that
+        # takes the corpus parameter or is defined on a corpus type; a
+        # hygienic `rust\"\"\"` expansion is checked on its escaped part, the
+        # only part a crate name reaches.
+        corpus_types = Set([:S, :P, :G])
+        emitter_local(b::Symbol) = occursin('′', String(b))
+        for (label, gen) in emitters
+            failures = String[]
+            for (sig, body, typevars) in _pn_defs(gen("zqx"))
+                symbols = _pn_symbols(sig)
+                (:zqx in _pn_params(sig) || !isempty(intersect(symbols, corpus_types))) || continue
+                bound, read = Set{Symbol}(), Set{Symbol}()
+                if _pn_hygienic(sig) || startswith(label, "rust")
+                    _pn_escaped_body!(body, bound, read)
+                    for a in sig.args[2:end]
+                        a isa Expr && a.head === :escape && push!(bound, _pn_unesc(a))
+                    end
+                else
+                    _pn_body!(body, bound, read)
+                    union!(bound, _pn_params(sig))
+                end
+                for b in bound
+                    (b === :zqx || emitter_local(b) || b in typevars) && continue
+                    push!(failures, "$b in $(sig.args[1])")
+                end
+            end
+            @test isempty(failures) || (@info "$label: a local a Rust name can spell" unique(failures); false)
         end
     end
 
@@ -432,6 +465,14 @@ else
                     __rustcall_arg_1__ { v: __rustcall_arg_1__ * 10 + __rustcall_arg_2__ }
                 }
             }
+            // A struct spelled like the string temporary its own constructor
+            // made for its parameter (`__rustcall_str_` + `s`), which then
+            // shadowed the type it constructs (PR #527 review).
+            #[allow(non_camel_case_types)]
+            #[julia] pub struct __rustcall_str_s { pub n: i32 }
+            #[julia] impl __rustcall_str_s {
+                #[julia] pub fn new(s: &str) -> Self { __rustcall_str_s { n: s.len() as i32 } }
+            }
             """
         exercise(get) = begin
             call = Base.invokelatest
@@ -444,6 +485,8 @@ else
             @test call(getproperty, f, :v) == 12
             a = call(get(:__rustcall_arg_1__), Int32(3), Int32(4))
             @test call(getproperty, a, :v) == 34
+            t = call(get(:__rustcall_str_s), "four")
+            @test call(getproperty, t, :n) == 4
         end
         mktempdir() do dir
             _pn_write_crate(dir, lib; name = "pn_crate")

@@ -42,7 +42,7 @@ end
         # delegator names its own arguments so that an argument called like
         # the method or the struct cannot shadow them (#325 review).
         @test occursin("function parse_scale(::Type{Divider}, text)", code)
-        @test occursin("parse_scale(__rustcall_arg1) = parse_scale(Divider, __rustcall_arg1)", code)
+        @test occursin("parse_scale(rustcall′arg1) = parse_scale(Divider, rustcall′arg1)", code)
         # Constructors are untouched: `Labeler(count)`, not `new(...)`.
         @test occursin("function Labeler(count)", code)
         @test !occursin("function new(", code)
@@ -58,8 +58,8 @@ end
         @test !occursin("shout(__rustcall_arg1) = begin", typed)
         with_bare = string(RustCall._generate_crate_method_wrapper(labeler, shout_m))
         @test occursin("function shout(::Type{Labeler}, s)", with_bare)
-        @test occursin("shout(__rustcall_arg1) = begin", with_bare)
-        @test occursin("shout(Labeler, __rustcall_arg1)", with_bare)
+        @test occursin("shout(rustcall′arg1) = begin", with_bare)
+        @test occursin("shout(Labeler, rustcall′arg1)", with_bare)
         # Constructors never dispatch on the type.
         ctor = only(filter(m -> m.is_constructor, labeler.methods))
         @test occursin("function Labeler(count)", string(RustCall._generate_crate_method_wrapper(labeler, ctor)))

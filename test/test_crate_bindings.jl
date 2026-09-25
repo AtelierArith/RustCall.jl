@@ -624,7 +624,7 @@ end
         # ...and its struct finalizers capture the destructor and the liveness
         # flag rather than resolving anything when they run (#249).
         @test occursin("_struct_generation(", code)
-        @test occursin("finalizer(RustCall.finalize_rust_object!, obj)", code)
+        @test occursin("finalizer(RustCall.finalize_rust_object!, rustcall′obj)", code)
         @test !occursin("maxlog=10", code)
 
         # Test with relative path
@@ -904,8 +904,8 @@ end
 
         code = RustCall._emit_struct_code(info)
         @test occursin("_call_target(var\"#TC#prop#rustcall_Tagged_label\", \"rustcall_Tagged_label\", \"Tagged_free_rust_string\")", code)
-        @test occursin("_guard_panic(call_rust_function(fp, RustCall.CRustString, getfield(self, :ptr)), channel,", code)
-        @test occursin("RustCall._take_owned_string(raw, freep)", code)
+        @test occursin("_guard_panic(call_rust_function(rustcall′fp, RustCall.CRustString, getfield(rustcall′self, :ptr)), rustcall′channel,", code)
+        @test occursin("RustCall._take_owned_string(rustcall′raw, rustcall′freep)", code)
         # ...and never the two-lookup form it replaced.
         @test !occursin("_get_func_ptr(\"Tagged_free_rust_string\")", code)
         @test Meta.parse("module M\n" * code * "\nend") isa Expr
@@ -933,7 +933,7 @@ end
         # `@warn` allocates and can yield. The try/catch moved *into*
         # `RustCall.finalize_rust_object!`, which counts a failure instead of
         # logging it, and the destructor is captured at construction.
-        @test occursin("finalizer(RustCall.finalize_rust_object!, obj)", code)
+        @test occursin("finalizer(RustCall.finalize_rust_object!, rustcall′obj)", code)
         # ...and the destructor is captured together with the liveness flag of
         # the generation that exports it, in one snapshot (#277).
         @test occursin("_struct_generation(var\"#TC#free#SafeStruct_free\", \"SafeStruct_free\")", code)
@@ -1175,23 +1175,23 @@ end
     # buffer come from one snapshot of the module's handle: resolving the
     # release function after the call let a hot reload land in between, and the
     # buffer was then freed through the replacement's allocator (#277).
-    @test occursin("func_ptr, panic_channel, free_ptr = _call_target(var\"#TC#fn#rustcall_shout\", \"rustcall_shout\", \"shout_free_rust_string\")", code)
-    @test occursin("_call_rust_owned_string_ptr(func_ptr, free_ptr", code)
-    @test occursin("__rustcall_str_input = RustCall.ffi_string_argument(input, \"input\", \"shout\")", code)
-    @test occursin("GC.@preserve(__rustcall_str_input", code)
-    @test occursin("_call_rust_borrowed_string_ptr(func_ptr", code)
+    @test occursin("rustcall′func_ptr, rustcall′panic_channel, rustcall′free_ptr = _call_target(var\"#TC#fn#rustcall_shout\", \"rustcall_shout\", \"shout_free_rust_string\")", code)
+    @test occursin("_call_rust_owned_string_ptr(rustcall′func_ptr, rustcall′free_ptr", code)
+    @test occursin("rustcall′str′input = RustCall.ffi_string_argument(input, \"input\", \"shout\")", code)
+    @test occursin("GC.@preserve(rustcall′str′input", code)
+    @test occursin("_call_rust_borrowed_string_ptr(rustcall′func_ptr", code)
     @test occursin("_call_target(var\"#TC#fn#rustcall_crate_greeting\", \"rustcall_crate_greeting\")", code)
-    @test occursin("GC.@preserve(__rustcall_str_s, call_rust_function(func_ptr, CResult_parse_int, pointer(__rustcall_str_s), sizeof(__rustcall_str_s) % Csize_t))", code)
+    @test occursin("GC.@preserve(rustcall′str′s, call_rust_function(rustcall′func_ptr, CResult_parse_int, pointer(rustcall′str′s), sizeof(rustcall′str′s) % Csize_t))", code)
     # Nothing to preserve: `GC.@preserve` is omitted entirely rather than
     # emitted with an empty object list, because the call is now nested inside
     # `_guard_panic(...)` and the parenthesized form needs at least one object
     # (#244, #277 Phase B5).
-    @test occursin("_guard_panic(call_rust_function(func_ptr, Int32, Int32(a), Int32(b)), panic_channel, \"add\")", code)
+    @test occursin("_guard_panic(call_rust_function(rustcall′func_ptr, Int32, Int32(a), Int32(b)), rustcall′panic_channel, \"add\")", code)
     # Every generated call reads its wrapper's panic channel, and resolves it
     # BEFORE the call: the channel is a thread-local in the image, so nothing
     # may yield between the two (#244).
     @test occursin("_guard_panic(", code)
-    @test occursin("func_ptr, panic_channel = _call_target(var\"#TC#fn#rustcall_add\", \"rustcall_add\")", code)
+    @test occursin("rustcall′func_ptr, rustcall′panic_channel = _call_target(var\"#TC#fn#rustcall_add\", \"rustcall_add\")", code)
     @test occursin("RustCall.guard_rust_panic_ptr", code)
     # The resolution precedes the call in the emitted text.
     add_at = findfirst("function add(a, b)", code)
@@ -1209,18 +1209,17 @@ end
     info = RustCall.scan_crate(SAMPLE_CRATE_PATH)
     code = RustCall.emit_crate_module_code(info, "/tmp/libsample.so")
 
-    # Since #526 every parameter is named against the definition it lands in:
-    # an argument spelled like one of the wrapper's own locals (`func_ptr`,
-    # `c_result`, `c_option`) is the one renamed, and the locals keep their
-    # readable names. `lib_name` is no local of these wrappers and is kept.
-    @test occursin("function shadow_str_len(func_ptr_, lib_name)", code)
-    @test occursin("__rustcall_str_func_ptr_ = RustCall.ffi_string_argument(func_ptr_, \"func_ptr_\", \"shadow_str_len\")", code)
-    @test occursin("func_ptr, panic_channel = _call_target(var\"#TC#fn#rustcall_shadow_str_len\", \"rustcall_shadow_str_len\")", code)
-    @test occursin("function shadow_parse_int(func_ptr_, c_result_)", code)
-    @test occursin("c_result = GC.@preserve(__rustcall_str_func_ptr_, call_rust_function(func_ptr, CResult_shadow_parse_int,", code)
-    @test occursin("function shadow_first_char(func_ptr_, c_option_)", code)
-    @test occursin("c_option = GC.@preserve(__rustcall_str_func_ptr_, call_rust_function(func_ptr, COption_shadow_first_char,", code)
-    @test occursin("call_rust_function(func_ptr, Int32, Int32(func_ptr_))", code)
+    # The wrapper's own locals are `rustcall′...` (PR #527 review), a name no
+    # Rust argument can spell, so an argument called `func_ptr` / `c_result` /
+    # `c_option` / `lib_name` keeps its name and meets no local.
+    @test occursin("function shadow_str_len(func_ptr, lib_name)", code)
+    @test occursin("rustcall′str′func_ptr = RustCall.ffi_string_argument(func_ptr, \"func_ptr\", \"shadow_str_len\")", code)
+    @test occursin("rustcall′func_ptr, rustcall′panic_channel = _call_target(var\"#TC#fn#rustcall_shadow_str_len\", \"rustcall_shadow_str_len\")", code)
+    @test occursin("function shadow_parse_int(func_ptr, c_result)", code)
+    @test occursin("rustcall′c_result = GC.@preserve(rustcall′str′func_ptr, call_rust_function(rustcall′func_ptr, CResult_shadow_parse_int,", code)
+    @test occursin("function shadow_first_char(func_ptr, c_option)", code)
+    @test occursin("rustcall′c_option = GC.@preserve(rustcall′str′func_ptr, call_rust_function(rustcall′func_ptr, COption_shadow_first_char,", code)
+    @test occursin("call_rust_function(rustcall′func_ptr, Int32, Int32(func_ptr))", code)
 
     @test Meta.parse(code) isa Expr
 
@@ -1251,34 +1250,34 @@ end
     # The source emitter passes (ptr, len) pairs and reads the per-method buffers
     info = RustCall.scan_crate(SAMPLE_CRATE_PATH)
     code = RustCall.emit_crate_module_code(info, "/tmp/libsample.so")
-    @test occursin("__rustcall_str_name = RustCall.ffi_string_argument(name, \"name\", \"label\")", code)
+    @test occursin("rustcall′str′name = RustCall.ffi_string_argument(name, \"name\", \"label\")", code)
     # `self` is in the preserve list of every instance method: a borrowed
     # `&str` points into the Rust object, which a temporary's finalizer could
     # otherwise free mid-call.
-    @test occursin("GC.@preserve(self, __rustcall_str_name, _call_rust_owned_string_ptr(func_ptr, free_ptr, getfield(self, :ptr), pointer(__rustcall_str_name), sizeof(__rustcall_str_name) % Csize_t)", code)
-    @test occursin("GC.@preserve(self, _call_rust_borrowed_string_ptr(func_ptr, getfield(self, :ptr))", code)
+    @test occursin("GC.@preserve(rustcall′self, rustcall′str′name, _call_rust_owned_string_ptr(rustcall′func_ptr, rustcall′free_ptr, getfield(rustcall′self, :ptr), pointer(rustcall′str′name), sizeof(rustcall′str′name) % Csize_t)", code)
+    @test occursin("GC.@preserve(rustcall′self, _call_rust_borrowed_string_ptr(rustcall′func_ptr, getfield(rustcall′self, :ptr))", code)
     # Each owned-`String` method snapshots its release function together with
     # the wrapper it calls, so the buffer cannot outlive the generation that
     # allocated it (#277).
-    @test occursin("func_ptr, panic_channel, free_ptr = _call_target(var\"#TC#m#rustcall_Labeler_label\", \"rustcall_Labeler_label\", \"Labeler_label_free_rust_string\")", code)
-    @test occursin("func_ptr, panic_channel, free_ptr = _call_target(var\"#TC#m#rustcall_Labeler_shout\", \"rustcall_Labeler_shout\", \"Labeler_shout_free_rust_string\")", code)
-    @test occursin("GC.@preserve(__rustcall_str_s, _call_rust_owned_string_ptr(func_ptr, free_ptr, pointer(__rustcall_str_s), sizeof(__rustcall_str_s) % Csize_t)", code)
-    @test occursin("GC.@preserve(self, __rustcall_str_s, call_rust_function(func_ptr, Csize_t, getfield(self, :ptr), pointer(__rustcall_str_s), sizeof(__rustcall_str_s) % Csize_t)", code)
-    @test occursin("GC.@preserve(self, call_rust_function(func_ptr, Float64, getfield(self, :ptr))", code)
+    @test occursin("rustcall′func_ptr, rustcall′panic_channel, rustcall′free_ptr = _call_target(var\"#TC#m#rustcall_Labeler_label\", \"rustcall_Labeler_label\", \"Labeler_label_free_rust_string\")", code)
+    @test occursin("rustcall′func_ptr, rustcall′panic_channel, rustcall′free_ptr = _call_target(var\"#TC#m#rustcall_Labeler_shout\", \"rustcall_Labeler_shout\", \"Labeler_shout_free_rust_string\")", code)
+    @test occursin("GC.@preserve(rustcall′str′s, _call_rust_owned_string_ptr(rustcall′func_ptr, rustcall′free_ptr, pointer(rustcall′str′s), sizeof(rustcall′str′s) % Csize_t)", code)
+    @test occursin("GC.@preserve(rustcall′self, rustcall′str′s, call_rust_function(rustcall′func_ptr, Csize_t, getfield(rustcall′self, :ptr), pointer(rustcall′str′s), sizeof(rustcall′str′s) % Csize_t)", code)
+    @test occursin("GC.@preserve(rustcall′self, call_rust_function(rustcall′func_ptr, Float64, getfield(rustcall′self, :ptr))", code)
     # The in-memory wrapper preserves `self` too
     labeler_info = only(filter(s -> s.name == "Labeler", info.julia_structs))
     kind_method = only(filter(m -> m.name == "kind", labeler_info.methods))
     kind_expr = string(RustCall._generate_crate_method_wrapper(labeler_info, kind_method))
-    @test occursin("GC.@preserve(self, _call_rust_borrowed_string_ptr(func_ptr, getfield(self, :ptr))", kind_expr)
+    @test occursin("GC.@preserve(rustcall′self, _call_rust_borrowed_string_ptr(rustcall′func_ptr, getfield(rustcall′self, :ptr))", kind_expr)
     label_method = only(filter(m -> m.name == "label", labeler_info.methods))
-    @test occursin("GC.@preserve(self, __rustcall_str_name, _call_rust_owned_string_ptr", string(RustCall._generate_crate_method_wrapper(labeler_info, label_method)))
+    @test occursin("GC.@preserve(rustcall′self, rustcall′str′name, _call_rust_owned_string_ptr", string(RustCall._generate_crate_method_wrapper(labeler_info, label_method)))
     # Constructors still return the boxed struct
     # A boxed-struct result is bound to the generation that allocated it: the
     # destructor, its panic channel and the flag come from the constructor's
     # own snapshot (#277, #291).
-    @test occursin("Labeler(call_rust_function(func_ptr, Ptr{Cvoid}, UInt32(count)), free_ptr, alive, free_panic_channel)", code)
-    @test occursin("Point(call_rust_function(func_ptr, Ptr{Cvoid}, Float64(x), Float64(y)), free_ptr, alive, free_panic_channel)", code)
-    @test occursin("func_ptr, panic_channel, free_ptr, alive, free_panic_channel = _ctor_target", code)
+    @test occursin("Labeler(call_rust_function(rustcall′func_ptr, Ptr{Cvoid}, UInt32(count)), rustcall′free_ptr, rustcall′alive, rustcall′free_panic_channel)", code)
+    @test occursin("Point(call_rust_function(rustcall′func_ptr, Ptr{Cvoid}, Float64(x), Float64(y)), rustcall′free_ptr, rustcall′alive, rustcall′free_panic_channel)", code)
+    @test occursin("rustcall′func_ptr, rustcall′panic_channel, rustcall′free_ptr, rustcall′alive, rustcall′free_panic_channel = _ctor_target", code)
     @test occursin("_ctor_target(var\"#TC#m#rustcall_Point_new\", \"rustcall_Point_new\", \"Point_free\")", code)
     @test Meta.parse(code) isa Expr
 

@@ -332,43 +332,24 @@ end
 """
     _string_temp_prefix(arg_names) -> String
 
-Prefix for the temporaries that hold the converted strings, chosen so that no
-temporary can collide with a Rust argument called, say, `__rustcall_str_s`.
+Prefix for the temporaries that hold the converted strings: `rustcall′str′`,
+in the namespace of the names an emitter binds itself (`_emitter_local`), which
+no Rust identifier — so no argument, and no item of the crate — can spell (PR
+#527 review). `arg_names` is no longer consulted.
 """
-function _string_temp_prefix(arg_names)
-    prefix = "__rustcall_str_"
-    while any(startswith(n, prefix) for n in arg_names)
-        prefix *= "_"
-    end
-    return prefix
-end
+_string_temp_prefix(arg_names) = string(_EMITTER_LOCAL_PREFIX, "str′")
 
 # The same for the `CallbackFrame` local of a call with callbacks (#296).
-function _callback_temp_prefix(arg_names)
-    prefix = "__rustcall_cb_"
-    while any(startswith(n, prefix) for n in arg_names)
-        prefix *= "_"
-    end
-    return prefix
-end
+_callback_temp_prefix(arg_names) = string(_EMITTER_LOCAL_PREFIX, "cb′")
 
 """
     _generated_local(base, arg_names) -> Symbol
 
-Name for a local the generated wrapper introduces (`func_ptr`, `lib_name`,
-`c_result`, ...). A Rust argument may legitimately be called `func_ptr`, and
-the wrapper must not shadow it, so the name is prefixed when — and only when —
-it would collide with one of `arg_names`. Without a collision the readable
-name is kept, so generated code is unchanged for the common case.
+Name for a local the generated wrapper introduces (`func_ptr`, `c_result`,
+...): `_emitter_local(base)`, which no Rust argument or crate item can spell,
+so the two never meet (PR #527 review). `arg_names` is no longer consulted.
 """
-function _generated_local(base::AbstractString, arg_names)
-    base in arg_names || return Symbol(base)
-    prefix = "__rustcall_"
-    while any(startswith(n, prefix) for n in arg_names)
-        prefix *= "_"
-    end
-    return Symbol(prefix, base)
-end
+_generated_local(base::AbstractString, arg_names) = _emitter_local(base)
 
 """
     _ffi_context(sig_or_method, owner = nothing) -> String

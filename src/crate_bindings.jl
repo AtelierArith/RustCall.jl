@@ -2585,7 +2585,7 @@ function _generate_crate_struct_wrapper(info::RustStructInfo;
     end
     struct_name_str = julia_struct_name(info)
     struct_name = Symbol(struct_name_str)
-    release_alive = _python_owned_handle(info) ? :(Ref(true)) : :alive
+    release_alive = _python_owned_handle(info) ? :(Ref(true)) : _emitter_local("alive")
 
     # Start with struct definition
     exprs = Expr[]
@@ -2607,29 +2607,33 @@ function _generate_crate_struct_wrapper(info::RustStructInfo;
             # must do no `dlsym` and compile no method (#249), and resolving
             # them after the constructor returned could pair a pointer from the
             # retired image with the replacement's destructor (#277).
-            function $struct_name(ptr::Ptr{Cvoid}, free_ptr::Ptr{Cvoid},
-                                  alive::Base.RefValue{Bool}, free_channel::Ptr{Cvoid} = C_NULL)
-                obj = new(ptr, free_ptr, alive, free_channel)
-                finalizer(RustCall.finalize_rust_object!, obj)
-                return obj
+            function $struct_name(rustcall′ptr::Ptr{Cvoid}, rustcall′free_ptr::Ptr{Cvoid},
+                                  rustcall′alive::Base.RefValue{Bool},
+                                  rustcall′free_channel::Ptr{Cvoid} = C_NULL)
+                rustcall′obj = new(rustcall′ptr, rustcall′free_ptr, rustcall′alive,
+                                   rustcall′free_channel)
+                finalizer(RustCall.finalize_rust_object!, rustcall′obj)
+                return rustcall′obj
             end
 
             # For a pointer that did not come from a call of this module.
-            function $struct_name(ptr::Ptr{Cvoid})
-                free_ptr, alive, free_channel = _struct_generation($free_cache, $free_symbol)
-                return $struct_name(ptr, free_ptr, $release_alive, free_channel)
+            function $struct_name(rustcall′ptr::Ptr{Cvoid})
+                rustcall′free_ptr, rustcall′alive, rustcall′free_channel =
+                    _struct_generation($free_cache, $free_symbol)
+                return $struct_name(rustcall′ptr, rustcall′free_ptr, $release_alive,
+                                    rustcall′free_channel)
             end
         end
         export $struct_name
 
-        function Base.show(io::IO, self::$struct_name)
-            print(io, nameof(@__MODULE__), ".", $struct_name_str, "(")
-            show(io, getfield(self, :ptr))
-            print(io, ")")
+        function Base.show(rustcall′io::IO, rustcall′self::$struct_name)
+            print(rustcall′io, nameof(@__MODULE__), ".", $struct_name_str, "(")
+            show(rustcall′io, getfield(rustcall′self, :ptr))
+            print(rustcall′io, ")")
         end
 
-        function Base.show(io::IO, ::MIME"text/plain", self::$struct_name)
-            Base.show(io, self)
+        function Base.show(rustcall′io::IO, ::MIME"text/plain", rustcall′self::$struct_name)
+            Base.show(rustcall′io, rustcall′self)
         end
     end)
 
@@ -2677,24 +2681,24 @@ function _crate_field_read(info::RustStructInfo, field_name::AbstractString,
         # Getter and release function from one snapshot: separately resolved,
         # a reload between them freed the buffer through the wrong image (#277).
         return quote
-            let (fp, channel, freep) = _call_target($cache, $name, $(c.free_symbol))
-                raw = _guard_panic(call_rust_function(fp, RustCall.CRustString, $self_ptr_expr), channel, $name, freep)
-                RustCall._take_owned_string(raw, freep)
+            let (rustcall′fp, rustcall′channel, rustcall′freep) = _call_target($cache, $name, $(c.free_symbol))
+                rustcall′raw = _guard_panic(call_rust_function(rustcall′fp, RustCall.CRustString, $self_ptr_expr), rustcall′channel, $name, rustcall′freep)
+                RustCall._take_owned_string(rustcall′raw, rustcall′freep)
             end
         end
     elseif ffi_owned_vec_return(c)
         element_type = c.surface_type.parameters[1]
         return quote
-            let (fp, channel, freep, alive) = _vec_target($cache, $name, $(c.free_symbol))
-                raw = _guard_panic(call_rust_function(fp, RustCall.CRustVec, $self_ptr_expr), channel, $name)
-                RustCall.RustVec{$element_type}(raw.ptr, raw.len, raw.cap, (freep, alive))
+            let (rustcall′fp, rustcall′channel, rustcall′freep, rustcall′alive) = _vec_target($cache, $name, $(c.free_symbol))
+                rustcall′raw = _guard_panic(call_rust_function(rustcall′fp, RustCall.CRustVec, $self_ptr_expr), rustcall′channel, $name)
+                RustCall.RustVec{$element_type}(rustcall′raw.ptr, rustcall′raw.len, rustcall′raw.cap, (rustcall′freep, rustcall′alive))
             end
         end
     elseif ffi_borrowed_string_return(c)
         return quote
-            let (fp, channel) = _call_target($cache, $name)
-                raw = _guard_panic(call_rust_function(fp, RustCall.CRustStr, $self_ptr_expr), channel, $name)
-                RustCall._crust_str_to_julia(raw)
+            let (rustcall′fp, rustcall′channel) = _call_target($cache, $name)
+                rustcall′raw = _guard_panic(call_rust_function(rustcall′fp, RustCall.CRustStr, $self_ptr_expr), rustcall′channel, $name)
+                RustCall._crust_str_to_julia(rustcall′raw)
             end
         end
     end
@@ -2702,8 +2706,8 @@ function _crate_field_read(info::RustStructInfo, field_name::AbstractString,
                                             _ffi_field_context(info, field_name, field_type);
                                             position = _ffi_field_position(info, field_name))
     return quote
-        let (fp, channel) = _call_target($cache, $name)
-            _guard_panic(call_rust_function(fp, $julia_type, $self_ptr_expr), channel, $name)
+        let (rustcall′fp, rustcall′channel) = _call_target($cache, $name)
+            _guard_panic(call_rust_function(rustcall′fp, $julia_type, $self_ptr_expr), rustcall′channel, $name)
         end
     end
 end
@@ -2727,12 +2731,12 @@ function _crate_field_write(info::RustStructInfo, field_name::AbstractString,
     if get(info.field_abis, field_name, "") == "vec"
         element_type = ffi_vec_element_type(get(info.field_vec_elements, field_name, ""))
         return quote
-            let values = collect($element_type, $value_expr),
-                (fp, channel) = _call_target($cache, $name)
-                GC.@preserve values begin
-                    _guard_panic(call_rust_function(fp, Cvoid, $self_ptr_expr,
-                                                    pointer(values), Csize_t(length(values))),
-                                 channel, $name)
+            let rustcall′values = collect($element_type, $value_expr),
+                (rustcall′fp, rustcall′channel) = _call_target($cache, $name)
+                GC.@preserve rustcall′values begin
+                    _guard_panic(call_rust_function(rustcall′fp, Cvoid, $self_ptr_expr,
+                                                    pointer(rustcall′values), Csize_t(length(rustcall′values))),
+                                 rustcall′channel, $name)
                 end
             end
         end
@@ -2742,17 +2746,17 @@ function _crate_field_write(info::RustStructInfo, field_name::AbstractString,
         # Match the wrapper's byte pointer/length input; never pass Rust String
         # by value or truncate an embedded NUL through a C string.
         return quote
-            let text = RustCall.ffi_string_argument($value_expr, "value", $name),
-                (fp, channel) = _call_target($cache, $name)
-                GC.@preserve text begin
-                    _guard_panic(call_rust_function(fp, Cvoid, $self_ptr_expr, pointer(text), Csize_t(ncodeunits(text))), channel, $name)
+            let rustcall′text = RustCall.ffi_string_argument($value_expr, "value", $name),
+                (rustcall′fp, rustcall′channel) = _call_target($cache, $name)
+                GC.@preserve rustcall′text begin
+                    _guard_panic(call_rust_function(rustcall′fp, Cvoid, $self_ptr_expr, pointer(rustcall′text), Csize_t(ncodeunits(rustcall′text))), rustcall′channel, $name)
                 end
             end
         end
     elseif ffi_borrowed_string_return(c)
         return quote
-            let (fp, channel) = _call_target($cache, $name)
-                _guard_panic(call_rust_function(fp, Cvoid, $self_ptr_expr, $value_expr), channel, $name)
+            let (rustcall′fp, rustcall′channel) = _call_target($cache, $name)
+                _guard_panic(call_rust_function(rustcall′fp, Cvoid, $self_ptr_expr, $value_expr), rustcall′channel, $name)
             end
         end
     end
@@ -2760,8 +2764,8 @@ function _crate_field_write(info::RustStructInfo, field_name::AbstractString,
                                             _ffi_field_context(info, field_name, field_type);
                                             position = _ffi_field_position(info, field_name))
     return quote
-        let value = convert($julia_type, $value_expr), (fp, channel) = _call_target($cache, $name)
-            _guard_panic(call_rust_function(fp, Cvoid, $self_ptr_expr, value), channel, $name)
+        let rustcall′value = convert($julia_type, $value_expr), (rustcall′fp, rustcall′channel) = _call_target($cache, $name)
+            _guard_panic(call_rust_function(rustcall′fp, Cvoid, $self_ptr_expr, rustcall′value), rustcall′channel, $name)
         end
     end
 end
@@ -2775,25 +2779,25 @@ function _crate_field_write_source(info::RustStructInfo, field_name::AbstractStr
                                    field_type::AbstractString, setter_symbol::AbstractString,
                                    self_ptr::String, value::String, cache::AbstractString;
                                    strict::Symbol = FFI_STRICT[])
-    target = "(fp, channel) = _call_target($cache, \"$setter_symbol\")"
+    target = "(rustcall′fp, rustcall′channel) = _call_target($cache, \"$setter_symbol\")"
     if get(info.field_abis, field_name, "") == "vec"
         element_type = string(ffi_vec_element_type(get(info.field_vec_elements, field_name, "")))
-        return "let values = collect($element_type, $value), $target; " *
-               "GC.@preserve values begin _guard_panic(call_rust_function(fp, Cvoid, $self_ptr, pointer(values), Csize_t(length(values))), channel, \"$setter_symbol\"); end; end"
+        return "let rustcall′values = collect($element_type, $value), $target; " *
+               "GC.@preserve rustcall′values begin _guard_panic(call_rust_function(rustcall′fp, Cvoid, $self_ptr, pointer(rustcall′values), Csize_t(length(rustcall′values))), rustcall′channel, \"$setter_symbol\"); end; end"
     end
     c = _ffi_field_return(info, field_name, field_type)
     if ffi_owned_string_return(c)
-        return "let text = RustCall.ffi_string_argument($value, \"value\", \"$setter_symbol\"), $target; " *
-               "GC.@preserve text begin _guard_panic(call_rust_function(fp, Cvoid, $self_ptr, pointer(text), Csize_t(ncodeunits(text))), channel, \"$setter_symbol\"); end; end"
+        return "let rustcall′text = RustCall.ffi_string_argument($value, \"value\", \"$setter_symbol\"), $target; " *
+               "GC.@preserve rustcall′text begin _guard_panic(call_rust_function(rustcall′fp, Cvoid, $self_ptr, pointer(rustcall′text), Csize_t(ncodeunits(rustcall′text))), rustcall′channel, \"$setter_symbol\"); end; end"
     elseif ffi_borrowed_string_return(c)
-        return "let $target; _guard_panic(call_rust_function(fp, Cvoid, $self_ptr, $value), channel, \"$setter_symbol\"); end"
+        return "let $target; _guard_panic(call_rust_function(rustcall′fp, Cvoid, $self_ptr, $value), rustcall′channel, \"$setter_symbol\"); end"
     end
     julia_type = ffi_return_symbol_or_throw(field_type, get(info.field_abis, field_name, ""),
                                             _ffi_field_context(info, field_name, field_type);
                                             strict = strict,
                                             position = _ffi_field_position(info, field_name))
-    return "let converted_value = convert($julia_type, $value), $target; " *
-           "_guard_panic(call_rust_function(fp, Cvoid, $self_ptr, converted_value), channel, \"$setter_symbol\"); end"
+    return "let rustcall′converted_value = convert($julia_type, $value), $target; " *
+           "_guard_panic(call_rust_function(rustcall′fp, Cvoid, $self_ptr, rustcall′converted_value), rustcall′channel, \"$setter_symbol\"); end"
 end
 
 """
@@ -2805,26 +2809,26 @@ function _crate_field_read_source(info::RustStructInfo, field_name::AbstractStri
                                   field_type::AbstractString, getter_symbol::AbstractString,
                                   self_ptr::String, cache::AbstractString; strict::Symbol = FFI_STRICT[])
     c = _ffi_field_return(info, field_name, field_type)
-    target = "(fp, channel) = _call_target($cache, \"$getter_symbol\")"
+    target = "(rustcall′fp, rustcall′channel) = _call_target($cache, \"$getter_symbol\")"
     if ffi_owned_string_return(c)
         # Getter and release function from one snapshot (#277).
-        return "let (fp, channel, freep) = _call_target($cache, \"$getter_symbol\", \"$(c.free_symbol)\"); " *
-               "raw = _guard_panic(call_rust_function(fp, RustCall.CRustString, $self_ptr), channel, \"$getter_symbol\", freep); " *
-               "RustCall._take_owned_string(raw, freep); end"
+        return "let (rustcall′fp, rustcall′channel, rustcall′freep) = _call_target($cache, \"$getter_symbol\", \"$(c.free_symbol)\"); " *
+               "rustcall′raw = _guard_panic(call_rust_function(rustcall′fp, RustCall.CRustString, $self_ptr), rustcall′channel, \"$getter_symbol\", rustcall′freep); " *
+               "RustCall._take_owned_string(rustcall′raw, rustcall′freep); end"
     elseif ffi_owned_vec_return(c)
         element_type = string(c.surface_type.parameters[1])
-        return "let (fp, channel, freep, alive) = _vec_target($cache, \"$getter_symbol\", \"$(c.free_symbol)\"); " *
-               "raw = _guard_panic(call_rust_function(fp, RustCall.CRustVec, $self_ptr), channel, \"$getter_symbol\"); " *
-               "RustCall.RustVec{$element_type}(raw.ptr, raw.len, raw.cap, (freep, alive)); end"
+        return "let (rustcall′fp, rustcall′channel, rustcall′freep, rustcall′alive) = _vec_target($cache, \"$getter_symbol\", \"$(c.free_symbol)\"); " *
+               "rustcall′raw = _guard_panic(call_rust_function(rustcall′fp, RustCall.CRustVec, $self_ptr), rustcall′channel, \"$getter_symbol\"); " *
+               "RustCall.RustVec{$element_type}(rustcall′raw.ptr, rustcall′raw.len, rustcall′raw.cap, (rustcall′freep, rustcall′alive)); end"
     elseif ffi_borrowed_string_return(c)
-        return "let $target; raw = _guard_panic(call_rust_function(fp, RustCall.CRustStr, $self_ptr), channel, \"$getter_symbol\"); " *
-               "RustCall._crust_str_to_julia(raw); end"
+        return "let $target; rustcall′raw = _guard_panic(call_rust_function(rustcall′fp, RustCall.CRustStr, $self_ptr), rustcall′channel, \"$getter_symbol\"); " *
+               "RustCall._crust_str_to_julia(rustcall′raw); end"
     end
     julia_type = ffi_return_symbol_or_throw(field_type, get(info.field_abis, field_name, ""),
                                             _ffi_field_context(info, field_name, field_type);
                                             strict = strict,
                                             position = _ffi_field_position(info, field_name))
-    return "let $target; _guard_panic(call_rust_function(fp, $julia_type, $self_ptr), channel, \"$getter_symbol\"); end"
+    return "let $target; _guard_panic(call_rust_function(rustcall′fp, $julia_type, $self_ptr), rustcall′channel, \"$getter_symbol\"); end"
 end
 
 """
@@ -2863,9 +2867,9 @@ function _generate_property_accessors(info::RustStructInfo)
         # A `String` field getter hands back an owned buffer, on the crate path
         # too since manifest schema 4 — it used to be read as `Any` (#246).
         read = _crate_field_read(info, field_name, field_type, getter_fn,
-                                 :(getfield(self, :ptr)), _target_cache_name(:prop, getter_fn))
+                                 :(getfield(rustcall′self, :ptr)), _target_cache_name(:prop, getter_fn))
         push!(getprop_branches, quote
-            if field === $field_sym
+            if rustcall′field === $field_sym
                 return $read
             end
         end)
@@ -2879,12 +2883,12 @@ function _generate_property_accessors(info::RustStructInfo)
         push!(caches, _target_cache_const(:prop, setter_fn))
 
         write = _crate_field_write(info, field_name, field_type, setter_fn,
-                                   :(getfield(self, :ptr)), :value,
+                                   :(getfield(rustcall′self, :ptr)), _emitter_local("value"),
                                    _target_cache_name(:prop, setter_fn))
         push!(setprop_branches, quote
-            if field === $field_sym
+            if rustcall′field === $field_sym
                 $write
-                return value
+                return rustcall′value
             end
         end)
     end
@@ -2894,27 +2898,27 @@ function _generate_property_accessors(info::RustStructInfo)
 
     quote
         $(caches...)
-        function Base.getproperty(self::$struct_name, field::Symbol)
+        function Base.getproperty(rustcall′self::$struct_name, rustcall′field::Symbol)
             # Allow access to internal ptr field
-            if field === :ptr
-                return getfield(self, :ptr)
+            if rustcall′field === :ptr
+                return getfield(rustcall′self, :ptr)
             end
-            _check_not_freed(self, $struct_name_str)
+            _check_not_freed(rustcall′self, $struct_name_str)
             $(getprop_branches...)
-            error("type $($struct_name_str) has no field $field")
+            error("type $($struct_name_str) has no field $rustcall′field")
         end
 
-        function Base.setproperty!(self::$struct_name, field::Symbol, value)
+        function Base.setproperty!(rustcall′self::$struct_name, rustcall′field::Symbol, rustcall′value)
             # Disallow setting internal ptr field
-            if field === :ptr
+            if rustcall′field === :ptr
                 error("cannot set internal field :ptr")
             end
-            _check_not_freed(self, $struct_name_str)
+            _check_not_freed(rustcall′self, $struct_name_str)
             $(setprop_branches...)
-            error("type $($struct_name_str) has no field $field")
+            error("type $($struct_name_str) has no field $rustcall′field")
         end
 
-        function Base.propertynames(self::$struct_name)
+        function Base.propertynames(rustcall′self::$struct_name)
             ($(field_symbols...),)
         end
     end
@@ -2967,7 +2971,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     c = _ffi_method_return(method, helper_owner)
 
     all_args = Any[]
-    method.is_static || push!(all_args, :(getfield(self, :ptr)))
+    method.is_static || push!(all_args, :(getfield(rustcall′self, :ptr)))
     append!(all_args, converted_args)
 
     channel_sym = _generated_local("panic_channel", method.arg_names)
@@ -2995,7 +2999,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
             :(($ptr_sym, $channel_sym, $free_sym) = _call_target($cache_sym, $wrapper_name, $(plan.free_symbol)))
         free_expr = isempty(plan.free_symbol) ? :(C_NULL) : free_sym
         c_sym = _generated_local("c_payload", method.arg_names)
-        method.is_static || pushfirst!(preserved, :self)
+        method.is_static || pushfirst!(preserved, _emitter_local("self"))
         payload_body = quote
             $(bindings...)
             $payload_target
@@ -3033,7 +3037,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     # The wrapper object itself is kept alive for the whole call as well: a
     # borrowed `&str` result points into the Rust object, which the finalizer
     # of a temporary `self` could otherwise free mid-call.
-    payload_body === nothing && !method.is_static && pushfirst!(preserved, :self)
+    payload_body === nothing && !method.is_static && pushfirst!(preserved, _emitter_local("self"))
     method_label = "$(struct_name_str)::$(method_name)"
     body = payload_body !== nothing ? payload_body : quote
         $(bindings...)
@@ -3056,7 +3060,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
         # The delegator names its own arguments: an argument called like the
         # method (`fn scale(scale)`) or like the struct would otherwise shadow
         # the function or the type inside the forwarding body.
-        dargs = [Symbol("__rustcall_arg", i) for i in eachindex(arg_syms)]
+        dargs = [_emitter_local(string("arg", i)) for i in eachindex(arg_syms)]
         bare_def = bare ?
             :($method_name($(dargs...)) = $method_name($struct_name, $(dargs...))) :
             nothing
@@ -3069,8 +3073,8 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
         end
     else
         quote
-            function $method_name(self::$struct_name, $(arg_syms...))
-                _check_not_freed(self, $struct_name_str)
+            function $method_name(rustcall′self::$struct_name, $(arg_syms...))
+                _check_not_freed(rustcall′self, $struct_name_str)
                 $body
             end
             export $method_name
@@ -3217,9 +3221,9 @@ function _generate_py_result_method_wrapper(info::RustStructInfo, method::RustMe
     release_alive = _python_owned_handle(info) ? :(Ref(true)) : alive_sym
 
     all_args = Any[]
-    method.is_static || push!(all_args, :(getfield(self, :ptr)))
+    method.is_static || push!(all_args, :(getfield(rustcall′self, :ptr)))
     append!(all_args, converted_args)
-    method.is_static || pushfirst!(preserved, :self)
+    method.is_static || pushfirst!(preserved, _emitter_local("self"))
     method_label = "$(struct_name_str)::$(method_name)"
     payload_free = _payload_free_symbol(helper_owner, (method.ok_abi,))
     cache_sym = _target_cache_name(:m, wrapper_name)
@@ -3279,7 +3283,7 @@ function _generate_py_result_method_wrapper(info::RustStructInfo, method::RustMe
         # The delegator names its own arguments: an argument called like the
         # method (`fn scale(scale)`) or like the struct would otherwise shadow
         # the function or the type inside the forwarding body.
-        dargs = [Symbol("__rustcall_arg", i) for i in eachindex(arg_syms)]
+        dargs = [_emitter_local(string("arg", i)) for i in eachindex(arg_syms)]
         bare_def = bare ?
             :($method_name($(dargs...)) = $method_name($struct_name, $(dargs...))) :
             nothing
@@ -3294,8 +3298,8 @@ function _generate_py_result_method_wrapper(info::RustStructInfo, method::RustMe
     else
         quote
             $declaration
-            function $method_name(self::$struct_name, $(arg_syms...))
-                _check_not_freed(self, $struct_name_str)
+            function $method_name(rustcall′self::$struct_name, $(arg_syms...))
+                _check_not_freed(rustcall′self, $struct_name_str)
                 $body
             end
             export $method_name
@@ -3319,25 +3323,26 @@ function _generate_crate_field_accessor(info::RustStructInfo, field_name::String
     if field_is_accessible(info, field_name)
         getter_name = info.field_getters[field_name]
         read = _crate_field_read(info, field_name, field_type, getter_name,
-                                 :(self.ptr), _target_cache_name(:acc, getter_name))
+                                 :(rustcall′self.ptr), _target_cache_name(:acc, getter_name))
         push!(exprs, quote
             $(_target_cache_const(:acc, getter_name))
-            function $(Symbol("get_", julia_field_name(field_name)))(self::$struct_name)
-                _check_not_freed(self, $struct_name_str)
+            function $(Symbol("get_", julia_field_name(field_name)))(rustcall′self::$struct_name)
+                _check_not_freed(rustcall′self, $struct_name_str)
                 $read
             end
         end)
     end
     if field_is_writable(info, field_name)
         setter_name = info.field_setters[field_name]
-        write = _crate_field_write(info, field_name, field_type, setter_name, :(self.ptr), :value,
+        write = _crate_field_write(info, field_name, field_type, setter_name, :(rustcall′self.ptr),
+                                   _emitter_local("value"),
                                    _target_cache_name(:acc, setter_name))
         push!(exprs, quote
             $(_target_cache_const(:acc, setter_name))
-            function $(Symbol("set_", julia_field_name(field_name), "!"))(self::$struct_name, value)
-                _check_not_freed(self, $struct_name_str)
+            function $(Symbol("set_", julia_field_name(field_name), "!"))(rustcall′self::$struct_name, rustcall′value)
+                _check_not_freed(rustcall′self, $struct_name_str)
                 $write
-                value
+                rustcall′value
             end
         end)
     end
@@ -5218,7 +5223,7 @@ function _emit_struct_code(info::RustStructInfo; strict::Symbol = FFI_STRICT[],
         return ""
     end
     struct_name = julia_struct_name(info)
-    release_alive = _python_owned_handle(info) ? "Ref(true)" : "alive"
+    release_alive = _python_owned_handle(info) ? "Ref(true)" : "rustcall′alive"
     free_symbol = ffi_struct_free_symbol(info.ffi_name)
     free_cache = _target_cache_ref(:free, free_symbol)
 
@@ -5235,25 +5240,25 @@ function _emit_struct_code(info::RustStructInfo; strict::Symbol = FFI_STRICT[],
     push!(lines, "    alive::Base.RefValue{Bool}")
     push!(lines, "    free_channel::Ptr{Cvoid}")
     push!(lines, "")
-    push!(lines, "    function $struct_name(ptr::Ptr{Cvoid}, free_ptr::Ptr{Cvoid}, alive::Base.RefValue{Bool}, free_channel::Ptr{Cvoid} = C_NULL)")
-    push!(lines, "        obj = new(ptr, free_ptr, alive, free_channel)")
-    push!(lines, "        finalizer(RustCall.finalize_rust_object!, obj)")
-    push!(lines, "        return obj")
+    push!(lines, "    function $struct_name(rustcall′ptr::Ptr{Cvoid}, rustcall′free_ptr::Ptr{Cvoid}, rustcall′alive::Base.RefValue{Bool}, rustcall′free_channel::Ptr{Cvoid} = C_NULL)")
+    push!(lines, "        rustcall′obj = new(rustcall′ptr, rustcall′free_ptr, rustcall′alive, rustcall′free_channel)")
+    push!(lines, "        finalizer(RustCall.finalize_rust_object!, rustcall′obj)")
+    push!(lines, "        return rustcall′obj")
     push!(lines, "    end")
     push!(lines, "")
-    push!(lines, "    function $struct_name(ptr::Ptr{Cvoid})")
-    push!(lines, "        free_ptr, alive, free_channel = _struct_generation($free_cache, $(repr(free_symbol)))")
-    push!(lines, "        return $struct_name(ptr, free_ptr, $release_alive, free_channel)")
+    push!(lines, "    function $struct_name(rustcall′ptr::Ptr{Cvoid})")
+    push!(lines, "        rustcall′free_ptr, rustcall′alive, rustcall′free_channel = _struct_generation($free_cache, $(repr(free_symbol)))")
+    push!(lines, "        return $struct_name(rustcall′ptr, rustcall′free_ptr, $release_alive, rustcall′free_channel)")
     push!(lines, "    end")
     push!(lines, "end")
     push!(lines, "export $struct_name")
-    push!(lines, "function Base.show(io::IO, self::$struct_name)")
-    push!(lines, "    print(io, nameof(@__MODULE__), \".$struct_name(\")")
-    push!(lines, "    show(io, getfield(self, :ptr))")
-    push!(lines, "    print(io, \")\")")
+    push!(lines, "function Base.show(rustcall′io::IO, rustcall′self::$struct_name)")
+    push!(lines, "    print(rustcall′io, nameof(@__MODULE__), \".$struct_name(\")")
+    push!(lines, "    show(rustcall′io, getfield(rustcall′self, :ptr))")
+    push!(lines, "    print(rustcall′io, \")\")")
     push!(lines, "end")
-    push!(lines, "function Base.show(io::IO, ::MIME\"text/plain\", self::$struct_name)")
-    push!(lines, "    Base.show(io, self)")
+    push!(lines, "function Base.show(rustcall′io::IO, ::MIME\"text/plain\", rustcall′self::$struct_name)")
+    push!(lines, "    Base.show(rustcall′io, rustcall′self)")
     push!(lines, "end")
     push!(lines, "")
 
@@ -5284,47 +5289,47 @@ function _emit_struct_code(info::RustStructInfo; strict::Symbol = FFI_STRICT[],
         end
         push!(lines, "")
         # getproperty
-        push!(lines, "function Base.getproperty(self::$struct_name, field::Symbol)")
-        push!(lines, "    if field === :ptr")
-        push!(lines, "        return getfield(self, :ptr)")
+        push!(lines, "function Base.getproperty(rustcall′self::$struct_name, rustcall′field::Symbol)")
+        push!(lines, "    if rustcall′field === :ptr")
+        push!(lines, "        return getfield(rustcall′self, :ptr)")
         push!(lines, "    end")
-        push!(lines, "    _check_not_freed(self, \"$struct_name\")")
+        push!(lines, "    _check_not_freed(rustcall′self, \"$struct_name\")")
         for (field_name, field_type) in readable_fields
             getter_fn = info.field_getters[field_name]
             read = _crate_field_read_source(info, field_name, field_type, getter_fn,
-                                            "getfield(self, :ptr)",
+                                            "getfield(rustcall′self, :ptr)",
                                             _target_cache_ref(:prop, getter_fn); strict = strict)
-            push!(lines, "    if field === $(repr(Symbol(julia_field_name(field_name))))")
+            push!(lines, "    if rustcall′field === $(repr(Symbol(julia_field_name(field_name))))")
             push!(lines, "        return $read")
             push!(lines, "    end")
         end
-        push!(lines, "    error(\"type $struct_name has no field \$field\")")
+        push!(lines, "    error(\"type $struct_name has no field \$rustcall′field\")")
         push!(lines, "end")
         push!(lines, "")
 
         # setproperty!
-        push!(lines, "function Base.setproperty!(self::$struct_name, field::Symbol, value)")
-        push!(lines, "    if field === :ptr")
+        push!(lines, "function Base.setproperty!(rustcall′self::$struct_name, rustcall′field::Symbol, rustcall′value)")
+        push!(lines, "    if rustcall′field === :ptr")
         push!(lines, "        error(\"cannot set internal field :ptr\")")
         push!(lines, "    end")
-        push!(lines, "    _check_not_freed(self, \"$struct_name\")")
+        push!(lines, "    _check_not_freed(rustcall′self, \"$struct_name\")")
         for (field_name, field_type) in writable_fields
             setter_fn = info.field_setters[field_name]
             write = _crate_field_write_source(info, field_name, field_type, setter_fn,
-                                              "getfield(self, :ptr)", "value",
+                                              "getfield(rustcall′self, :ptr)", "rustcall′value",
                                               _target_cache_ref(:prop, setter_fn); strict = strict)
-            push!(lines, "    if field === $(repr(Symbol(julia_field_name(field_name))))")
+            push!(lines, "    if rustcall′field === $(repr(Symbol(julia_field_name(field_name))))")
             push!(lines, "        $write")
-            push!(lines, "        return value")
+            push!(lines, "        return rustcall′value")
             push!(lines, "    end")
         end
-        push!(lines, "    error(\"type $struct_name has no field \$field\")")
+        push!(lines, "    error(\"type $struct_name has no field \$rustcall′field\")")
         push!(lines, "end")
         push!(lines, "")
 
         # propertynames
         field_syms = join([repr(Symbol(julia_field_name(name))) for (name, _) in property_fields], ", ")
-        push!(lines, "function Base.propertynames(self::$struct_name)")
+        push!(lines, "function Base.propertynames(rustcall′self::$struct_name)")
         push!(lines, "    ($field_syms,)")
         push!(lines, "end")
     end
@@ -5391,12 +5396,12 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
     prologue = isempty(bindings_str) ? "" : bindings_str * "\n"
     # `self` is preserved too: a borrowed `&str` result points into the Rust
     # object, which the finalizer of a temporary could free mid-call.
-    method.is_static || (preserve_str = strip("self " * preserve_str))
+    method.is_static || (preserve_str = strip("rustcall′self " * preserve_str))
     ptr_var = _generated_local("func_ptr", method.arg_names)
     c = _ffi_method_return(method, helper_owner)
 
     all_args = String[]
-    method.is_static || push!(all_args, "getfield(self, :ptr)")
+    method.is_static || push!(all_args, "getfield(rustcall′self, :ptr)")
     isempty(converted_args_str) || push!(all_args, converted_args_str)
     args_str = join(all_args, ", ")
 
@@ -5476,7 +5481,7 @@ end"""
         comma_args = isempty(arg_syms) ? "" : ", $arg_syms"
         # Own argument names in the delegator, so an argument called like the
         # method or the struct cannot shadow them in the forwarding body.
-        dargs = join(("__rustcall_arg$i" for i in eachindex(method.arg_names)), ", ")
+        dargs = join(("rustcall′arg$i" for i in eachindex(method.arg_names)), ", ")
         dcomma = isempty(dargs) ? "" : ", $dargs"
         bare_def = bare ? "\n$method_name($dargs) = $method_name($struct_name$dcomma)" : ""
         """
@@ -5487,8 +5492,8 @@ export $method_name"""
     else
         self_args = isempty(arg_syms) ? "" : ", $arg_syms"
         """
-function $method_name(self::$struct_name$self_args)
-    _check_not_freed(self, "$struct_name")
+function $method_name(rustcall′self::$struct_name$self_args)
+    _check_not_freed(rustcall′self, "$struct_name")
 $body
 end
 export $method_name"""
@@ -5546,7 +5551,7 @@ function _emit_py_result_method_code(info::RustStructInfo, method::RustMethod,
     free_channel_var = _generated_local("free_panic_channel", method.arg_names)
 
     all_args = String[]
-    method.is_static || push!(all_args, "getfield(self, :ptr)")
+    method.is_static || push!(all_args, "getfield(rustcall′self, :ptr)")
     isempty(converted_args_str) || push!(all_args, converted_args_str)
     args_str = join(all_args, ", ")
     method_label = "$(struct_name)::$(method_name)"
@@ -5602,7 +5607,7 @@ end"""
         comma_args = isempty(arg_syms) ? "" : ", $arg_syms"
         # Own argument names in the delegator, so an argument called like the
         # method or the struct cannot shadow them in the forwarding body.
-        dargs = join(("__rustcall_arg$i" for i in eachindex(method.arg_names)), ", ")
+        dargs = join(("rustcall′arg$i" for i in eachindex(method.arg_names)), ", ")
         dcomma = isempty(dargs) ? "" : ", $dargs"
         bare_def = bare ? "\n$method_name($dargs) = $method_name($struct_name$dcomma)" : ""
         return """$declaration
@@ -5613,8 +5618,8 @@ export $method_name"""
     end
     self_args = isempty(arg_syms) ? "" : ", $arg_syms"
     return """$declaration
-function $method_name(self::$struct_name$self_args)
-    _check_not_freed(self, "$struct_name")
+function $method_name(rustcall′self::$struct_name$self_args)
+    _check_not_freed(rustcall′self, "$struct_name")
 $body
 end
 export $method_name"""

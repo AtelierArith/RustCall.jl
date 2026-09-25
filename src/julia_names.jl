@@ -381,6 +381,16 @@ _check_julia_name_clashes(functions, structs, where_::AbstractString;
 # set the probe made, never by their spelling.
 _parameter_placeholder(k::Integer) = string("rustcall′arg′", k)
 
+# The names an emitter binds itself inside a definition it generates — a
+# receiver, a pointer, a panic channel, a string temporary — are in the same
+# namespace (PR #527 review): `rustcall′<name>`. A crate's items and a
+# wrapper's parameters are Rust identifiers and cannot spell one, so no local
+# of a wrapper ever shadows a crate item the wrapper reads, and no parameter
+# meets a local, by construction rather than by allocation. The source-text
+# emitter writes them as they are; `Meta.parse` reads them back unchanged.
+const _EMITTER_LOCAL_PREFIX = "rustcall′"
+_emitter_local(name) = Symbol(_EMITTER_LOCAL_PREFIX, name)
+
 # A copy of a function / method record with other parameter names, or of a
 # struct record with other methods; every other field as it is.
 _with_field(item, field::Symbol, value) =

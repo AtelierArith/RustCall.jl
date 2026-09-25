@@ -439,7 +439,7 @@ end
         # generated finalizer, and it *counts* the failure instead of logging
         # it: `@warn` allocates and can yield, and a finalizer may run while
         # the thread holds `REGISTRY_LOCK` (#249).
-        @test occursin("finalizer(RustCall.finalize_rust_object!, obj)", code)
+        @test occursin("finalizer(RustCall.finalize_rust_object!, rustcall′obj)", code)
         src = read(joinpath(dirname(dirname(pathof(RustCall))), "src", "structs.jl"), String)
         i = findfirst("function finalize_rust_object!", src)
         @test i !== nothing
@@ -1362,14 +1362,14 @@ end
         # copying it and release it through the contract's symbol. Previously this branch read
         # `call_rust_function(ptr, Any, ...)` and leaked.
         emitted = RustCall._emit_struct_code(info)
-        @test occursin("_guard_panic(call_rust_function(fp, RustCall.CRustString", emitted)
-        @test occursin("RustCall._take_owned_string(raw, freep)", emitted)
+        @test occursin("_guard_panic(call_rust_function(rustcall′fp, RustCall.CRustString", emitted)
+        @test occursin("RustCall._take_owned_string(rustcall′raw, rustcall′freep)", emitted)
         @test occursin("Rc246Counter_free_rust_string", emitted)
         @test !occursin("call_rust_function(func_ptr, Any", emitted)
 
         generated = string(RustCall._generate_property_accessors(info))
-        @test occursin("_guard_panic(call_rust_function(fp, RustCall.CRustString", generated)
-        @test occursin("RustCall._take_owned_string(raw, freep)", generated)
+        @test occursin("_guard_panic(call_rust_function(rustcall′fp, RustCall.CRustString", generated)
+        @test occursin("RustCall._take_owned_string(rustcall′raw, rustcall′freep)", generated)
         @test occursin("Rc246Counter_free_rust_string", generated)
 
         # A plain field is unaffected.
@@ -2167,7 +2167,7 @@ _release_460(ptr::Ptr{UInt8}, len::UInt, cap::UInt) = (_FREED_460[] += 1; nothin
         # owned-string read checks the channel without the buffer.
         crate = src_text("crate_bindings.jl")
         @test !occursin("_guard_panic(nothing", crate)
-        @test occursin("channel, \$name, freep)", crate)
+        @test occursin("rustcall′channel, \$name, rustcall′freep)", crate)
         @test occursin("check_rust_panic_ptr(channel, func_name, raw, target.free_ptr)", src_text("structs.jl"))
     end
 

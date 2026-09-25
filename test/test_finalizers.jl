@@ -96,7 +96,9 @@ end
         # body of their own — that is what makes the property checkable.
         for file in ("structs.jl", "crate_bindings.jl")
             src = _fin_src(file)
-            @test occursin("finalizer(RustCall.finalize_rust_object!, obj)", src)
+            # (`rustcall′obj` in the crate emitters, whose locals are in the
+            # emitter's own namespace; `obj` in the hygienic `rust\"\"\"` one.)
+            @test occursin(r"finalizer\(RustCall\.finalize_rust_object!, (rustcall′)?obj\)", src)
             # No `finalizer(obj) do x` blocks left anywhere.
             @test !occursin("finalizer(obj) do x", src)
         end

@@ -269,20 +269,20 @@ end
     @test occursin("struct COption_Divider_ratio <: FFIByValue", code)
     # The release function is snapshotted with the call pointer: a crate method
     # names its buffer after `<Struct>_<method>` (#268, #277).
-    @test occursin("func_ptr, panic_channel, free_ptr = _call_target(var\"#TC#m#rustcall_Divider_checked_div\", \"rustcall_Divider_checked_div\", \"Divider_checked_div_free_rust_string\")",
+    @test occursin("rustcall′func_ptr, rustcall′panic_channel, rustcall′free_ptr = _call_target(var\"#TC#m#rustcall_Divider_checked_div\", \"rustcall_Divider_checked_div\", \"Divider_checked_div_free_rust_string\")",
                    code)
-    @test occursin("_result_payload(String, c_payload.err_value, free_ptr)", code)
+    @test occursin("_result_payload(String, rustcall′c_payload.err_value, rustcall′free_ptr)", code)
     # No payload is a string here, so nothing is resolved to release.
-    @test occursin("func_ptr, panic_channel = _call_target(var\"#TC#m#rustcall_Divider_ratio\", \"rustcall_Divider_ratio\")", code)
-    @test occursin("_result_payload(Float64, c_payload.value, C_NULL)", code)
+    @test occursin("rustcall′func_ptr, rustcall′panic_channel = _call_target(var\"#TC#m#rustcall_Divider_ratio\", \"rustcall_Divider_ratio\")", code)
+    @test occursin("_result_payload(Float64, rustcall′c_payload.value, C_NULL)", code)
     # The channel is read before either payload is decoded (#244).
-    at = findfirst("function checked_div(self::Divider, d)", code)
+    at = findfirst("function checked_div(rustcall′self::Divider, d)", code)
     @test at !== nothing
     body = code[first(at):end]
     body = body[1:first(findfirst("\nend", body))]
     # The guard gets the aggregate and its release function, so a callback's
     # exception raised there cannot leak an owned payload (#460).
-    @test findfirst("_guard_panic(c_payload, panic_channel,", body) < findfirst("_result_payload(", body)
+    @test findfirst("_guard_panic(rustcall′c_payload, rustcall′panic_channel,", body) < findfirst("_result_payload(", body)
     @test Meta.parse(code) isa Expr
 
     # The in-memory emitter emits the same aggregate and decoding.
