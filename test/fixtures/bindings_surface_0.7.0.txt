@@ -1,0 +1,1304 @@
+# The surface of RustCall 0.7.0 that a file written by `write_bindings_to_file`
+# can reach, recorded from the v0.7.0 release. v0.7.0 is the oldest release of
+# bindings format 0.7, and every file of that format must load
+# under it (#531). One line per name: the name, then one entry per
+# method, `arity|keywords`: `n` positional arguments, or `n+` for a
+# vararg method taking at least n; the keywords it accepts, `*` for any.
+# A name with no entries is not callable (a module, a constant).
+@irust	3+|
+@irust_str	3|
+@register_ffi_struct	3|
+@rust	3|
+@rust_ccall	5+|
+@rust_crate	3+|
+@rust_register	4+|
+@rust_str	3|
+ALL_LOAD_POLICIES
+ARTIFACT_ALIVE
+ARTIFACT_BUILD_ENV_DENY_SUBSTRINGS
+ARTIFACT_BUILD_ENV_NAMES
+ARTIFACT_BUILD_ENV_PREFIXES
+ARTIFACT_BUILD_SCRIPT_ENV_NAMES
+ARTIFACT_BUILD_SCRIPT_ENV_PREFIXES
+ARTIFACT_BUILD_SCRIPT_ENV_SUFFIXES
+ARTIFACT_ENV_ABSENT
+ARTIFACT_EPOCH
+ARTIFACT_GENERATIONS
+ARTIFACT_ID_SCHEMA_VERSION
+ARTIFACT_IMAGE_PATHS
+ARTIFACT_SHORT_ID_LEN
+ArtifactGeneration	4|	5|
+ArtifactId	0|build_env,cfg,codegen,compiler,dependencies,extra,features,kind,source,target_triple,toolchain,type_params	12|
+BINDINGS_FORMAT_VERSION
+Base
+BoundaryCollector	0|	4|
+BoundaryNote	1|
+BoundaryPosition	1|
+BuildEnvSnapshot	0|	1|
+CACHE_FORMAT_VERSION
+CACHE_INPUT_DIRS
+CACHE_LOCK
+CACHE_SCRATCH_NAME
+CALLBACK_SLOTS
+CARGO_BLOCK_PACKAGE_PREFIX
+CARGO_TREE_INVOCATIONS
+COptionType	2|
+CRATES_IO_SOURCES
+CRATE_INPUT_VCS_DIRS
+CRATE_INPUT_VCS_DIRS_ANY_LEVEL
+CRATE_TARGET_KEY_FILE
+CResultType	3|
+CRustOption	2|
+CRustResult	2|
+CRustSlice	2|
+CRustStr	2|
+CRustString	3|
+CRustVec	3|
+CURRENT_LIB
+CacheMetadata	6|
+CachedCrateTarget	3|
+CachedTarget	4|
+CallTarget	10|	9|
+CallTargetCache	0|
+CallbackFrame	1|
+CallbackSlot
+CallbackTrampoline
+CargoBuildError	3|
+CargoProject	5|
+CompilationError	4|context,file_path,line_number
+Core
+CrateBindingMember	2|
+CrateBindingObject	2|
+CrateBindingOptions	0|build_release,cache_enabled,default_features,features,output_module_name,output_path,use_wrapper_crate	7|
+CrateBindings	1|
+CrateBuildRecord	10|
+CrateGeneration	0|	3|
+CrateGenerationCell	0|	1|
+CrateInfo	7|	9|
+CrateTargetCache	0|
+DEAD_ARTIFACT
+DEFAULT_COMPILER
+DEFERRED_DROPS
+DEFERRED_DROPS_LOCK
+DLCLOSE_COUNT
+Dates
+DeferredDrop	3|	6|
+DeferredDropQueue	1|
+DependencyResolutionError	2|
+DependencySpec	1|	1|features,git,path,version	2|	3|	4|	5|
+EXTRACTOR_IDENTITY_FILENAME
+EXTRACTOR_RELEASE_CRATES
+ExpandedInline	2|
+ExtractorError	1|
+FFIByValue
+FFIContract	10|
+FFIType	7|
+FFI_ABI_KINDS
+FFI_METHOD_LOCK
+FFI_OWNERSHIP_KINDS
+FFI_OWNERSHIP_NEEDS_FREE
+FFI_PRIMITIVE_PATH_PREFIXES
+FFI_STRICT
+FFI_SYMBOL_PREFIX
+FFI_TYPE_TABLE
+FINALIZER_FREE_FAILURES
+FUNCTION_REGISTRY
+FUNCTION_REGISTRY_BY_LIB
+FUNCTION_RETURN_TYPES_BY_LIB
+FUNCTION_SYMBOLS_BY_LIB
+FileWatching
+FunctionInfo	11|	5|	8|
+GENERATION_COPY_HOST_LEN
+GENERATION_COPY_INSTANCE_LEN
+GENERATION_COPY_MARKER
+GENERATION_LEASE_SUFFIX
+GENERIC_FUNCTION_REGISTRY
+GENERIC_IMAGE_PATHS
+GENERIC_STRUCT_ARTIFACTS
+GenericCargoContext	5|
+GenericFunctionInfo	10|	11|	12|
+HANDLE_MIRRORS
+HANDLE_ONLY_ALIVE
+HOT_RELOAD_DEBOUNCE_SECONDS
+HOT_RELOAD_ENABLED
+HOT_RELOAD_REGISTRY
+HotReloadState	8|build_options,record	9|
+IRUST_FUNCTIONS
+IRUST_SCALAR_RUST_TYPES
+IRUST_SCALAR_TYPES
+IrustSnippet	3|
+JSONParseError	2|
+JULIA_TO_RUST_TYPE_MAP
+Libdl
+LoadPolicy	14|	1|boundary_catches_panics,call_sites,cargo_profile,dlopen_flags,finalizer_frees,issues,notes,panic_strategy,registration_mode,registry,registry_key_kind,sets_current_lib
+LoadedArtifact	6|	7|	8|
+MANIFEST_SCHEMA_VERSION
+MAX_DEBOUNCE_WINDOWS
+MAX_DEFERRED_DROPS
+MAX_RELOAD_CHASES
+MODULE_ACTIVE_LIB
+MODULE_BLOCK_SEQUENCE
+MODULE_STATES
+MONOMORPHIZATION_OWNERS
+MONOMORPHIZED_FUNCTIONS
+Main
+MethodPayloadPlan	6|
+ModuleBlockRecord	4|
+ModuleNode	1|	4|
+MonomorphizationOwner	2|
+NATIVE_PRODUCTS
+NATIVE_SCRATCH_NAME
+OWNED_HANDLES
+PANIC_CHANNELS
+PRELOADED_LIBRARIES
+PYO3_ATTRIBUTE_ORIGINS
+PYO3_DISPATCHER_MINIMUM
+PYO3_ERROR_CODE
+PYO3_OPAQUE_ERROR
+PYO3_SKIP_REASONS
+PreparedLibraryMetadata	2|
+PyO3Extension	7|
+PyO3LinkPlan	14|	4|build_env,build_inputs,cfg_text,crate_features,interpreter,interpreter_config,pyo3_features,resolved,runtime_libraries	5|build_env,build_inputs,cfg_text,crate_features,interpreter,interpreter_config,pyo3_features,resolved,runtime_libraries
+PyO3Wrapper	6|
+QUIET_HOOK_LOCK
+QUIET_PANIC_HOOK_INSTALLS
+QUIET_PANIC_HOOK_REMOVALS
+QUIET_PANIC_INSTALL_SYMBOL
+QUIET_PANIC_UNINSTALL_SYMBOL
+RECOVERY_FINGERPRINT_LEN
+REGISTRY_LOCK
+RELEASED_GENERIC_IMAGES
+RELEASE_FORMAT_IDENTIFIER
+RELOAD_GENERATION
+RELOAD_LOCKS
+RELOAD_LOCKS_LOCK
+RETIRED_HANDLES
+RUSTCALL_ATTRIBUTE_ORIGINS
+RUSTCALL_RELEASE_CRATES
+RUSTCALL_UUID
+RUSTC_BUILD_ENV_NAMES
+RUST_COMPARISON_OPS
+RUST_HELPERS_LIB
+RUST_LIBRARIES
+ReleasedGenericImage	5|
+RetiredImage	3|
+RuntimeError	2|arguments,context,library_name	3|arguments,context,library_name
+RustArc	1|
+RustBlockSnapshot	4|	5|	6|
+RustBox	1|
+RustCall
+RustCallState	1|
+RustCompiler	0|debug_dir,debug_mode,emit_debug_info,optimization_level,target_triple	5|
+RustError	1|	2|	3|
+RustFunctionSignature	34|	6|arg_abis,attribute,body_has_cfg,callback_args,callback_returns,cfg_features,constraints,err_abi,err_type,exported,ffi_name,has_borrowed_string_helper,has_owned_string_helper,inner_abi,inner_type,module_path,ok_abi,ok_type,python_defaults,python_kinds,python_name,python_path,return_abi,return_kind,skip_reason,source,symbol,vis
+RustMethod	31|	6|accessor,arg_abis,attribute,callback_args,callback_returns,err_abi,err_type,generic_wrapper,generic_wrapper_name,inner_abi,inner_type,is_classmethod,is_constructor,ok_abi,ok_type,python_defaults,python_kinds,python_name,return_abi,return_kind,returns_boxed_struct,skip_reason,string_owner,symbol,vis
+RustOption
+RustPanicError	2|
+RustPtr
+RustRc	1|
+RustRef
+RustResult
+RustSlice	2|
+RustStr	2|
+RustString	3|
+RustStructInfo	30|	7|attribute,cfg_features,constraints,ffi_name,field_abis,field_free_symbols,field_getters,field_pyo3_get,field_pyo3_set,field_setters,field_vec_elements,generic_wrappers,has_borrowed_string_helper,has_clone,has_owned_string_helper,module_path,pyo3_extends,pyo3_options,python_name,python_owned_handle,python_path,skip_reason,vis
+RustTypeConfirmation	3|
+RustTypeProbe	2|	3|
+RustVec	1|
+SESSION_TOKEN
+SHA
+SOURCE_SCANS
+SPECIALIZATION_RECORD_SCHEMA
+STATE
+STATE_FILTERS
+SYMBOL_VISIBILITY_RULE
+Scratch
+SessionToken	0|
+SpecializationRecord	2|
+SpecializedFunction	9|
+StateFilterWatch	3|
+StateView	1|	2|
+TARGET_LAST_USED_STAMP
+TOML
+TraitBound	2|
+TypeConstraints	0|	1|
+WRAPPER_RESERVED_CRATE_NAMES
+WrapperCrateSource	3|	4|	5|
+_AFTER_BUILD_ENV_SNAPSHOT
+_ARTIFACT_COMPILER_IDENTITY
+_ARTIFACT_DIGEST_LOCK
+_BASE_EXPORTED_NAMES
+_BATCH_LIBRARY_COPIES
+_BOUNDARY_COLLECTOR_KEY
+_BoundaryFinding	1|
+_CACHE_DIR_MEMO
+_CACHE_SCRATCH_SIBLING
+_CALLBACK_ERRORS_PENDING
+_CALLBACK_ERROR_KEY
+_CALLBACK_FRAMES_KEY
+_CARGO_CFG_ENV_NAMES
+_CARGO_CFG_ENV_PREFIXES
+_CARGO_CFG_TEXT
+_CARGO_CONFIG_LINE
+_CARGO_TARGET_ENV_SUFFIXES
+_CRATE_MODULE_HELPERS
+_CRATE_MODULE_IMPORTED_MODULES
+_CRATE_MODULE_PRELUDE
+_CRATE_MODULE_PRELUDE_NAMES
+_CRATE_MODULE_ROOT_CONSTANTS
+_EI_BASELINE_ENV
+_EI_HARMLESS_CONFIG_TABLES
+_EI_HARMLESS_ENV_NAMES
+_EI_HARMLESS_ENV_PREFIXES
+_EXPANSION_CACHE
+_EXPANSION_LOCK
+_EXTRACTOR_DIGEST
+_EXTRACTOR_LOCK
+_EXTRACTOR_PATH
+_EXTRACTOR_SOURCE_DIGEST
+_FFI_PTR_CONST_PREFIX
+_FFI_PTR_MUT_PREFIX
+_FFI_UNKNOWN_SLOTS
+_FFI_WARNED_CONTEXTS
+_FINGERPRINT_CRATES
+_GENERATION_COPY_INSTANCE
+_GENERATION_LEASES
+_JULIA_TO_RUST_TYPE
+_LEGACY_CACHE_DIRS
+_LEGACY_CACHE_FILE
+_MONOMORPHIZATION_TYPE_SUFFIX
+_MONOMORPHIZE_SETTLE_SECONDS
+_PANIC_BUFFER_BYTES
+_PATH_DEP_GRAPH_CACHE
+_PRECOMPILE_PROBE_CARGO_TOML
+_PRECOMPILE_PROBE_CFG_TEXT
+_PRECOMPILE_PROBE_LIB_RS
+_PROBE_FLOAT_TYPES
+_PROBE_INTEGER_TYPES
+_PROBE_LABEL_PREFIX
+_PYTHON_FINGERPRINT_EXPR
+_PyO3Dependency	3|
+_RAW_POINTER_RETURN_NOTE
+_RUSTC_CFG_FILE
+_RUSTC_CFG_TEXT
+_SECRET_ENV_FRAGMENTS
+_StateGet	2|
+_StateGetIndex	1|
+_StateHasKey	1|
+_StateMutation	3|
+_StateProbe	1|
+_StateSnapshot	0|
+_TOOLCHAIN_COMPILER_UNIDENTIFIED
+_TOOLCHAIN_FINGERPRINT
+_UNGUARDED_EXPORT_NOTE
+_VALID_KEY_KINDS
+_VALID_PANIC_STRATEGIES
+_VALID_REGISTRATION_MODES
+_VALID_REGISTRIES
+__init__	0|
+_acquire_generation_lease	1|
+_alias_reloaded_library	3|
+_artifact_env_value	2|
+_artifact_reset_digest_caches!	0|
+_as_env	1|
+_await_source_change	2|
+_bare_build_record	2|
+_batch_copy_is_current	2|
+_batch_monomorphize	3|
+_bindings_format_message	1|
+_bindings_format_version	1|
+_binds_julia_wrapper	1|
+_boundary_collecting	0|
+_boundary_collector	0|
+_boundary_examined!	4|
+_boundary_item!	1|
+_boundary_label	1|	2|
+_boundary_note!	3|
+_boundary_raw_pointer_return!	3|
+_boundary_refuse	4|
+_boundary_report	3|
+_boundary_unguarded_export!	1|
+_build_env_changes	2|python,snapshot	3|python,snapshot	4|python,snapshot
+_build_env_mismatch_message	2|
+_build_env_seam	1|
+_build_pyo3_extension_library	3|*	4|default_features,features,python,release
+_build_pyo3_wrapper_project	7|	8|
+_build_record_mismatch	2|
+_cache_built_library	3|
+_cache_dir_override	0|
+_cache_generic_library	5|
+_cached_generic_artifact	2|
+_call_and_guard	4+|
+_call_generic_constructor	4|
+_call_generic_field	6|
+_call_generic_method	6|
+_call_irust_function	3+|
+_call_monomorphized	1+|
+_call_rust_borrowed_string	2+|
+_call_rust_borrowed_string_ptr	1+|
+_call_rust_constructor	3+|
+_call_rust_function	3+|
+_call_rust_method	4+|
+_call_rust_owned_string	3+|
+_call_rust_owned_string_ptr	2+|
+_callback_frames	0|
+_callback_slot_1	0+|
+_callback_slot_2	0+|
+_callback_slot_3	0+|
+_callback_slot_4	0+|
+_callback_slot_5	0+|
+_callback_slot_6	0+|
+_callback_slot_7	0+|
+_callback_slot_8	0+|
+_callback_temp_prefix	1|
+_callback_trampoline	1|
+_callback_zero	1|
+_canonical_dir	1|
+_cargo_block_id	2|cargo_config,cargo_lock,release	3|cargo_config,cargo_lock,release
+_cargo_block_identity	2|	3|
+_cargo_build_args	3|env,locked
+_cargo_build_env	1|
+_cargo_build_env_for	1|
+_cargo_cfg_env_key	0|	1|
+_cargo_cfg_text	0|	1|
+_cargo_config_digest	0|dir	1|dir
+_cargo_config_files	0|dir	1|dir
+_cargo_config_search_dirs	1|
+_cargo_feature_args	2|
+_cargo_network_args	0|	1|
+_cargo_package_environment	2|
+_cargo_package_metadata	1|dir,env
+_cargo_package_name	1|
+_cargo_panic_env	3|
+_cargo_probe_context	3|builtins
+_cargo_probe_profile	0|
+_cargo_rerun_inputs	2|
+_cargo_resolved_features	1|*	2|default_features,features
+_cargo_root_dir	1|
+_cargo_tree	2|env
+_ccall_arc_new	2|
+_ccall_box_new	2|
+_ccall_rc_new	2|
+_ccall_vec_copy	4|
+_ccall_vec_get	4|
+_ccall_vec_new	3|
+_ccall_vec_push	3|
+_ccall_vec_set	4|
+_cdylib_filename	1|
+_cfg_file_args	1|cfg_text
+_cfg_mode	1|
+_cfg_rustc_flags	0|	1|
+_cfg_snapshot	1|
+_check_cargo_profile	2|
+_check_extractor	0|
+_check_module_bindings_format	1|
+_check_module_names	1|
+_check_not_freed	2|
+_check_record_arguments	2|crate_path,default_features,features,lib_name,release
+_check_reloadable_crate	2|
+_check_return_annotation	3|
+_check_tool	2|
+_check_toolchain	3|
+_claim_crate_target!	3|wait
+_claim_lockfile!	1|
+_clear_cache_unlocked	0|sweep_legacy
+_close_released_generic_images!	2|
+_close_retired_images!	1|
+_collect_boundary	1|
+_collect_manifest_path_deps!	3|
+_collect_pyo3_dependencies!	3|
+_compile_and_call_irust	1+|
+_compile_and_load_rust	3|cargo_env,cfg_text,compiler_level,compiler_target
+_compile_and_load_rust_with_cargo	3|cargo_env,cfg_text
+_compile_generic_source	3|
+_compute_file_checksum	1|
+_condapkg_link_source	1|
+_confirm_irust_return_type	4|
+_copy_to_relative_lib	3|
+_count_braces_outside_strings	1|
+_count_trailing_backslashes	1|
+_crate_build_cfg_text	1|env,features,memo,profile,target_directory
+_crate_dir_from_tree_line	1|
+_crate_field_read	6|
+_crate_field_read_source	6|strict
+_crate_field_write	7|
+_crate_field_write_source	7|strict
+_crate_has_build_script	1|
+_crate_hot_reload_name	1|	2|	3|
+_crate_init_prologue	0|
+_crate_lib_name	1|
+_crate_manifest	1|allow_cargo,build_env,cargo_env,cfg,cfg_text
+_crate_precompile_dependencies	1|	2|
+_crate_rust_edition	2|allow_cargo,env
+_crate_rust_identifier_at	2|
+_crate_scan_inputs	3|
+_crate_target!	1|	2|
+_crate_wrapper_exprs	1|
+_crust_str_to_julia	1|
+_crust_string_to_julia	1|
+_declaration_manifest	1|
+_declared_path_dependencies	1|
+_default_arg_abi	1|
+_default_arg_abis	1|
+_default_compiler	1|
+_default_payload_abi	1|
+_default_return_abi	2|
+_defer_drop	3|
+_defer_vec_drop	5|
+_define_module_state_views!	1|
+_depot_is_writable	1|
+_directory_size	1|skip
+_dispatch_with_target	3+|
+_drain_source_changes	2|
+_ei_canonical	1|
+_ei_cargo_lines	4|
+_ei_config_files	2|
+_ei_config_verdict	1|
+_ei_env_acted_on	2|
+_ei_env_harmless	1|
+_ei_env_verdict	1|
+_ei_files_under	1|
+_ei_is_baseline	2|
+_ei_is_version_line	1|
+_ei_lines_inclusive	1|
+_ei_lockfile_without_release_versions	3|
+_ei_manifest_without_version	1|
+_ei_nondefault_targets	1|
+_ei_normalize_env	1|windows
+_ei_package_field	2|
+_ei_packages	3|
+_ei_parse_tree_line	1|
+_ei_relpath_forward	2|
+_ei_source_digest	4|
+_ei_unqualified_reference	2|
+_ei_workspace_manifest	3|
+_emit_function_code	1|strict
+_emit_in_callback_frame	2|
+_emit_method_code	2|bare,strict
+_emit_method_definition	4|bare,predef
+_emit_option_function_code	3|frame_str,preserve_str,prologue,strict
+_emit_payload_decode	3|
+_emit_preserved	2|
+_emit_py_result_function_code	3|frame_str,preserve_str,prologue,strict
+_emit_py_result_method_code	5|bare,frame_str,preserve_str,prologue,strict
+_emit_result_function_code	3|frame_str,preserve_str,prologue,strict
+_emit_string_arg_plan	1|
+_emit_struct_code	1|colliding,strict
+_enable_crate_hot_reload	1|*
+_enable_hot_reload	1|callback,interval,poll
+_ensure_module_state!	1|
+_expand_inherited_dependencies!	2|
+_expand_precompile_inputs	1|
+_explicit_workspace_root	1|
+_extract_error_line_numbers	1|
+_extract_error_line_numbers_impl	1|
+_extract_suggestions	1|
+_extract_suggestions_impl	1|
+_extractor_identity_decide	5|
+_fetch_rust_panic	2|
+_ffi_by_value_agrees	2|
+_ffi_by_value_needs_method	1|
+_ffi_check_direction	1|
+_ffi_checked_code_point	1|
+_ffi_context	1|	2|
+_ffi_contract	6|
+_ffi_directional_abi	2|
+_ffi_field_context	3|
+_ffi_field_position	2|
+_ffi_field_return	3|
+_ffi_function_return	1|
+_ffi_item_return	4|
+_ffi_layout_method	1|
+_ffi_layout_signature	1|
+_ffi_method_return	2|
+_ffi_name_of	1|
+_ffi_ownership_for	2|
+_ffi_pointer_row	1|	2|
+_ffi_positional	6|	7|	8|	9|
+_ffi_register!	1|
+_ffi_registration_module	1|
+_ffi_row	6|	7|
+_ffi_scalar	2|	3|
+_ffi_slot_expr	2|
+_ffi_string_argument	3|
+_ffi_unknown_contract	2|
+_ffi_unsupported_return	5|position
+_file_content_digest	1|
+_filter_state!	2|
+_filter_storage	2|
+_finalize_ownership!	1|
+_find_rs_files!	2|
+_find_rs_files_recursive!	2|
+_forget_generic_image!	1|
+_function_skipped!	1|
+_function_wrappers_expr	1|
+_generate_crate_field_accessor	3|
+_generate_crate_function_wrapper	1|
+_generate_crate_method_wrapper	2|bare
+_generate_crate_struct_wrapper	1|colliding
+_generate_inline_option_wrapper	7|	8|
+_generate_inline_result_wrapper	7|	8|
+_generate_inline_string_wrapper	4|
+_generate_irust_function	4|
+_generate_option_function_wrapper	5|	6|
+_generate_property_accessors	1|
+_generate_py_result_function_wrapper	5|	6|
+_generate_py_result_method_wrapper	7|bare,frame
+_generate_result_function_wrapper	5|	6|
+_generate_single_wrapper	1|
+_generate_string_function_wrapper	2|
+_generated_local	2|
+_generation_copy_host	0|
+_generation_copy_instance	0|
+_generation_copy_name	6|
+_generic_artifact_member	3|
+_generic_binding	2|
+_generic_binding_map	2|
+_generic_cargo_context	4|
+_generic_cargo_dependencies	1|
+_generic_cargo_identity	1|
+_generic_constructor_call	3|
+_generic_group_typechecks	2|	3|
+_generic_method_wrapper_name	2|
+_generic_struct_free_target	2|
+_get_library_filename	1|
+_get_reload_lock	1|
+_git_dependency_keys	1|
+_graph_stamp	1|
+_graph_stamps	1|
+_harvest_patch_paths!	3|
+_hashed_relative_path	1|
+_identity_file_bytes	1|release_names
+_identity_file_digest	1|release_names
+_image_is_current	3|
+_in_callback_frame	2|
+_inline_method_payload_wrapper	8|frame,self,static_type
+_inline_wrapper_exprs	2|
+_instantiate_runtime_bindings	1|target_module,visible
+_invalidate_kept_snapshots!	0|
+_irust_expansion	3|
+_irust_return_type	2|
+_irust_signature	2|
+_is_cargo_env_key	1|
+_is_rustcall_release_crate	2|
+_is_string_abi	1|
+_is_toml_key_line	2|
+_json_array	2|
+_json_expect	3|
+_json_number	2|
+_json_object	2|
+_json_skip_ws	2|
+_json_string	2|
+_json_unicode_escape	2|
+_json_value	2|
+_julia_module_name	1|
+_julia_to_rust_type	1|
+_lease_state	1|
+_legacy_cache_dirs	0|
+_legacy_cache_files	0|
+_legacy_cache_root	0|
+_linkable_lib_target	1|
+_load_cache_metadata_unlocked	1|
+_local_path_dependency_dirs_uncached	1|env
+_lockfile_names_root	2|
+_manifest_digest	1|
+_manifest_method	1|
+_manifest_registry_entries	1|
+_manifest_return_type	1|
+_manifest_signature_for	2|
+_mark_target_used!	1|
+_mbool	2|
+_method_payload_plan	3|strict
+_method_string_owner	2|
+_module_binding	2|
+_module_block_records	1|
+_module_symbol_conflict	3|
+_module_tree	1|	2|
+_monomorphization_id	4|
+_monomorphize_function_once	2|restored_override
+_monomorphize_generic_struct_group	3|
+_monomorphized_arg	3|
+_monomorphized_call_args	2|
+_mstr	2|
+_mstr_or_nothing	2|
+_mvec	2|
+_native_build_dirs	1|
+_native_target_dir	1|create,depot
+_netpairs!	2|
+_netstring!	2|
+_netstring_bytes!	2|
+_netstrings!	2|
+_new_alive!	1|
+_new_shaped_project_dir	1|
+_next_artifact_generation!	1|
+_observe_state_mutation!	4|
+_opened_from_current_copy	4|
+_owner_binding	2|
+_ownership_drop_target	2|	3|
+_ownership_free	2|
+_package_field	4|allow_cargo,env
+_pairs	1|
+_parent_helper_imports_expr	0|
+_parent_helper_imports_source	0|
+_parse_cargo_tree_features	1|
+_parse_irust_variables	1|
+_parse_manifest	1|
+_parse_manifest_or_nothing	1|
+_parse_qualified_call	1|
+_pathed_release_versions	2|
+_payload_decode_expr	3|
+_payload_free_symbol	2|
+_plain_crate_build_env	0|	1|
+_plain_scan_info	5|env
+_pop_callback_frame!	1|
+_precompile_concrete_members	1|
+_precompile_crate_scan_path	0|
+_precompile_init_load_path	0|
+_precompile_restore_views!	2|
+_precompile_scan_views	0|
+_precompile_snapshot_views	1|
+_precompile_state_container_ops	0|
+_prepare_generic_function	3|arg_types,blocked,cargo,compiler,group,path,return_type	4|arg_types,blocked,cargo,compiler,group,path,return_type	5|arg_types,blocked,cargo,compiler,group,path,return_type
+_print_boundary_report	5|
+_print_omitted_source_lines	3|
+_print_toolchain_check	7|
+_private_artifact_copy	1|
+_probe_body	1|
+_probe_cargo_toml	4|
+_probe_constraint_from_diagnostic	1|
+_probe_constraint_names	1|
+_probe_irust_return_type	3|
+_process_alive	1|
+_publish_cache_file	2|
+_publish_generic_struct_group!	2|
+_publish_lockfile!	2|replace,root,wait
+_publish_shaped_project_lease	2|
+_publish_temp_path	1|
+_push_callback_frame!	0+|
+_py_result_types	3|strict
+_pyo3_alias_toml	1|
+_pyo3_build_interpreter	0|	1|
+_pyo3_config_file_digest	0|	1|
+_pyo3_configured_lib_dir	0|	1|
+_pyo3_conservative_plan	1|default_features,features,flags,resolution,snapshot
+_pyo3_dependencies	1|
+_pyo3_extension_artifact	6|default_features,features,release,snapshot
+_pyo3_extension_ext_suffix	1|
+_pyo3_extension_filename	1|
+_pyo3_extension_interpreter_probe	1|	2|
+_pyo3_extension_link_args	0|
+_pyo3_extension_module_name	1|
+_pyo3_feature_flags	2|
+_pyo3_host_arg_type	1|
+_pyo3_host_args	5|drop_leading
+_pyo3_host_async	1|
+_pyo3_host_attr	2|
+_pyo3_host_build_env	3|	4|
+_pyo3_host_defs	10|
+_pyo3_host_field_readable	2|
+_pyo3_host_field_writable	2|
+_pyo3_host_find	2|
+_pyo3_host_function_expr	2|
+_pyo3_host_generic_body	2|
+_pyo3_host_injected_arg	1|
+_pyo3_host_last_generic_arg	1|
+_pyo3_host_last_ident	1|
+_pyo3_host_method_expr	4|
+_pyo3_host_needs_numpy	1|
+_pyo3_host_numpy_arg	1|
+_pyo3_host_numpy_parts	1|
+_pyo3_host_numpy_value_type	1|
+_pyo3_host_property_expr	2|
+_pyo3_host_python_attr	3|
+_pyo3_host_python_name	2|
+_pyo3_host_scalar_type	1|
+_pyo3_host_single_def	7|
+_pyo3_host_struct_arg	2|
+_pyo3_host_struct_exprs	2|
+_pyo3_host_struct_target	2|	3|
+_pyo3_host_value_expr	4|
+_pyo3_host_value_type	1|
+_pyo3_item_label	1|
+_pyo3_resolved_plan	3|default_features,features,release
+_pyo3_symbol_suffix	1|
+_pyo3_unresolved_cfg_plan	5|	6|
+_pyo3_wrapper_build_env	2|*	3|crate_root,source_files
+_pyo3_wrapper_build_script	1|
+_pyo3_wrapper_items	1|
+_python_config_consulted	0|	1|
+_python_config_libdir	1|
+_python_config_selections	0|	1|
+_python_executable	2|
+_python_executable_on_path	0|	1|
+_python_framework_prefix	2|
+_python_interpreter_fingerprint	1|	2|
+_python_library_dir_of	2|
+_python_link_is_implicit	0|	1|
+_python_link_source_or_empty	1|
+_python_owned_handle	1|
+_python_resolved	1|	2|
+_python_runtime_libraries	1|	2|
+_python_selection	0|	1|
+_python_sysconfig_libdir	2|
+_quote_preserved	2|
+_real_path	1|
+_reconcile_probe_types	1|
+_record_build_subprocess_env	2|
+_record_generic_specialization	3|
+_record_module_block!	4|
+_record_module_symbols!	3|	4|
+_record_module_symbols_transaction!	4|
+_record_named	2|
+_record_retired!	3|
+_record_string	2|	3|
+_record_strings	2|
+_recorded_build_env	0|python	1|link_source,python
+_refresh_call_target!	3|
+_refresh_release_versions!	1|release_names
+_refresh_stored_lockfile!	2|wait
+_register_manifest	2|cargo_backed,cargo_context,compiler,handle,load_path,policy,require_loaded,set_current,snapshot_env
+_registry_signatures	1|
+_release_binding	2|
+_release_dependency_table	2|
+_release_names_for_dependencies	1|
+_release_owned_return	2|
+_release_path_dependency_keys	2|
+_released_image_is_live	1|
+_reload_failure_fingerprint	1|
+_reload_library_locked	1|
+_reload_library_once	1|
+_remove_generation_copy	1|
+_remove_shaped_project	1|	2|
+_rendered_errors	1|
+_requalified_reference	2|
+_require_dispatcher_pyo3_version	2|
+_require_linkable_lib_target	2|
+_reset_cache_dir_memo!	0|
+_reset_extractor_state!	0|
+_resolve_call	2|
+_resolve_generic_struct_field_type	3|
+_resolve_lib	2|
+_resolved_pyo3_dependency	2|	3|
+_restore_generic_artifact	2|
+_result_payload	3|
+_rethrow_callback_error!	1|	2|	3|
+_retire_alive!	1|
+_retire_handle_mirrors!	1|
+_return_annotation_agrees	2|
+_root_patch_toml	1|
+_run_extractor	1|stdin_data
+_run_extractor_with_build_env	2|source_inputs
+_run_type_probe	3|compiler
+_rust_arc_clone_symbol	1|
+_rust_arc_drop_symbol	1|
+_rust_arc_new_symbol	1|
+_rust_box_drop_symbol	1|
+_rust_box_new_symbol	1|
+_rust_call_dynamic	2+|
+_rust_call_dynamic_cached	4+|
+_rust_call_typed	3+|
+_rust_call_typed_cached	5+|
+_rust_call_typed_uncached	5+|
+_rust_comparison_operand	2|
+_rust_rc_clone_symbol	1|
+_rust_rc_drop_symbol	1|
+_rust_rc_new_symbol	1|
+_rust_refused_item!	2|
+_rust_refuses	1|
+_rust_sources_digest	0+|
+_rust_type_suffix	1|
+_rust_vec_copy_symbol	1|
+_rust_vec_drop_symbol	1|
+_rust_vec_get_symbol	1|
+_rust_vec_new_symbol	1|
+_rust_vec_push_symbol	1|
+_rust_vec_set_symbol	1|
+_rustc_block_identity	3|
+_rustc_cfg_text	0|	1|
+_rustcall_release_crate_dir	1|
+_rustcall_release_crate_version	1|
+_rustcall_release_names_in	1|
+_save_cache_metadata_unlocked	2|
+_save_checksum	2|
+_scan_crate_signatures	1|build_options	1|env
+_scan_input_relative	2|
+_scan_inputs	2|
+_schema_mismatch_message	2|
+_shared_batch_copy	2|
+_should_proxy_crate_binding	1|
+_show_crate_binding_object	2|
+_snapshot_compiler	2|
+_snapshot_return_type	1|
+_source_fingerprint	1|
+_specialization_record_path	1|
+_specialized_arg_type	2|
+_specialized_return_type	2|
+_stable_probe_env_value	3|
+_stale_cache_format_dirs	0|
+_state_mutate	2+|
+_state_mutate_storage!	2+|
+_state_read	2|
+_state_value	1|
+_state_view	2|
+_static_method_collisions	1|	2|
+_store_callback_error!	2|
+_string_arg_plan	2|	4|callbacks,context
+_string_temp_prefix	1|
+_strings	1|
+_struct_wrappers_expr	2|
+_submodule_code	1|strict
+_submodule_exprs	1|
+_suggested_type	2|
+_sweep_abandoned_projects	1|
+_sweep_orphan_project_lease	1|
+_sweep_stale_generation_copies	1|
+_take_callback_error	0|
+_take_owned_string	2|
+_target_cache_const	2|
+_target_cache_name	2|
+_target_cache_ref	2|
+_target_cache_source	2|
+_throw_module_symbol_conflict	2|
+_toml_line_value	2|
+_tool_version	2|
+_toolchain_compiler_identity	0|
+_toolchain_fingerprint_inputs	0|
+_toolchain_release	1|
+_truncate_chars	2|
+_try_lock_lease	1|
+_uncached_library_home	1|
+_under_directory	2|
+_unique_source_name	2|
+_unqualified_reference	2|
+_unwrap_crate_binding_value	1|
+_update_handle_mirrors!	4|
+_uses_string_ffi	1|
+_validate_ffi_by_value	1|form,repr_c
+_verify_build_interpreter	2|	4|
+_verify_cached_checksum	2|
+_wait_for_file_event	2|
+_warn_if_build_env_changed	1|strict	3|python,strict	4|python,strict	5|python,strict
+_watch_is_enabled	1|
+_watch_timed_out	1|
+_watched_directories	1|
+_with_shaped_project	3|
+_with_wrapper_output_lock	2|poll
+_withdraw_released_image!	4|
+_without_inline_version	2|
+_without_version_lines	2|rewrite
+_workspace_dependency_table	2|
+_workspace_excludes	3|
+_workspace_inherited_package_field	2|
+_workspace_lists	3|
+_workspace_root_dir	1|
+_wrap_crate_binding_value	2|
+_wrapper_probe_cfg_text	1|*	2|*
+_wrapper_probe_context	1|*	2|default_features,features,interpreter,release
+_wrapper_probe_env	3|	4|
+_wrapper_shaped_project	2|
+_writable_depot	0|
+adopt_artifact!	2|close_duplicate,eager,lib_name,path,return_types,set_current,snapshot_env,symbols
+alias_artifact!	3|
+alive_ref_for_handle	2|
+artifact_alive_ref	1|
+artifact_build_env	0|env	1|env
+artifact_build_env_captured	1|
+artifact_codegen_options	1|
+artifact_compiler_identity	0|
+artifact_dependency_strings	1|
+artifact_encoding	1|
+artifact_epoch	0|
+artifact_generation	1|
+artifact_generation_snapshot	2|
+artifact_handle_is_owned	1|
+artifact_handle_open_count	1|
+artifact_key	0|*	1|
+artifact_path_dependency_digest	1|env
+artifact_scan_inputs	1|crate_root,external_roots,generated_root
+artifact_short_id	1|	2|
+artifact_type_params	2|
+bindings_format_compatible	1|
+boundary_report	1|io
+build_cargo_project	1|default_features,env,features,locked,policy,release,target_directory,working_directory
+build_cargo_project_cached	2|env,locked,release
+build_crate_directly	2|default_features,env,features
+build_pyo3_extension	1|cache_enabled,default_features,features,python,release
+build_pyo3_wrapper	1|cache_enabled,default_features,features,plan,release,snapshot
+cached_call_target	3|
+cached_target_hit	1|	2|
+call_generic_function	1+|
+call_rust_function	2+|	3+|
+cargo_block_package	1|
+cargo_lockfile_id	1|
+cargo_offline	0|	1|
+cargo_panic_env_var	1|
+cargo_profile_panic_line	1|
+ccall_arg_type	1|
+ccall_return_type	1|
+check_bindings_format	1|
+check_for_changes	1|
+check_not_freed	2|
+check_rust_panic_ptr	2|	4|
+check_rustc_available	0|
+check_toolchain	0|io
+cleanup_cargo_project	1|
+cleanup_old_cache	0|	1|
+clear_cache	0|sweep_legacy
+clear_cargo_cache	0|
+clear_library_metadata!	1|
+clear_lockfiles	0|
+clone	1|
+close_artifact_handle!	1|
+close_retired_handles!	0|	1|
+close_retired_images!	1|
+compile_rust_to_shared_lib	1|compiler
+compute_crate_hash	1|build_env,default_features,features,kind,release,snapshot
+confirm_rust_return_type	3|compiler
+constraints_from_strings	1|
+convert_arg	2|
+convert_c_option_to_rust_option	2|	3|
+convert_c_result_to_rust_result	3|	4|
+convert_return	2|
+copy_library_metadata!	2|
+copy_to_julia!	2|
+crate_build_options	0|default_features,features,kind,release
+crate_build_record	2|build_options,link_source,python,snapshot
+crate_content_digest	1|
+crate_direct_policy	0|
+crate_has_cdylib	1|
+crate_input_dirs	1|
+crate_input_files	1|
+crate_lib_root	2|
+crate_library_name	1|build_env,default_features,features,kind,release,snapshot
+crate_needs_pyo3_wrapper	1|
+crate_rust_identifier	2|
+crate_target_directory	1|	2|
+crate_target_hit	2|
+crate_target_id	1|
+crate_wrapper_policy	0|
+create_cargo_project	2|edition,path
+create_rust_arc	1|
+create_rust_box	1|
+create_rust_rc	1|
+create_rust_vec	1|
+create_wrapper_crate	2|
+cstring_to_julia_string	1|
+deferred_drop_count	0|
+diagnostic_code	1|
+diagnostic_level	1|
+diagnostic_spans	1|
+disable_all_hot_reload	0|
+disable_hot_reload	1|
+dlopen_flags	1|
+drop!	1|
+drop_rust_arc	1|
+drop_rust_box	1|
+drop_rust_rc	1|
+drop_rust_vec	1|
+effective_panic_strategy	1|env	2|
+effective_rustflags	1|
+emit_crate_module	2|build_options,build_record,build_release,extra_inputs,lib_name,module_name,pin_library,preload,python,snapshot
+emit_crate_module_code	2|build_options,build_record,build_release,lib_name,module_name,pin_library,preload,python,snapshot,strict,use_relative_path
+emit_julia_definitions	1|colliding
+emit_julia_function_wrappers	1|
+enable_hot_reload	2|build_options,callback,interval,poll
+enable_hot_reload_for_crate	1|*	1|callback,default_features,features,interval,lib_name,poll,release	2|*	2|callback,default_features,features,interval,lib_name,poll,release
+ensure_cargo_lockfile!	1|env
+ensure_loaded	2|
+escape_toml_string	1|
+eval	1|
+expand_inline	1|cfg,cfg_text
+exported_symbol	2|
+extension_module_is_linkable	0|
+external_lib_tree_digest	2|
+extract_cargo_block	1|
+extract_cargo_deps_line	1|
+extract_crate_dependencies	1|
+extract_manifest	1|build_env,cfg,cfg_text,crate_root,edition,mode,skip_unparsable	1|cfg,mode
+extractor_build_identity	1|cargo,env
+extractor_digest	0|
+extractor_path	0|
+extractor_source_digest	0|
+ffi_aggregate_type	1|
+ffi_argument_contract	1|abi
+ffi_borrowed_string_return	1|
+ffi_by_value_allowed	1|
+ffi_by_value_error	2|
+ffi_by_value_layout	1|
+ffi_by_value_registered	1|
+ffi_callback_plan	3|
+ffi_ccall_type	1|
+ffi_char_code_point	1|
+ffi_char_from_code_point	1|
+ffi_check_by_value	2|
+ffi_check_by_value_signature	2|
+ffi_describe	1|abi,direction
+ffi_free_symbol	1|
+ffi_is_aggregate	1|
+ffi_julia_symbol	1|
+ffi_julia_type	1|
+ffi_known	1|
+ffi_lookup	1|
+ffi_manifest_abi_kind	2|
+ffi_method_symbol	2|
+ffi_normalize_spelling	1|
+ffi_owned_string_return	1|
+ffi_owned_vec_contract	3|
+ffi_owned_vec_return	1|
+ffi_ownership	1|
+ffi_panic_symbol	1|
+ffi_payload_is_owned_string	2|
+ffi_payload_symbols	3|position,strict
+ffi_return_ccall_type	1|abi
+ffi_return_contract	1|abi,free_symbol,owner,ownership
+ffi_return_slot_symbol_or_throw	3|position,strict
+ffi_return_symbol_or_throw	3|position,strict
+ffi_return_type_or_throw	3|position,strict
+ffi_signature_context	3|owner
+ffi_slot_convert	2|
+ffi_slots	1|
+ffi_string_argument	3|
+ffi_struct_free_symbol	1|
+ffi_surface_type	1|
+ffi_type_expr	1|
+ffi_vec_element_type	1|
+field_is_accessible	2|
+field_is_writable	2|
+finalize_rust_object!	1|
+finalizer_failure_count	0|
+finalizer_frees	1|
+find_rust_source_files	1|
+find_rust_sources	1|
+flush_deferred_drops	0|
+format_dependency_line	1|
+format_rustc_error	1|
+generate_bindings	1|build_release,cache_enabled,default_features,features,output_module_name,pyo3_host
+generate_c_option_struct_type	2|
+generate_c_result_struct_type	3|
+generate_cache_key	2|build_env,cfg_text,dependencies
+generate_cargo_toml	3|
+generate_pyo3_host_bindings	1|default_features,features,module_name,release
+generate_pyo3_wrapper_cargo_toml	2|pyo3_dependency,python_dispatch,target_identifier,target_renamed,wrapper_name
+generate_wrapper_cargo_toml	2|
+generate_wrapper_lib_rs	1|
+generation_lease_path	1|
+generation_path	2|
+generic_struct_generation_snapshot	3|
+generics_policy	0|
+get_built_library_path	2|target_directory
+get_cache_dir	0|
+get_cache_size	0|
+get_cached_library	1|
+get_cargo_cache_dir	0|
+get_cargo_cache_size	0|
+get_cargo_cached_library	1|
+get_current_library	0|
+get_default_compiler	0|
+get_default_target	0|
+get_deferred_drop_count	0|
+get_file_mtime	1|
+get_function_info	1|	2|
+get_function_pointer	2|
+get_function_pointer_from_lib	2|
+get_function_return_type	2|
+get_library_extension	0|
+get_library_handle	1|
+get_max_deferred_drops	0|
+get_metadata_dir	0|
+get_monomorphized_function	2|
+get_project_lib_name	1|
+get_rust_helpers_lib	0|
+get_rust_helpers_lib_path	0|
+get_rustc_version	0|
+guard_rust_panic_ptr	3|	4|
+has_dependencies	1|
+hash_dependencies	1|
+helper_library_policy	0|
+hot_reload_policy	0|
+include	1|	2|
+infer_type_parameters	2|
+inline_boundary_report	1|io
+inline_cargo_policy	0|
+inline_rustc_policy	0|
+install_library_metadata!	2|
+install_quiet_panic_hook!	1|snapshot_env
+irust_policy	0|
+is_cache_valid	3|cfg_text
+is_dropped	1|
+is_err	1|
+is_generic_function	1|
+is_hot_reload_enabled	1|
+is_none	1|
+is_ok	1|
+is_rust_helpers_available	0|
+is_some	1|
+is_supported_arg_type	1|
+is_supported_return_type	1|
+is_valid	1|
+isexpr	2|
+julia_string_to_cstring	1|
+julia_string_to_rust	1|
+julia_to_c_type	1|
+julia_type_to_rust_string	1|
+juliatype_to_rust	1|
+library_names_for_handle	1|
+list_cached_libraries	0|
+list_hot_reload_crates	0|
+list_library_functions	1|
+list_loaded_libraries	0|
+load_artifact!	2|*
+load_cache_metadata	1|
+load_cached_library	1|
+load_crate_bindings	1|build_release,cache_enabled,default_features,features,output_module_name,pyo3_host,submodule_name,target_module
+load_rust_helpers_lib	1|
+load_specialization_record	1|
+loadable_library_copy	1|
+local_path_dependency_dirs	1|env
+lockfile_dir	0|
+lockfile_path	1|
+manifest_constraints	1|
+manifest_function_signatures	1|only_attributed,origins
+manifest_struct_infos	1|origins
+manifest_type_params	1|
+merge_dependencies	1|
+merge_two_dependencies	2|
+method_wrapper_symbol	2|
+minimum_supported_rustc	0|
+module_build_record	1|
+module_symbol_library	2|
+monomorphize_function	2|
+must_assume_unwind	1|env	2|
+native_crate_dir	1|
+native_installed_slug	0|	1|
+native_is_installed_package	0|	1|
+native_package_root	0|
+native_product_candidates	1|
+native_product_filename	1|
+native_product_path	1|
+native_scratch_dir	1|
+native_target_dir	1|create,depot
+next_reload_generation	0|
+normalize_arg_type	2|
+normalize_arg_types	2|
+normalize_dependency	1|
+panic_channel_pointer	2|
+parse_cargo_deps_line	1|
+parse_cargo_env_snapshot	1|
+parse_cargo_toml	1|
+parse_cargo_toml_block	1|
+parse_dependencies_from_code	1|
+parse_json	1|
+parse_single_cargo_dep	1|
+parse_toml_dependency	2|
+partition_first	2|
+partition_skip_reason	1|
+precompile_generics	1+|
+prefer_dynamic_build	0|env	1|
+prefer_dynamic_flag	1|
+preload_dependency!	2|
+preloaded_libraries	0|
+prepare_library_metadata	2|
+primary_span_label	1|
+probe_rust_expression_type	2|compiler
+process_generation_path	2|
+publish_call_target!	3|	4|
+publish_crate_target!	3|
+purge_library_state!	1|
+pyo3_dependency_toml	3|package
+pyo3_feature_candidates	1|snapshot
+pyo3_host_available	0|
+pyo3_host_import
+pyo3_link_plan	1|default_features,features,release,snapshot
+pyo3_link_rustflags	1|
+pyo3_skip_explanation	1|
+pyo3_wrapper_build_record	3|default_features,features,release
+python_library_dir	0|	1|
+python_link_source	0|	1|
+qualified_name	2|
+quiet_panic_hooks_enabled	0|env	1|
+read_extractor_identity	1|
+rebuild_crate	1|build_options	1|env
+record_build_options	1|
+register_artifact_metadata!	2|require_loaded,return_types,set_current,symbols
+register_ffi_struct	1|repr_c
+register_function	4|
+register_function_symbol	3|
+register_generic_function	3|*	4|*	5|*
+register_generic_struct_wrappers	2|cargo,compiler
+register_handle_mirror!	2|
+registered_alive_for_handle	1|
+registered_image_path	1|
+registers_in_rust_libraries	1|
+release_generics	1+|close
+reload_library	1|
+remove_dependency_comments	1|
+require_rust_helpers	1|
+requires_catch_unwind_boundary	1|env	2|
+resolve_call_target	2|_lookup,free_symbol
+resolve_macro_call_target	2|
+resolve_version	3|
+resolve_version_conflict	2|
+result_to_exception	1|	2|
+retired_handles	0|	1|
+rust_impl	2|
+rust_impl_call	3|
+rust_impl_qualified	4|
+rust_impl_with_type	3|
+rust_str_to_julia	1|
+rust_string_to_julia	1|
+rust_vec_get	2|
+rust_vec_set!	3|
+rustc_command	1|base
+rustc_diagnostics	1|
+rustc_panic_flags	1|
+rustcall_runtime_crate_path	0|
+rusttype_to_julia	1|
+safe_dlsym	2|
+save_cache_metadata	2|
+save_cached_library	3|
+save_cargo_cached_library	2|
+save_specialization_record	2|
+scan_crate	1|allow_cargo,build_env,cargo_env,cfg,cfg_text
+scan_report	1|default_features,features,generate,io,release,resolve
+session_token	0|
+set_default_compiler	1|
+set_hot_reload_global	1|
+set_max_deferred_drops	1|
+snake_to_pascal	1|
+snapshot_cmd	2|
+snapshot_env	1|
+snapshot_which	2|
+source_scan_count	0|
+specialize_generic	4|
+specialize_generic_group	2|
+split_cargo_deps	1|
+stable_content_hash	1|
+start_watch_task	1|interval,poll
+stop_watch_task	1|
+struct_free_pointer	2|
+suggest_fix_for_error	2|
+sweep_stale_cache_formats	0|legacy
+take_rust_panic	1|
+to_julia_vector	1|
+toolchain_fingerprint	0|
+trigger_reload	1|
+try_load_rust_helpers	0|
+uninstall_quiet_panic_hook!	1|
+unload_all_libraries	0|close
+unload_artifact!	1|close	2|close,expect_generation
+unload_library	1|close
+unregister_ffi_struct	1|
+unwrap	1|
+unwrap_or	2|
+unwrap_or_throw	1|	2|
+uses_global_symbols	1|
+validate_dependencies	1|
+validate_version_format	2|
+verify_rust_helpers_functions	1|
+version_specificity	1|
+wrap_crate	1|build_env,cfg,cfg_text,crate_name,crate_root,edition,skip_unparsable
+wrap_rust_code	1|
+wrapper_target_identifier	2|
+write_bindings_to_file	2|build_release,default_features,features,output_module_name,relative_lib_path,strict
+write_extractor_identity!	2|cargo,env
+write_rust_code_to_project	2|
