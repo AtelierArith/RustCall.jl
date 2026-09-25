@@ -44,6 +44,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `var"..."` must use the new name. Exported symbols do not change.
 
 ### Fixed
+- **A crate item named like something the generated code uses no longer
+  replaces it** ([#528](https://github.com/AtelierArith/RustCall.jl/issues/528)).
+  Generated modules spelled `Base.show`, `getfield(x, :ptr)`, `RustCall.StateView`,
+  `PythonCall.Py`, `Int32`, `nothing`, ... by their plain names, and the crate's
+  items are bound in the same module. A `#[pyclass] struct Base` made a PyO3
+  host module fail with `FieldError: type DataType has no field getproperty`; a
+  `#[julia] fn getfield` or `fn nothing` broke every wrapper that called it; a
+  `#[julia] fn Int32` added a method to Base's `Int32` constructor; and
+  `@rust_crate` refused a struct or module named `Base`, `Core`, `RustCall`,
+  `Libdl`, any Base export or a prelude helper, from lists kept for that. The
+  emitted code now reaches everything outside its own module through a name no
+  Rust identifier can spell: the expression emitters (`@rust_crate`, the PyO3
+  host, and the argument plans `rust"""` shares) write their templates with
+  `RustCall.@_emitted`, which turns every free name of Base, Core and RustCall
+  into a `GlobalRef` when RustCall is loaded, and a file written by
+  `write_bindings_to_file` binds `import Base as rustcall′Base` and
+  `import RustCall as rustcall′RustCall` once per module and goes through them
+  (U+2032 is a Julia identifier character and never a Rust one). Every
+  function a generated module defines is declared its own
+  (`function Int32 end`) before its methods. The lists are gone: an item may
+  take any of those names, and only the module's own definitions — its
+  helpers and constants (#463), and the `eval` / `include` Julia defines in
+  every module — are refused. `rust"""` was already hygienic; the one name its
+  expansion took from the caller, the `Vararg` lowering spells for an
+  `args...` closure, is now RustCall's. `test/test_module_name_shadowing.jl`
+  lowers the output of every emitter, under a covering set of every
+  combination of its keyword options (read off the emitter's method, so a new
+  option fails the test until it is swept; any three options' values occur
+  together), and requires each free global a Rust identifier could spell to be
+  one of that module's own definitions. That sweep found the written file's
+  `relative_lib_path` spelling `joinpath(@__DIR__, ...)` bare, which a crate's
+  `fn joinpath` took over; it goes through the alias too. A
+  written file no longer imports `RustCall`'s helpers under their names;
+  regenerate an older file to get the fix.
 - **A Rust parameter named like a name its wrapper uses no longer breaks the
   wrapper** ([#526](https://github.com/AtelierArith/RustCall.jl/issues/526)).
   A generated wrapper's parameters are named after the Rust ones, and its

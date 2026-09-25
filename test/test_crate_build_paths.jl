@@ -103,10 +103,13 @@ const _CBP_MISSING_DEP = "rustcall_nonexistent_crate_461 = \"=0.0.1\""
                                   RustCall.RustStructInfo[], String[])
         code = RustCall.emit_crate_module_code(info, "/nonexistent/lib.so";
                                                lib_name = "cbp_libdl_461")
-        @test occursin("\nimport RustCall.Libdl\n", code)
+        # `Libdl` is reached through RustCall's alias (#528), never imported
+        # from the caller's environment.
+        @test occursin("\nimport RustCall as rustcall′RustCall\n", code)
+        @test occursin("rustcall′RustCall.Libdl.dlsym(", code)
         @test !occursin("\nimport Libdl\n", code)
         # The file still parses, and every `Libdl.` it names is the one
-        # imported through RustCall.
+        # reached through RustCall.
         @test Meta.parseall(code) isa Expr
     end
 
@@ -231,7 +234,7 @@ const _CBP_MISSING_DEP = "rustcall_nonexistent_crate_461 = \"=0.0.1\""
                                                 output_module_name = "CbpRlib461",
                                                 relative_lib_path = relative)
                 code = read(out, String)
-                @test occursin("import RustCall.Libdl", code)
+                @test occursin("rustcall′RustCall.Libdl.dlsym(", code)
                 # The library the file names outlives the wrapper project it was
                 # built in.
                 m = Module(:CbpRlibHost461)
