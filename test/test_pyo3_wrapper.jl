@@ -577,12 +577,12 @@ const PYO3_MIXED_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_mixed
             # Both emitters, since they are separate code paths.
             code = RustCall.emit_crate_module_code(wrapped, "/nonexistent/lib.so";
                                                    lib_name = "rust_crate_byvalue_probe")
-            @test occursin("struct CResult_parse <: FFIByValue", code)
-            @test occursin("struct CResult_Point_scaled <: FFIByValue", code)
-            @test occursin("struct CResult_render <: FFIByValue", code)
-            @test occursin("ok_value::RustCall.CRustString", code)
-            @test occursin("struct CResult_Point_shifted <: FFIByValue", code)
-            @test occursin("ok_value::Ptr{Cvoid}", code)
+            @test occursin("struct CResult_parse <: rustcall′RustCall.FFIByValue", code)
+            @test occursin("struct CResult_Point_scaled <: rustcall′RustCall.FFIByValue", code)
+            @test occursin("struct CResult_render <: rustcall′RustCall.FFIByValue", code)
+            @test occursin("ok_value::rustcall′RustCall.CRustString", code)
+            @test occursin("struct CResult_Point_shifted <: rustcall′RustCall.FFIByValue", code)
+            @test occursin("ok_value::rustcall′Base.Ptr{rustcall′Base.Cvoid}", code)
             @test occursin("_ctor_target(var\"#TC#m#rustcall_Point_shifted\", \"rustcall_Point_shifted\"", code)
             @test occursin("function Fallible(value)", code)
             @test occursin("_ctor_target(var\"#TC#m#rustcall_Fallible_new\", \"rustcall_Fallible_new\"", code)
@@ -590,12 +590,12 @@ const PYO3_MIXED_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_mixed
             expr = RustCall.emit_crate_module(wrapped, "/nonexistent/lib.so";
                                               lib_name = "rust_crate_byvalue_probe")
             text = string(expr)
-            @test occursin("CResult_parse <: FFIByValue", text)
-            @test occursin("CResult_Point_scaled <: FFIByValue", text)
-            @test occursin("CResult_render <: FFIByValue", text)
-            @test occursin("CResult_Point_try_label <: FFIByValue", text)
-            @test occursin("CResult_Point_shifted <: FFIByValue", text)
-            @test occursin("CResult_Fallible_new <: FFIByValue", text)
+            @test occursin("CResult_parse <: RustCall.FFIByValue", text)
+            @test occursin("CResult_Point_scaled <: RustCall.FFIByValue", text)
+            @test occursin("CResult_render <: RustCall.FFIByValue", text)
+            @test occursin("CResult_Point_try_label <: RustCall.FFIByValue", text)
+            @test occursin("CResult_Point_shifted <: RustCall.FFIByValue", text)
+            @test occursin("CResult_Fallible_new <: RustCall.FFIByValue", text)
             @test occursin("_ctor_target", text)
 
             # The `PyResult` emitters are two more call-site emitters, so they
@@ -646,9 +646,10 @@ const PYO3_MIXED_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_mixed
         # Every setter converts the value to the field's type before the
         # call, in all three emitters, so the `ccall` signature is the field's
         # slot and not the runtime type of what was passed (#307 review).
-        @test occursin("convert(Float64, rustcall′value)", accessor)
-        @test occursin("convert(Float64, rustcall′value)", text)
-        @test occursin("convert(Float64, rustcall′value)", code)
+        # (Base through a `GlobalRef` or the file's alias, #528.)
+        @test occursin("Base.convert(Base.Float64, rustcall′value)", accessor)
+        @test occursin("Base.convert(Base.Float64, rustcall′value)", text)
+        @test occursin("rustcall′Base.convert(rustcall′Base.Float64, rustcall′value)", code)
         @test !occursin("getfield(self, :ptr), value)", code)
     end
 

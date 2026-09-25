@@ -591,8 +591,10 @@ the hint only types what is left.
 """
 function _pyo3_host_value_expr(call, shape::PyO3Shape)
     jt = _pyo3_host_read_type(shape)
-    jt === :Any && return :(_pyo3_from_python($call))
-    return :(_pyo3_from_python($call, $jt))
+    jt === :Any && return @_emitted(:(_pyo3_from_python($call)))
+    # The hint is a Base type spelling: a `GlobalRef` like the rest (#528).
+    jt = _emitted_type(jt)
+    return @_emitted(:(_pyo3_from_python($call, $jt)))
 end
 
 _pyo3_host_attr(base, name::AbstractString) = Expr(:., base, QuoteNode(Symbol(name)))
@@ -625,7 +627,7 @@ function _pyo3_host_args(arg_names, shapes, python_defaults, python_kinds;
         kind == "keyword_only" && break
         sym = Symbol(name)
         push!(sig, sym)
-        push!(conv, :(_pyo3_to_python($sym)))
+        push!(conv, @_emitted(:(_pyo3_to_python($sym))))
         push!(defaults, i <= length(python_defaults) && !isempty(python_defaults[i]))
         push!(syms, sym)
     end
@@ -639,9 +641,9 @@ end
 function _pyo3_host_single_def(name::Symbol, sig::Vector{Any}, call::Expr, return_kind::Symbol,
                                shape::PyO3Shape, construct::Union{Nothing, Symbol})
     if return_kind === :py_result
-        valued = construct === nothing ? _pyo3_host_value_expr(call, shape) : :($construct($call))
-        jt = construct === nothing ? _pyo3_host_result_type(shape) : construct
-        body = quote
+        valued = construct === nothing ? _pyo3_host_value_expr(call, shape) : @_emitted(:($construct($call)))
+        jt = construct === nothing ? _emitted_type(_pyo3_host_result_type(shape)) : construct
+        body = @_emitted quote
             try
                 return _pyo3_ok($valued, $jt)
             catch rustcall′err
@@ -651,13 +653,13 @@ function _pyo3_host_single_def(name::Symbol, sig::Vector{Any}, call::Expr, retur
         end
         return Expr(:function, Expr(:call, name, sig...), body)
     elseif return_kind === :unit || shape.kind === :unit
-        body = quote
+        body = @_emitted quote
             $call
             return nothing
         end
         return Expr(:function, Expr(:call, name, sig...), body)
     else
-        valued = construct === nothing ? _pyo3_host_value_expr(call, shape) : :($construct($call))
+        valued = construct === nothing ? _pyo3_host_value_expr(call, shape) : @_emitted(:($construct($call)))
         return Expr(:function, Expr(:call, name, sig...), Expr(:block, valued))
     end
 end
@@ -698,7 +700,7 @@ function _pyo3_host_function_expr(f::RustFunctionSignature)
     _, sig, conv, defaults = _pyo3_host_args(f.arg_names, f.py_arg_shapes,
                                              f.python_defaults, f.python_kinds; what)
     python = _pyo3_host_python_name(f.name, f.python_name)
-    base = _pyo3_host_python_attr(:(_pyo3_module()), f.python_path, python)
+    base = _pyo3_host_python_attr(@_emitted(:(_pyo3_module())), f.python_path, python)
     callof = convs -> Expr(:call, base, convs...)
     shape = _pyo3_host_required_shape(f.py_return_shape, "the return of $what")
     return _pyo3_host_defs(Symbol(julia_function_name(f)), Any[], sig, conv, defaults, callof,
@@ -708,7 +710,7 @@ end
 # The Python class object of a scanned class: an attribute of the imported
 # module, under its declarative module path when it has one.
 _pyo3_host_class_base(s::RustStructInfo) =
-    _pyo3_host_python_attr(:(_pyo3_module()), s.python_path,
+    _pyo3_host_python_attr(@_emitted(:(_pyo3_module())), s.python_path,
                            _pyo3_host_python_name(s.name, s.python_name))
 
 # `class_base` is the expression for the class object itself (with the
@@ -737,9 +739,9 @@ function _pyo3_host_method_expr(jname::Symbol, class_base::Expr, m::RustMethod)
         # An instance method: the object is the first Julia argument, and the
         # Python object it holds is the receiver. A `&mut self` method mutates
         # that same object, so no extra step is needed.
-        receiver = _pyo3_host_attr(:(getfield(rustcall′obj, $(QuoteNode(_PYO3_HOST_HANDLE_FIELD)))), python)
+        receiver = _pyo3_host_attr(@_emitted(:(getfield(rustcall′obj, $(QuoteNode(_PYO3_HOST_HANDLE_FIELD))))), python)
         callof = convs -> Expr(:call, receiver, convs...)
-        return _pyo3_host_defs(Symbol(julia_method_name(m)), Any[:(rustcall′obj::$jname)], sig, conv, defaults,
+        return _pyo3_host_defs(Symbol(julia_method_name(m)), Any[@_emitted(:(rustcall′obj::$jname))], sig, conv, defaults,
                                callof, m.return_kind, shape)
     end
 end
@@ -854,8 +856,8 @@ function _pyo3_host_property_expr(jname::Symbol, s::RustStructInfo)
         p.readable || continue
         p.read_shape === nothing && continue
         valued = _pyo3_host_value_expr(:rustcall′v, p.read_shape)
-        valued == :(_pyo3_from_python(rustcall′v)) && continue
-        push!(conversions, :(rustcall′s === $(attr(p)) && return $valued))
+        valued == @_emitted(:(_pyo3_from_python(rustcall′v))) && continue
+        push!(conversions, @_emitted(:(rustcall′s === $(attr(p)) && return $valued)))
     end
     # A property is read under its Julia name (`for_`); the Python attribute
     # (`for`) is looked up. Only a property the host binds is remapped: an
@@ -865,7 +867,7 @@ function _pyo3_host_property_expr(jname::Symbol, s::RustStructInfo)
     renamed = Any[]
     for p in properties
         p.julia == p.python && continue
-        push!(renamed, :(rustcall′s === $(QuoteNode(Symbol(p.julia))) && (rustcall′s = $(attr(p)))))
+        push!(renamed, @_emitted(:(rustcall′s === $(QuoteNode(Symbol(p.julia))) && (rustcall′s = $(attr(p))))))
     end
     # A read-only property raises a Julia error naming it instead of the raw
     # Python `AttributeError` a descriptor would.
@@ -873,27 +875,27 @@ function _pyo3_host_property_expr(jname::Symbol, s::RustStructInfo)
     for p in properties
         p.writable && continue
         push!(read_only,
-              :(rustcall′s === $(attr(p)) &&
-                throw(ArgumentError($(string("property `", p.julia, "` is read-only"))))))
+              @_emitted(:(rustcall′s === $(attr(p)) &&
+                throw(ArgumentError($(string("property `", p.julia, "` is read-only")))))))
     end
     handle = QuoteNode(_PYO3_HOST_HANDLE_FIELD)
     # The generated locals are the emitter's own (`rustcall′...`, PR #527
     # review), which no property or crate item can spell.
-    getbody = quote
+    getbody = @_emitted quote
         rustcall′s === $handle && return getfield(rustcall′p, $handle)
         $(renamed...)
         rustcall′v = PythonCall.pygetattr(getfield(rustcall′p, $handle), String(rustcall′s))
         $(conversions...)
         return _pyo3_from_python(rustcall′v)
     end
-    setbody = quote
+    setbody = @_emitted quote
         rustcall′s === $handle && throw(ArgumentError($(string(_PYO3_HOST_HANDLE_FIELD, " is not assignable"))))
         $(renamed...)
         $(read_only...)
         PythonCall.pysetattr(getfield(rustcall′p, $handle), String(rustcall′s), _pyo3_to_python(rustcall′v))
         return rustcall′v
     end
-    return quote
+    return @_emitted quote
         function Base.getproperty(rustcall′p::$jname, rustcall′s::Symbol)
             $getbody
         end
@@ -924,13 +926,13 @@ function _pyo3_host_struct_exprs(s::RustStructInfo)
     # inner constructor also means any outer constructor the emitter adds is a
     # new method rather than a redefinition. Every class type is a
     # `_PyO3Object`, which is how `_pyo3_to_python` knows a handle by its value.
-    field = Expr(:(::), _PYO3_HOST_HANDLE_FIELD, :(PythonCall.Py))
+    field = Expr(:(::), _PYO3_HOST_HANDLE_FIELD, @_emitted(:(PythonCall.Py)))
     # The constructor's parameter is a local of the emitter's own (PR #527
     # review); the field keeps its name.
     handle = _emitter_local("py")
-    inner = Expr(:(=), Expr(:call, jname, Expr(:(::), handle, :(PythonCall.Py))),
+    inner = Expr(:(=), Expr(:call, jname, Expr(:(::), handle, @_emitted(:(PythonCall.Py)))),
                  Expr(:call, :new, handle))
-    out = Any[Expr(:struct, false, :($jname <: _PyO3Object), Expr(:block, field, inner))]
+    out = Any[Expr(:struct, false, @_emitted(:($jname <: _PyO3Object)), Expr(:block, field, inner))]
     # The methods the host binds (`_pyo3_host_bound_methods`, the list its
     # definitions are read from): constructors first. `#[getter]`/`#[setter]`
     # methods are Python properties (`_pyo3_host_bound_properties`), so they
@@ -954,9 +956,9 @@ end
 function _pyo3_host_class_table_expr(info::CrateInfo)
     pairs = Any[Expr(:tuple, Symbol(julia_struct_name(s)), _pyo3_host_class_base(s))
                 for s in _pyo3_host_bound_classes(info)]
-    return :(function _pyo3_class_pairs()
+    return @_emitted(:(function _pyo3_class_pairs()
                  return $(Expr(:tuple, pairs...))
-             end)
+             end))
 end
 
 """
@@ -981,6 +983,10 @@ function _pyo3_host_definitions(info::CrateInfo)
     prelude = _pyo3_host_prelude_exprs("", String[], true, true)
     for name in _pyo3_host_defined_names(prelude)
         add!(name, :binding, "the generated module's own `$name`")
+    end
+    # And what Julia's `module` defines in every module (#528).
+    for name in _JULIA_MODULE_OWN_NAMES
+        add!(String(name), :binding, "Julia's own `$name` of every module")
     end
     for f in _pyo3_host_bound_functions(info)
         add!(julia_function_name(f), :free,
@@ -1073,14 +1079,15 @@ than redefining it.
 function _pyo3_host_prelude_exprs(path::AbstractString, features::Vector{String},
                                   default_features::Bool, release::Bool)
     out = Any[]
-    push!(out, :(import RustCall))
-    push!(out, :(import PythonCall))
-    push!(out, :(const _PYO3_CRATE_PATH = $(String(path))))
-    push!(out, :(const _PYO3_FEATURES = $features))
-    push!(out, :(const _PYO3_DEFAULT_FEATURES = $default_features))
-    push!(out, :(const _PYO3_RELEASE = $release))
-    push!(out, :(const _PYO3_MODULE = Base.RefValue{Any}(nothing)))
-    push!(out, quote
+    # PythonCall under a name no Rust item can take (#528); Base and RustCall
+    # are `GlobalRef`s (`@_emitted`), so neither is imported.
+    push!(out, Expr(:import, Expr(:as, Expr(:., :PythonCall), _EMITTED_PYTHONCALL_ALIAS)))
+    push!(out, @_emitted(:(const _PYO3_CRATE_PATH = $(String(path)))))
+    push!(out, @_emitted(:(const _PYO3_FEATURES = $features)))
+    push!(out, @_emitted(:(const _PYO3_DEFAULT_FEATURES = $default_features)))
+    push!(out, @_emitted(:(const _PYO3_RELEASE = $release)))
+    push!(out, @_emitted(:(const _PYO3_MODULE = Base.RefValue{Any}(nothing))))
+    push!(out, @_emitted quote
         function _pyo3_module()
             m = _PYO3_MODULE[]
             m === nothing || return m
@@ -1092,11 +1099,11 @@ function _pyo3_host_prelude_exprs(path::AbstractString, features::Vector{String}
         end
     end)
     handle = QuoteNode(_PYO3_HOST_HANDLE_FIELD)
-    push!(out, :(abstract type _PyO3Object end))
+    push!(out, @_emitted(:(abstract type _PyO3Object end)))
     # numpy is imported the first time a numeric array is passed, never
     # otherwise; `false` records that it is not importable.
-    push!(out, :(const _PYO3_NUMPY = Base.RefValue{Any}(nothing)))
-    push!(out, quote
+    push!(out, @_emitted(:(const _PYO3_NUMPY = Base.RefValue{Any}(nothing))))
+    push!(out, @_emitted quote
         function _pyo3_numpy()
             np = _PYO3_NUMPY[]
             np === nothing || return np
@@ -1110,7 +1117,7 @@ function _pyo3_host_prelude_exprs(path::AbstractString, features::Vector{String}
             return np
         end
     end)
-    push!(out, quote
+    push!(out, @_emitted quote
         function _pyo3_to_python(x)
             x isa _PyO3Object && return getfield(x, $handle)
             if x isa AbstractArray
@@ -1124,9 +1131,9 @@ function _pyo3_host_prelude_exprs(path::AbstractString, features::Vector{String}
             return x
         end
     end)
-    push!(out, :(const _PYO3_CLASSES = Base.RefValue{Any}(nothing)))
-    push!(out, :(function _pyo3_class_pairs end))
-    push!(out, quote
+    push!(out, @_emitted(:(const _PYO3_CLASSES = Base.RefValue{Any}(nothing))))
+    push!(out, @_emitted(:(function _pyo3_class_pairs end)))
+    push!(out, @_emitted quote
         function _pyo3_classes()
             c = _PYO3_CLASSES[]
             c === nothing || return c
@@ -1135,7 +1142,7 @@ function _pyo3_host_prelude_exprs(path::AbstractString, features::Vector{String}
             return c
         end
     end)
-    push!(out, quote
+    push!(out, @_emitted quote
         function _pyo3_from_python(v)
             v isa PythonCall.Py || return v
             PythonCall.pyis(v, PythonCall.pybuiltins.None) && return nothing
@@ -1152,19 +1159,19 @@ function _pyo3_host_prelude_exprs(path::AbstractString, features::Vector{String}
             return v
         end
     end)
-    push!(out, quote
+    push!(out, @_emitted quote
         function _pyo3_from_python(v, ::Type{T}) where {T}
             x = _pyo3_from_python(v)
             x isa PythonCall.Py || return x
             return PythonCall.pyconvert(T, x, x)
         end
     end)
-    push!(out, quote
+    push!(out, @_emitted quote
         function _pyo3_from_python(v, ::Type{Any})
             return _pyo3_from_python(v)
         end
     end)
-    push!(out, quote
+    push!(out, @_emitted quote
         function _pyo3_from_python(v, ::Type{Vector{T}}) where {T}
             x = _pyo3_from_python(v)
             x isa PythonCall.Py || return x
@@ -1176,7 +1183,7 @@ function _pyo3_host_prelude_exprs(path::AbstractString, features::Vector{String}
             return PythonCall.pyconvert(Vector{T}, x, x)
         end
     end)
-    push!(out, quote
+    push!(out, @_emitted quote
         function _pyo3_ok(v, ::Type{T}) where {T}
             v isa T && return RustCall.RustResult{T, String}(true, v)
             return RustCall.RustResult{Any, String}(true, v)
@@ -1287,6 +1294,16 @@ function generate_pyo3_host_bindings(crate_path::AbstractString;
     # refused before anything is emitted, by the check every emitter runs,
     # over what this one binds (#514).
     _pyo3_host_check_names(info)
+    # Every function the module defines is declared its own first, so a
+    # method under a name the module only sees through `using Base` —
+    # `#[pyfunction] fn Int32` — cannot extend Base's (#528).
+    defs = _pyo3_host_definitions(info)
+    types = Set(d.name for d in defs if d.scope === :binding)
+    for name in unique(d.name for d in defs
+                       if (d.scope === :free || (d.scope isa Tuple && first(d.scope) === :self)) &&
+                          !(d.name in types))
+        push!(body.args, Expr(:function, Symbol(name)))
+    end
     append!(body.args, _pyo3_host_item_exprs(info))
     push!(body.args, _pyo3_host_class_table_expr(info))
     return Expr(:module, true, mod_name, body)

@@ -54,14 +54,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file written by `write_bindings_to_file` records the environment in its own
   source, so re-precompiling read the same record and failed again. The
   message now comes from one function, `RustCall._build_env_changed_message`,
-  given the module's origin: each emitter's `__init__` passes its own
-  (`origin = :rust_crate` / `:bindings_file`, `_crate_init_prologue`), and a
-  file is told to be regenerated with `write_bindings_to_file` (the call is
-  spelled out with the crate's path). A file written before this change makes
-  the call without an origin, which is read as a written file: only such a
-  file can still carry the older call. `test/test_build_env_remedy.jl` checks
-  both emitters and the older call against a recorded toolchain that no longer
-  matches.
+  given the module's origin, and a written file is told to be regenerated with
+  `write_bindings_to_file` (the call is spelled out, with the crate's path as
+  a Julia string literal). The in-memory `@rust_crate` module passes
+  `origin = :rust_crate`; a written file keeps making the origin-less call
+  every 0.7.x makes, which is read as a written file's. So the fix reaches files
+  v0.7.1 wrote, and a file written now still loads under v0.7.0 / v0.7.1
+  (PR #532 review). `test/test_build_env_remedy.jl` checks both emitters and a
+  v0.7.1-spelled file against a recorded toolchain that no longer matches.
+  **A written file makes only calls the oldest release of its format line
+  accepts**: `test/fixtures/bindings_surface_0.7.0.txt` records every name
+  v0.7.0 defines with each method's positional arity and keywords
+  (`test/record_bindings_surface.jl`), and the #528 option sweep checks every
+  `RustCall` reference of every file it emits against it
+  (`test/bindings_surface.jl`), so a keyword or helper a later patch adds
+  cannot reach a written file.
+- **A crate item named like something the generated code uses no longer
+  replaces it** ([#528](https://github.com/AtelierArith/RustCall.jl/issues/528)).
+  Generated modules spelled `Base.show`, `getfield(x, :ptr)`, `RustCall.StateView`,
+  `PythonCall.Py`, `Int32`, `nothing`, ... by their plain names, and the crate's
+  items are bound in the same module. A `#[pyclass] struct Base` made a PyO3
+  host module fail with `FieldError: type DataType has no field getproperty`; a
+  `#[julia] fn getfield` or `fn nothing` broke every wrapper that called it; a
+  `#[julia] fn Int32` added a method to Base's `Int32` constructor; and
+  `@rust_crate` refused a struct or module named `Base`, `Core`, `RustCall`,
+  `Libdl`, any Base export or a prelude helper, from lists kept for that. The
+  emitted code now reaches everything outside its own module through a name no
+  Rust identifier can spell: the expression emitters (`@rust_crate`, the PyO3
+  host, and the argument plans `rust"""` shares) write their templates with
+  `RustCall.@_emitted`, which turns every free name of Base, Core and RustCall
+  into a `GlobalRef` when RustCall is loaded, and a file written by
+  `write_bindings_to_file` binds `import Base as rustcall′Base` and
+  `import RustCall as rustcall′RustCall` once per module and goes through them
+  (U+2032 is a Julia identifier character and never a Rust one). Every
+  function a generated module defines is declared its own
+  (`function Int32 end`) before its methods. The lists are gone: an item may
+  take any of those names, and only the module's own definitions — its
+  helpers and constants (#463), and the `eval` / `include` Julia defines in
+  every module — are refused. `rust"""` was already hygienic; the one name its
+  expansion took from the caller, the `Vararg` lowering spells for an
+  `args...` closure, is now RustCall's. `test/test_module_name_shadowing.jl`
+  lowers the output of every emitter, under a covering set of every
+  combination of its keyword options (read off the emitter's method, so a new
+  option fails the test until it is swept; any three options' values occur
+  together), and requires each free global a Rust identifier could spell to be
+  one of that module's own definitions. That sweep found the written file's
+  `relative_lib_path` spelling `joinpath(@__DIR__, ...)` bare, which a crate's
+  `fn joinpath` took over; it goes through the alias too. A
+  written file no longer imports `RustCall`'s helpers under their names;
+  regenerate an older file to get the fix.
 - **A Rust parameter named like a name its wrapper uses no longer breaks the
   wrapper** ([#526](https://github.com/AtelierArith/RustCall.jl/issues/526)).
   A generated wrapper's parameters are named after the Rust ones, and its

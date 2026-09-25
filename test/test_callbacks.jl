@@ -67,8 +67,8 @@ const _CB_REPO = normpath(joinpath(@__DIR__, ".."))
                                               callback_returns = ["i64", ""])
         src = RustCall._emit_function_code(good)
         # Parenthesized, so the argument after it stays an argument of the call.
-        @test occursin("Base.@cfunction(RustCall.CallbackSlot{1, Int64}(), Int64, (Int64,)), Int64(x)", src)
-        @test occursin("CallbackTrampoline{Int64}", src)
+        @test occursin("rustcall′Base.@cfunction(rustcall′RustCall.CallbackSlot{1, rustcall′Base.Int64}(), rustcall′Base.Int64, (rustcall′Base.Int64,)), rustcall′Base.Int64(x)", src)
+        @test occursin("CallbackTrampoline{rustcall′Base.Int64}", src)
         @test occursin("RustCall._push_callback_frame!", src) && occursin("RustCall._pop_callback_frame!", src)
         @test occursin("try", src) && occursin("finally", src)
         @test Meta.parseall(src) isa Expr
@@ -470,7 +470,7 @@ const _CB_REPO = normpath(joinpath(@__DIR__, ".."))
             out = joinpath(dir, "bindings.jl")
             RustCall.write_bindings_to_file(dir, out)
             text = read(out, String)
-            @test occursin("Base.@cfunction", text) && occursin("CallbackTrampoline{Int64}", text)
+            @test occursin("rustcall′Base.@cfunction", text) && occursin("CallbackTrampoline{rustcall′Base.Int64}", text)
             @test Meta.parseall(text) isa Expr
             RustCall.unload_library(Base.invokelatest(getfield, getfield(bindings, :module_ref), :_LIB_NAME); close = true)
         end

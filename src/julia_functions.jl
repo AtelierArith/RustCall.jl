@@ -268,14 +268,18 @@ function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
                     "number $(k)); at most $(CALLBACK_SLOTS) are supported (#296).")
                 continue
             end
+            # The slot's C types are contract spellings: `GlobalRef`s into Base,
+            # so a crate item named `Int64` cannot capture them (#528).
+            ret_expr = _emitted_type(plan.ret_expr)
+            arg_exprs = map(_emitted_type, plan.arg_exprs)
             push!(trampolines,
-                  :($(GlobalRef(@__MODULE__, :CallbackTrampoline)){$(plan.ret_expr)}($arg_sym)))
+                  :($(GlobalRef(@__MODULE__, :CallbackTrampoline)){$ret_expr}($arg_sym)))
             # A singleton callable carrying the slot's return type, so a
             # call with no trampoline behind it can still hand Rust a value of
             # the right type instead of raising (#460).
-            slot = :($(GlobalRef(@__MODULE__, :CallbackSlot)){$k, $(plan.ret_expr)}())
-            push!(call_args, Expr(:macrocall, :(Base.var"@cfunction"), nothing,
-                                  slot, plan.ret_expr, Expr(:tuple, plan.arg_exprs...)))
+            slot = :($(GlobalRef(@__MODULE__, :CallbackSlot)){$k, $ret_expr}())
+            push!(call_args, Expr(:macrocall, GlobalRef(Base, Symbol("@cfunction")), nothing,
+                                  slot, ret_expr, Expr(:tuple, arg_exprs...)))
         elseif c.abi === :ptr_len || c.abi === :ptr_len_cap
             # `(ptr, len)` — and, should an owned buffer ever be taken by
             # value, `(ptr, len, cap)`. Slot-count driven, so a new multi-word
@@ -296,11 +300,11 @@ function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
             helper = GlobalRef(@__MODULE__, :ffi_string_argument)
             push!(bindings, :($bytes = $helper($arg_sym, $name, $context)))
             push!(preserved, bytes)
-            push!(call_args, :(pointer($bytes)))
-            push!(call_args, :(sizeof($bytes) % Csize_t))
-            c.abi === :ptr_len_cap && push!(call_args, :(sizeof($bytes) % Csize_t))
+            push!(call_args, @_emitted(:(pointer($bytes))))
+            push!(call_args, @_emitted(:(sizeof($bytes) % Csize_t)))
+            c.abi === :ptr_len_cap && push!(call_args, @_emitted(:(sizeof($bytes) % Csize_t)))
         elseif c.known && c.abi === :by_value
-            push!(call_args, :($(_ffi_slot_expr(rust_type, c))($arg_sym)))
+            push!(call_args, :($(_emitted_type(_ffi_slot_expr(rust_type, c)))($arg_sym)))
         else
             # A pointer, the unit type, or a spelling the contract does not
             # cover: hand the value to `call_rust_function`, which applies its

@@ -985,7 +985,7 @@ const ALL_SPELLINGS = vcat(
             symbol = "rustcall_probe", return_kind = :result,
             ok_type = "i32", err_type = "i32")
         emitted = RustCall._emit_result_function_code(sig, "a", "Int32(a)")
-        @test occursin("struct CResult_probe <: FFIByValue", emitted)
+        @test occursin("struct CResult_probe <: rustcall′RustCall.FFIByValue", emitted)
         @test !occursin("register_ffi_struct", emitted)
 
         # 3. The real thing: a package that both defines such a mirror **and**

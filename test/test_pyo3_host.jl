@@ -432,7 +432,11 @@ end
     @test summary(RustCall._pyo3_host_bound_properties(point)) ==
           [("x", "x", true, true), ("y", "y", true, true)]
 
-    text = string(Base.remove_linenums!(RustCall._pyo3_host_property_expr(:Gate, gate)))
+    # The host reaches Base, RustCall and PythonCall through names no crate
+    # item can take (#528); the assertions read it without them.
+    unqualified(s) = replace(s, "rustcall′PythonCall." => "PythonCall.", "(Base.Base)." => "",
+                             "Base." => "", "RustCall." => "")
+    text = unqualified(string(Base.remove_linenums!(RustCall._pyo3_host_property_expr(:Gate, gate))))
     @test occursin("rustcall′s === :for_ && (rustcall′s = :for)", text)
     @test occursin("rustcall′s === :end_ && (rustcall′s = :end)", text)
     @test !occursin("rustcall′s === :plain && (rustcall′s =", text)
@@ -454,7 +458,7 @@ end
 
     # The hint only types what the value conversion left: an `Option` is its
     # payload's hint, an opaque one reads whatever comes back.
-    read_of(shape) = string(Base.remove_linenums!(RustCall._pyo3_host_value_expr(:v, shape)))
+    read_of(shape) = unqualified(string(Base.remove_linenums!(RustCall._pyo3_host_value_expr(:v, shape))))
     optional(inner) = RustCall.PyO3Shape(:option, "", 0, inner)
     scalar = RustCall.PyO3Shape(:scalar, "i32")
     @test read_of(RustCall.PyO3Shape(:opaque)) == "_pyo3_from_python(v)"
@@ -468,9 +472,9 @@ end
     # Every argument is untyped and handed over by `_pyo3_to_python`, whatever
     # its hint; the interpreter's own arguments are dropped.
     class_base = :(_pyo3_module().Gate)
-    method_text(name) = string(Base.remove_linenums!(Expr(:block,
+    method_text(name) = unqualified(string(Base.remove_linenums!(Expr(:block,
         RustCall._pyo3_host_method_expr(:Gate, class_base,
-                                        only(filter(m -> m.name == name, gate.methods)))...)))
+                                        only(filter(m -> m.name == name, gate.methods)))...))))
     @test occursin("function copied(rustcall′obj::Gate)", method_text("copied"))
     @test occursin("_pyo3_from_python((getfield(rustcall′obj, :_rustcall_py)).copied())", method_text("copied"))
     @test occursin("function level_of(rustcall′obj::Gate, other)", method_text("level_of"))

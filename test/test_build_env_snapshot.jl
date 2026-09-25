@@ -627,7 +627,8 @@ end
                         line = only(filter(l -> startswith(l, "const _BUILD_RECORD = "),
                                            split(read(out, String), '\n')))
                         m = Module(:BesnSwapRecord485)
-                        Core.eval(m, :(import RustCall))
+                        # The file names RustCall through its alias (#528).
+                        Core.eval(m, Meta.parse("import RustCall as rustcall′RustCall"))
                         Core.eval(m, Meta.parse(chopprefix(line, "const _BUILD_RECORD = ")))
                     end))
                 mktempdir() do dir

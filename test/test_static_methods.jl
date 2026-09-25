@@ -35,13 +35,13 @@ end
         # The free function keeps its bare name; the static method is typed and
         # gets no bare form, so `shout(::Any)` is defined exactly once.
         @test occursin("function shout(input)", code)
-        @test occursin("function shout(::Type{Labeler}, s)", code)
+        @test occursin("function shout(::rustcall′Base.Type{Labeler}, s)", code)
         @test !occursin("shout(s) = shout(Labeler, s)", code)
-        @test count("\nfunction shout(", code) == 2   # `shout(input)` and `shout(::Type{Labeler}, s)`
+        @test count("\nfunction shout(", code) == 2   # `shout(input)` and `shout(::rustcall′Base.Type{Labeler}, s)`
         # A static method that collides with nothing keeps both forms; the
         # delegator names its own arguments so that an argument called like
         # the method or the struct cannot shadow them (#325 review).
-        @test occursin("function parse_scale(::Type{Divider}, text)", code)
+        @test occursin("function parse_scale(::rustcall′Base.Type{Divider}, text)", code)
         @test occursin("parse_scale(rustcall′arg1) = parse_scale(Divider, rustcall′arg1)", code)
         # Constructors are untouched: `Labeler(count)`, not `new(...)`.
         @test occursin("function Labeler(count)", code)
@@ -54,10 +54,10 @@ end
         # `string(::Expr)` prints the delegator as
         # `shout(__rustcall_arg1) = begin … shout(Labeler, __rustcall_arg1) end`.
         typed = string(RustCall._generate_crate_method_wrapper(labeler, shout_m; bare = false))
-        @test occursin("function shout(::Type{Labeler}, s)", typed)
+        @test occursin("function shout(::Base.Type{Labeler}, s)", typed)
         @test !occursin("shout(__rustcall_arg1) = begin", typed)
         with_bare = string(RustCall._generate_crate_method_wrapper(labeler, shout_m))
-        @test occursin("function shout(::Type{Labeler}, s)", with_bare)
+        @test occursin("function shout(::Base.Type{Labeler}, s)", with_bare)
         @test occursin("shout(rustcall′arg1) = begin", with_bare)
         @test occursin("shout(Labeler, rustcall′arg1)", with_bare)
         # Constructors never dispatch on the type.
@@ -127,7 +127,7 @@ end
                 RustCall.write_bindings_to_file(SM_SAMPLE_CRATE, output_path;
                                                 output_module_name = "StaticBindings")
                 content = read(output_path, String)
-                @test occursin("function shout(::Type{Labeler}, s)", content)
+                @test occursin("function shout(::rustcall′Base.Type{Labeler}, s)", content)
                 @test count("\nfunction shout(", content) == 2
                 # Loading the file defines every method once: with `--warn-overwrite`
                 # semantics this is what precompilation checks, and here it is

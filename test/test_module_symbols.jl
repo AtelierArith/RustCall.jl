@@ -220,14 +220,21 @@ end
                                      module_path = ["a"])
         nested = RustCall._module_tree([sig("f", ["a", "deep"])], [st])
         @test_throws ErrorException RustCall._check_module_names(nested)
-        # A module named like a generated helper, an imported module or a
-        # prelude import.
+        # A module named like a generated helper, or like the `eval` /
+        # `include` Julia gives every module, is refused.
         helper = RustCall._module_tree([sig("f", ["_call_target"])], RustCall.RustStructInfo[])
         @test_throws ErrorException RustCall._check_module_names(helper)
-        for reserved in ("RustCall", "Libdl", "call_rust_function", "RustResult", "FFIByValue",
-                         "String", "sum", "Int32", "convert")   # Base exports too
+        for reserved in ("eval", "include")
             @test_throws ErrorException RustCall._check_module_names(
                 RustCall._module_tree([sig("f", [reserved])], RustCall.RustStructInfo[]))
+        end
+        # A module named like something the generated code uses is not: the
+        # code reaches Base and RustCall through names no Rust item can take
+        # (#528).
+        for fine in ("RustCall", "Libdl", "call_rust_function", "RustResult", "FFIByValue",
+                     "String", "sum", "Int32", "convert", "Base", "Core")
+            @test RustCall._check_module_names(
+                RustCall._module_tree([sig("f", [fine])], RustCall.RustStructInfo[])) === nothing
         end
         # Rust keeps `fn C` and `struct C` apart; Julia does not: the struct's
         # type name must not repeat a function-like binding of its own module.
@@ -260,10 +267,11 @@ end
             Tuple{String, String}[], true, Dict{String, Bool}())
         @test RustCall._check_module_names(
             RustCall._module_tree(RustCall.RustFunctionSignature[], [self_named])) === nothing
-        @test_throws ErrorException RustCall._check_module_names(
+        # A struct named like a Base type is its module's own (#528).
+        @test RustCall._check_module_names(
             RustCall._module_tree(RustCall.RustFunctionSignature[],
                 [RustCall.RustStructInfo("String", String[], RustCall.RustMethod[], "",
-                                         Tuple{String, String}[], true, Dict{String, Bool}())]))
+                                         Tuple{String, String}[], true, Dict{String, Bool}())])) === nothing
         # Two structs with a method of one name are ordinary dispatch, not a clash.
         m_get = RustCall.RustMethod("get", false, false, String[], String[], "i32")
         a_ = RustCall.RustStructInfo("A", String[], [m_get], "", Tuple{String, String}[], true, Dict{String, Bool}())

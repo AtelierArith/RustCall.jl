@@ -934,10 +934,14 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
             method_sym = Symbol(julia_method_name(m))
             method_func = esc(Symbol(julia_method_name(m)))
             # Use a fixed name 'args' – it's safe within the anonymous function scope
-            # and avoids 'Module.##gensym' qualification issues
+            # and avoids 'Module.##gensym' qualification issues. Typed
+            # `Vararg{Any}` rather than spelled `args...`: lowering spells the
+            # latter's type as a bare `Vararg` of the caller's module, which a
+            # block's own `struct Vararg` would take (#528); this `Vararg` is
+            # the macro's, resolved in RustCall.
             push!(method_accessors, quote
                 if field === $(QuoteNode(method_sym))
-                    return (args...) -> $method_func(self, args...)
+                    return (args::Vararg{Any}) -> $method_func(self, args...)
                 end
             end)
         end
