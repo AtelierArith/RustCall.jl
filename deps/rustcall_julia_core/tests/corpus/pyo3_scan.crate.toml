@@ -851,8 +851,7 @@ return_abi = ""
 generic_wrapper = ""
 
 [structs.methods.py_return]
-kind = "class"
-name = "Point"
+kind = "opaque"
 
 [[structs.methods.args]]
 name = "x"
@@ -968,8 +967,7 @@ return_abi = ""
 generic_wrapper = ""
 
 [structs.methods.py_return]
-kind = "class"
-name = "Point"
+kind = "opaque"
 
 [[structs.methods]]
 name = "from_class"
@@ -996,8 +994,7 @@ generic_wrapper = ""
 is_classmethod = true
 
 [structs.methods.py_return]
-kind = "class"
-name = "Point"
+kind = "opaque"
 
 [[structs.methods.args]]
 name = "cls"
@@ -1155,8 +1152,7 @@ return_abi = ""
 generic_wrapper = ""
 
 [structs.methods.py_return]
-kind = "class"
-name = "Secret"
+kind = "opaque"
 
 [[structs.methods.args]]
 name = "value"
@@ -1225,8 +1221,7 @@ return_abi = ""
 generic_wrapper = ""
 
 [structs.methods.py_return]
-kind = "class"
-name = "Circle"
+kind = "opaque"
 
 [[structs.methods.args]]
 name = "r"
@@ -1339,8 +1334,7 @@ return_abi = ""
 generic_wrapper = ""
 
 [structs.methods.py_return]
-kind = "class"
-name = "GatedPoint"
+kind = "opaque"
 
 [[structs.methods.args]]
 name = "x"

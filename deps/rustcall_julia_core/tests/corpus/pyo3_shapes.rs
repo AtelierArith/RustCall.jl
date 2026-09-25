@@ -1,11 +1,12 @@
-// The PyO3-host shape of every position is resolved by path (#264, PR #525
-// review): a crate's own `Option` shadows std's, `Self` is the enclosing
-// class however it is wrapped, and pyo3 / numpy / std items are recognised
-// by their full paths as well as their bare names.
+// The PyO3-host hint of every position is read off its spelling (#264, PR
+// #525 review): primitives, `String` / `&str`, `Vec` / `Option` bare or under
+// a std root, pyo3-numpy arrays by name (bare or behind `Py` / `Bound`), and
+// `Python` / `PyModule` as injected. A class, `Self` or anything else is
+// opaque: the host recognises class objects by their runtime type.
 use numpy::PyReadonlyArray1;
 use pyo3::prelude::*;
 
-/// Shadows `std::option::Option` for the bare name, crate-wide.
+/// Shadows `std::option::Option`; the bare name is still hinted as one.
 pub struct Option<T>(pub T);
 
 #[pyclass]

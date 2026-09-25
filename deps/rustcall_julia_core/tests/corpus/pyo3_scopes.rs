@@ -1,7 +1,8 @@
-// A PyO3 type path means what it means in the module it is written in (PR
-// #525 review): one resolver (`paths::resolve_type_path`) reads the module's
-// own declarations and `use` items — renames, globs of the crate's modules —
-// and falls back to the prelude only for a bare name nothing else binds.
+// The PyO3 host's hint (`py_shape`) is read off a type's spelling and never
+// resolved (PR #525 review): a crate's own `Option`, a renamed `Py` or class
+// and an aliased numpy root are hinted by what they are spelled as, or not at
+// all. The host converts every value by its runtime type, so a misread hint
+// costs at most a conversion of the returned value, never a call.
 use pyo3::prelude::*;
 
 #[pyclass]
@@ -12,7 +13,7 @@ pub struct Node {
 pub mod a {
     use pyo3::prelude::*;
 
-    /// Shadows `std::option::Option` in `a`, and nowhere else.
+    /// Shadows `std::option::Option` in `a`: still hinted as an `Option`.
     pub struct Option<T>(pub T);
 
     #[pyfunction]
@@ -33,13 +34,13 @@ pub mod b {
         x
     }
 
-    /// An aliased crate root is that crate.
+    /// An aliased crate root: a numpy array by its type's name.
     #[pyfunction]
     pub fn total(values: np::PyReadonlyArray1<'_, f64>) -> f64 {
         values.as_array().sum()
     }
 
-    /// A renamed pyo3 item and a renamed class.
+    /// A renamed pyo3 item and a renamed class: opaque.
     #[pyfunction]
     pub fn knot(node: Handle<Knot>) -> Handle<Knot> {
         node
@@ -56,14 +57,13 @@ pub mod c {
     use crate::a::*;
     use pyo3::prelude::*;
 
-    /// The glob brings `a::Option` in.
+    /// The glob brings `a::Option` in: still hinted as an `Option`.
     #[pyfunction]
     pub fn via_glob(x: Option<i32>) -> i32 {
         x.0
     }
 
-    /// A path through another module names that module's item, never the
-    /// prelude.
+    /// A path through another module is opaque.
     #[pyfunction]
     pub fn through(x: super::a::Option<i32>, y: crate::b::Option<i32>) -> i32 {
         x.0 + y.map(|v| v.0).unwrap_or(0)

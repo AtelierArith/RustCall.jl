@@ -28,7 +28,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 55
+line = 56
 module_path = []
 
 [[functions.args]]
@@ -62,7 +62,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 60
+line = 61
 module_path = []
 
 [[functions.args]]
@@ -101,7 +101,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 66
+line = 67
 module_path = []
 
 [[functions.args]]
@@ -135,7 +135,7 @@ has_owned_string_helper = false
 has_borrowed_string_helper = false
 source = ""
 body_has_cfg = false
-line = 71
+line = 72
 module_path = []
 
 [[functions.args]]

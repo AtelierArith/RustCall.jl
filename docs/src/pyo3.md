@@ -87,17 +87,26 @@ imported, and only what it registers is reachable. That includes a
 bindings follow the declarative nesting, so a direct item is `Sample.f` and one
 in a nested `#[pymodule] mod inner` is `Sample.inner.g`.
 
-The host path reads the Rust parameter and return spellings, so the shapes a
-PyO3 crate actually uses are handled rather than reported as skips:
+The host path converts every value by what it is at run time, never by the
+Rust spelling of its position, so the shapes a PyO3 crate actually uses —
+aliases, re-exports and a crate's own types included — are handled rather than
+reported as skips. Arguments are untyped; Python checks them as it would a
+Python caller's.
 
-* **numpy arrays.** A `PyReadonlyArray*` / `PyArray*` parameter is typed
-  `AbstractArray` and converted with `numpy.asarray` before the call, because
-  pyo3-numpy extracts from a real `numpy.ndarray` and a Julia array otherwise
-  reaches Python as a `juliacall.VectorValue`. A numpy return is converted back
-  to a Julia `Array`.
-* **Python callables.** A parameter with no Julia equivalent stays `Any`; a
-  Julia function passed there arrives as a Python callable (PythonCall wraps
-  it), and a `Py<PyAny>` argument or return stays a Python object.
+* **Classes.** A Julia class handle is passed as the Python object it holds,
+  and a returned object whose Python type is one of the module's classes is
+  that class's Julia handle — through `Py<T>`, `Py<Self>`, an alias, an
+  `Option` or a `Vec` alike. Python `None` is `nothing` both ways.
+* **numpy arrays.** A Julia array of numbers is passed as a `numpy.ndarray`
+  when numpy imports, because pyo3-numpy extracts from nothing else; PyO3 reads
+  a `Vec` from it as from any sequence. A numpy return is converted back to a
+  Julia `Array`.
+* **Return types.** The extractor's hint for a return (a primitive, `String`,
+  a `Vec`, a numpy array) types what the value conversion left; a value that
+  does not fit it stays a Python object.
+* **Python callables.** A Julia function passed as an argument arrives as a
+  Python callable (PythonCall wraps it), and a `Py<PyAny>` argument or return
+  stays a Python object.
 * **`#[classmethod]`.** Python's bound descriptor passes the class, so the
   binding drops that argument from the Julia signature and calls through the
   class object. `#[pyo3(pass_module)]` is the same: the injected module is not
@@ -487,7 +496,7 @@ Manifest schema 5 adds, for every function, struct and method:
 | `skip_reason` | why the item cannot be wrapped, empty when it can |
 | `python_name` | the name PyO3 exposes it under, when it is not the Rust name as written: `#[pyo3(name = "...")]`, a raw `r#for` as `for`, and for a `#[getter]` / `#[setter]` method the property (`#[getter(x)]`, or the name without a `get_` / `set_` prefix) |
 | `accessor` | `getter` / `setter` for a `#[getter]` / `#[setter]` method |
-| argument / field `py_shape`, function / method `py_return` | what the value is to the Python-host bindings, resolved by the scan from the type's paths: `class` (a scanned `#[pyclass]`, `Self` resolved, through `Py` / `Bound` / `Borrowed` / `PyRef` / `PyRefMut`), `vec` / `option` (`std`'s, with an `inner` shape), `array` (pyo3-numpy, with `rank` and element `name`), `scalar`, `string`, `unit`, `injected` (`Python<'_>`, a `pass_module` module) or `opaque`. The host reads nothing else about a PyO3 type |
+| argument / field `py_shape`, function / method `py_return` | a hint for the Python-host bindings, read off the type's spelling with no path resolution: `vec` / `option` (bare or under a std root, with an `inner` hint), `array` (pyo3-numpy, with `rank` and element `name`), `scalar`, `string`, `unit`, `injected` (`Python<'_>`, a `pass_module` module) or `opaque`. The host converts values by what they are at run time; the hint only types what that left, and says which arguments the interpreter supplies |
 | `return_kind` + `ok_type` / `err_type` / `inner_type` | on methods too, not just free functions: a `#[pymethods]` method returning `PyResult<T>` is `py_result` with `T`, so Phase 2 never re-reads the Rust type spelling |
 | field `abi = "vec"` + `vec_element` + `free_symbol` | schema 10's owned-vector contract: the exact Julia element layout and the export that must release this getter's `(ptr, len, cap)` buffer |
 | argument `python_default` + `python_kind` | schema 12's PyO3 call shape; defaults remain Rust expressions and are evaluated only by PyO3's original dispatcher |

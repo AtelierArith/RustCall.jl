@@ -708,8 +708,7 @@ return_abi = ""
 generic_wrapper = ""
 
 [structs.methods.py_return]
-kind = "class"
-name = "Rect"
+kind = "opaque"
 
 [[structs.methods.args]]
 name = "w"
@@ -746,8 +745,7 @@ return_abi = ""
 generic_wrapper = ""
 
 [structs.methods.py_return]
-kind = "class"
-name = "Rect"
+kind = "opaque"
 
 [[structs.methods]]
 name = "area"

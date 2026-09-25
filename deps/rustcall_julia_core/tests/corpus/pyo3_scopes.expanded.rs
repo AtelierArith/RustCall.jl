@@ -5,7 +5,7 @@ pub struct Node {
 }
 pub mod a {
     use pyo3::prelude::*;
-    /// Shadows `std::option::Option` in `a`, and nowhere else.
+    /// Shadows `std::option::Option` in `a`: still hinted as an `Option`.
     pub struct Option<T>(pub T);
     #[pyfunction]
     pub fn in_a(x: Option<i32>) -> i32 {
@@ -21,12 +21,12 @@ pub mod b {
     pub fn in_b(x: Option<i32>) -> Option<i32> {
         x
     }
-    /// An aliased crate root is that crate.
+    /// An aliased crate root: a numpy array by its type's name.
     #[pyfunction]
     pub fn total(values: np::PyReadonlyArray1<'_, f64>) -> f64 {
         values.as_array().sum()
     }
-    /// A renamed pyo3 item and a renamed class.
+    /// A renamed pyo3 item and a renamed class: opaque.
     #[pyfunction]
     pub fn knot(node: Handle<Knot>) -> Handle<Knot> {
         node
@@ -40,13 +40,12 @@ pub mod b {
 pub mod c {
     use crate::a::*;
     use pyo3::prelude::*;
-    /// The glob brings `a::Option` in.
+    /// The glob brings `a::Option` in: still hinted as an `Option`.
     #[pyfunction]
     pub fn via_glob(x: Option<i32>) -> i32 {
         x.0
     }
-    /// A path through another module names that module's item, never the
-    /// prelude.
+    /// A path through another module is opaque.
     #[pyfunction]
     pub fn through(x: super::a::Option<i32>, y: crate::b::Option<i32>) -> i32 {
         x.0 + y.map(|v| v.0).unwrap_or(0)

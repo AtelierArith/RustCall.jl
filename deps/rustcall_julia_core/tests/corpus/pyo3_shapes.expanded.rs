@@ -1,6 +1,6 @@
 use numpy::PyReadonlyArray1;
 use pyo3::prelude::*;
-/// Shadows `std::option::Option` for the bare name, crate-wide.
+/// Shadows `std::option::Option`; the bare name is still hinted as one.
 pub struct Option<T>(pub T);
 #[pyclass]
 pub struct Node {

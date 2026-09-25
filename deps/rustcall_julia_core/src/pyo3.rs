@@ -44,8 +44,7 @@ use crate::manifest::{
     skip_reason, Attribute, Field, Function, Manifest, Method, PyShape, ReturnKind, Struct,
 };
 use crate::paths::{
-    import_of_type_alias, imports_of_use, locate, resolve_type_path, ImplHeader, Located,
-    ModuleItems, PathTarget, ScannedImport,
+    import_of_type_alias, imports_of_use, locate, ImplHeader, Located, ScannedImport,
 };
 use crate::types::{
     extract_option_type, extract_result_type, generics_to_type_params, has_impl_trait,
@@ -113,9 +112,6 @@ pub struct Pyo3Scan {
     routes: crate::public_routes::PublicRoutes,
     edition_2015: bool,
     intrinsic_skips: std::collections::BTreeMap<(Vec<String>, String, usize, String), String>,
-    /// Every module's own type-namespace declarations, which the one path
-    /// resolver reads (`paths::resolve_type_path`, PR #525 review).
-    items: ModuleItems,
 }
 
 impl Pyo3Scan {
@@ -267,7 +263,6 @@ impl Pyo3Scan {
         python_path: &[String],
         inside_pymodule: bool,
     ) {
-        self.items.record(items, module_path);
         for item in items {
             match item {
                 Item::Type(alias) => {
@@ -585,14 +580,10 @@ impl Pyo3Scan {
                         &owner_skip,
                         &imp.cfg,
                     );
-                    // Written in the impl's module, `Self` the class (#264).
-                    let class_name =
-                        crate::codegen::unraw(&self.classes[index].entry.name).to_string();
-                    let scope = self.shape_scope(&imp.header.module_path, Some(&class_name));
                     for arg in &mut entry.args {
-                        arg.py_shape = Some(scope.shape_of(&arg.rust_type));
+                        arg.py_shape = Some(shape_of(&arg.rust_type));
                     }
-                    entry.py_return = Some(scope.return_shape(
+                    entry.py_return = Some(return_hint(
                         entry.return_kind,
                         &entry.ok_type,
                         &entry.return_type,
@@ -602,39 +593,24 @@ impl Pyo3Scan {
             }
         }
 
-        // Every PyO3 position's host shape, resolved by path here so no
-        // consumer reads a type spelling (#264, PR #525 review).
+        // Every PyO3 position's host hint, read off the type here so no
+        // consumer reads a type spelling (#264); see [`PyShape`].
         for function in &mut manifest.functions {
             if !function.attribute.is_pyo3_scan() {
                 continue;
             }
-            let scope = self.shape_scope(&function.module_path, None);
             for arg in &mut function.args {
-                arg.py_shape = Some(scope.shape_of(&arg.rust_type));
+                arg.py_shape = Some(shape_of(&arg.rust_type));
             }
-            function.py_return = Some(scope.return_shape(
+            function.py_return = Some(return_hint(
                 function.return_kind,
                 &function.ok_type,
                 &function.return_type,
             ));
         }
-        let field_shapes: Vec<Vec<PyShape>> = self
-            .classes
-            .iter()
-            .map(|class| {
-                let name = crate::codegen::unraw(&class.entry.name).to_string();
-                let scope = self.shape_scope(&class.module_path, Some(&name));
-                class
-                    .entry
-                    .fields
-                    .iter()
-                    .map(|f| scope.shape_of(&f.rust_type))
-                    .collect()
-            })
-            .collect();
-        for (class, shapes) in self.classes.iter_mut().zip(field_shapes) {
-            for (field, shape) in class.entry.fields.iter_mut().zip(shapes) {
-                field.py_shape = Some(shape);
+        for class in &mut self.classes {
+            for field in &mut class.entry.fields {
+                field.py_shape = Some(shape_of(&field.rust_type));
             }
         }
 
@@ -648,160 +624,85 @@ impl Pyo3Scan {
     }
 }
 
-impl Pyo3Scan {
-    fn shape_scope<'a>(
-        &'a self,
-        module_path: &'a [String],
-        self_class: Option<&'a str>,
-    ) -> ShapeScope<'a> {
-        ShapeScope {
-            classes: &self.classes,
-            imports: &self.imports,
-            items: &self.items,
-            module_path,
-            self_class,
-            edition_2015: self.edition_2015,
-        }
-    }
-}
-
-/// Where a PyO3 item's type is written, for [`ShapeScope::shape`]: the scanned
-/// classes, and what [`resolve_type_path`] needs to decide a path from the
-/// module it is written in — that module, the crate's imports and
-/// declarations — and the class `Self` names there.
-struct ShapeScope<'a> {
-    classes: &'a [ScannedClass],
-    imports: &'a [ScannedImport],
-    items: &'a ModuleItems,
-    module_path: &'a [String],
-    self_class: Option<&'a str>,
-    edition_2015: bool,
-}
-
 const SCALARS: [&str; 15] = [
     "i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16", "u32", "u64", "u128", "usize", "f32",
     "f64", "bool",
 ];
 
-impl ShapeScope<'_> {
-    /// The shape of a type the manifest spells as `spelling` (the scan's own
-    /// `type_to_string`); a spelling syn does not read back is opaque.
-    fn shape_of(&self, spelling: &str) -> PyShape {
-        syn::parse_str::<Type>(spelling)
-            .map(|ty| self.shape(&ty))
-            .unwrap_or_else(|_| PyShape::of("opaque"))
-    }
+/// The host hint of a type the manifest spells as `spelling` (the scan's own
+/// `type_to_string`); a spelling syn does not read back is opaque.
+fn shape_of(spelling: &str) -> PyShape {
+    syn::parse_str::<Type>(spelling)
+        .map(|ty| shape(&ty))
+        .unwrap_or_else(|_| PyShape::of("opaque"))
+}
 
-    /// The shape of a function's or method's return: of `T` for a
-    /// `PyResult<T>`, of the whole return type otherwise.
-    fn return_shape(&self, kind: ReturnKind, ok_type: &str, return_type: &str) -> PyShape {
-        if kind == ReturnKind::PyResult {
-            self.shape_of(ok_type)
-        } else {
-            self.shape_of(return_type)
+/// The hint of a function's or method's return: of `T` for a `PyResult<T>`,
+/// of the whole return type otherwise.
+fn return_hint(kind: ReturnKind, ok_type: &str, return_type: &str) -> PyShape {
+    if kind == ReturnKind::PyResult {
+        shape_of(ok_type)
+    } else {
+        shape_of(return_type)
+    }
+}
+
+/// The host hint of `ty`, read off its spelling alone; see [`PyShape`]. No
+/// path is resolved: the hint only narrows what a value the host has already
+/// converted by its runtime type is read back as, so a spelling it misreads
+/// (a crate's own `Option`, an alias) costs a conversion, never a call.
+fn shape(ty: &Type) -> PyShape {
+    match unparen(ty) {
+        Type::Group(g) => shape(&g.elem),
+        Type::Tuple(t) if t.elems.is_empty() => PyShape::of("unit"),
+        Type::Reference(r) => shape(&r.elem),
+        Type::Path(p) if p.qself.is_none() => path_shape(&p.path),
+        _ => PyShape::of("opaque"),
+    }
+}
+
+fn path_shape(path: &syn::Path) -> PyShape {
+    use syn::ext::IdentExt;
+    let segments: Vec<String> = path
+        .segments
+        .iter()
+        .map(|s| s.ident.unraw().to_string())
+        .collect();
+    let Some(last) = segments.last().map(String::as_str) else {
+        return PyShape::of("opaque");
+    };
+    let args = type_arguments(path);
+    // `Vec`, `Option` and `String` bare (the prelude's) or under a std root;
+    // a primitive only bare.
+    let bare = segments.len() == 1 && path.leading_colon.is_none();
+    let std_spelled = bare || matches!(segments[0].as_str(), "std" | "core" | "alloc");
+    match last {
+        name if bare && SCALARS.contains(&name) => PyShape::named("scalar", name),
+        "str" if bare => PyShape::of("string"),
+        "String" if std_spelled && args.is_empty() => PyShape::of("string"),
+        "Vec" | "Option" if std_spelled && args.len() == 1 => {
+            let kind = if last == "Vec" { "vec" } else { "option" };
+            PyShape::wrapping(kind, shape(&args[0]))
         }
-    }
-
-    /// The host shape of `ty`; see [`PyShape`].
-    fn shape(&self, ty: &Type) -> PyShape {
-        match unparen(ty) {
-            Type::Group(g) => self.shape(&g.elem),
-            Type::Tuple(t) if t.elems.is_empty() => PyShape::of("unit"),
-            Type::Reference(r) => self.shape(&r.elem),
-            Type::Path(p) => self.path_shape(p),
+        name if numpy_rank(name).is_some() => {
+            let rank = numpy_rank(name).unwrap_or(0);
+            match args.last().map(shape) {
+                Some(e) if e.kind == "scalar" => PyShape {
+                    rank,
+                    ..PyShape::named("array", &e.name)
+                },
+                _ => PyShape::of("opaque"),
+            }
+        }
+        // PyO3's own rule: an argument whose type's last segment is `Python`
+        // is the interpreter token, whatever path spells it; the `PyModule` a
+        // `#[pyo3(pass_module)]` function gets is read the same way.
+        "Python" | "PyModule" => PyShape::of("injected"),
+        "Py" | "Bound" | "Borrowed" | "PyRef" | "PyRefMut" => match args.last().map(shape) {
+            Some(inner) if matches!(inner.kind.as_str(), "array" | "injected") => inner,
             _ => PyShape::of("opaque"),
-        }
-    }
-
-    fn path_shape(&self, p: &syn::TypePath) -> PyShape {
-        if p.qself.is_none() && p.path.is_ident("Self") {
-            return match self.self_class {
-                Some(class) => PyShape::named("class", class),
-                None => PyShape::of("opaque"),
-            };
-        }
-        let args = type_arguments(&p.path);
-        match resolve_type_path(
-            p,
-            self.module_path,
-            self.imports,
-            self.items,
-            self.edition_2015,
-        ) {
-            PathTarget::Primitive(name) if name == "str" => PyShape::of("string"),
-            PathTarget::Primitive(name) if SCALARS.contains(&name.as_str()) => {
-                PyShape::named("scalar", &name)
-            }
-            PathTarget::Extern(path) => self.extern_shape(&path, &args, true),
-            // A glob of another crate supplies the name: pyo3's or numpy's
-            // items are recognised through it, and only when one glob agrees.
-            PathTarget::Globbed(candidates) => {
-                let shapes: Vec<PyShape> = candidates
-                    .iter()
-                    .map(|path| self.extern_shape(path, &args, false))
-                    .filter(|shape| shape.kind != "opaque")
-                    .collect();
-                match shapes.as_slice() {
-                    [one] => one.clone(),
-                    _ => PyShape::of("opaque"),
-                }
-            }
-            PathTarget::Local { module_path, name } => {
-                if !args.is_empty() {
-                    return PyShape::of("opaque");
-                }
-                self.classes
-                    .iter()
-                    .find(|c| {
-                        c.module_path == module_path && crate::codegen::unraw(&c.entry.name) == name
-                    })
-                    .map(|_| PyShape::named("class", &name))
-                    .unwrap_or_else(|| PyShape::of("opaque"))
-            }
-            _ => PyShape::of("opaque"),
-        }
-    }
-
-    /// The shape of another crate's item, by its path (crate root first).
-    /// `std` / `core` / `alloc` items are recognised only by a written or
-    /// prelude path (`std_paths`), never through a glob.
-    fn extern_shape(&self, path: &[String], args: &[Type], std_paths: bool) -> PyShape {
-        let (Some(root), Some(last)) = (path.first(), path.last()) else {
-            return PyShape::of("opaque");
-        };
-        let std_root = matches!(root.as_str(), "std" | "core" | "alloc");
-        match (root.as_str(), last.as_str()) {
-            _ if std_root && std_paths && last == "String" => PyShape::of("string"),
-            _ if std_root && std_paths && (last == "Vec" || last == "Option") => {
-                let kind = if last == "Vec" { "vec" } else { "option" };
-                match args {
-                    [inner] => PyShape::wrapping(kind, self.shape(inner)),
-                    _ => PyShape::of("opaque"),
-                }
-            }
-            ("numpy", name) if numpy_rank(name).is_some() => {
-                let rank = numpy_rank(name).unwrap_or(0);
-                match args.last().map(|t| self.shape(t)) {
-                    Some(e) if e.kind == "scalar" => PyShape {
-                        rank,
-                        ..PyShape::named("array", &e.name)
-                    },
-                    _ => PyShape::of("opaque"),
-                }
-            }
-            ("pyo3", "Python" | "PyModule") => PyShape::of("injected"),
-            ("pyo3", "Py" | "Bound" | "Borrowed" | "PyRef" | "PyRefMut") => {
-                match args.last().map(|t| self.shape(t)) {
-                    Some(inner)
-                        if matches!(inner.kind.as_str(), "class" | "array" | "injected") =>
-                    {
-                        inner
-                    }
-                    _ => PyShape::of("opaque"),
-                }
-            }
-            _ => PyShape::of("opaque"),
-        }
+        },
+        _ => PyShape::of("opaque"),
     }
 }
 

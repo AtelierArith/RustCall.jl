@@ -64,45 +64,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or the method's without `r#` and without a `get_` / `set_` prefix, PyO3's
   rule — so the PyO3 wrapper crate's Python-owned accessor helpers look up
   the same attribute (a `#[getter] fn get_x` read `get_x` there, not `x`).
-  A property's value crosses through the same conversion a method's does
-  (PR #525 review): a read through the method return conversion, so a
-  getter returning another `#[pyclass]` (`Py<Child>`, `PyResult<Py<Child>>`)
-  yields the Julia `Child` rather than a raw `PythonCall.Py`; a write through
-  the method argument plan (`RustCall._pyo3_host_arg_plan`, now the one
-  per-argument decision `_pyo3_host_args` also reads), so a setter taking a
-  class is handed the Python object the Julia handle holds and one taking a
-  numpy array gets `numpy.asarray` of the Julia array. **What a value is to
-  the host is now decided by the extractor, from the type's paths**, never
-  from its spelling in Julia (#264): every argument, return and field of a
-  scanned PyO3 item carries a `py_shape` / `py_return` in the manifest
-  (`rustcall_julia_core::manifest::PyShape`, additive within schema 0.7) — a
-  class (resolved to a scanned `#[pyclass]` as an impl header is, `Self` the
-  enclosing class, through pyo3's `Py` / `Bound` / `Borrowed` / `PyRef` /
-  `PyRefMut`), `std`'s `Vec` / `Option` of a shape, a pyo3-numpy array with
-  its rank and element, a scalar, a string, the unit, an interpreter-supplied
-  argument, or an opaque value. So `Py<Self>` and `PyResult<Py<Self>>` are the
-  class, an `Option` maps `None` to `nothing` and back whatever its payload
-  is (`Option<Py<PyAny>>` too; a Julia `nothing` no longer reaches
-  `getfield`), and a crate's own `Option` — named `crate::Option`, or
-  shadowing the bare name — is not std's: its value passes through as it is.
-  Every path is decided by one module-scoped resolver
-  (`rustcall_julia_core::paths::resolve_type_path`): the module's own
-  declarations, its `use` items (`as` renames — `use numpy as np` makes
-  `np::PyReadonlyArray1` numpy's — and globs of the crate's own modules),
-  `crate::` / `self::` / `super::`, the extern crate roots, then the prelude
-  for a bare name nothing else binds, so a `struct Option` in module `a`
-  shadows the bare name in `a` only. A path the scan cannot decide (a glob of
-  an unindexed crate over a prelude name, a qualified `<T as Tr>::X`) stays
-  opaque. The
-  host reads only that description (`RustCall.PyO3Shape`); every spelling
-  parser it had — the class, numpy, injected-argument and value-type readers —
-  is gone, and a manifest from an extractor that predates the field is refused
-  with the instruction to rebuild it. An identifier-form property name
+  **Every PyO3 host value now crosses by what it is at run time, never by
+  the Rust spelling of its position** (PR #525 review). The generated module
+  defines two conversions every binding, getter and setter goes through:
+  `_pyo3_to_python` hands Python a class handle's Python object, a Julia
+  array of numbers as a `numpy.ndarray` when numpy imports (pyo3-numpy
+  extracts from nothing else, and PyO3 reads a `Vec` from one as from any
+  sequence), another array or a tuple element by element, and anything else
+  as it is (`nothing` is `None`); `_pyo3_from_python` reads `None` back as
+  `nothing` and an object whose Python type is one of the module's classes
+  (a table built once from the class objects) as that class's Julia handle.
+  So a type alias of a class handle (`type Handle = Py<Point>`), an optional
+  one, a bare `Option` beside a glob of a module whose `Option` is private,
+  a crate's own `Option` (by path or shadowing the bare name), `Py<Self>`,
+  `Option<Py<PyAny>>`, a `Vec` of class objects returned, and every setter
+  of these are called as a Python caller would call them; before, each of
+  them depended on reading the type, and a misread handed PyO3 a
+  `juliacall` wrapper or returned a raw `Py`. Arguments are untyped (Python
+  checks them). The extractor still describes each position
+  (`py_shape` / `py_return`, `rustcall_julia_core::manifest::PyShape`,
+  additive within schema 0.7), read off the spelling with no path
+  resolution — a primitive, `String` / `&str`, `Vec` / `Option` bare or
+  under a std root, a pyo3-numpy array by its name, `Python` / `PyModule`
+  as interpreter-supplied, else opaque — and it is a hint only: it types
+  what the value conversion left (`i32` is `Int32`, a numpy return a
+  `Vector{Float64}`, a `PyResult` the `RustResult`'s parameter), and a value
+  that does not fit it stays the Python object it is. The one thing the host
+  takes from it is which arguments the interpreter supplies, by PyO3's own
+  rule (a type whose last segment is `Python`). The Julia-side spelling
+  parsers (class, numpy, injected-argument and value-type readers) are gone,
+  and a manifest from an extractor that predates the field is refused with
+  the instruction to rebuild it.
+  An identifier-form property name
   (`#[getter(r#type)]`) is unrawed like every Rust name (`type`); a string
   `name = "..."` is taken as written. And
   a name the generated module or type defines for itself — the handle field
-  `_rustcall_py`, `_pyo3_module`, `_PYO3_MODULE`, `_pyo3_asarray`, the
-  imports — is part of the one-namespace clash check: a crate item bound under
+  `_rustcall_py`, `_pyo3_module`, `_PYO3_MODULE`, `_pyo3_to_python`,
+  `_pyo3_from_python`, `_PyO3Object`, the imports — is part of the
+  one-namespace clash check: a crate item bound under
   one (a `#[getter] fn _rustcall_py`, a `#[pyfunction] fn _pyo3_module`) is
   refused with both named instead of shadowing the handle or redefining the
   module's import function. The reserved names are read off the prelude the

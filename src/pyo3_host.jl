@@ -497,16 +497,19 @@ end
 # Field access goes through the Python object, not the manifest's wrapper
 # symbols. `#[pyo3(get)]` / `#[pyo3(set)]` install a descriptor inside the crate,
 # so it works for a private field and for a private struct — exactly the cases
-# the manifest's `getter`/`setter` symbols are blank for. The manifest still
-# describes each field's value (`Field.py_shape`), which is what types the
-# getter; a field PyO3 does not expose raises at access, as it would in Python.
+# the manifest's `getter`/`setter` symbols are blank for. A field PyO3 does not
+# expose raises at access, as it would in Python.
 
-# Every value crosses the boundary by the shape the extractor resolved for its
-# position (`PyO3Shape`, manifest `py_shape` / `py_return`): Julia reads that
-# description, never the Rust spelling (#264, PR #525 review). The class a
-# `:class` shape names is looked up in `classes`, the scanned classes the
-# module binds; one it does not bind is passed and returned as the Python
-# object it is.
+# Every value crosses the boundary by what it **is** at run time, never by the
+# Rust spelling of its position (PR #525 review): the generated module's
+# `_pyo3_to_python` hands Python a class handle's Python object, a Julia array
+# of numbers as a numpy array (when numpy is importable) and anything else as it
+# is; `_pyo3_from_python` reads Python `None` back as `nothing` and an object of
+# one of the module's classes as that class's Julia handle. The extractor's
+# `PyO3Shape` (manifest `py_shape` / `py_return`) is a hint and nothing more: it
+# chooses the Julia type an otherwise unconverted value is read back as, and a
+# value that does not fit it stays the Python object it is. The one thing the
+# host takes from it is which arguments the interpreter supplies (`:injected`).
 
 # A function, not a `const Dict`: a module-level mutable registry is what
 # `test_state.jl`'s guard forbids (#251), and this table never changes.
@@ -530,9 +533,10 @@ end
 """
     _pyo3_host_required_shape(shape, what) -> PyO3Shape
 
-The shape of a PyO3 position, or a `RustError` when the manifest carries none:
-every position of a scanned PyO3 item has one, so a missing one means the
-extractor predates it and would otherwise be read as an opaque value.
+The hint of a PyO3 position, or a `RustError` when the manifest carries none:
+every position of a scanned PyO3 item has one, and without it the host cannot
+tell an argument the interpreter supplies from one the caller passes, so a
+missing one means the extractor predates it.
 """
 function _pyo3_host_required_shape(shape::Union{Nothing, PyO3Shape}, what::AbstractString)
     shape === nothing || return shape
@@ -541,126 +545,55 @@ function _pyo3_host_required_shape(shape::Union{Nothing, PyO3Shape}, what::Abstr
                     "(or `julia --project deps/build.jl` in a checkout)."))
 end
 
-# The Julia class a `:class` shape names, when the module binds it.
-_pyo3_host_class_type(shape::PyO3Shape, classes::AbstractDict) =
-    shape.kind === :class ? get(classes, shape.name, nothing) : nothing
-
 """
-    _pyo3_host_read_type(shape, classes) -> Union{Symbol, Expr, Nothing}
+    _pyo3_host_read_type(shape) -> Union{Symbol, Expr}
 
-The Julia type a value of this shape is read back as, or `nothing` for "leave
-it as a Python object": a class's Julia type, a converted scalar, `String`, a
-`Vector` of a convertible element, a numpy array by its element and rank,
-`Union{Nothing, T}` for an `Option` of any of these.
+The Julia type the hint says a value is read back as, `:Any` for "whatever it
+is": a scalar's Julia type, `String`, a `Vector` of the element's hint, a numpy
+array by its element and rank. An `Option` is its payload's hint: `None` is
+`nothing` whatever the hint (`_pyo3_from_python`).
 """
-function _pyo3_host_read_type(shape::PyO3Shape, classes::AbstractDict)
+function _pyo3_host_read_type(shape::PyO3Shape)
     kind = shape.kind
     kind === :unit && return :Nothing
-    kind === :scalar && return _pyo3_host_scalar_type(shape.name)
+    kind === :scalar && return something(_pyo3_host_scalar_type(shape.name), :Any)
     kind === :string && return :String
-    kind === :class && return _pyo3_host_class_type(shape, classes)
-    if kind === :vec
-        # A `Vec` of classes stays a Python list of objects.
-        shape.inner.kind === :class && return nothing
-        element = _pyo3_host_read_type(shape.inner, classes)
-        return element === nothing ? nothing : :(Vector{$element})
-    elseif kind === :array
+    kind === :vec && return :(Vector{$(_pyo3_host_read_type(shape.inner))})
+    kind === :option && return _pyo3_host_read_type(shape.inner)
+    if kind === :array
         element = _pyo3_host_scalar_type(shape.name)
-        element === nothing && return nothing
+        element === nothing && return :Any
         shape.rank == 0 && return element
         shape.rank == 1 && return :(Vector{$element})
         shape.rank == 2 && return :(Matrix{$element})
         return :(Array{$element})
-    elseif kind === :option
-        # A layer of its own: `None` is `nothing` whatever the payload is, so
-        # an unconverted payload reads as `Union{Nothing, PythonCall.Py}`.
-        inner = _pyo3_host_read_type(shape.inner, classes)
-        return :(Union{Nothing, $(something(inner, :(PythonCall.Py)))})
     end
-    return nothing
-end
-
-"""
-    _pyo3_host_value_expr(call, shape, classes) -> Expr
-
-The call's result read back by its shape — the one decision for every value the
-host reads: a function's or a method's return and a property's read
-(`getproperty`). A class is wrapped into its Julia type, an `Option` maps
-`None` to `nothing` (the call evaluated once), a convertible value is
-`pyconvert`ed, anything else is the Python object it is.
-"""
-function _pyo3_host_value_expr(call, shape::PyO3Shape, classes::AbstractDict)
-    class = _pyo3_host_class_type(shape, classes)
-    class === nothing || return :($class($call))
-    if shape.kind === :option
-        # `None` is `nothing` whatever the payload is (PR #525 review); only
-        # a present value's conversion depends on it.
-        value = Symbol("#rustcall_optional")
-        present = _pyo3_host_value_expr(value, shape.inner, classes)
-        return :(let $value = $call
-                     PythonCall.pyis($value, PythonCall.pybuiltins.None) ? nothing : $present
-                 end)
-    end
-    jt = _pyo3_host_read_type(shape, classes)
-    jt === nothing && return call
-    return :(PythonCall.pyconvert($jt, $call))
-end
-
-# The Julia type a binding accepts for an argument of this shape. Abstract on
-# purpose: a Python host is duck-typed, and `Integer` lets both `Int32(2)` and
-# `2` reach `add`, as they would in Python.
-function _pyo3_host_arg_type(shape::PyO3Shape)
-    kind = shape.kind
-    if kind === :scalar
-        shape.name == "bool" && return :Bool
-        shape.name in ("f32", "f64") && return :Real
-        return :Integer
-    end
-    kind === :string && return :AbstractString
-    kind === :vec && return :AbstractVector
-    # A 0-d numpy array is a scalar in disguise (pyo3-numpy's `PyArray0`);
-    # anything with a rank is reached as an array.
-    kind === :array && return shape.rank == 0 ? :Any : :AbstractArray
     return :Any
 end
 
-"""
-    _pyo3_host_arg_plan(sym, shape, classes) -> (signature entry, conversion)
-
-How one value of this shape, held by the Julia variable `sym`, is handed to
-Python — the one decision for every argument the host passes: a function's and
-a method's (`_pyo3_host_args`) and a property's written value (`setproperty!`,
-`_pyo3_host_property_expr`). A numpy array is converted with `numpy.asarray`
-(pyo3-numpy extracts from a real `numpy.ndarray`, not the
-`juliacall.VectorValue` a Julia array becomes, #424); a bound class (or a `Vec`
-of them) is passed as the Python object its Julia handle holds; an `Option`
-passes `nothing` as `None` and converts a present value as its element;
-anything else is passed as it is.
-"""
-function _pyo3_host_arg_plan(sym::Symbol, shape::PyO3Shape, classes::AbstractDict)
-    handle = QuoteNode(_PYO3_HOST_HANDLE_FIELD)
-    unwrap(x) = :($x isa PythonCall.Py ? $x : getfield($x, $handle))
-    kind = shape.kind
-    if kind === :array
-        return :($sym::$(_pyo3_host_arg_type(shape))), :(_pyo3_asarray($sym))
-    elseif _pyo3_host_class_type(shape, classes) !== nothing
-        return sym, unwrap(sym)
-    elseif kind === :vec && _pyo3_host_class_type(shape.inner, classes) !== nothing
-        item = Symbol("#item")
-        return :($sym::AbstractVector), :([$(unwrap(item)) for $item in $sym])
-    elseif kind === :option
-        _, present = _pyo3_host_arg_plan(sym, shape.inner, classes)
-        present === sym && return sym, sym
-        return sym, :($sym === nothing ? nothing : $present)
-    end
-    return :($sym::$(_pyo3_host_arg_type(shape))), sym
+# The `T` of the `RustResult{T, String}` a `PyResult` return is reported as:
+# the hint, with `Nothing` admitted for an `Option`. A value outside it is
+# reported under `Any` (`_pyo3_ok`), so the hint never fails a call.
+function _pyo3_host_result_type(shape::PyO3Shape)
+    jt = _pyo3_host_read_type(shape)
+    jt === :Any && return :Any
+    shape.kind === :option && return :(Union{Nothing, $jt})
+    return jt
 end
 
-# Whether a value of this shape is converted with `_pyo3_asarray` on its way
-# in, which decides whether the module defines that helper (#424).
-_pyo3_host_takes_array(shape::PyO3Shape) =
-    shape.kind === :array ||
-    (shape.inner !== nothing && _pyo3_host_takes_array(shape.inner))
+"""
+    _pyo3_host_value_expr(call, shape) -> Expr
+
+The call's result read back — the one decision for every value the host reads:
+a function's or a method's return and a property's read (`getproperty`).
+`_pyo3_from_python` decides by the value (`None`, an object of a bound class);
+the hint only types what is left.
+"""
+function _pyo3_host_value_expr(call, shape::PyO3Shape)
+    jt = _pyo3_host_read_type(shape)
+    jt === :Any && return :(_pyo3_from_python($call))
+    return :(_pyo3_from_python($call, $jt))
+end
 
 _pyo3_host_attr(base, name::AbstractString) = Expr(:., base, QuoteNode(Symbol(name)))
 
@@ -670,13 +603,14 @@ _pyo3_host_attr(base, name::AbstractString) = Expr(:., base, QuoteNode(Symbol(na
 _pyo3_host_python_name(name, python_name) =
     isempty(python_name) ? rust_name(name) : String(python_name)
 
-# `(arg symbols, typed signature entries, call expressions, has-default flags)`
-# for the positional prefix, with the arguments the interpreter supplies
-# (`:injected`) dropped and the list stopped at the first keyword-only parameter
-# (a keyword-only argument cannot be forwarded positionally, which is all this
-# emitter does).
-function _pyo3_host_args(arg_names, shapes, python_defaults, python_kinds,
-                         classes::AbstractDict; drop_leading::Bool = false, what = "")
+# `(arg symbols, signature entries, call expressions, has-default flags)` for
+# the positional prefix, with the arguments the interpreter supplies
+# (`:injected`) dropped and the list stopped at the first keyword-only
+# parameter (a keyword-only argument cannot be forwarded positionally, which is
+# all this emitter does). Every argument is untyped and handed over by
+# `_pyo3_to_python`: Python checks it, as it would a Python caller's.
+function _pyo3_host_args(arg_names, shapes, python_defaults, python_kinds;
+                         drop_leading::Bool = false, what = "")
     syms = Symbol[]
     sig = Any[]
     conv = Any[]
@@ -690,9 +624,8 @@ function _pyo3_host_args(arg_names, shapes, python_defaults, python_kinds,
         kind = i <= length(python_kinds) ? String(python_kinds[i]) : ""
         kind == "keyword_only" && break
         sym = Symbol(name)
-        entry, converted = _pyo3_host_arg_plan(sym, shape, classes)
-        push!(sig, entry)
-        push!(conv, converted)
+        push!(sig, sym)
+        push!(conv, :(_pyo3_to_python($sym)))
         push!(defaults, i <= length(python_defaults) && !isempty(python_defaults[i]))
         push!(syms, sym)
     end
@@ -700,16 +633,17 @@ function _pyo3_host_args(arg_names, shapes, python_defaults, python_kinds,
 end
 
 # One `function` definition, shaped by the return kind. `:py_result` catches the
-# interpreter's exception and reports it as the `Err` payload.
+# interpreter's exception and reports it as the `Err` payload. A constructor
+# (`construct`, the class's Julia type) wraps what `#[new]` returns: an object
+# of that class, by what a constructor is.
 function _pyo3_host_single_def(name::Symbol, sig::Vector{Any}, call::Expr, return_kind::Symbol,
-                               shape::PyO3Shape, classes::AbstractDict)
+                               shape::PyO3Shape, construct::Union{Nothing, Symbol})
     if return_kind === :py_result
-        valued = _pyo3_host_value_expr(call, shape, classes)
-        jt = _pyo3_host_read_type(shape, classes)
-        jt === nothing && (jt = :Any)
+        valued = construct === nothing ? _pyo3_host_value_expr(call, shape) : :($construct($call))
+        jt = construct === nothing ? _pyo3_host_result_type(shape) : construct
         body = quote
             try
-                return RustCall.RustResult{$jt, String}(true, $valued)
+                return _pyo3_ok($valued, $jt)
             catch var"#err"
                 var"#err" isa PythonCall.PyException || rethrow()
                 return RustCall.RustResult{$jt, String}(false, sprint(showerror, var"#err"))
@@ -723,8 +657,8 @@ function _pyo3_host_single_def(name::Symbol, sig::Vector{Any}, call::Expr, retur
         end
         return Expr(:function, Expr(:call, name, sig...), body)
     else
-        return Expr(:function, Expr(:call, name, sig...),
-                    Expr(:block, _pyo3_host_value_expr(call, shape, classes)))
+        valued = construct === nothing ? _pyo3_host_value_expr(call, shape) : :($construct($call))
+        return Expr(:function, Expr(:call, name, sig...), Expr(:block, valued))
     end
 end
 
@@ -735,7 +669,8 @@ end
 # (`#[pyo3(signature = (dim, tags = None, plev = 0))]`).
 function _pyo3_host_defs(name::Symbol, fixed_sig::Vector{Any}, var_sig::Vector{Any},
                          var_conv::Vector{Any}, defaults::Vector{Bool}, callof,
-                         return_kind::Symbol, shape::PyO3Shape, classes::AbstractDict)
+                         return_kind::Symbol, shape::PyO3Shape;
+                         construct::Union{Nothing, Symbol} = nothing)
     count = length(var_sig)
     first_default = findfirst(identity, defaults)
     minarity = first_default === nothing ? count : first_default - 1
@@ -743,7 +678,7 @@ function _pyo3_host_defs(name::Symbol, fixed_sig::Vector{Any}, var_sig::Vector{A
     for arity in minarity:count
         call = callof(var_conv[1:arity])
         push!(out, _pyo3_host_single_def(name, vcat(copy(fixed_sig), var_sig[1:arity]), call,
-                                         return_kind, shape, classes))
+                                         return_kind, shape, construct))
     end
     return out
 end
@@ -758,42 +693,46 @@ function _pyo3_host_python_attr(base, python_path, python_name::AbstractString)
     return _pyo3_host_attr(base, python_name)
 end
 
-function _pyo3_host_function_expr(f::RustFunctionSignature, classes::AbstractDict)
+function _pyo3_host_function_expr(f::RustFunctionSignature)
     what = "the function `$(qualified_name(f.module_path, f.name))`"
     _, sig, conv, defaults = _pyo3_host_args(f.arg_names, f.py_arg_shapes,
-                                             f.python_defaults, f.python_kinds, classes; what)
+                                             f.python_defaults, f.python_kinds; what)
     python = _pyo3_host_python_name(f.name, f.python_name)
     base = _pyo3_host_python_attr(:(_pyo3_module()), f.python_path, python)
     callof = convs -> Expr(:call, base, convs...)
     shape = _pyo3_host_required_shape(f.py_return_shape, "the return of $what")
     return _pyo3_host_defs(Symbol(julia_function_name(f)), Any[], sig, conv, defaults, callof,
-                           f.return_kind, shape, classes)
+                           f.return_kind, shape)
 end
+
+# The Python class object of a scanned class: an attribute of the imported
+# module, under its declarative module path when it has one.
+_pyo3_host_class_base(s::RustStructInfo) =
+    _pyo3_host_python_attr(:(_pyo3_module()), s.python_path,
+                           _pyo3_host_python_name(s.name, s.python_name))
 
 # `class_base` is the expression for the class object itself (with the
 # declarative module path, when any); a constructor calls it, a static or class
 # method calls an attribute of it, and an instance method calls an attribute of
-# the Python object the Julia handle holds. `Self` is already the class in
-# every shape: the extractor resolved it.
-function _pyo3_host_method_expr(jname::Symbol, class_base::Expr, m::RustMethod,
-                                classes::AbstractDict)
+# the Python object the Julia handle holds.
+function _pyo3_host_method_expr(jname::Symbol, class_base::Expr, m::RustMethod)
     what = "the method `$(m.name)` of `$jname`"
     _, sig, conv, defaults = _pyo3_host_args(m.arg_names, m.py_arg_shapes,
-                                             m.python_defaults, m.python_kinds, classes;
+                                             m.python_defaults, m.python_kinds;
                                              drop_leading = m.is_classmethod, what)
     python = _pyo3_host_python_name(m.name, m.python_name)
     shape = _pyo3_host_required_shape(m.py_return_shape, "the return of $what")
     if m.is_constructor
         callof = convs -> Expr(:call, class_base, convs...)
         return _pyo3_host_defs(jname, Any[], sig, conv, defaults, callof,
-                               m.return_kind, shape, classes)
+                               m.return_kind, shape; construct = jname)
     elseif m.is_static || m.is_classmethod
         # `#[classmethod]`'s class argument is dropped above: Python's bound
         # descriptor supplies it (#424).
         base = _pyo3_host_attr(class_base, python)
         callof = convs -> Expr(:call, base, convs...)
         return _pyo3_host_defs(Symbol(julia_method_name(m)), Any[], sig, conv, defaults, callof,
-                               m.return_kind, shape, classes)
+                               m.return_kind, shape)
     else
         # An instance method: the object is the first Julia argument, and the
         # Python object it holds is the receiver. A `&mut self` method mutates
@@ -801,25 +740,8 @@ function _pyo3_host_method_expr(jname::Symbol, class_base::Expr, m::RustMethod,
         receiver = _pyo3_host_attr(:(getfield(obj, $(QuoteNode(_PYO3_HOST_HANDLE_FIELD)))), python)
         callof = convs -> Expr(:call, receiver, convs...)
         return _pyo3_host_defs(Symbol(julia_method_name(m)), Any[:(obj::$jname)], sig, conv, defaults,
-                               callof, m.return_kind, shape, classes)
+                               callof, m.return_kind, shape)
     end
-end
-
-# Whether any generated call takes a pyo3-numpy array, which is what decides
-# whether the module carries the `_pyo3_asarray` helper (#424).
-function _pyo3_host_needs_numpy(info::CrateInfo)
-    takes(shapes) = any(s -> s !== nothing && _pyo3_host_takes_array(s), shapes)
-    for f in info.pyo3_functions
-        takes(f.py_arg_shapes) && return true
-    end
-    for s in info.pyo3_structs
-        for m in s.methods
-            takes(m.py_arg_shapes) && return true
-        end
-        # A written field is an argument too (`_pyo3_host_arg_plan`).
-        takes(values(s.field_py_shapes)) && return true
-    end
-    return false
 end
 
 # Whether PyO3 exposes a getter / setter for the field, per the manifest. A
@@ -841,11 +763,11 @@ attribute, merged by that attribute. `python` is the attribute PyO3 exposes (the
 manifest's `python_name`: `#[getter(end)]`, `#[pyo3(get, name = "x")]`, a
 `get_` / `set_` prefix dropped, a raw `r#for` unrawed); `julia` is the name
 Julia reads it under, `julia_binding_name` of that attribute (`for` → `for_`).
-`read_shape` is the shape of the value a read returns and `write_shape` of the
-value a write takes (`nothing` when nothing reads / writes it), as the
-extractor resolved them; both are converted by the plans a method's return and
-argument are (`_pyo3_host_value_expr`, `_pyo3_host_arg_plan`, PR #525 review).
-`what` names the Rust item in a message.
+`read_shape` is the hint of the value a read returns (`nothing` when nothing
+reads it); a read is converted as a method's return is
+(`_pyo3_host_value_expr`), a write as a method's argument is
+(`_pyo3_to_python`), by the value (PR #525 review). `what` names the Rust item
+in a message.
 """
 struct PyO3HostProperty
     python::String
@@ -853,7 +775,6 @@ struct PyO3HostProperty
     readable::Bool
     writable::Bool
     read_shape::Union{Nothing, PyO3Shape}
-    write_shape::Union{Nothing, PyO3Shape}
     what::String
 end
 
@@ -883,17 +804,16 @@ writable. `async` accessors are refused by the extractor and bound nowhere.
 function _pyo3_host_bound_properties(s::RustStructInfo)
     order = String[]
     found = Dict{String, PyO3HostProperty}()
-    add!(python, read_shape, write_shape, readable, writable, what) = begin
+    add!(python, read_shape, readable, writable, what) = begin
         prior = get(found, python, nothing)
         if prior === nothing
             push!(order, python)
             found[python] = PyO3HostProperty(python, _pyo3_host_property_julia_name(python),
-                                             readable, writable, read_shape, write_shape, what)
+                                             readable, writable, read_shape, what)
         else
             found[python] = PyO3HostProperty(
                 python, prior.julia, prior.readable || readable, prior.writable || writable,
-                something(prior.read_shape, read_shape, Some(nothing)),
-                something(prior.write_shape, write_shape, Some(nothing)), prior.what)
+                something(prior.read_shape, read_shape, Some(nothing)), prior.what)
         end
     end
     owner = qualified_name(s.module_path, s.name)
@@ -904,54 +824,38 @@ function _pyo3_host_bound_properties(s::RustStructInfo)
         python = _pyo3_host_python_name(field, get(s.field_python_names, field, ""))
         what = "the field `$owner.$field`"
         shape = _pyo3_host_required_shape(get(s.field_py_shapes, field, nothing), what)
-        add!(python, readable ? shape : nothing, writable ? shape : nothing, readable, writable,
-             what)
+        add!(python, readable ? shape : nothing, readable, writable, what)
     end
     for m in s.methods
         (isempty(m.accessor) || _pyo3_host_async(m)) && continue
         getter = m.accessor == "getter"
         # A getter's value is its return (a `PyResult`'s `Ok` type), as for any
-        # method; a setter's is its one argument the interpreter does not inject.
+        # method.
         what = "the $(m.accessor) `$(_boundary_label(s, m))`"
         read_shape = getter ? _pyo3_host_required_shape(m.py_return_shape, what) : nothing
-        write_shape = nothing
-        if !getter
-            shapes = [_pyo3_host_required_shape(sh, what) for sh in m.py_arg_shapes]
-            written = findfirst(sh -> sh.kind !== :injected, shapes)
-            write_shape = written === nothing ? nothing : shapes[written]
-        end
-        add!(_pyo3_host_python_name(m.name, m.python_name), read_shape, write_shape,
-             getter, !getter, what)
+        add!(_pyo3_host_python_name(m.name, m.python_name), read_shape, getter, !getter, what)
     end
     return PyO3HostProperty[found[p] for p in order]
 end
 
 # `#[pyo3(get)]` / `#[pyo3(set)]` and `#[getter]` / `#[setter]` install a
-# descriptor inside the crate, so the object answers; the manifest types the
-# value and says which directions PyO3 exposed (#424). Every branch comes from
-# `_pyo3_host_bound_properties` (#524), and every value crosses through the
-# conversion a method's would: a read through `_pyo3_host_value_expr` (a class
-# is wrapped into its Julia type), a write through `_pyo3_host_arg_plan` (a
-# class handle is unwrapped, a numpy array converted) — PR #525 review.
-function _pyo3_host_property_expr(jname::Symbol, s::RustStructInfo, classes::AbstractDict)
+# descriptor inside the crate, so the object answers; the manifest says which
+# directions PyO3 exposed (#424). Every branch comes from
+# `_pyo3_host_bound_properties` (#524), and every value crosses as a method's
+# would (PR #525 review): a read through `_pyo3_host_value_expr`, a write
+# through `_pyo3_to_python`.
+function _pyo3_host_property_expr(jname::Symbol, s::RustStructInfo)
     properties = _pyo3_host_bound_properties(s)
     attr(p) = QuoteNode(Symbol(p.python))
-    # After the remapping below `s` is the Python attribute.
+    # After the remapping below `s` is the Python attribute. Only a typed hint
+    # needs a branch of its own; any other value is read back by what it is.
     conversions = Any[]
     for p in properties
         p.readable || continue
         p.read_shape === nothing && continue
-        valued = _pyo3_host_value_expr(:v, p.read_shape, classes)
-        valued === :v && continue
+        valued = _pyo3_host_value_expr(:v, p.read_shape)
+        valued == :(_pyo3_from_python(v)) && continue
         push!(conversions, :(s === $(attr(p)) && return $valued))
-    end
-    writes = Any[]
-    for p in properties
-        p.writable || continue
-        p.write_shape === nothing && continue
-        _, converted = _pyo3_host_arg_plan(:v, p.write_shape, classes)
-        converted === :v && continue
-        push!(writes, :(s === $(attr(p)) && (w = $converted)))
     end
     # A property is read under its Julia name (`for_`); the Python attribute
     # (`for`) is looked up. Only a property the host binds is remapped: an
@@ -978,15 +882,13 @@ function _pyo3_host_property_expr(jname::Symbol, s::RustStructInfo, classes::Abs
         $(renamed...)
         v = PythonCall.pygetattr(getfield(p, $handle), String(s))
         $(conversions...)
-        return v
+        return _pyo3_from_python(v)
     end
     setbody = quote
         s === $handle && throw(ArgumentError($(string(_PYO3_HOST_HANDLE_FIELD, " is not assignable"))))
         $(renamed...)
         $(read_only...)
-        w = v
-        $(writes...)
-        PythonCall.pysetattr(getfield(p, $handle), String(s), w)
+        PythonCall.pysetattr(getfield(p, $handle), String(s), _pyo3_to_python(v))
         return v
     end
     return quote
@@ -1008,10 +910,9 @@ _pyo3_host_async(f::RustFunctionSignature) =
     partition_skip_reason(f.skip_reason)[1] == "async_fn"
 _pyo3_host_async(m::RustMethod) = partition_skip_reason(m.skip_reason)[1] == "async_fn"
 
-function _pyo3_host_struct_exprs(s::RustStructInfo, classes::AbstractDict)
+function _pyo3_host_struct_exprs(s::RustStructInfo)
     jname = Symbol(julia_struct_name(s))
-    pyclass = _pyo3_host_python_name(s.name, s.python_name)
-    class_base = _pyo3_host_python_attr(:(_pyo3_module()), s.python_path, pyclass)
+    class_base = _pyo3_host_class_base(s)
     # An explicit inner constructor suppresses the constructors Julia would
     # otherwise synthesize for this one-field struct — including the untyped
     # `Class(x)` a one-argument `#[new]` mapping to `Any` (`Py<PyAny>`, a
@@ -1019,11 +920,12 @@ function _pyo3_host_struct_exprs(s::RustStructInfo, classes::AbstractDict)
     # module precompilation (#433). The wrapping path still needs
     # `Class(::PythonCall.Py)`, which the field type gives it, and defining an
     # inner constructor also means any outer constructor the emitter adds is a
-    # new method rather than a redefinition.
+    # new method rather than a redefinition. Every class type is a
+    # `_PyO3Object`, which is how `_pyo3_to_python` knows a handle by its value.
     field = Expr(:(::), _PYO3_HOST_HANDLE_FIELD, :(PythonCall.Py))
     inner = Expr(:(=), Expr(:call, jname, field),
                  Expr(:call, :new, _PYO3_HOST_HANDLE_FIELD))
-    out = Any[Expr(:struct, false, jname, Expr(:block, field, inner))]
+    out = Any[Expr(:struct, false, :($jname <: _PyO3Object), Expr(:block, field, inner))]
     # The methods the host binds (`_pyo3_host_bound_methods`, the list its
     # definitions are read from): constructors first. `#[getter]`/`#[setter]`
     # methods are Python properties (`_pyo3_host_bound_properties`), so they
@@ -1031,22 +933,26 @@ function _pyo3_host_struct_exprs(s::RustStructInfo, classes::AbstractDict)
     methods = _pyo3_host_bound_methods(s)
     for m in methods
         m.is_constructor || continue
-        append!(out, _pyo3_host_method_expr(jname, class_base, m, classes))
+        append!(out, _pyo3_host_method_expr(jname, class_base, m))
     end
-    push!(out, _pyo3_host_property_expr(jname, s, classes))
+    push!(out, _pyo3_host_property_expr(jname, s))
     for m in methods
         m.is_constructor && continue
-        append!(out, _pyo3_host_method_expr(jname, class_base, m, classes))
+        append!(out, _pyo3_host_method_expr(jname, class_base, m))
     end
     return out
 end
 
-# The scanned classes, keyed by `rust_name` — the name a `:class` shape carries
-# (the extractor records it without `r#`, #514) — to the Julia type the emitter
-# defines (`julia_struct_name`).
-_pyo3_host_classes(info::CrateInfo) =
-    Dict{String, Symbol}(rust_name(s.name) => Symbol(julia_struct_name(s))
-                         for s in _pyo3_host_bound_classes(info))
+# The module's `_pyo3_class_pairs()`: each bound class's Julia type beside its
+# Python class object, the table `_pyo3_from_python` recognises a returned
+# object's type in (read once, at the first conversion that needs it).
+function _pyo3_host_class_table_expr(info::CrateInfo)
+    pairs = Any[Expr(:tuple, Symbol(julia_struct_name(s)), _pyo3_host_class_base(s))
+                for s in _pyo3_host_bound_classes(info)]
+    return :(function _pyo3_class_pairs()
+                 return $(Expr(:tuple, pairs...))
+             end)
+end
 
 """
     _pyo3_host_definitions(info::CrateInfo) -> Vector{JuliaDefinition}
@@ -1067,7 +973,7 @@ function _pyo3_host_definitions(info::CrateInfo)
     # module-level name of its prelude, read off the prelude (with the numpy
     # helper, so the set does not depend on the crate), and each class type's
     # handle field (PR #525 review).
-    prelude = _pyo3_host_prelude_exprs("", String[], true, true, true)
+    prelude = _pyo3_host_prelude_exprs("", String[], true, true)
     for name in _pyo3_host_defined_names(prelude)
         add!(name, :binding, "the generated module's own `$name`")
     end
@@ -1132,16 +1038,31 @@ end
 const _PYO3_HOST_HANDLE_FIELD = :_rustcall_py
 
 """
-    _pyo3_host_prelude_exprs(path, features, default_features, release, numpy) -> Vector{Any}
+    _pyo3_host_prelude_exprs(path, features, default_features, release) -> Vector{Any}
 
 What `generate_pyo3_host_bindings` defines at the top of its module before any
-binding: the imports, the build constants, the lazy import `_pyo3_module` and,
-when a binding takes a numpy array, `_pyo3_asarray`. The names it defines are
-reserved (`_pyo3_host_defined_names`, read by `_pyo3_host_definitions`), so a
-crate item bound under one is refused rather than redefining it.
+binding: the imports, the build constants, the lazy import `_pyo3_module`, and
+the value conversions every binding goes through (PR #525 review):
+
+* `_pyo3_to_python(x)` — a class handle (`_PyO3Object`) is the Python object it
+  holds; a Julia array of numbers is a `numpy.ndarray` when numpy imports
+  (pyo3-numpy extracts from nothing else, #424, and PyO3 reads a `Vec` from one
+  as from any sequence); another array or a tuple is converted element by
+  element; anything else is passed as it is (`nothing` is `None`).
+* `_pyo3_from_python(v[, T])` — `None` is `nothing`; an object whose type is one
+  of the module's classes (`_pyo3_class_pairs`, emitted after them) is that
+  class's Julia handle; anything else is `pyconvert`ed to the hint `T` when it
+  fits and stays the Python object when it does not. A list read as
+  `Vector{T}` is read element by element, so a list of class objects is a
+  vector of handles.
+* `_pyo3_ok(v, T)` — the `Ok` of a `PyResult`, typed `T` when the value is one.
+
+The names it defines are reserved (`_pyo3_host_defined_names`, read by
+`_pyo3_host_definitions`), so a crate item bound under one is refused rather
+than redefining it.
 """
 function _pyo3_host_prelude_exprs(path::AbstractString, features::Vector{String},
-                                  default_features::Bool, release::Bool, numpy::Bool)
+                                  default_features::Bool, release::Bool)
     out = Any[]
     push!(out, :(import RustCall))
     push!(out, :(import PythonCall))
@@ -1161,16 +1082,91 @@ function _pyo3_host_prelude_exprs(path::AbstractString, features::Vector{String}
             return m
         end
     end)
-    # pyo3-numpy extracts from a **real** `numpy.ndarray`, and a Julia array
-    # becomes a `juliacall.VectorValue`; the bindings that take one convert it
-    # here (lazily — a module with no numpy parameter never imports numpy).
-    if numpy
-        push!(out, quote
-            function _pyo3_asarray(x)
-                return PythonCall.pyimport("numpy").asarray(x)
+    handle = QuoteNode(_PYO3_HOST_HANDLE_FIELD)
+    push!(out, :(abstract type _PyO3Object end))
+    # numpy is imported the first time a numeric array is passed, never
+    # otherwise; `false` records that it is not importable.
+    push!(out, :(const _PYO3_NUMPY = Base.RefValue{Any}(nothing)))
+    push!(out, quote
+        function _pyo3_numpy()
+            np = _PYO3_NUMPY[]
+            np === nothing || return np
+            np = try
+                PythonCall.pyimport("numpy")
+            catch err
+                err isa PythonCall.PyException || rethrow()
+                false
             end
-        end)
-    end
+            _PYO3_NUMPY[] = np
+            return np
+        end
+    end)
+    push!(out, quote
+        function _pyo3_to_python(x)
+            x isa _PyO3Object && return getfield(x, $handle)
+            if x isa AbstractArray
+                if eltype(x) <: Number
+                    np = _pyo3_numpy()
+                    return np === false ? x : np.asarray(x)
+                end
+                return map(_pyo3_to_python, x)
+            end
+            x isa Tuple && return map(_pyo3_to_python, x)
+            return x
+        end
+    end)
+    push!(out, :(const _PYO3_CLASSES = Base.RefValue{Any}(nothing)))
+    push!(out, :(function _pyo3_class_pairs end))
+    push!(out, quote
+        function _pyo3_classes()
+            c = _PYO3_CLASSES[]
+            c === nothing || return c
+            c = _pyo3_class_pairs()
+            _PYO3_CLASSES[] = c
+            return c
+        end
+    end)
+    push!(out, quote
+        function _pyo3_from_python(v)
+            v isa PythonCall.Py || return v
+            PythonCall.pyis(v, PythonCall.pybuiltins.None) && return nothing
+            t = PythonCall.pytype(v)
+            for (T, cls) in _pyo3_classes()
+                PythonCall.pyis(t, cls) && return T(v)
+            end
+            return v
+        end
+    end)
+    push!(out, quote
+        function _pyo3_from_python(v, ::Type{T}) where {T}
+            x = _pyo3_from_python(v)
+            x isa PythonCall.Py || return x
+            return PythonCall.pyconvert(T, x, x)
+        end
+    end)
+    push!(out, quote
+        function _pyo3_from_python(v, ::Type{Any})
+            return _pyo3_from_python(v)
+        end
+    end)
+    push!(out, quote
+        function _pyo3_from_python(v, ::Type{Vector{T}}) where {T}
+            x = _pyo3_from_python(v)
+            x isa PythonCall.Py || return x
+            if PythonCall.pyisinstance(x, PythonCall.pybuiltins.list) ||
+               PythonCall.pyisinstance(x, PythonCall.pybuiltins.tuple)
+                items = Any[_pyo3_from_python(e, T) for e in x]
+                return isempty(items) ? T[] : map(identity, items)
+            end
+            return PythonCall.pyconvert(Vector{T}, x, x)
+        end
+    end)
+    push!(out, quote
+        function _pyo3_ok(v, ::Type{T}) where {T}
+            v isa T && return RustCall.RustResult{T, String}(true, v)
+            return RustCall.RustResult{Any, String}(true, v)
+        end
+    end)
     return out
 end
 
@@ -1178,7 +1174,8 @@ end
     _pyo3_host_defined_names(exprs) -> Vector{String}
 
 The module-level names these expressions define — `import M`, `const X = ...`,
-`function f(...)` — read off the expressions themselves, so the reserved set is
+`function f(...)`, `function f end`, `abstract type T end` — read off the
+expressions themselves, so the reserved set is
 whatever the prelude emits and never a list kept beside it.
 """
 function _pyo3_host_defined_names(exprs)
@@ -1193,8 +1190,17 @@ function _pyo3_host_defined_names(exprs)
             end
         elseif x.head === :const && x.args[1] isa Expr && x.args[1].head === :(=)
             push!(names, String(x.args[1].args[1]))
-        elseif x.head === :function && x.args[1] isa Expr && x.args[1].head === :call
-            push!(names, String(x.args[1].args[1]))
+        elseif x.head === :function
+            sig = x.args[1]
+            while sig isa Expr && sig.head === :where
+                sig = sig.args[1]
+            end
+            sig isa Symbol && push!(names, String(sig))
+            sig isa Expr && sig.head === :call && push!(names, String(sig.args[1]))
+        elseif x.head === :abstract
+            T = x.args[1]
+            T isa Expr && T.head === :(<:) && (T = T.args[1])
+            push!(names, String(T))
         end
         return nothing
     end
@@ -1237,23 +1243,17 @@ function generate_pyo3_host_bindings(crate_path::AbstractString;
     mod_name = Symbol(module_name === nothing ? snake_to_pascal(info.name) : module_name)
     body = Expr(:block)
     append!(body.args, _pyo3_host_prelude_exprs(path, collect(String, features),
-                                                default_features, release,
-                                                _pyo3_host_needs_numpy(info)))
-    # The scanned classes, by their `rust_name` (a type spelling carries no `r#`,
-    # #514): a return or argument spelling them
-    # (or `Py<T>` / `Bound<'_, T>` around one) is that Julia struct, not a
-    # `Py`. Local, not module-level: `test_state.jl`'s guard forbids a mutable
-    # registry in `RustCall` (#251).
-    classes = _pyo3_host_classes(info)
+                                                default_features, release))
     # Two items one Julia name would bind (`fn r#for` beside `fn for_`) are
     # refused before anything is emitted, by the check every emitter runs,
     # over what this one binds (#514).
     _pyo3_host_check_names(info)
     for f in _pyo3_host_bound_functions(info)
-        append!(body.args, _pyo3_host_function_expr(f, classes))
+        append!(body.args, _pyo3_host_function_expr(f))
     end
     for s in _pyo3_host_bound_classes(info)
-        append!(body.args, _pyo3_host_struct_exprs(s, classes))
+        append!(body.args, _pyo3_host_struct_exprs(s))
     end
+    push!(body.args, _pyo3_host_class_table_expr(info))
     return Expr(:module, true, mod_name, body)
 end

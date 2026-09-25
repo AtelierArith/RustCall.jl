@@ -145,23 +145,21 @@ end
 end
 
 @testset "pyo3-numpy arrays (#424)" begin
-    # The extractor reads a pyo3-numpy array by its path — bare, behind
-    # `Py<...>` / `Bound<'_, ...>`, with or without `numpy::` — and records its
-    # rank and element (`rustcall_julia_core` corpus `pyo3_shapes`); Julia
-    # reads that description (#264, PR #525 review).
+    # The extractor hints a pyo3-numpy array by its type's name — bare, behind
+    # `Py<...>` / `Bound<'_, ...>`, under any path — with its rank and element
+    # (`rustcall_julia_core` corpus `pyo3_shapes`); Julia reads that hint
+    # (#264). Only a return is typed by it: an argument is converted by its
+    # value (a Julia array of numbers is a numpy array, PR #525 review).
     info = RustCall.scan_crate(PYO3_HOST_CRATE)
     fn(name) = only(filter(f -> f.name == name, info.pyo3_functions))
     @test fn("array_sum").py_arg_shapes[1] == RustCall.PyO3Shape(:array, "f64", 1, nothing)
     @test fn("doubled").py_return_shape == RustCall.PyO3Shape(:array, "f64", 1, nothing)
+    @test fn("np_total").py_arg_shapes[1] == RustCall.PyO3Shape(:array, "f64", 1, nothing)
     array(element, rank) = RustCall.PyO3Shape(:array, element, rank, nothing)
-    # An array argument is an `AbstractArray` the emitter wraps with
-    # `numpy.asarray`; a numpy return is typed from its element and rank.
-    @test RustCall._pyo3_host_arg_type(array("f64", 1)) === :AbstractArray
-    @test RustCall._pyo3_host_arg_type(array("u8", 0)) === :Any
-    @test RustCall._pyo3_host_read_type(array("f64", 1), Dict()) == :(Vector{Float64})
-    @test RustCall._pyo3_host_read_type(array("f32", 2), Dict()) == :(Matrix{Float32})
-    @test RustCall._pyo3_host_read_type(array("i32", -1), Dict()) == :(Array{Int32})
-    @test RustCall._pyo3_host_needs_numpy(info)
+    @test RustCall._pyo3_host_read_type(array("f64", 1)) == :(Vector{Float64})
+    @test RustCall._pyo3_host_read_type(array("f32", 2)) == :(Matrix{Float32})
+    @test RustCall._pyo3_host_read_type(array("i32", -1)) == :(Array{Int32})
+    @test RustCall._pyo3_host_read_type(array("u8", 0)) === :UInt8
 end
 
 @testset "PyO3 declarative module attribute paths (#424)" begin
@@ -211,9 +209,8 @@ end
     point = only(filter(s -> s.name == "Point", info.pyo3_structs))
     matched = only(filter(m -> m.name == "r#match", point.methods))
     @test matched.python_name == "match"
-    classes = Dict{String, Symbol}("Point" => :Point)
     text = string(Base.remove_linenums!(Expr(:block,
-        RustCall._pyo3_host_function_expr(raw, classes)...)))
+        RustCall._pyo3_host_function_expr(raw)...)))
     @test occursin("function for_(", text)
     # The Python attribute is `for` (spelled `var"for"` in a Julia expression).
     @test occursin(".var\"for\"(", text)
@@ -399,34 +396,21 @@ end
             @test "PYO3_PYTHON=$python" in cmd.env
         end
 
-        # A raw class name in argument and return position is the class: the
-        # class map is keyed by `rust_name`, the key every type spelling is
-        # looked up by (PR #515 review, raised on #517).
+        # A raw class name: the class's Julia type is `type`, and its Python
+        # class object `module.type` is the one a returned object is
+        # recognised by (PR #525 review), whatever spells the return.
         write(joinpath(dir, "src", "lib.rs"), """
             use pyo3::prelude::*;
             #[pyclass] pub struct r#type { pub v: i32 }
             #[pyfunction] fn make() -> r#type { r#type { v: 1 } }
-            #[pyfunction] fn wrapped(py: Python<'_>) -> PyResult<Py<r#type>> { Py::new(py, r#type { v: 2 }) }
             #[pyfunction] fn read(t: PyRef<'_, r#type>) -> i32 { t.v }
-            #[pyfunction] fn read_ref(t: &r#type) -> i32 { t.v }
-            #[pyfunction] fn read_all(ts: Vec<PyRef<'_, r#type>>) -> usize { ts.len() }
             """)
         info = RustCall.scan_crate(dir)
-        classes = RustCall._pyo3_host_classes(info)
-        @test classes == Dict("type" => :type)
-        # The extractor records the class by its name without `r#`, whatever
-        # layers the spelling puts around it.
-        fn(name) = only(filter(f -> f.name == name, info.pyo3_functions))
-        klass = RustCall.PyO3Shape(:class, "type")
-        @test fn("make").py_return_shape == klass
-        @test fn("wrapped").py_return_shape == klass
-        @test fn("read").py_arg_shapes[1] == klass
-        @test fn("read_ref").py_arg_shapes[1] == klass
-        @test fn("read_all").py_arg_shapes[1] == RustCall.PyO3Shape(:vec, "", 0, klass)
         text = string(Base.remove_linenums!(RustCall.generate_pyo3_host_bindings(dir)))
-        @test occursin("type((_pyo3_module()).make())", text)
-        # Every class argument is passed as the Python object the handle holds.
-        @test count("isa PythonCall.Py", text) >= 3
+        @test occursin("struct type <: _PyO3Object", text)
+        @test occursin("(type, (_pyo3_module()).type)", text)
+        @test occursin("_pyo3_from_python((_pyo3_module()).make())", text)
+        @test occursin("(_pyo3_module()).read(_pyo3_to_python(t))", text)
     end
 end
 
@@ -448,98 +432,56 @@ end
     @test summary(RustCall._pyo3_host_bound_properties(point)) ==
           [("x", "x", true, true), ("y", "y", true, true)]
 
-    classes = RustCall._pyo3_host_classes(info)
-    text = string(Base.remove_linenums!(RustCall._pyo3_host_property_expr(:Gate, gate, classes)))
+    text = string(Base.remove_linenums!(RustCall._pyo3_host_property_expr(:Gate, gate)))
     @test occursin("s === :for_ && (s = :for)", text)
     @test occursin("s === :end_ && (s = :end)", text)
     @test !occursin("s === :plain && (s =", text)
     @test occursin("(:for_, :end_, :plain, :anchor, :samples, :twin, :maybe_twin, :type)", text)
-    # The getter types the read, as a field's Rust type does.
-    @test occursin("s === :for && return PythonCall.pyconvert(Int32, v)", text)
+    # The getter's hint types the read, as a field's does.
+    @test occursin("s === :for && return _pyo3_from_python(v, Int32)", text)
     @test occursin("property `end_` is read-only", text)
     @test !occursin("property `for_` is read-only", text)
 
-    # A property converts exactly as a method does: the read through the
-    # method emitter's return conversion (`_pyo3_host_value_expr`), the write
-    # through its argument plan (`_pyo3_host_arg_plan`) — so a getter
-    # returning another class is wrapped into it, and a setter taking a class
-    # or a numpy array is handed the Python object / `numpy.asarray` (PR #525
-    # review).
-    read_of(shape) = string(Base.remove_linenums!(
-        RustCall._pyo3_host_value_expr(:v, shape, classes)))
-    write_of(shape) = string(Base.remove_linenums!(
-        RustCall._pyo3_host_arg_plan(:v, shape, classes)[2]))
-    class(name) = RustCall.PyO3Shape(:class, name)
-    optional(inner) = RustCall.PyO3Shape(:option, "", 0, inner)
-    @test read_of(class("Point")) == "Point(v)"
-    @test occursin("s === :anchor && return Point(v)", text)
-    # Compared without layout: the printer indents a nested `if` differently.
-    squash(x) = filter(!isspace, x)
-    @test occursin(squash("s === :anchor && (w = $(write_of(class("Point"))))"),
-                   squash(text))
-    @test occursin("getfield(v, :_rustcall_py)", write_of(class("Point")))
-    @test occursin("s === :samples && (w = _pyo3_asarray(v))", text)
-    @test write_of(RustCall.PyO3Shape(:array, "f64", 1, nothing)) == "_pyo3_asarray(v)"
-    # A scalar is handed over as it is.
-    @test !occursin("s === :for && (w =", text)
-    # The numpy helper is emitted for a setter's array argument.
-    @test RustCall._pyo3_host_needs_numpy(info)
+    # A property converts exactly as a method does, by the value (PR #525
+    # review): a read through `_pyo3_from_python` — `None` is `nothing`, an
+    # object of a bound class its handle — and a write through
+    # `_pyo3_to_python` — a handle is its Python object, a numeric array a
+    # numpy array. No branch depends on the setter's argument type.
+    @test occursin("return _pyo3_from_python(v)", text)
+    @test occursin("PythonCall.pysetattr(getfield(p, :_rustcall_py), String(s), _pyo3_to_python(v))",
+                   text)
+    @test !occursin("s === :anchor", text) && !occursin("s === :twin", text)
 
-    # `Self` is the enclosing class however it is wrapped — `Py<Self>`,
-    # `PyResult<Py<Self>>`, `PyRef<'_, Self>` — for a property and a method
-    # alike (PR #525 review).
-    @test occursin("s === :twin && return Gate(v)", text)
-    @test occursin(squash("s === :twin && (w = if v isa PythonCall.Py v else getfield(v, :_rustcall_py) end)"),
-                   squash(text))
-    # The extractor resolved `Self` to the class (corpus `pyo3_shapes`).
-    twin_getter = only(filter(m -> m.name == "twin", gate.methods))
-    @test twin_getter.py_return_shape == class("Gate")
+    # The hint only types what the value conversion left: an `Option` is its
+    # payload's hint, an opaque one reads whatever comes back.
+    read_of(shape) = string(Base.remove_linenums!(RustCall._pyo3_host_value_expr(:v, shape)))
+    optional(inner) = RustCall.PyO3Shape(:option, "", 0, inner)
+    scalar = RustCall.PyO3Shape(:scalar, "i32")
+    @test read_of(RustCall.PyO3Shape(:opaque)) == "_pyo3_from_python(v)"
+    @test read_of(optional(RustCall.PyO3Shape(:opaque))) == "_pyo3_from_python(v)"
+    @test read_of(optional(scalar)) == "_pyo3_from_python(v, Int32)"
+    @test read_of(RustCall.PyO3Shape(:vec, "", 0, RustCall.PyO3Shape(:opaque))) ==
+          "_pyo3_from_python(v, Vector{Any})"
+    @test RustCall._pyo3_host_result_type(optional(scalar)) == :(Union{Nothing, Int32})
+    @test RustCall._pyo3_host_result_type(optional(RustCall.PyO3Shape(:opaque))) === :Any
+
+    # Every argument is untyped and handed over by `_pyo3_to_python`, whatever
+    # its hint; the interpreter's own arguments are dropped.
     class_base = :(_pyo3_module().Gate)
     method_text(name) = string(Base.remove_linenums!(Expr(:block,
         RustCall._pyo3_host_method_expr(:Gate, class_base,
-                                        only(filter(m -> m.name == name, gate.methods)),
-                                        classes)...)))
-    @test occursin("Gate((getfield(obj, :_rustcall_py)).copied())", method_text("copied"))
-    @test occursin("getfield(other, :_rustcall_py)", method_text("level_of"))
-
-    # An `Option` of a class is read by its layers, not by its last
-    # identifier: `nothing` passes as `nothing` (no `getfield` on it) and a
-    # Python `None` reads back as `nothing`, for arguments, returns, methods
-    # and properties alike (PR #525 review).
-    optional_write = write_of(optional(class("Point")))
-    @test occursin("v === nothing", optional_write)
-    @test occursin("getfield(v, :_rustcall_py)", optional_write)
-    optional_read = read_of(optional(class("Point")))
-    @test occursin("PythonCall.pybuiltins.None", optional_read) && occursin("Point(", optional_read)
-    maybe_getter = only(filter(m -> m.name == "maybe_twin", gate.methods))
-    @test maybe_getter.py_return_shape == optional(class("Gate"))
-    @test occursin("other === nothing", method_text("level_or_zero"))
-    @test occursin(squash("s === :maybe_twin && (w = $(write_of(optional(class("Gate")))))"),
-                   squash(text))
-    # An `Option` of a non-class passes a present value as it is.
-    @test write_of(optional(RustCall.PyO3Shape(:vec, "", 0, RustCall.PyO3Shape(:scalar, "i32")))) == "v"
-    # The plan is the shape's, whatever the spelling says: a hand-built
-    # signature whose spelling reads like a class but whose shape is opaque
-    # passes the value through, and the reverse wraps it.
-    opaque_sig = RustCall.RustFunctionSignature("f", ["x"], ["Py<Point>"], "Py<Point>", false,
-                                                String[]; attribute = :py_function,
-                                                py_arg_shapes = Union{Nothing, RustCall.PyO3Shape}[RustCall.PyO3Shape(:opaque)],
-                                                py_return_shape = RustCall.PyO3Shape(:opaque))
-    opaque_text = string(Base.remove_linenums!(Expr(:block,
-        RustCall._pyo3_host_function_expr(opaque_sig, classes)...)))
-    @test !occursin("getfield", opaque_text) && !occursin("Point(", opaque_text)
-    class_sig = RustCall.RustFunctionSignature("g", ["x"], ["i32"], "i32", false, String[];
-                                               attribute = :py_function,
-                                               py_arg_shapes = Union{Nothing, RustCall.PyO3Shape}[class("Point")],
-                                               py_return_shape = class("Point"))
-    class_text = string(Base.remove_linenums!(Expr(:block,
-        RustCall._pyo3_host_function_expr(class_sig, classes)...)))
-    @test occursin("getfield(x, :_rustcall_py)", class_text) && occursin("Point(", class_text)
+                                        only(filter(m -> m.name == name, gate.methods)))...)))
+    @test occursin("function copied(obj::Gate)", method_text("copied"))
+    @test occursin("_pyo3_from_python((getfield(obj, :_rustcall_py)).copied())", method_text("copied"))
+    @test occursin("function level_of(obj::Gate, other)", method_text("level_of"))
+    @test occursin("level_of(_pyo3_to_python(other))", method_text("level_of"))
+    # A constructor wraps what `#[new]` returns.
+    @test occursin("Gate((_pyo3_module()).Gate(_pyo3_to_python(level)))", method_text("new"))
     # A manifest that describes no shape (an extractor from before the field)
-    # is refused, not read as an opaque value.
+    # is refused: without it an interpreter-supplied argument is not known.
     bare_sig = RustCall.RustFunctionSignature("h", ["x"], ["i32"], "i32", false, String[];
                                               attribute = :py_function)
-    @test_throws RustCall.RustError RustCall._pyo3_host_function_expr(bare_sig, classes)
+    @test_throws RustCall.RustError RustCall._pyo3_host_function_expr(bare_sig)
 
     # One definition per property, under its Julia name — after the handle
     # field the generated type itself defines (PR #525 review).
@@ -604,75 +546,34 @@ end
         c = only(RustCall.scan_crate(dir).pyo3_structs)
         @test summary(RustCall._pyo3_host_bound_properties(c)) == [("end", "end_", true, false)]
 
-        # A type is read by the extractor, by its path, never from its
-        # spelling in Julia (#264, PR #525 review): a crate's own `Option` is
-        # not std's, whether named `crate::Option` or shadowing the bare name,
-        # so the value passes through as it is.
-        write(joinpath(dir, "src", "lib.rs"), """
-            use pyo3::prelude::*;
-            pub struct Option<T>(pub T);
-            #[pyclass] pub struct P { v: i32 }
-            #[pyfunction] fn own(x: crate::Option<Py<P>>) -> i32 { 0 }
-            #[pyfunction] fn bare(x: Option<Py<P>>) -> i32 { 0 }
-            #[pyfunction] fn made() -> crate::Option<Py<P>> { todo!() }
-            #[pyfunction] fn std_opt(x: std::option::Option<Py<P>>) -> std::option::Option<Py<P>> { x }
-            """)
-        shadowed = RustCall.scan_crate(dir)
-        sclasses = RustCall._pyo3_host_classes(shadowed)
-        fexpr(name) = string(Base.remove_linenums!(Expr(:block,
-            RustCall._pyo3_host_function_expr(
-                only(filter(f -> f.name == name, shadowed.pyo3_functions)), sclasses)...)))
-        @test !occursin("getfield", fexpr("own"))
-        @test !occursin("getfield", fexpr("bare"))
-        @test !occursin("P(", fexpr("made"))
-        @test occursin("x === nothing", fexpr("std_opt"))
-        @test occursin("P(", fexpr("std_opt"))
-        # ... because the plan is read off the manifest's description of each
-        # position, which the extractor resolved.
-        std_opt = only(filter(f -> f.name == "std_opt", shadowed.pyo3_functions))
-        @test std_opt.py_arg_shapes[1] == RustCall.PyO3Shape(:option, "", 0,
-                                                             RustCall.PyO3Shape(:class, "P"))
-        own = only(filter(f -> f.name == "own", shadowed.pyo3_functions))
-        @test own.py_arg_shapes[1] == RustCall.PyO3Shape(:opaque)
-
-        # A path means what it means in the module it is written in (PR #525
-        # review): a `struct Option` in `a` shadows the bare name in `a` only,
-        # an aliased crate root (`use numpy as np`) is that crate, and a path
-        # nothing decides stays opaque.
+        # The hint is read off the spelling alone and never resolved (PR #525
+        # review): a bare `Option` is hinted as std's whatever shadows it, a
+        # path through another module is opaque, a renamed numpy root is
+        # still a numpy array. The calls do not depend on it — every argument
+        # and return is converted by its value — which the PythonCall
+        # testset below exercises on the fixture's aliases, globs and shadows.
         write(joinpath(dir, "src", "lib.rs"), """
             use pyo3::prelude::*;
             pub mod a {
                 pub struct Option<T>(pub T);
                 #[pyo3::pyfunction] pub fn in_a(x: Option<i32>) -> i32 { x.0 }
+                #[pyo3::pyfunction] pub fn through(x: crate::a::Option<i32>) -> i32 { x.0 }
             }
             pub mod b {
                 use pyo3::prelude::*;
                 use numpy as np;
-                #[pyfunction] pub fn in_b(x: Option<i32>) -> Option<i32> { x }
                 #[pyfunction] pub fn total(v: np::PyReadonlyArray1<'_, f64>) -> f64 { 0.0 }
                 #[pyfunction] pub fn anything(x: Option<Py<PyAny>>) -> Option<Py<PyAny>> { x }
-            }
-            pub mod c {
-                use pyo3::prelude::*;
-                use crate::a::*;
-                #[pyfunction] pub fn via_glob(x: Option<i32>) -> i32 { x.0 }
             }
             """)
         scoped = RustCall.scan_crate(dir)
         sfn(name) = only(filter(f -> f.name == name, scoped.pyo3_functions))
-        scalar = RustCall.PyO3Shape(:scalar, "i32")
-        optional_i32 = RustCall.PyO3Shape(:option, "", 0, scalar)
-        @test sfn("in_a").py_arg_shapes[1] == RustCall.PyO3Shape(:opaque)
-        @test sfn("in_b").py_arg_shapes[1] == optional_i32
-        @test sfn("in_b").py_return_shape == optional_i32
+        optional_i32 = RustCall.PyO3Shape(:option, "", 0, RustCall.PyO3Shape(:scalar, "i32"))
+        @test sfn("in_a").py_arg_shapes[1] == optional_i32
+        @test sfn("through").py_arg_shapes[1] == RustCall.PyO3Shape(:opaque)
         @test sfn("total").py_arg_shapes[1] == RustCall.PyO3Shape(:array, "f64", 1, nothing)
-        @test sfn("via_glob").py_arg_shapes[1] == RustCall.PyO3Shape(:opaque)
-        # An `Option` maps `None` to `nothing` whatever its payload is.
-        opaque_option = RustCall.PyO3Shape(:option, "", 0, RustCall.PyO3Shape(:opaque))
-        @test sfn("anything").py_return_shape == opaque_option
-        anything_text = string(Base.remove_linenums!(Expr(:block,
-            RustCall._pyo3_host_function_expr(sfn("anything"), RustCall._pyo3_host_classes(scoped))...)))
-        @test occursin("PythonCall.pybuiltins.None", anything_text)
+        @test sfn("anything").py_return_shape ==
+              RustCall.PyO3Shape(:option, "", 0, RustCall.PyO3Shape(:opaque))
 
         # A name the generated module or type defines for itself is taken:
         # an item bound under it is refused with both named, by the same
@@ -714,9 +615,11 @@ end
         # every module-level name of the prelude, and the type's handle field.
         reserved = [d.name for d in RustCall._pyo3_host_definitions(RustCall.scan_crate(dir))
                     if occursin("generated", d.owner)]
-        prelude = RustCall._pyo3_host_prelude_exprs("", String[], true, true, true)
+        prelude = RustCall._pyo3_host_prelude_exprs("", String[], true, true)
         @test Set(reserved) ⊇ Set(RustCall._pyo3_host_defined_names(prelude))
-        @test "_pyo3_module" in reserved && "_pyo3_asarray" in reserved
+        @test "_pyo3_module" in reserved && "_pyo3_to_python" in reserved
+        @test "_pyo3_from_python" in reserved && "_PyO3Object" in reserved
+        @test "_pyo3_class_pairs" in reserved
         @test "_rustcall_py" in reserved
     end
 end
@@ -724,8 +627,7 @@ end
 @testset "a one-argument #[new] cannot overwrite the default constructor (#433)" begin
     info = RustCall.scan_crate(PYO3_HOST_CRATE)
     wrapper = only(filter(s -> s.name == "Wrapper", info.pyo3_structs))
-    classes = Dict{String, Symbol}("Wrapper" => :Wrapper)
-    exprs = RustCall._pyo3_host_struct_exprs(wrapper, classes)
+    exprs = RustCall._pyo3_host_struct_exprs(wrapper)
     struct_expr = only(filter(e -> e isa Expr && e.head === :struct, exprs))
     body = struct_expr.args[3]
     # The field, then an explicit inner constructor. Defining *any* inner
@@ -951,11 +853,46 @@ end
     # A `Vec` of class references.
     @test M.total_norm([p34, M.origin()]) == 5.0
 
+    # Every value crosses by what it is at run time (PR #525 review), so a
+    # spelling no reading of the type is sure of still calls correctly:
+    # a type alias of a class handle, in and out ...
+    @test M.handle_x(M.Point(2.5, 0.0)) == 2.5
+    made = M.make_handle(1.5)
+    @test made.is_ok && made.value isa M.Point && made.value.x == 1.5
+    # ... an alias of an optional one: `nothing` is `None`, `None` is
+    # `nothing`, a present value a handle ...
+    @test M.maybe_x(nothing) == -1.0
+    @test M.maybe_x(M.Point(4.0, 0.0)) == 4.0
+    @test M.maybe_point(0.0).value === nothing
+    @test M.maybe_point(2.0).value isa M.Point
+    # ... a bare `Option` beside a glob of a module with a private `Option` ...
+    @test M.glob_x(nothing) === nothing
+    @test M.glob_x(M.Point(7.0, 0.0)) == 7.0
+    # ... a crate's own `Option`, by path and by the bare name its module
+    # shadows: the handle is passed as the Python object its extractor reads.
+    @test M.custom_x(M.Point(3.0, 0.0)) == 3.0
+    @test M.custom_bare_x(M.Point(5.0, 0.0)) == 5.0
+    # ... a `Vec` of class objects returned is a vector of handles.
+    pts = M.points(3)
+    @test pts isa Vector{M.Point}
+    @test [p.x for p in pts] == [0.0, 1.0, 2.0]
+    @test M.points(0) == []
+
     if _numpy_available()
         # The typed binding converts the Julia array and the numpy return.
         @test bindings.array_sum([1.0, 2.0, 3.0]) == 6.0
         @test bindings.doubled([1.0, 2.0]) == [2.0, 4.0]
+        # numpy under another name (`use numpy as np`).
+        @test M.np_total([1.0, 2.0, 4.0]) == 7.0
+    else
+        @test_skip "pyo3-numpy assertions need numpy in the interpreter"
     end
+    # A `Vec` argument: a Julia array of numbers reaches PyO3 as a numpy array
+    # when numpy imports, and PyO3 reads a `Vec` from it as from any sequence;
+    # a `Bool` array too.
+    @test M.vec_sum([1.0, 2.5]) == 3.5
+    @test M.vec_sum(Float64[]) == 0.0
+    @test M.count_true([true, false, true]) == 2
 
     # A Python callable argument: a Julia function reaches Python as a
     # callable (PythonCall wraps it), and the binding passes it through (#424).
