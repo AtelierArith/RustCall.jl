@@ -131,7 +131,8 @@ end
     clear_library_metadata!(lib_name)
 
 Drop everything the registries record *about* one library: its name-to-symbol
-mappings and its return-type hints.
+mappings, its return-type hints, its panic channels and the generic functions
+its block defined (`GENERIC_FUNCTIONS_BY_LIB`).
 
 Called wherever a library leaves `RUST_LIBRARIES` or is replaced under the same
 name (unload, hot reload, re-registration of a `rust\"\"\"` block). A stale
@@ -158,6 +159,13 @@ function clear_library_metadata!(lib_name::AbstractString)
         # the one that was closed (#244).
         for key in collect(keys(PANIC_CHANNELS))
             first(key) == name && delete!(PANIC_CHANNELS, key)
+        end
+        # The generic functions the library's block defined (#520): a rebuilt
+        # block registers its own again after loading, and a row left behind
+        # would let a call from the defining module specialize a source the
+        # library no longer holds.
+        for key in collect(keys(GENERIC_FUNCTIONS_BY_LIB))
+            first(key) == name && delete!(GENERIC_FUNCTIONS_BY_LIB, key)
         end
     end
     return nothing
@@ -661,16 +669,24 @@ check_rust_panic_ptr(channel::Ptr{Cvoid}, func_name::AbstractString, value,
                      free_ptr::Ptr{Cvoid}) =
     (guard_rust_panic_ptr(value, channel, func_name, free_ptr); nothing)
 
-struct PreparedLibraryMetadata
+# `G` is `GenericFunctionInfo`, which `src/generics.jl` defines after this file;
+# `prepare_library_metadata` always builds a `Vector{GenericFunctionInfo}`, so
+# the rows are concrete.
+struct PreparedLibraryMetadata{G}
     symbols::Vector{Pair{String, String}}
     return_types::Vector{Pair{String, Type}}
+    # The generic functions the library's block defines (#520), installed
+    # under `(library, name)` in `GENERIC_FUNCTIONS_BY_LIB` and by bare name in
+    # `GENERIC_FUNCTION_REGISTRY`.
+    generics::Vector{G}
 end
 
 # Evaluate caller iterators and conversions before entering STATE. In
 # particular, malformed metadata must not erase an existing registration.
-function prepare_library_metadata(symbols, return_types)
+function prepare_library_metadata(symbols, return_types, generics = ())
     prepared_symbols = Pair{String, String}[]
     prepared_types = Pair{String, Type}[]
+    prepared_generics = GenericFunctionInfo[]
     for (name, symbol) in symbols
         push!(prepared_symbols, String(name) => String(symbol))
     end
@@ -678,16 +694,27 @@ function prepare_library_metadata(symbols, return_types)
         type isa Type || throw(ArgumentError("return metadata must contain Julia types"))
         push!(prepared_types, String(name) => type)
     end
-    PreparedLibraryMetadata(prepared_symbols, prepared_types)
+    for info in generics
+        info isa GenericFunctionInfo ||
+            throw(ArgumentError("generic metadata must contain GenericFunctionInfo records"))
+        push!(prepared_generics, info)
+    end
+    PreparedLibraryMetadata(prepared_symbols, prepared_types, prepared_generics)
 end
 
 """
     install_library_metadata!(name, metadata::PreparedLibraryMetadata)
 
-Replace a library's symbol mappings and return-type hints atomically.
-The caller must hold `REGISTRY_LOCK` and publish the handle in that same
-transaction. Prepare caller-supplied iterators with `prepare_library_metadata`
-outside the lock; this publication step accepts only materialized rows.
+Replace a library's symbol mappings, return-type hints and generic functions
+atomically. The caller must hold `REGISTRY_LOCK` and publish the handle in that
+same transaction. Prepare caller-supplied iterators with
+`prepare_library_metadata` outside the lock; this publication step accepts only
+materialized rows.
+
+The generics go in the same transaction as the rest (#520): clearing a
+library's rows and publishing its generics in two steps left a window in which
+a call from the defining module found the library without its own generic and
+fell through to another module's generic of the same name.
 """
 function install_library_metadata!(name::String, metadata::PreparedLibraryMetadata)
     clear_library_metadata!(name)
@@ -696,6 +723,10 @@ function install_library_metadata!(name::String, metadata::PreparedLibraryMetada
     end
     for (key, ret_type) in metadata.return_types
         FUNCTION_RETURN_TYPES_BY_LIB[(name, key)] = ret_type
+    end
+    for info in metadata.generics
+        GENERIC_FUNCTION_REGISTRY[info.name] = info
+        GENERIC_FUNCTIONS_BY_LIB[(name, info.name)] = info
     end
     return nothing
 end
@@ -741,8 +772,8 @@ end
 """
     copy_library_metadata!(from, to)
 
-Give the library `to` the same name-to-symbol mappings and return-type hints as
-`from`, replacing whatever it had.
+Give the library `to` the same name-to-symbol mappings, return-type hints and
+owner-qualified generic registrations as `from`, replacing whatever it had.
 
 Used when one loaded handle is registered under a second name (`@rust`'s reload
 alias, `_alias_reloaded_library`): both registries are per library, so the alias
@@ -763,6 +794,9 @@ function copy_library_metadata!(from::AbstractString, to::AbstractString)
         end
         for ((lib, name), ret_type) in collect(FUNCTION_RETURN_TYPES_BY_LIB)
             lib == source && (FUNCTION_RETURN_TYPES_BY_LIB[(target, name)] = ret_type)
+        end
+        for ((lib, name), generic) in collect(GENERIC_FUNCTIONS_BY_LIB)
+            lib == source && (GENERIC_FUNCTIONS_BY_LIB[(target, name)] = generic)
         end
     end
     return nothing

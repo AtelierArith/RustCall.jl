@@ -333,6 +333,24 @@ const GENERIC_FUNCTION_REGISTRY = _state_view(:generic_function_registry,
     Dict{String, GenericFunctionInfo}())
 
 """
+Generic functions keyed by `(library name, Julia name)` — the owner-qualified
+counterpart of `GENERIC_FUNCTION_REGISTRY` (#520).
+
+`GENERIC_FUNCTION_REGISTRY` is keyed by the bare name, so it is process-wide:
+a second module whose block defines a generic `f` replaced the first module's
+registration, and `@rust f(x)` from the first module then specialized the
+second module's source. This table keeps each library's own registration, and
+`resolve_rust_call` consults it for the libraries of the caller's own blocks
+before anything process-wide. Rows are installed and dropped with the library's
+other metadata, in the same transaction (`install_library_metadata!`,
+`clear_library_metadata!`).
+
+Guarded by `REGISTRY_LOCK`.
+"""
+const GENERIC_FUNCTIONS_BY_LIB = _state_view(:generic_functions_by_lib,
+    Dict{Tuple{String, String}, GenericFunctionInfo}())
+
+"""
 Registry for monomorphized function instances.
 
 Keyed by `artifact_key` of the monomorphization `ArtifactId`
@@ -570,7 +588,13 @@ function infer_type_parameters(func_name::String, arg_types::Vector{<:Type})
     if generic_info === nothing
         error("Function '$func_name' is not registered as a generic function")
     end
+    return infer_type_parameters(generic_info, arg_types)
+end
 
+# The same, for a registration already in hand — the one `resolve_rust_call`
+# chose, which is not necessarily the one the bare name maps to (#520).
+function infer_type_parameters(generic_info::GenericFunctionInfo, arg_types::Vector{<:Type})
+    func_name = generic_info.name
     type_params = Dict{Symbol, Type}()
     sig_arg_types = generic_info.arg_types
     type_param_set = Set(generic_info.type_params)
@@ -619,7 +643,17 @@ info.name         # "rustcall_identity_i32_<id>"
 info.return_type  # Int32
 ```
 """
-function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Type})
+monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Type}) =
+    _monomorphize_function(func_name, type_params, nothing)
+
+# A registration already in hand: `resolve_rust_call` chose it among the
+# caller's own blocks, and the bare name may map to another module's generic
+# of the same name (#520).
+monomorphize_function(info::GenericFunctionInfo, type_params::Dict{Symbol, <:Type}) =
+    _monomorphize_function(info.name, type_params, info)
+
+function _monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Type},
+                                registered::Union{Nothing, GenericFunctionInfo})
     # An attempt publishes nothing when the image it resolved against was
     # released between its `load_artifact!` and its publication (#397 review):
     # two tasks racing on one instantiation both end on the winner's handle,
@@ -642,7 +676,7 @@ function monomorphize_function(func_name::String, type_params::Dict{Symbol, <:Ty
     deadline = Inf
     backoff = 0.001
     while true
-        info = _monomorphize_function_once(func_name, type_params)
+        info = _monomorphize_function_once(func_name, type_params; registered)
         info === nothing || return info
         deadline = min(deadline, time() + _MONOMORPHIZE_SETTLE_SECONDS)
         time() < deadline ||
@@ -730,9 +764,12 @@ end
 # taken *earlier*, so a test can play the reader whose batch path was released
 # between the restore and the load (`_batch_copy_is_current`).
 function _monomorphize_function_once(func_name::String, type_params::Dict{Symbol, <:Type};
-                                     restored_override = nothing)
-    registered = lock(REGISTRY_LOCK) do
-        get(GENERIC_FUNCTION_REGISTRY, func_name, nothing)
+                                     restored_override = nothing,
+                                     registered::Union{Nothing, GenericFunctionInfo} = nothing)
+    if registered === nothing
+        registered = lock(REGISTRY_LOCK) do
+            get(GENERIC_FUNCTION_REGISTRY, func_name, nothing)
+        end
     end
     registered === nothing && error("Function '$func_name' is not registered as a generic function")
     registered.group === nothing ||
@@ -1760,6 +1797,14 @@ function call_generic_function(func_name::String, args...)
     info = monomorphize_function(func_name, type_params)
 
     return _call_monomorphized(info, args...)
+end
+
+# The registration `resolve_rust_call` chose for an `@rust` call site: the
+# caller's own block's generic, whatever the bare name maps to process-wide
+# (#520).
+function call_generic_function(generic::GenericFunctionInfo, args...)
+    type_params = infer_type_parameters(generic, collect(map(typeof, args)))
+    return _call_monomorphized(monomorphize_function(generic, type_params), args...)
 end
 
 """

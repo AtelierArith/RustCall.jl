@@ -2376,14 +2376,14 @@ Throws if the load fails, leaving the registry untouched.
 function load_artifact!(policy::LoadPolicy, path::AbstractString;
                         lib_name::AbstractString,
                         preload = (),
-                        symbols = (), return_types = (), eager = (),
+                        symbols = (), return_types = (), generics = (), eager = (),
                         kwargs...)
     lib_path = String(path)
     name = String(lib_name)
     # Reject caller metadata before acquiring a loader reference. Otherwise
     # a throwing iterator or conversion in adopt_artifact! leaks this open.
     metadata = registers_in_rust_libraries(policy) ?
-               prepare_library_metadata(symbols, return_types) :
+               prepare_library_metadata(symbols, return_types, generics) :
                prepare_library_metadata((), ())
     prepared_eager = registers_in_rust_libraries(policy) ?
                      String[String(symbol) for symbol in eager] : String[]
@@ -2417,7 +2417,7 @@ function load_artifact!(policy::LoadPolicy, path::AbstractString;
     # it was merely handed.
     return adopt_artifact!(policy, handle; lib_name = name, path = lib_path,
                            symbols = metadata.symbols, return_types = metadata.return_types,
-                           eager = prepared_eager,
+                           generics = metadata.generics, eager = prepared_eager,
                            close_duplicate = true, kwargs...)
 end
 
@@ -2494,6 +2494,7 @@ function adopt_artifact!(policy::LoadPolicy, handle::Ptr{Cvoid};
                          path::AbstractString = "",
                          symbols = (),
                          return_types = (),
+                         generics = (),
                          eager = (),
                          snapshot_env = nothing,
                          close_duplicate::Bool = false,
@@ -2522,7 +2523,7 @@ function adopt_artifact!(policy::LoadPolicy, handle::Ptr{Cvoid};
     duplicate = C_NULL
     replaced = C_NULL
     metadata = registers_in_rust_libraries(policy) ?
-               prepare_library_metadata(symbols, return_types) : nothing
+               prepare_library_metadata(symbols, return_types, generics) : nothing
     artifact = lock(REGISTRY_LOCK) do
         if !registers_in_rust_libraries(policy)
             retired = get(RETIRED_HANDLES, handle, nothing)
@@ -2628,7 +2629,8 @@ end
                                 set_current = policy.sets_current_lib) -> Bool
 
 Re-publish the volatile metadata of a library that is **already** loaded — the
-name-to-symbol mappings and the return-type hints — without opening anything.
+name-to-symbol mappings, the return-type hints and the generic functions its
+block defines (`generics`, #520) — without opening anything.
 
 `require_loaded` makes the existence check part of the same critical section as
 the writes, so an `unload_artifact!` racing between a caller's `haskey` and
@@ -2637,11 +2639,11 @@ is gone.  Returns `false` in that case and writes nothing; the caller then
 falls through to compiling and loading the library again.
 """
 function register_artifact_metadata!(policy::LoadPolicy, lib_name::AbstractString;
-                                     symbols = (), return_types = (),
+                                     symbols = (), return_types = (), generics = (),
                                      require_loaded::Bool = false,
                                      set_current::Bool = policy.sets_current_lib)
     name = String(lib_name)
-    metadata = prepare_library_metadata(symbols, return_types)
+    metadata = prepare_library_metadata(symbols, return_types, generics)
     return lock(REGISTRY_LOCK) do
         if require_loaded && !haskey(RUST_LIBRARIES, name)
             return false
