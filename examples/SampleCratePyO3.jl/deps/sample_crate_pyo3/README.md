@@ -210,7 +210,7 @@ python = ["pyo3"]
 example takes it by path from the RustCall.jl checkout, so that it is tested with
 the attribute of the same tree as the RustCall it runs against — the only
 reference this example makes outside `examples/SampleCratePyO3.jl/`. A crate of
-your own can depend on the release instead (`rustcall_julia_macros = "0.3"`).
+your own can depend on the release instead (`rustcall_julia_macros = "0.4"`).
 
 ## Why the feature flag?
 
