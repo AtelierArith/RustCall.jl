@@ -20,6 +20,8 @@ using Test
 using RustCall
 using RustToolChain: cargo
 
+include("source_helpers.jl")
+
 const _BESN_ROOT = dirname(dirname(pathof(RustCall)))
 const _BESN_SAMPLE = joinpath(@__DIR__, "fixtures", "sample_crate")
 const _BESN_PYO3_ONLY = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_only")
@@ -40,7 +42,7 @@ end
 
 # Every function definition in `file`: (name, signature, body).
 function _besn_definitions(file)
-    ast = Meta.parseall(read(joinpath(_BESN_ROOT, "src", file), String); filename = file)
+    ast = Meta.parseall(read_source_tree(joinpath(_BESN_ROOT, "src", file)); filename = file)
     out = Tuple{Symbol, Any, Any}[]
     fname(sig) = sig isa Symbol ? sig :
                  sig isa Expr && sig.head === :call ? fname(sig.args[1]) :

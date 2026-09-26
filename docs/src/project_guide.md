@@ -11,6 +11,30 @@ This page collects repository-oriented information that no longer lives in the t
 - `examples/`: runnable examples covering inline Rust, crate bindings, Pluto, and package-style usage.
 - `benchmark/`: benchmark scripts for core calls, arrays, generics, and ownership helpers.
 
+## Crate binding components
+
+`src/crate_bindings.jl` composes the following files in dependency order.
+They all define bindings in `RustCall`; the split introduces no new public
+module, changes no function signature, and retains the written-bindings format.
+
+| Component in `src/` | Responsibility |
+| --- | --- |
+| `crate_scan.jl` | Crate metadata, extraction, and Rust wrapper projects |
+| `crate_build_env.jl` | Build records, precompile dependencies, environment and interpreter checks |
+| `crate_module_expr.jl` | In-memory module template and shared initialization prologue |
+| `crate_layout.jl` | Module tree, collision checks, emitted names, and traversal |
+| `crate_wrappers_expr.jl` | Expression wrappers and shared field/payload plans |
+| `crate_build.jl` | Build orchestration, artifact keys, and bindings-format checks |
+| `crate_runtime.jl` | Runtime binding proxies, dynamic loading, and `@rust_crate` |
+| `crate_write.jl` | Persisted bindings build and library placement |
+| `crate_module_source.jl` | Source-text module and wrapper emission |
+
+Both emitters use the same layout, build record, field plans, and payload
+plans. Keep shared decisions there when changing generation. The components
+remain directly under `src/` so source-relative native paths and source-wide
+lint checks retain their scope. Source-level tests follow the composition
+root's literal includes through `test/source_helpers.jl`.
+
 ## Bundled Examples
 
 - `examples/MyExample.jl`: package-style example using inline `rust"""..."""` blocks.

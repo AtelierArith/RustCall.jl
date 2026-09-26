@@ -13,6 +13,8 @@ using Test
 using RustCall
 using RustToolChain: cargo
 
+include("source_helpers.jl")
+
 const KW_MACROS_PATH = joinpath(dirname(@__DIR__), "deps", "rustcall_julia_macros")
 
 const _KW_HAVE_CARGO = try
@@ -673,7 +675,7 @@ end
     offenders = String[]
     for file in ("pyo3_host.jl", "crate_bindings.jl", "structs.jl", "julia_functions.jl",
                  "ruststr.jl", "julia_names.jl")
-        for (n, line) in enumerate(eachline(joinpath(src, file)))
+        for (n, line) in enumerate(eachline(IOBuffer(read_source_tree(joinpath(src, file)))))
             startswith(lstrip(line), "#") && continue
             # The crate's own package name, not an item's.
             occursin("rust_crate_\$(info.name)_", line) && continue

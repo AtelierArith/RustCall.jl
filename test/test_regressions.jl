@@ -4,6 +4,8 @@ using RustCall
 using Test
 using Libdl
 
+include("source_helpers.jl")
+
 all_signatures(code; mode = "inline") = RustCall.manifest_function_signatures(
     RustCall.extract_manifest(code; mode = mode); only_attributed = false
 )
@@ -2094,7 +2096,7 @@ _release_460(ptr::Ptr{UInt8}, len::UInt, cap::UInt) = (_FREED_460[] += 1; nothin
 
 @testset "#460: FFI boundary correctness" begin
     repo_src = normpath(joinpath(@__DIR__, "..", "src"))
-    src_text(file) = read(joinpath(repo_src, file), String)
+    src_text(file) = read_source_tree(joinpath(repo_src, file))
 
     @testset "item 1: an inline setter converts to the field's slot type" begin
         if !RustCall.check_rustc_available()

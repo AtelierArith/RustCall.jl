@@ -46,7 +46,7 @@ git ls-files 'src/*.jl' 'test/test_*.jl' 'benchmark/*.jl' 'deps/*/src/*.rs' | xa
 - `src/dependencies.jl`, `src/dependency_resolution.jl`: dependency parsing/resolution.
 - `src/cargoproject.jl`, `src/cargobuild.jl`: Cargo project/build flow.
 - `src/julia_functions.jl`: `#[julia]` parsing/transform/wrapper support.
-- `src/crate_bindings.jl`: crate scanning, binding generation, `@rust_crate`.
+- `src/crate_bindings.jl`: includes the crate scanning, build, emission, and runtime components; see [the component map](project_guide.md#Crate-binding-components).
 - `src/hot_reload.jl`: crate hot reload support.
 
 ### Caching and generics

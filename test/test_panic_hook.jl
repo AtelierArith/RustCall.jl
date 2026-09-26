@@ -1,6 +1,8 @@
 using Test
 using RustCall
 
+include("source_helpers.jl")
+
 # A caught panic is not an incident (#304). The generated wrapper records the
 # message in its channel and Julia raises `RustCall.RustPanicError`, but Rust
 # runs the panic **hook** before the unwind `catch_unwind` catches, so every
@@ -423,8 +425,7 @@ pub fn hook_probe_two(n: i32) -> i32 {
             @test !occursin("fn $(RustCall.QUIET_PANIC_INSTALL_SYMBOL)", golden)
             @test !occursin("pub struct __RustCallBoundary", golden)
             # And the wrapper crate is given that dependency.
-            bindings_jl = read(joinpath(dirname(@__DIR__), "src", "crate_bindings.jl"),
-                               String)
+            bindings_jl = read_source_tree(joinpath(dirname(@__DIR__), "src", "crate_bindings.jl"))
             @test occursin("rustcall_julia_macros = { path =", bindings_jl)
         end
     end
