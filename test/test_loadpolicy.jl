@@ -13,9 +13,11 @@ using Test
 using RustCall
 using Libdl
 
+include("source_helpers.jl")
+
 const _SRC_DIR = joinpath(dirname(dirname(pathof(RustCall))), "src")
 
-_src(name) = read(joinpath(_SRC_DIR, name), String)
+_src(name) = read_source_tree(joinpath(_SRC_DIR, name))
 
 """Number of non-overlapping occurrences of `needle` in the source of `name`."""
 _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))

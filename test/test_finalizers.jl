@@ -13,8 +13,10 @@ using Test
 using Libdl
 using RustCall
 
+include("source_helpers.jl")
+
 const _FIN_SRC = joinpath(dirname(dirname(pathof(RustCall))), "src")
-_fin_src(name) = read(joinpath(_FIN_SRC, name), String)
+_fin_src(name) = read_source_tree(joinpath(_FIN_SRC, name))
 
 const _OWNERSHIP_FREES = Threads.Atomic{Int}(0)
 function _ownership_test_free(::Ptr{Cvoid})

@@ -10,6 +10,8 @@ using Test
 using RustCall
 using RustToolChain: cargo
 
+include("source_helpers.jl")
+
 const _HRR_SAMPLE_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate")
 
 _hrr_cargo_available() = try
@@ -496,7 +498,7 @@ _hrr_with(r::RustCall.CrateBuildRecord; kwargs...) =
         @test _hrr_error(() -> RustCall.emit_crate_module(info, "/tmp/x.dylib";
                              lib_name = "other", build_record = named)) isa ArgumentError
         # Both entry points build under the snapshot they record.
-        src = read(joinpath(pkgdir(RustCall), "src", "crate_bindings.jl"), String)
+        src = read_source_tree(joinpath(pkgdir(RustCall), "src", "crate_bindings.jl"))
         @test count("build_env = _record_build_subprocess_env(record, snapshot)", src) == 2
         @test count("env = build_env)", src) >= 4
         @test occursin("build_record = _record_named(record, lib_name)", src)
