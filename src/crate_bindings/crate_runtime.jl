@@ -292,7 +292,7 @@ MyCrate.distance(p)
 # In a package: define the module here and re-export from it
 module MyPkg
 using RustCall
-@rust_crate joinpath(@__DIR__, "..", "..", "deps", "my_crate") submodule="Bindings"
+@rust_crate joinpath(@__DIR__, "..", "deps", "my_crate") submodule="Bindings"
 using .Bindings: add, Point
 export add, Point
 end

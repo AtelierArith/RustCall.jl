@@ -73,6 +73,8 @@ end
 # at once, and says it is offline; without the flag it would go to the network.
 const _CBP_MISSING_DEP = "rustcall_nonexistent_crate_461 = \"=0.0.1\""
 
+include("crate_build_paths_package_relative.jl")
+
 @testset "Crate build paths (#461)" begin
     @testset "wrapper lib.rs names the crate by its Rust identifier (item 2)" begin
         mktempdir() do dir
