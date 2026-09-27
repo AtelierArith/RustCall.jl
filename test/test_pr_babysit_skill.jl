@@ -3,7 +3,8 @@ using Test
 const PR_BABYSIT_SKILL_PATH = joinpath(@__DIR__, "..", ".claude", "skills", "pr-babysit", "SKILL.md")
 
 @testset "PR babysit skill review and log-search guidance" begin
-    skill = read(PR_BABYSIT_SKILL_PATH, String)
+    # Windows checkouts may expose CRLF even though the committed skill uses LF.
+    skill = replace(read(PR_BABYSIT_SKILL_PATH, String), "\r\n" => "\n")
 
     @test occursin("wait until the requested Codex review for that exact", skill)
     @test occursin("A missing result or a `Running` status is pending", skill)
