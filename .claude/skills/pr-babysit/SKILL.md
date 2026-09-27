@@ -46,7 +46,7 @@ HEAD_SHA=$(gh pr view <PR> --json headRefOid --jq .headRefOid)
 ### 1. CI
 
 ```bash
-gh api repos/<OWNER>/<REPO>/commits/$HEAD_SHA/check-runs \
+gh api --method GET repos/<OWNER>/<REPO>/commits/$HEAD_SHA/check-runs \
   -f per_page=100 \
   --jq '.check_runs[] | [.id, .name, .status, .conclusion, .details_url] | @tsv'
 ```
@@ -56,7 +56,7 @@ failure logs; do not add results from another head to this pass's ledger. After
 collecting checks and logs, fetch the PR head again. If it differs from
 `HEAD_SHA`, discard this pass's CI ledger and end as pending without editing.
 
-For each job that is `fail`:
+For each job whose conclusion is `failure`:
 
 ```bash
 gh run view --job <JOB_ID> --log > /tmp/job.log
