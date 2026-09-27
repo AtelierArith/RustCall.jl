@@ -74,12 +74,19 @@ while collecting or classifying findings.
 Also read top-level review bodies (`gh api repos/<OWNER>/<REPO>/pulls/<PR>/reviews`)
 and add any requests without inline threads to the finding ledger.
 
-Before changing code, make a review-only pass over the findings currently available
-for this head. Inspect the cited code, relevant callers, and tests, then keep a
-small finding ledger (finding, evidence, disposition, test, fixing SHA, thread
-status). Classify each finding as a previously missed case, a regression from a
-recent fix, a duplicate, or a claim whose assumptions do not hold. This avoids
-treating every new comment as proof that the last fix caused a new bug.
+Record the PR head SHA, then wait until the requested Codex review for that exact
+SHA is complete before editing. Check the review status summary as well as review
+records and threads. A missing result or a `Running` status is pending, not a clean
+round. Once the review is complete, fetch review bodies and threads again and
+confirm the PR still points to the same SHA. If review is pending, its status is
+unavailable, or the head changed, end this pass as pending without editing.
+
+After that gate, make a review-only pass over all findings for the unchanged head.
+Inspect the cited code, relevant callers, and tests, then keep a small finding
+ledger (finding, evidence, disposition, test, fixing SHA, thread status). Classify
+each finding as a previously missed case, a regression from a recent fix, a
+duplicate, or a claim whose assumptions do not hold. This avoids treating every
+new comment as proof that the last fix caused a new bug.
 
 For P2 findings, verify the reported scenario against the code and its callers.
 If it is a real defect, add a regression test that reproduces it before or with
