@@ -42,7 +42,7 @@ end
 
 # Every function definition in `file`: (name, signature, body).
 function _besn_definitions(file)
-    ast = Meta.parseall(read_source_tree(joinpath(_BESN_ROOT, "src", file)); filename = file)
+    ast = Meta.parseall(read_source_tree(_test_source_path(file)); filename = file)
     out = Tuple{Symbol, Any, Any}[]
     fname(sig) = sig isa Symbol ? sig :
                  sig isa Expr && sig.head === :call ? fname(sig.args[1]) :

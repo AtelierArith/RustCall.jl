@@ -430,7 +430,7 @@ _hrr_with(r::RustCall.CrateBuildRecord; kwargs...) =
                              "RUSTFLAGS" => "--cfg hrr_race474")
             # The reload builds and probes with the one environment it derives
             # from the record; nothing else reaches the two subprocesses.
-            src = read(joinpath(pkgdir(RustCall), "src", "hot_reload.jl"), String)
+            src = read(joinpath(pkgdir(RustCall), "src", "loading", "hot_reload.jl"), String)
             @test occursin("env = _record_build_subprocess_env(record, snapshot)", src)
             @test occursin("_scan_crate_signatures(record; env = env)", src)
             @test occursin("rebuild_crate(record; env = env)", src)
@@ -498,7 +498,7 @@ _hrr_with(r::RustCall.CrateBuildRecord; kwargs...) =
         @test _hrr_error(() -> RustCall.emit_crate_module(info, "/tmp/x.dylib";
                              lib_name = "other", build_record = named)) isa ArgumentError
         # Both entry points build under the snapshot they record.
-        src = read_source_tree(joinpath(pkgdir(RustCall), "src", "crate_bindings.jl"))
+        src = read_source_tree(joinpath(pkgdir(RustCall), "src", "crate_bindings", "crate_bindings.jl"))
         @test count("build_env = _record_build_subprocess_env(record, snapshot)", src) == 2
         @test count("env = build_env)", src) >= 4
         @test occursin("build_record = _record_named(record, lib_name)", src)

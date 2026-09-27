@@ -7,6 +7,8 @@ using Test
 using RustCall
 using RustToolChain: cargo
 
+include("source_helpers.jl")
+
 const _CBP_ROOT = dirname(@__DIR__)
 const _CBP_HOST_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_host")
 
@@ -70,6 +72,8 @@ end
 # A dependency no registry has: under `--offline` Cargo fails at resolution,
 # at once, and says it is offline; without the flag it would go to the network.
 const _CBP_MISSING_DEP = "rustcall_nonexistent_crate_461 = \"=0.0.1\""
+
+include("crate_build_paths_package_relative.jl")
 
 @testset "Crate build paths (#461)" begin
     @testset "wrapper lib.rs names the crate by its Rust identifier (item 2)" begin
@@ -163,7 +167,7 @@ const _CBP_MISSING_DEP = "rustcall_nonexistent_crate_461 = \"=0.0.1\""
         # from outside; the source is where it can be asserted. The builds,
         # whose failures do surface, are checked by behaviour below.
         # Line endings normalised: a Windows checkout may have CRLF.
-        source(file) = replace(read(joinpath(_CBP_ROOT, "src", file), String), "\r\n" => "\n")
+        source(file) = replace(read(_test_source_path(file), String), "\r\n" => "\n")
         pyo3_src = source("pyo3.jl")
         manifest_src = source("manifest.jl")
         # The text of one top-level function, from its signature to the first

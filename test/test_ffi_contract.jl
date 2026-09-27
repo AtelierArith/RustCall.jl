@@ -1,5 +1,5 @@
 # Tests for the single source of truth of the FFI type contract
-# (`src/ffi_contract.jl`, issue #276).
+# (`src/ffi/ffi_contract.jl`, issue #276).
 #
 # Phase A added the contract next to the five tables that already decided "what
 # does this Rust type mean at the C boundary?", and enumerated every point where
@@ -240,7 +240,7 @@ const ALL_SPELLINGS = vcat(
         # exactly one return type, and the wrapper returns one `#[repr(C)]`
         # aggregate (`<fn>_RustCallOwnedString { ptr, len, cap }`,
         # codegen.rs:837-863), received as `CRustString`
-        # (src/structs.jl:511-528) — so the return contract carries the
+        # (src/ffi/structs.jl:511-528) — so the return contract carries the
         # aggregate, not the word list.
         ret = RustCall.ffi_return_contract("String"; abi = "string")
         @test ret.known
@@ -492,14 +492,14 @@ const ALL_SPELLINGS = vcat(
         @test RustCall.ffi_ccall_type("char") !== RustCall.ffi_surface_type("char")
     end
 
-    @testset "divergence: small integers missing from src/structs.jl (#245 item 2)" begin
+    @testset "divergence: small integers missing from src/ffi/structs.jl (#245 item 2)" begin
         # `rust_to_julia_type_sym` knew 8 primitives, so a `#[julia]` struct field
         # of type `u16` became `:Any` in generated accessor code while the same
         # type in a free function became `:UInt16`. One table, one answer now.
         for s in ("i8", "i16", "u8", "u16", "i128", "u128", "usize", "isize", "char")
             @test RustCall.ffi_julia_symbol(s) !== nothing
             # A struct field accessor resolves the same concrete type a free
-            # function does — `src/structs.jl` no longer has a table of its own.
+            # function does — `src/ffi/structs.jl` no longer has a table of its own.
             @test RustCall.ffi_return_type_or_throw(s, "", "S::f -> $s") !== Any
         end
         @test RustCall.ffi_julia_symbol("u16") === :UInt16
@@ -1131,7 +1131,7 @@ const ALL_SPELLINGS = vcat(
         # Rust export, so the Rust destructor runs on the allocating allocator
         # (#249). The two owned tags differ in WHEN, not HOW:
         #   :owned_by_rust        — released within the call (the wrapper copies,
-        #                           then frees; src/structs.jl:511-523)
+        #                           then frees; src/ffi/structs.jl:511-523)
         #   :transferred_to_julia — the handle outlives the call and Julia frees
         #                           it later, from a finalizer
         @test :owned_by_rust in RustCall.FFI_OWNERSHIP_NEEDS_FREE

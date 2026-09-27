@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fail when Julia source outside src/artifact_id.jl builds artifact identity by hand.
+# Fail when Julia source outside src/artifacts/artifact_id.jl builds artifact identity by hand.
 #
 # Since #278 there is exactly one answer to "which compiled artifact corresponds
 # to this request?": build an `ArtifactId` and call `artifact_key`. Every other
@@ -8,17 +8,17 @@
 # that is not the `rustc` that compiles) and the repeated Cargo cache patches.
 #
 # Four rules, all scoped to `src/`; the first three allowlist only
-# `src/artifact_id.jl`, the fourth also `src/short_name.jl`:
+# `src/artifacts/artifact_id.jl`, the fourth also `src/artifacts/short_name.jl`:
 #
 #   1. No hand-rolled digest of concatenated key material
 #      (`sha256("$(a)_$(b)")`). Concatenation is not injective; the netstring
-#      encoder in src/artifact_id.jl is.
+#      encoder in src/artifacts/artifact_id.jl is.
 #   2. No truncation of a digest outside `artifact_short_id`. Truncation exists
 #      for human-readable names only, in one place, at one length.
 #   3. No session-randomized `hash()` for an identifier. Julia's `hash` is
 #      randomized per process, so a name derived from it can never be matched
-#      again — see the rule at the top of src/cache.jl.
-#   4. No short id naming a path or a Cargo package outside `src/short_name.jl`
+#      again — see the rule at the top of src/artifacts/cache.jl.
+#   4. No short id naming a path or a Cargo package outside `src/artifacts/short_name.jl`
 #      (#504). A short id that is a location must be owned by the full key it
 #      came from (a claim record, and a lock from build start through
 #      copy-out), and `short_name` / `short_name_path` / `with_short_name` /
@@ -29,7 +29,7 @@
 #          library, a Cargo package in a fresh private project, a log field;
 #        `# short-id: lease` — a token that is not derived from an artifact key
 #          and whose path is owned by a lease of its own (the host / instance
-#          tags of a generation copy, src/loadpolicy.jl).
+#          tags of a generation copy, src/loading/loadpolicy.jl).
 #      A marked line may not itself build a path (`joinpath`, `mkpath`,
 #      `mktempdir`, `CargoProject`, `CARGO_TARGET_DIR`).
 #
@@ -57,7 +57,7 @@ report() {
 hits=$(grep -rnE --include='*.jl' 'sha256\("[^"]*\$' "$dir" | grep -vE "$allow" || true)
 if [[ -n "$hits" ]]; then
     report "Artifact identity must not be built by string concatenation (issue #278)." \
-           "Build a RustCall.ArtifactId and call artifact_key; see src/artifact_id.jl." \
+           "Build a RustCall.ArtifactId and call artifact_key; see src/artifacts/artifact_id.jl." \
            "$hits"
 fi
 
@@ -93,7 +93,7 @@ hits=$(grep -rnE --include='*.jl' 'artifact_short_id\(' "$dir" \
        | grep -vE "$short_allow" \
        | grep -vE '# short-id: (label|lease)' || true)
 if [[ -n "$hits" ]]; then
-    report "A short id may name a path or a Cargo package only through src/short_name.jl (issue #504)." \
+    report "A short id may name a path or a Cargo package only through src/artifacts/short_name.jl (issue #504)." \
            "Use short_name / short_name_path with claim_short_name! / with_short_name / with_owned_short_name, or mark a pure label with '# short-id: label'." \
            "$hits"
 fi
@@ -102,7 +102,7 @@ hits=$(grep -rnE --include='*.jl' 'artifact_short_id\(.*# short-id: (label|lease
        | grep -E 'joinpath|mkpath|mktempdir|CargoProject|CARGO_TARGET_DIR' || true)
 if [[ -n "$hits" ]]; then
     report "A line marked '# short-id: label' / 'lease' builds a path (issue #504)." \
-           "A short id that is a location goes through src/short_name.jl, which owns it by the full key." \
+           "A short id that is a location goes through src/artifacts/short_name.jl, which owns it by the full key." \
            "$hits"
 fi
 
@@ -110,4 +110,4 @@ if [[ $status -ne 0 ]]; then
     exit 1
 fi
 
-echo "OK: artifact identity goes through src/artifact_id.jl, short names through src/short_name.jl, in $dir"
+echo "OK: artifact identity goes through src/artifacts/artifact_id.jl, short names through src/artifacts/short_name.jl, in $dir"

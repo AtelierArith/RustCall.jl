@@ -774,7 +774,7 @@ _id(; kwargs...) = RustCall.ArtifactId(;
         @test_throws ArgumentError RustCall.artifact_short_id(key, 65)
 
         # And the grep-style rule itself holds on this tree: no file outside
-        # src/artifact_id.jl concatenates key material, truncates a digest, or
+        # src/artifacts/artifact_id.jl concatenates key material, truncates a digest, or
         # names an artifact with Julia's session-randomized `hash()`.
         lint = joinpath(pkgdir(RustCall), "scripts", "lint_artifact_identity.sh")
         @test isfile(lint)

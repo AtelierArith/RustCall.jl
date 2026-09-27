@@ -25,7 +25,7 @@ include("source_helpers.jl")
         @test_throws SystemError read_source_tree(joinpath(dir, "missing.jl"))
     end
 
-    source = read_source_tree(joinpath(pkgdir(RustCall), "src", "crate_bindings.jl"))
+    source = read_source_tree(joinpath(pkgdir(RustCall), "src", "crate_bindings", "crate_bindings.jl"))
     for definition in ("struct CrateInfo", "struct CrateBuildRecord", "struct ModuleNode",
                        "function emit_crate_module(", "function _generate_crate_function_wrapper(",
                        "function generate_bindings(", "struct CrateBindings",

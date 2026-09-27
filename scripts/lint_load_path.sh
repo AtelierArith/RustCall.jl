@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Fail when Julia source outside src/loadpolicy.jl opens or unloads a compiled
+# Fail when Julia source outside src/loading/loadpolicy.jl opens or unloads a compiled
 # artifact by hand.
 #
 # Since #277 Phase B there is exactly one place that turns a compiled file into
-# a usable library: `load_artifact!` in src/loadpolicy.jl, with
+# a usable library: `load_artifact!` in src/loading/loadpolicy.jl, with
 # `unload_artifact!` and `alias_artifact!` as the reverse and the aliasing
 # operations. Before that there were twelve `dlopen` sites with four different
 # flag sets and eight open-coded `RUST_LIBRARIES[...] = ...` writes, which is
@@ -13,12 +13,12 @@
 #
 # Three rules, all scoped to `src/`:
 #
-#   1. `Libdl.dlopen` only in src/loadpolicy.jl. No allowlist: the last
+#   1. `Libdl.dlopen` only in src/loading/loadpolicy.jl. No allowlist: the last
 #      exemption, the LLVM IR path, was removed with #265 Phase 2, and the two
 #      @rust_crate module templates went through the loader in #277 Phase B5.
-#   2. `Libdl.dlclose` only in src/loadpolicy.jl. Closing an image is half of a
+#   2. `Libdl.dlclose` only in src/loading/loadpolicy.jl. Closing an image is half of a
 #      registry transaction, never a standalone act.
-#   3. No `RUST_LIBRARIES[...] = ...` outside src/loadpolicy.jl. The handle and
+#   3. No `RUST_LIBRARIES[...] = ...` outside src/loading/loadpolicy.jl. The handle and
 #      the metadata that describes it must be published together.
 #
 # Usage: bash scripts/lint_load_path.sh [src]
@@ -66,7 +66,7 @@ hits=$(grep -rnE --include='*.jl' 'RUST_LIBRARIES\[[^]]*\] *=' "$dir" \
        | grep -viE '^[^:]*:[0-9]+: *#' \
        | grep -vE "$loader" || true)
 if [[ -n "$hits" ]]; then
-    report "The library registry may only be written by src/loadpolicy.jl (issue #277)." \
+    report "The library registry may only be written by src/loading/loadpolicy.jl (issue #277)." \
            "load_artifact! / adopt_artifact! publish the handle and its symbol table in one transaction." \
            "$hits"
 fi
@@ -75,4 +75,4 @@ if [[ $status -ne 0 ]]; then
     exit 1
 fi
 
-echo "OK: loading, unloading and registration go through src/loadpolicy.jl in $dir"
+echo "OK: loading, unloading and registration go through src/loading/loadpolicy.jl in $dir"

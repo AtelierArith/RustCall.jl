@@ -11,29 +11,48 @@ This page collects repository-oriented information that no longer lives in the t
 - `examples/`: runnable examples covering inline Rust, crate bindings, Pluto, and package-style usage.
 - `benchmark/`: benchmark scripts for core calls, arrays, generics, and ownership helpers.
 
+## Source directories
+
+`src/RustCall.jl` is the package entry point and owns the include order. Its
+implementation is grouped by subsystem:
+
+- `src/artifacts/`: artifact identity, cache records, and build environment snapshots.
+- `src/build/`: rustc, Cargo projects, dependency inspection, and diagnostics.
+- `src/ffi/`: FFI types, conversion rules, ownership, and wrapper code generation.
+- `src/loading/`: library loading, registry state, and hot reload.
+- `src/macros/`: Rust string and call macros, generics, manifest integration, and precompile workloads.
+- `src/crate_bindings/`: the `@rust_crate` composition root and its scanning, build, emitter, and runtime components.
+- `src/pyo3/`: PyO3 wrapper planning and Python host integration.
+- `src/native_layout.jl`: the shared build-layout policy included by `src/RustCall.jl` and `deps/build.jl`.
+
+All implementation files still define bindings in `RustCall`; the folders do
+not introduce nested modules. Source-level checks follow literal includes from
+the composition roots with `test/source_helpers.jl`, so moving a component does
+not narrow their coverage.
+
 ## Crate binding components
 
-`src/crate_bindings.jl` composes the following files in dependency order.
-They all define bindings in `RustCall`; the split introduces no new public
-module, changes no function signature, and retains the written-bindings format.
+`src/crate_bindings/crate_bindings.jl` composes the following files in dependency
+order. They all define bindings in `RustCall`; the split introduces no new
+public module, changes no function signature, and retains the written-bindings
+format.
 
-| Component in `src/` | Responsibility |
+| Component | Responsibility |
 | --- | --- |
 | `crate_scan.jl` | Crate metadata, extraction, and Rust wrapper projects |
 | `crate_build_env.jl` | Build records, precompile dependencies, environment and interpreter checks |
 | `crate_module_expr.jl` | In-memory module template and shared initialization prologue |
 | `crate_layout.jl` | Module tree, collision checks, emitted names, and traversal |
-| `crate_wrappers_expr.jl` | Expression wrappers and shared field/payload plans |
+| `crate_wrappers_expr.jl` | Expression wrappers and shared field and payload plans |
 | `crate_build.jl` | Build orchestration, artifact keys, and bindings-format checks |
 | `crate_runtime.jl` | Runtime binding proxies, dynamic loading, and `@rust_crate` |
 | `crate_write.jl` | Persisted bindings build and library placement |
-| `crate_module_source.jl` | Source-text module and wrapper emission |
+| `crate_module_source.jl` | Source-text module and wrapper emission for persisted bindings |
 
 Both emitters use the same layout, build record, field plans, and payload
-plans. Keep shared decisions there when changing generation. The components
-remain directly under `src/` so source-relative native paths and source-wide
-lint checks retain their scope. Source-level tests follow the composition
-root's literal includes through `test/source_helpers.jl`.
+plans. Keep shared decisions there when changing generation. Source-level tests
+walk component includes from the composition root, and the files remain within
+the `src/crate_bindings/` directory.
 
 ## Bundled Examples
 

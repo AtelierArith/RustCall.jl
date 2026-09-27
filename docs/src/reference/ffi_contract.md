@@ -1,6 +1,6 @@
 # The FFI type contract
 
-Rust-to-Julia type mapping lives in one place, `src/ffi_contract.jl`, and is
+Rust-to-Julia type mapping lives in one place, `src/ffi/ffi_contract.jl`, and is
 documented — with the generated supported-type matrix — under
 [The FFI Type Contract](../type_contract.md).
 
@@ -32,16 +32,16 @@ const JULIA_TO_RUST_TYPE_MAP = Dict{Type, String}(
 )
 ```
 
-## Contract table and lookups (`src/ffi_contract.jl`)
+## Contract table and lookups (`src/ffi/ffi_contract.jl`)
 
 ```@autodocs
 Modules = [RustCall]
-Pages = [joinpath("src", "ffi_contract.jl")]
+Pages = [joinpath("src", "ffi", "ffi_contract.jl")]
 ```
 
-## Type translation (`src/typetranslation.jl`)
+## Type translation (`src/ffi/typetranslation.jl`)
 
 ```@autodocs
 Modules = [RustCall]
-Pages = [joinpath("src", "typetranslation.jl")]
+Pages = [joinpath("src", "ffi", "typetranslation.jl")]
 ```

@@ -86,7 +86,7 @@ pub fn hook_probe_two(n: i32) -> i32 {
         # (#388 review).
         @test !any(name -> occursin("quiet_panic_hook", name),
                    string.(fieldnames(RustCall.LoadPolicy)))
-        loadpolicy = read(joinpath(dirname(@__DIR__), "src", "loadpolicy.jl"), String)
+        loadpolicy = read(joinpath(dirname(@__DIR__), "src", "loading", "loadpolicy.jl"), String)
         @test occursin("Libdl.dlsym(handle, QUIET_PANIC_INSTALL_SYMBOL", loadpolicy)
         # Nothing is installed into, or removed from, a handle that has no such
         # symbol.
@@ -425,7 +425,7 @@ pub fn hook_probe_two(n: i32) -> i32 {
             @test !occursin("fn $(RustCall.QUIET_PANIC_INSTALL_SYMBOL)", golden)
             @test !occursin("pub struct __RustCallBoundary", golden)
             # And the wrapper crate is given that dependency.
-            bindings_jl = read_source_tree(joinpath(dirname(@__DIR__), "src", "crate_bindings.jl"))
+            bindings_jl = read_source_tree(joinpath(dirname(@__DIR__), "src", "crate_bindings", "crate_bindings.jl"))
             @test occursin("rustcall_julia_macros = { path =", bindings_jl)
         end
     end

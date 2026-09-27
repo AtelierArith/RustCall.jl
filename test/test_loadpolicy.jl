@@ -15,9 +15,7 @@ using Libdl
 
 include("source_helpers.jl")
 
-const _SRC_DIR = joinpath(dirname(dirname(pathof(RustCall))), "src")
-
-_src(name) = read_source_tree(joinpath(_SRC_DIR, name))
+_src(name) = read_source_tree(_test_source_path(name))
 
 """Number of non-overlapping occurrences of `needle` in the source of `name`."""
 _count_in(name, needle) = count(_ -> true, eachmatch(needle, _src(name)))
@@ -247,18 +245,17 @@ end
     #
     # The axis is whether the block declares `// cargo-deps:`, NOT the cache
     # state: a dependency-free inline block is RTLD_LOCAL on both a disk-cache
-    # hit (src/cache.jl:270) and a miss (src/ruststr.jl:284), while a
+    # hit (src/artifacts/cache.jl:270) and a miss (src/macros/ruststr.jl:284), while a
     # Cargo-backed block is RTLD_GLOBAL on both its cache hit
-    # (src/ruststr.jl:386) and its fresh build (:419). So the same
+    # (src/macros/ruststr.jl:386) and its fresh build (:419). So the same
     # user-visible construct publishes its symbols process-globally or not
     # depending only on whether it happens to name a dependency.
     # -----------------------------------------------------------------
     @testset "divergence: dlopen flags (#250)" begin
         local_sites = 0
         global_sites = 0
-        for file in readdir(_SRC_DIR)
-            endswith(file, ".jl") || continue
-            file == "loadpolicy.jl" && continue
+        for file in _test_source_files()
+            basename(file) == "loadpolicy.jl" && continue
             src = _src(file)
             local_sites += count(_ -> true, eachmatch(r"dlopen\([^)]*RTLD_LOCAL", src))
             global_sites += count(_ -> true, eachmatch(r"dlopen\([^)]*RTLD_GLOBAL", src))
@@ -275,7 +272,7 @@ end
             @test !occursin(r"dlopen\(", _src(file))
         end
         # ...and scripts/lint_load_path.sh is what keeps it that way.
-        lint = read(joinpath(dirname(_SRC_DIR), "scripts", "lint_load_path.sh"), String)
+        lint = read(joinpath(dirname(_TEST_SOURCE_ROOT), "scripts", "lint_load_path.sh"), String)
         @test occursin("Libdl", lint)
         @test occursin("loadpolicy", lint)
 
@@ -305,7 +302,7 @@ end
         end
         @test !isdefined(RustCall, :DLOPEN_GLOBAL_OVERRIDE)
         @test !isdefined(RustCall, :_init_dlopen_global_override!)
-        src = read(joinpath(dirname(pathof(RustCall)), "loadpolicy.jl"), String)
+        src = read(joinpath(dirname(pathof(RustCall)), "loading", "loadpolicy.jl"), String)
         @test !occursin("RUSTCALL_DLOPEN_GLOBAL\"", src)
     end
 
@@ -472,7 +469,7 @@ end
         # A user crate's own profile is not overridden from the outside.
         @test RustCall._cargo_panic_env(RustCall.crate_direct_policy(), nothing, true) === nothing
 
-        repo_root = dirname(_SRC_DIR)
+        repo_root = dirname(_TEST_SOURCE_ROOT)
         build_jl = read(joinpath(repo_root, "deps", "build.jl"), String)
         helpers_toml = read(joinpath(repo_root, "deps", "rustcall_helpers", "Cargo.toml"), String)
         @test occursin("CARGO_PROFILE_RELEASE_PANIC", build_jl)
@@ -545,8 +542,7 @@ end
         @test occursin("_ctor_target(", _src("crate_bindings.jl"))
         @test occursin("alive_ref_for_handle(", _src("structs.jl"))
         # ...and the old, resolve-after-the-call entry points are gone.
-        for file in readdir(_SRC_DIR)
-            endswith(file, ".jl") || continue
+        for file in _test_source_files()
             src = _src(file)
             @test !occursin("guard_rust_panic(", src)
             @test !occursin("check_rust_panic(", src)
@@ -562,9 +558,8 @@ end
     # -----------------------------------------------------------------
     @testset "divergence: registration sites (#250, #255)" begin
         writes = 0
-        for file in readdir(_SRC_DIR)
-            endswith(file, ".jl") || continue
-            file == "loadpolicy.jl" && continue
+        for file in _test_source_files()
+            basename(file) == "loadpolicy.jl" && continue
             writes += count(_ -> true,
                             eachmatch(r"RUST_LIBRARIES\[[^\]]*\]\s*=", _src(file)))
         end
@@ -601,7 +596,7 @@ end
 
         # Generics registers only when the key is absent, and that guard is
         # load-bearing: _unique_source_name returns the fixed base name
-        # "rust_code" outside debug mode (src/compiler.jl:68-72), so every
+        # "rust_code" outside debug mode (src/build/compiler.jl:68-72), so every
         # instantiation compiles into its own temp directory under the same
         # librust_code basename. An unconditional assignment would swap a live
         # handle and discard the function-pointer cache (#250). Since B1 the

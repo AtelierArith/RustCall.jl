@@ -6,30 +6,30 @@ dependency DSL and its resolution, and the temporary Cargo projects RustCall
 generates, builds and caches. External crates are on
 [External crates](crates.md).
 
-## Dependencies (`src/dependencies.jl`)
+## Dependencies (`src/build/dependencies.jl`)
 
 ```@autodocs
 Modules = [RustCall]
-Pages = [joinpath("src", "dependencies.jl")]
+Pages = [joinpath("src", "build", "dependencies.jl")]
 ```
 
-## Dependency resolution (`src/dependency_resolution.jl`)
+## Dependency resolution (`src/build/dependency_resolution.jl`)
 
 ```@autodocs
 Modules = [RustCall]
-Pages = [joinpath("src", "dependency_resolution.jl")]
+Pages = [joinpath("src", "build", "dependency_resolution.jl")]
 ```
 
-## Cargo projects (`src/cargoproject.jl`)
+## Cargo projects (`src/build/cargoproject.jl`)
 
 ```@autodocs
 Modules = [RustCall]
-Pages = [joinpath("src", "cargoproject.jl")]
+Pages = [joinpath("src", "build", "cargoproject.jl")]
 ```
 
-## Cargo builds (`src/cargobuild.jl`)
+## Cargo builds (`src/build/cargobuild.jl`)
 
 ```@autodocs
 Modules = [RustCall]
-Pages = [joinpath("src", "cargobuild.jl")]
+Pages = [joinpath("src", "build", "cargobuild.jl")]
 ```

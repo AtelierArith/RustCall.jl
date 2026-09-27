@@ -377,7 +377,7 @@ end
 
     @testset "The compiler in the key is the compiler that runs (#252)" begin
         # `artifact_compiler_identity` reads RustToolChain.rustc()/cargo() —
-        # the very commands src/compiler.jl and src/cargobuild.jl invoke — and
+        # the very commands src/build/compiler.jl and src/build/cargobuild.jl invoke — and
         # raises rather than degrading to the string "unknown".
         @test !isdefined(RustCall, :_get_rustc_version)
         @test !isdefined(RustCall, :_cached_rustc_version)
@@ -826,7 +826,7 @@ end
             # Every caller treats a failed cache write as "not cached" rather
             # than as a failed build.
             @test occursin("Failed to save library to cache",
-                           read(joinpath(pkgdir(RustCall), "src", "ruststr.jl"), String))
+                           read(joinpath(pkgdir(RustCall), "src", "macros", "ruststr.jl"), String))
         end
     end
 

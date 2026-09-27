@@ -1,7 +1,7 @@
 # Load policy
 
 The one path through which every compiled artifact is opened, registered,
-retired and unloaded (`src/loadpolicy.jl`, #277). The exception types are on
+retired and unloaded (`src/loading/loadpolicy.jl`, #277). The exception types are on
 [Errors](errors.md).
 
 ## Loading and lifetime
@@ -24,9 +24,9 @@ The user-facing halves of the load path:
 
 See [Panics, Visibility and Lifetime](../panics.md) for the semantics these guarantee.
 
-## Load policy (`src/loadpolicy.jl`)
+## Load policy (`src/loading/loadpolicy.jl`)
 
 ```@autodocs
 Modules = [RustCall]
-Pages = [joinpath("src", "loadpolicy.jl")]
+Pages = [joinpath("src", "loading", "loadpolicy.jl")]
 ```

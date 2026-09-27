@@ -31,7 +31,7 @@ using RustToolChain: rustc, cargo
 # The one place that knows where these products live; `src/RustCall.jl`
 # includes the same file, so the build and the lookup cannot drift apart.
 include(joinpath(@__DIR__, "..", "src", "native_layout.jl"))
-include(joinpath(@__DIR__, "..", "src", "extractor_identity.jl"))
+include(joinpath(@__DIR__, "..", "src", "artifacts", "extractor_identity.jl"))
 
 """
     check_rust_toolchain() -> Bool

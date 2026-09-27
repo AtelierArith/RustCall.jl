@@ -15,8 +15,7 @@ using RustCall
 
 include("source_helpers.jl")
 
-const _FIN_SRC = joinpath(dirname(dirname(pathof(RustCall))), "src")
-_fin_src(name) = read_source_tree(joinpath(_FIN_SRC, name))
+_fin_src(name) = read_source_tree(_test_source_path(name))
 
 const _OWNERSHIP_FREES = Threads.Atomic{Int}(0)
 function _ownership_test_free(::Ptr{Cvoid})
@@ -430,7 +429,7 @@ end
     # (d) The allocator contract is written down.
     # ------------------------------------------------------------------
     @testset "the allocator contract is documented" begin
-        docs = joinpath(dirname(_FIN_SRC), "docs", "src", "panics.md")
+        docs = joinpath(dirname(_TEST_SOURCE_ROOT), "docs", "src", "panics.md")
         @test isfile(docs)
         text = read(docs, String)
         @test occursin("allocator contract", lowercase(text))

@@ -5,14 +5,14 @@ The generic function registry and monomorphization through
 free functions (Result/Option aware). See [Generics](../generics.md) for the
 user-facing guide.
 
-## Generics (`src/generics.jl`)
+## Generics (`src/macros/generics.jl`)
 
 ```@autodocs
 Modules = [RustCall]
-Pages = [joinpath("src", "generics.jl")]
+Pages = [joinpath("src", "macros", "generics.jl")]
 ```
 
-## `#[julia]` functions (`src/julia_functions.jl`)
+## `#[julia]` functions (`src/macros/julia_functions.jl`)
 
 ### Strings in `#[julia]` functions
 
@@ -38,10 +38,10 @@ shout("hello")  # "HELLO"
 
 ```@autodocs
 Modules = [RustCall]
-Pages = [joinpath("src", "julia_functions.jl")]
+Pages = [joinpath("src", "macros", "julia_functions.jl")]
 ```
 
-## Julia names of Rust items (`src/julia_names.jl`)
+## Julia names of Rust items (`src/macros/julia_names.jl`)
 
 The one decision of the name every Rust item — function, method, field,
 struct, module — is bound under in Julia (#514): a raw identifier loses its
@@ -49,5 +49,5 @@ struct, module — is bound under in Julia (#514): a raw identifier loses its
 
 ```@autodocs
 Modules = [RustCall]
-Pages = [joinpath("src", "julia_names.jl")]
+Pages = [joinpath("src", "macros", "julia_names.jl")]
 ```

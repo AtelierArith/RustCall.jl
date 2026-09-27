@@ -121,7 +121,7 @@ use serde::{Deserialize, Serialize};
 ///   method returning an owned `String`, the expanded library exports only
 ///   `<Struct>_<method>_free_rust_string`, and where the struct has no local
 ///   string helper at all that derived symbol does not exist: the buffer is
-///   never released and leaks, silently. `src/manifest.jl` validates exact
+///   never released and leaks, silently. `src/macros/manifest.jl` validates exact
 ///   equality, so bumping the version is what makes such a consumer refuse the
 ///   manifest instead of using the wrong owner (#342 review).
 /// * **9** adds [`Function::callable_path`] and [`Struct::callable_path`]

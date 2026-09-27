@@ -671,11 +671,10 @@ end
     item = "(?:f|m|s|sig|func|method|info|struct_info)"
     patterns = [Regex("Symbol\\($item\\.name\\)"), Regex("\\b$item\\.name =>"),
                 Regex("_\\\$\\($item\\.name\\)")]
-    src = joinpath(dirname(@__DIR__), "src")
     offenders = String[]
-    for file in ("pyo3_host.jl", "crate_bindings.jl", "structs.jl", "julia_functions.jl",
-                 "ruststr.jl", "julia_names.jl")
-        for (n, line) in enumerate(eachline(IOBuffer(read_source_tree(joinpath(src, file)))))
+    for file in ("pyo3/pyo3_host.jl", "crate_bindings/crate_bindings.jl", "ffi/structs.jl",
+                 "macros/julia_functions.jl", "macros/ruststr.jl", "macros/julia_names.jl")
+        for (n, line) in enumerate(eachline(IOBuffer(read_source_tree(_test_source_path(file)))))
             startswith(lstrip(line), "#") && continue
             # The crate's own package name, not an item's.
             occursin("rust_crate_\$(info.name)_", line) && continue

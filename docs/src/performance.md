@@ -18,7 +18,7 @@ RustCall.jl automatically caches compiled Rust libraries. This eliminates the ne
 ### How Caching Works
 
 - **Cache key**: `RustCall.artifact_key` of a `RustCall.ArtifactId` — the single
-  identity function of the package (`src/artifact_id.jl`). The record names
+  identity function of the package (`src/artifacts/artifact_id.jl`). The record names
   everything that can change the produced binary: the expanded source, generic
   type parameters *in declaration order*, target triple, codegen options, the
   `#[cfg]` snapshot, the dependency set (a local `path =` dependency contributes
@@ -57,7 +57,7 @@ Two inputs are tracked **best effort** and are documented limits, not proofs:
   allowlist (`RUSTFLAGS`, `CARGO_PROFILE_*`, `PYO3_*`, `CC`, `PKG_CONFIG_PATH`, …; never
   anything that looks like a credential). A build script may read any variable it
   likes, and the only exhaustive answer is Cargo's own fingerprint. Extend
-  `ARTIFACT_BUILD_ENV_*` in `src/artifact_id.jl` — the one place — if you need
+  `ARTIFACT_BUILD_ENV_*` in `src/artifacts/artifact_id.jl` — the one place — if you need
   more.
 - **Files outside a package directory.** A `#[path = "../../elsewhere.rs"]`
   module or an `include_str!` above the crate root is compiled in but does not
