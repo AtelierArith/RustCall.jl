@@ -6,10 +6,33 @@ const PR_BABYSIT_SKILL_PATH = joinpath(@__DIR__, "..", ".claude", "skills", "pr-
     # Windows checkouts may expose CRLF even though the committed skill uses LF.
     skill = replace(read(PR_BABYSIT_SKILL_PATH, String), "\r\n" => "\n")
 
-    @test occursin("wait until the requested Codex review for that exact", skill)
+    @test occursin("Wait until the requested Codex review for `HEAD_SHA` is complete", skill)
     @test occursin("A missing result or a `Running` status is pending", skill)
-    @test occursin("If review is pending, its status is", skill)
-    @test occursin("end this pass as pending without editing.", skill)
+    @test occursin("check or review is pending or unavailable", skill)
+    @test occursin("end this pass as pending", skill)
+    @test occursin("without\nediting.", skill)
+    @test occursin("rerun the check-runs query for `HEAD_SHA`", skill)
+    @test occursin("All check runs for\n`HEAD_SHA` must be complete.", skill)
+
+    head_sha_capture = findfirst(
+        raw"HEAD_SHA=$(gh pr view <PR> --json headRefOid --jq .headRefOid)", skill)
+    sha_specific_checks = findfirst(
+        raw"gh api --method GET repos/<OWNER>/<REPO>/commits/$HEAD_SHA/check-runs", skill)
+    @test head_sha_capture !== nothing
+    @test sha_specific_checks !== nothing
+    if head_sha_capture !== nothing && sha_specific_checks !== nothing
+        @test first(head_sha_capture) < first(sha_specific_checks)
+    end
+
+    @test occursin("If any check is queued or in progress, note it and end this pass as pending", skill)
+    @test occursin("Use one commit per logical fix, then\npush those commits together once the whole round is addressed.", skill)
+
+    @test occursin(
+        r"gh api --method GET repos/<OWNER>/<REPO>/commits/\$HEAD_SHA/check-runs \\\n\s+-f per_page=100",
+        skill,
+    )
+    @test occursin("For each job whose conclusion is `failure`:", skill)
+    @test !occursin("For each job that is `fail`:", skill)
 
     command = match(r"(?m)^rg -n -e \"([^\"]+)\" /tmp/job\.log \| head$", skill)
     @test command !== nothing
