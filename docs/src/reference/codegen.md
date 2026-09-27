@@ -4,14 +4,14 @@ What the [front doors](compilation.md) run: the `rustc` invocation, the
 compiler's diagnostics read as data, and the `ccall` expressions generated from
 the [FFI manifest](manifest.md).
 
-## Compiler (`src/compiler.jl`)
+## Compiler (`src/build/compiler.jl`)
 
 ```@autodocs
 Modules = [RustCall]
-Pages = [joinpath("src", "compiler.jl")]
+Pages = [joinpath("src", "build", "compiler.jl")]
 ```
 
-## rustc diagnostics (`src/rustc_json.jl`)
+## rustc diagnostics (`src/build/rustc_json.jl`)
 
 `rustc --error-format=json` output, read as data. This is what lets `@irust`
 ask the compiler for a snippet's type instead of guessing it from the source
@@ -19,17 +19,17 @@ ask the compiler for a snippet's type instead of guessing it from the source
 
 ```@autodocs
 Modules = [RustCall]
-Pages = [joinpath("src", "rustc_json.jl")]
+Pages = [joinpath("src", "build", "rustc_json.jl")]
 ```
 
-## Code generation (`src/codegen.jl`)
+## Code generation (`src/ffi/codegen.jl`)
 
 ```@autodocs
 Modules = [RustCall]
-Pages = [joinpath("src", "codegen.jl")]
+Pages = [joinpath("src", "ffi", "codegen.jl")]
 ```
 
-## Names the generated code uses (`src/emitted_names.jl`)
+## Names the generated code uses (`src/ffi/emitted_names.jl`)
 
 A generated module binds the crate's items under their own names, so the code
 it emits reaches Base, Core, RustCall and PythonCall only through names no Rust
@@ -39,5 +39,5 @@ identifier can spell: a `GlobalRef` in `@rust_crate` and the PyO3 host, a
 
 ```@autodocs
 Modules = [RustCall]
-Pages = [joinpath("src", "emitted_names.jl")]
+Pages = [joinpath("src", "ffi", "emitted_names.jl")]
 ```

@@ -1,5 +1,5 @@
 # Test dependency parsing for Phase 3
-# Tests for src/dependencies.jl
+# Tests for src/build/dependencies.jl
 
 using RustCall
 using Test

@@ -696,8 +696,8 @@ pub const PANIC_SYMBOL_SUFFIX: &str = "_take_panic";
 /// Every crate that uses `#[julia]` depends on it already — it is where the
 /// attribute comes from — and every `Cargo.toml` RustCall writes for a crate
 /// with generated wrappers declares it too (`rustcall_runtime_crate_path`, used
-/// by `generate_wrapper_cargo_toml` in `src/crate_bindings.jl` and
-/// `generate_pyo3_wrapper_cargo_toml` in `src/pyo3.jl`), all pointing at the one
+/// by `generate_wrapper_cargo_toml` in `src/crate_bindings/crate_bindings.jl`
+/// and `generate_pyo3_wrapper_cargo_toml` in `src/pyo3/pyo3.jl`), all pointing at the one
 /// directory — two copies in one `cdylib` would each define
 /// [`INSTALL_PANIC_HOOK_SYMBOL`]. The path is spelled `::rustcall_julia_macros`,
 /// so a module of any depth reaches it and no local item can shadow it; the one
@@ -706,7 +706,7 @@ pub const PANIC_SYMBOL_SUFFIX: &str = "_take_panic";
 pub const RUNTIME_CRATE: &str = "rustcall_julia_macros";
 
 /// The symbol a file-owned artifact exports to install its quiet panic hook.
-/// Julia resolves it once per image, at load time (`src/loadpolicy.jl`).
+/// Julia resolves it once per image, at load time (`src/loading/loadpolicy.jl`).
 ///
 /// # Why the `__rustcall_` prefix
 ///

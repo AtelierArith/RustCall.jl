@@ -144,7 +144,7 @@ const _GL_PROJECT = dirname(@__DIR__)
     end
 
     @testset "the source keeps the order: lease before copy, sweep before both" begin
-        src = read(joinpath(_GL_PROJECT, "src", "loadpolicy.jl"), String)
+        src = read(joinpath(_GL_PROJECT, "src", "loading", "loadpolicy.jl"), String)
         body = src[findfirst("function loadable_library_copy", src)[1]:end]
         @test findfirst("_sweep_stale_generation_copies(built)", body)[1] <
               findfirst("_acquire_generation_lease(copy_path)", body)[1] <

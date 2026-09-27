@@ -18,9 +18,9 @@ jobs:
         run: bash scripts/lint_interpolation.sh src
       - name: Check that Julia does not parse Rust syntax with regexes
         run: bash scripts/lint_rust_syntax_regex.sh src
-      - name: Check that artifact identity goes through src/artifact_id.jl
+      - name: Check that artifact identity goes through src/artifacts/artifact_id.jl
         run: bash scripts/lint_artifact_identity.sh src
-      - name: Check that loading and registration go through src/loadpolicy.jl
+      - name: Check that loading and registration go through src/loading/loadpolicy.jl
         run: bash scripts/lint_load_path.sh src
       - name: Check that every FFI entry point takes one generation snapshot
         run: bash scripts/lint_generation_snapshot.sh src

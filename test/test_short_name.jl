@@ -1,8 +1,10 @@
 using Test
 using RustCall
 
+include("source_helpers.jl")
+
 # #504: a short id that names a path or a Cargo package is spelled and owned in
-# one place, `src/short_name.jl`. For each such name, two full keys that share
+# one place, `src/artifacts/short_name.jl`. For each such name, two full keys that share
 # the prefix are forced together here, and their outputs must never mix: a
 # persistent name refuses the second key, a reused one makes the two builds take
 # turns from build start through copy-out.
@@ -10,7 +12,7 @@ using RustCall
 const SN_K1 = "0123456789abcdef" * "1"^48
 const SN_K2 = "0123456789abcdef" * "2"^48
 
-_sn_src(file) = read(joinpath(pkgdir(RustCall), "src", file), String)
+_sn_src(file) = read(_test_source_path(file), String)
 
 @testset "short names are a prefix of the full key, and keys do not move (#504)" begin
     @test RustCall.short_name(SN_K1) == first(SN_K1, RustCall.ARTIFACT_SHORT_ID_LEN)
@@ -325,7 +327,7 @@ end
     end
 end
 
-@testset "the lint keeps short-id locations in src/short_name.jl (#504)" begin
+@testset "the lint keeps short-id locations in src/artifacts/short_name.jl (#504)" begin
     lint = joinpath(pkgdir(RustCall), "scripts", "lint_artifact_identity.sh")
     if Sys.iswindows() || Sys.which("bash") === nothing
         @test_skip "bash is required to run the lint"

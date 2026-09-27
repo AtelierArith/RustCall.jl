@@ -8,7 +8,7 @@ extension modules are on [PyO3 crates](pyo3.md).
 
 ## Crate bindings
 
-`src/crate_bindings.jl` includes the components below into the `RustCall`
+`src/crate_bindings/crate_bindings.jl` includes the components below into the `RustCall`
 module. Public names and the written-bindings format are shared across them.
 
 The explicit-binding runtime contract is:
@@ -19,14 +19,14 @@ The explicit-binding runtime contract is:
 
 ```@autodocs
 Modules = [RustCall]
-Pages = [joinpath("src", file) for file in (
+Pages = [joinpath("src", "crate_bindings", file) for file in (
     "crate_scan.jl", "crate_build_env.jl", "crate_module_expr.jl",
     "crate_layout.jl", "crate_wrappers_expr.jl", "crate_build.jl",
     "crate_runtime.jl", "crate_write.jl", "crate_module_source.jl",
 )]
 ```
 
-## One environment per build (`src/build_env_snapshot.jl`)
+## One environment per build (`src/artifacts/build_env_snapshot.jl`)
 
 Every crate build — `@rust_crate`, `write_bindings_to_file`, the PyO3 wrapper
 and host paths, a hot reload — reads the environment through one
@@ -34,5 +34,5 @@ and host paths, a hot reload — reads the environment through one
 
 ```@autodocs
 Modules = [RustCall]
-Pages = [joinpath("src", "build_env_snapshot.jl")]
+Pages = [joinpath("src", "artifacts", "build_env_snapshot.jl")]
 ```

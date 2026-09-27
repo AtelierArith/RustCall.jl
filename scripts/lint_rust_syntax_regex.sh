@@ -7,20 +7,20 @@
 # regression of that design and must go through the manifest instead.
 #
 # Allowlist (RustCall's own syntax or best-effort diagnostics, not Rust grammar):
-#   src/ruststr.jl      `$var` interpolation in @irust — and nothing else since
+#   src/macros/ruststr.jl      `$var` interpolation in @irust — and nothing else since
 #                       #348: the @irust return type is asked of rustc
-#                       (probe_rust_expression_type in src/compiler.jl, reading
+#                       (probe_rust_expression_type in src/build/compiler.jl, reading
 #                       --error-format=json diagnostics as data) instead of
 #                       being guessed from the snippet's text
-#   src/dependencies.jl `// cargo-deps:` / `//! ```cargo` dependency comment DSL
-#   src/exceptions.jl   brace counting for compile-error hints (diagnostics only)
+#   src/build/dependencies.jl `// cargo-deps:` / `//! ```cargo` dependency comment DSL
+#   src/ffi/exceptions.jl   brace counting for compile-error hints (diagnostics only)
 #
 # Usage: bash scripts/lint_rust_syntax_regex.sh [src]
 
 set -euo pipefail
 
 dir="${1:-src}"
-allow='^(src/ruststr\.jl|src/dependencies\.jl|src/exceptions\.jl):'
+allow='^(src/macros/ruststr\.jl|src/build/dependencies\.jl|src/ffi/exceptions\.jl):'
 
 # Regex literals (r"..."), Regex("...") constructors and eachmatch/match calls
 # whose pattern mentions Rust item keywords or attribute syntax.
@@ -36,7 +36,7 @@ hits=$(grep -rnE --include='*.jl' "$pattern" "$dir" | grep -vE "$allow" || true)
 
 if [[ -n "$hits" ]]; then
     echo "Julia source must not parse Rust syntax with regexes (see issue #264)."
-    echo "Use the FFI manifest from rustcall-extract (src/manifest.jl) instead:"
+    echo "Use the FFI manifest from rustcall-extract (src/macros/manifest.jl) instead:"
     echo
     echo "$hits"
     exit 1

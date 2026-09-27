@@ -1,5 +1,5 @@
 # Test Cargo project generation and building for Phase 3
-# Tests for src/cargoproject.jl and src/cargobuild.jl
+# Tests for src/build/cargoproject.jl and src/build/cargobuild.jl
 
 using RustCall
 using Test

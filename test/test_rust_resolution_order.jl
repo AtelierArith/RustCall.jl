@@ -320,7 +320,7 @@ _ro_block(m::Module, rust::AbstractString) =
         end
 
         # `_resolve_lib` rebinds through that one function, never key by key.
-        source = read(joinpath(dirname(@__DIR__), "src", "rustmacro.jl"), String)
+        source = read(joinpath(dirname(@__DIR__), "src", "macros", "rustmacro.jl"), String)
         body = source[findfirst("function _resolve_lib(", source)[1]:end]
         body = body[1:findfirst("\nend", body)[1]]
         code = join((l for l in split(body, '\n') if !startswith(strip(l), "#")), '\n')
@@ -471,7 +471,7 @@ _ro_block(m::Module, rust::AbstractString) =
         # Source-level: the four `@rust` entry points ask `resolve_rust_call`
         # and nothing else decides generic-or-function; it restores the
         # caller's blocks before it resolves anything.
-        source = read(joinpath(dirname(@__DIR__), "src", "rustmacro.jl"), String)
+        source = read(joinpath(dirname(@__DIR__), "src", "macros", "rustmacro.jl"), String)
         code_of(name) = begin
             body = source[findfirst("function $(name)(", source)[1]:end]
             body = body[1:findfirst("\nend", body)[1]]

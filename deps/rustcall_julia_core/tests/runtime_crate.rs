@@ -4,7 +4,7 @@
 //! writes whole (`panic_hook_items()`), and compiled once into the runtime crate
 //! every `#[julia]` crate depends on. They must be the *same* items — a
 //! `#[julia]` wrapper and an inline `rust"""` wrapper get the same silence, and
-//! `src/loadpolicy.jl` resolves one symbol name for both (#304).
+//! `src/loading/loadpolicy.jl` resolves one symbol name for both (#304).
 //!
 //! Regenerate with `UPDATE_GOLDEN=1 cargo test` (then `cargo fmt`) and review
 //! the diff.

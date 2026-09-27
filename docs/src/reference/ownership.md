@@ -7,23 +7,23 @@ helpers library (`deps/rustcall_helpers/`), and the Julia types generated for
 `#[julia]` structs. See [Struct Mapping](../struct_mapping.md) for the
 user-facing guide.
 
-## Wrapper types (`src/types.jl`)
+## Wrapper types (`src/ffi/types.jl`)
 
 ```@autodocs
 Modules = [RustCall]
-Pages = [joinpath("src", "types.jl")]
+Pages = [joinpath("src", "ffi", "types.jl")]
 ```
 
-## Memory and ownership (`src/memory.jl`)
+## Memory and ownership (`src/ffi/memory.jl`)
 
 ```@autodocs
 Modules = [RustCall]
-Pages = [joinpath("src", "memory.jl")]
+Pages = [joinpath("src", "ffi", "memory.jl")]
 ```
 
-## `#[julia]` structs (`src/structs.jl`)
+## `#[julia]` structs (`src/ffi/structs.jl`)
 
 ```@autodocs
 Modules = [RustCall]
-Pages = [joinpath("src", "structs.jl")]
+Pages = [joinpath("src", "ffi", "structs.jl")]
 ```

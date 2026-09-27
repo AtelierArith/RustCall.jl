@@ -16,13 +16,13 @@
 #
 # The snapshot constructors are the only places allowed to resolve a piece:
 #
-#   * `resolve_call_target`            src/ruststr.jl   — a call's pointer, channel,
+#   * `resolve_call_target`            src/macros/ruststr.jl   — a call's pointer, channel,
 #                                                         release fn, return ABI
-#   * `artifact_generation_snapshot`   src/structs.jl   — a struct's destructor + flag
+#   * `artifact_generation_snapshot`   src/ffi/structs.jl   — a struct's destructor + flag
 #   * `generic_struct_generation_snapshot`
-#                                      src/structs.jl   — the generic counterpart
+#                                      src/ffi/structs.jl   — the generic counterpart
 #   * `_call_target` / `_struct_generation`
-#                                      src/crate_bindings.jl — inside a @rust_crate module
+#                                      src/crate_bindings/crate_bindings.jl — inside a @rust_crate module
 #
 # So this lint forbids, outside the file that *defines* each of them, the
 # individual resolvers they are made of.

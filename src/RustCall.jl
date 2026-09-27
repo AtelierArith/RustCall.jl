@@ -104,7 +104,7 @@ is still the current one (#253).
 # Why a counter and not a flag
 
 A call site may keep the `CallTarget` it resolved (`cached_call_target`,
-`src/ruststr.jl`) and reuse it instead of paying `resolve_call_target` again —
+`src/macros/ruststr.jl`) and reuse it instead of paying `resolve_call_target` again —
 7 µs and a hundred allocations, on the way to a 5 ns `ccall`. That is only sound
 while nothing the snapshot captured has changed: a hot reload, an adoption, an
 alias, a retirement, a newly registered return type or panic channel all make a
@@ -112,7 +112,7 @@ kept snapshot a pointer into the wrong generation, which is the #277 bug class.
 
 So the reuse has to be invalidated, and *nothing may be allowed to forget to
 invalidate it*. The bump therefore lives in `_state_mutate_storage!`
-(`src/state_filter.jl`) — the one helper every state-container write already
+(`src/loading/state_filter.jl`) — the one helper every state-container write already
 goes through — rather than at the mutation sites, which are many and which grow.
 A write that does not actually change what a snapshot would say costs a
 re-resolution and nothing else; a write that does and went unnoticed would be a
@@ -245,104 +245,104 @@ end
 # standing registry.
 const REGISTRY_LOCK = STATE.lock
 
-include("state_filter.jl")
+include("loading/state_filter.jl")
 
 # Include submodules in order of dependency
-include("types.jl")
-include("typetranslation.jl")
-include("ffi_contract.jl")
+include("ffi/types.jl")
+include("ffi/typetranslation.jl")
+include("ffi/ffi_contract.jl")
 # How emitted code names Base, Core and RustCall without a name a crate item
 # could take (#528): `@_emitted`, `_emitted_type`, `_emitted_source`.
-include("emitted_names.jl")
+include("ffi/emitted_names.jl")
 # rustc's `--error-format=json` diagnostics, read as data rather than as text
 # (#348). Depends on nothing; must precede compiler.jl, which probes with it.
-include("rustc_json.jl")
-include("compiler.jl")
-include("codegen.jl")
-include("exceptions.jl")
+include("build/rustc_json.jl")
+include("build/compiler.jl")
+include("ffi/codegen.jl")
+include("ffi/exceptions.jl")
 
 # Where `Pkg.build` puts the two native build products, and where they are
 # looked up again (#258). Included before cache.jl, which shares its depot
 # selection, and written so `deps/build.jl` can include the same file.
 include("native_layout.jl")
-include("extractor_identity.jl")
+include("artifacts/extractor_identity.jl")
 
-include("cache.jl")
+include("artifacts/cache.jl")
 
 # The one load/unload path and the policy every front door names (#277):
 # `load_artifact!` / `adopt_artifact!` / `unload_artifact!` and the per-door
 # `LoadPolicy` constructors. Functions here reference RUST_LIBRARIES /
 # CURRENT_LIB from ruststr.jl, which is resolved at call time, so it can sit
 # right after cache.jl.
-include("loadpolicy.jl")
+include("loading/loadpolicy.jl")
 
 # Artifact identity (#278, Phase A). Also right after cache.jl: it is the
 # identity layer the cache sits on and it needs nothing beyond
 # exceptions.jl/compiler.jl (both already included) at load time;
 # toolchain_fingerprint() from manifest.jl is only called at run time.
-include("artifact_id.jl")
+include("artifacts/artifact_id.jl")
 
 # One environment snapshot per crate build (#481): the type every build path
 # reads the environment through. Needs nothing at load time.
-include("build_env_snapshot.jl")
+include("artifacts/build_env_snapshot.jl")
 
-include("memory.jl")
+include("ffi/memory.jl")
 
 # Phase 3: External library integration
-include("dependencies.jl")
-include("dependency_resolution.jl")
+include("build/dependencies.jl")
+include("build/dependency_resolution.jl")
 # Short on-disk names for full artifact keys, owned by the full key (#504).
 # Before the Cargo files, whose constants name its owner record.
-include("short_name.jl")
-include("cargoproject.jl")
-include("cargobuild.jl")
+include("artifacts/short_name.jl")
+include("build/cargoproject.jl")
+include("build/cargobuild.jl")
 
-include("ruststr.jl")
-include("module_state.jl")
-include("rustmacro.jl")
+include("macros/ruststr.jl")
+include("loading/module_state.jl")
+include("macros/rustmacro.jl")
 
 # Phase 2: Generics support
-include("generics.jl")
+include("macros/generics.jl")
 
 # Phase 4: Object mapping support
-include("structs.jl")
+include("ffi/structs.jl")
 
 # Phase 5: #[julia] attribute support
-include("julia_functions.jl")
+include("macros/julia_functions.jl")
 # The Julia name of every Rust item — function, method, field, struct, module (#514)
-include("julia_names.jl")
+include("macros/julia_names.jl")
 
 # FFI manifest consumption (rustcall-extract CLI); depends on the types above
-include("manifest.jl")
+include("macros/manifest.jl")
 
 # The toolchain preflight of #490: the resolved rustc/cargo, the supported
 # floor, and the extractor's status. Uses the compiler identity of
 # artifact_id.jl and the extractor lookup of manifest.jl.
-include("toolchain_check.jl")
+include("artifacts/toolchain_check.jl")
 
 # Phase 6: External crate bindings (Maturin-like feature)
-include("crate_bindings.jl")
+include("crate_bindings/crate_bindings.jl")
 
 # The FFI surface report of #441: runs the wrapper generators of ruststr.jl
 # and crate_bindings.jl in collecting mode (#454) and builds nothing, so it
 # comes after both.
-include("boundary_report.jl")
+include("ffi/boundary_report.jl")
 
 # PyO3 crates without a RustCall attribute: scan reporting and the link plan
 # a wrapper crate needs (#275). Depends on scan_crate from crate_bindings.jl.
-include("pyo3.jl")
+include("pyo3/pyo3.jl")
 
 # The PyO3 Python-host path: build a PyO3 crate as the Python extension it
 # already is, and hand the artifact to a Python implementation (#424 Phase 1).
 # Interpreter-free itself; `RustCallPyO3HostExt` defines the import hook.
-include("pyo3_host.jl")
+include("pyo3/pyo3_host.jl")
 
 # Hot reload support
-include("hot_reload.jl")
+include("loading/hot_reload.jl")
 
 # Cache the `__init__` helper-load path's native code in the package image.
 # Must follow every include whose state containers the workload touches.
-include("precompile.jl")
+include("macros/precompile.jl")
 
 # Export public API — only macros/string literals are exported.
 # All other identifiers are accessible via RustCall.XXX or import RustCall: XXX.

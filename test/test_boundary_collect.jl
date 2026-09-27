@@ -5,7 +5,7 @@ using RustCall
 # `boundary_report` / `inline_boundary_report` run the emitters `rust"""` and
 # `@rust_crate` run, in a collecting mode where every argument and return
 # position a generator decides is recorded and a refusal is a finding instead
-# of a `RustError`. Nothing in `src/boundary_report.jl` re-reads the manifest,
+# of a `RustError`. Nothing in `src/ffi/boundary_report.jl` re-reads the manifest,
 # so a rule added to a generator is in the report by construction — which is
 # what the last testset shows, by adding one.
 
@@ -13,8 +13,8 @@ const BC_SAMPLE_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate")
 
 _bc_keys(positions) = [(p.item, p.position) for p in positions]
 
-@testset "no generation rule is duplicated in src/boundary_report.jl (#454)" begin
-    source = read(joinpath(dirname(@__DIR__), "src", "boundary_report.jl"), String)
+@testset "no generation rule is duplicated in src/ffi/boundary_report.jl (#454)" begin
+    source = read(joinpath(dirname(@__DIR__), "src", "ffi", "boundary_report.jl"), String)
     # The helpers the report of #450 consulted on its own, and the manifest
     # columns it read to decide what generation wraps. None is named here any
     # more: the report runs the generators and prints what they recorded.

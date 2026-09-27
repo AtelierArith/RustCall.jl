@@ -1,5 +1,5 @@
 # Generates `docs/src/type_contract.md` from the FFI contract itself
-# (`src/ffi_contract.jl`), so the documented matrix cannot drift from the table
+# (`src/ffi/ffi_contract.jl`), so the documented matrix cannot drift from the table
 # generated code actually consults (#276, #245 item 4).
 #
 # Run automatically by `docs/make.jl`. The result is checked in so the page is
@@ -11,7 +11,7 @@ const _MATRIX_HEADER = """
 # The FFI type contract
 
 Every decision of the form *"what does this Rust type mean at the C boundary?"*
-is answered in one place, `src/ffi_contract.jl`. Wrapper generation, argument
+is answered in one place, `src/ffi/ffi_contract.jl`. Wrapper generation, argument
 conversion, return-slot selection and the choice of release symbol all read this
 one table (issue #276); there is no second table to disagree with it and no
 fallback guess when it has no answer.
@@ -99,7 +99,7 @@ in the table above: it crosses as a `UInt32` Unicode scalar value, while the
 Julia surface type is `Char` — whose bit pattern is left-aligned UTF-8 and
 therefore *not* the code point. RustCall converts, in one place
 (`ccall_return_type` / `convert_return` and their argument counterparts in
-`src/codegen.jl`), so no generated call site carries the conversion and no
+`src/ffi/codegen.jl`), so no generated call site carries the conversion and no
 position can reinterpret one for the other. A slot that is not a Unicode scalar
 value — above `0x10FFFF`, or in the surrogate range — is refused rather than
 turned into an invalid `Char`.

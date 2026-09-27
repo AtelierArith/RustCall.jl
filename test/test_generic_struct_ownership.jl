@@ -430,7 +430,7 @@ end
 @testset "the generic struct path reads the generic registrations once (#522)" begin
     src = joinpath(pkgdir(RustCall), "src")
     tables = Set([:GENERIC_FUNCTIONS_BY_LIB, :GENERIC_FUNCTION_REGISTRY, :_generic_group_members])
-    structs = _own_functions(joinpath(src, "structs.jl"))
+    structs = _own_functions(joinpath(src, "ffi", "structs.jl"))
     readers = Set(name for (name, exs) in structs
                   if any(ex -> !isempty(intersect(_own_symbols(ex), tables)), exs))
     # One function of structs.jl touches the generic registrations...
@@ -440,7 +440,7 @@ end
     @test _own_count_locks(reader) == 1
     # The group instantiation reads no generic registration at all: which
     # members it builds is decided by its caller's one read.
-    generics = _own_functions(joinpath(src, "generics.jl"))
+    generics = _own_functions(joinpath(src, "macros", "generics.jl"))
     body = only(generics[:_instantiate_generic_struct_group])
     @test isempty(intersect(_own_symbols(body), tables))
     @test !(:_generic_group_member in _own_symbols(body))

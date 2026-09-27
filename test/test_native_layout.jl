@@ -2,6 +2,8 @@ using Test
 using RustCall
 using TOML
 
+include("source_helpers.jl")
+
 # Where `Pkg.build("RustCall")` puts the ownership helper library and the
 # `rustcall-extract` CLI, and where a running RustCall looks for them again
 # (#258).
@@ -35,7 +37,7 @@ _toolchain_required() =
         @test !occursin("librust_helpers", build_jl)
 
         for file in ("memory.jl", "manifest.jl")
-            src = read(joinpath(_REPO_ROOT, "src", file), String)
+            src = read(_test_source_path(file), String)
             @test !occursin("rustcall_extract\", \"target", src)
             @test !occursin("rustcall_helpers\", \"target", src)
             @test !occursin("rust_helpers\", \"target", src)

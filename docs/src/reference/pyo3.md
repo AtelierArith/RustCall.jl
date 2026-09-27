@@ -6,16 +6,16 @@ that finds the Python runtime, the skip reasons a scan reports, and the Python
 host that binds a crate as the extension it already is. See
 [PyO3 Crates](../pyo3.md) for the user-facing guide.
 
-## PyO3 wrapper crates (`src/pyo3.jl`)
+## PyO3 wrapper crates (`src/pyo3/pyo3.jl`)
 
 ```@autodocs
 Modules = [RustCall]
-Pages = [joinpath("src", "pyo3.jl")]
+Pages = [joinpath("src", "pyo3", "pyo3.jl")]
 ```
 
-## The Python host path (`src/pyo3_host.jl`)
+## The Python host path (`src/pyo3/pyo3_host.jl`)
 
 ```@autodocs
 Modules = [RustCall]
-Pages = [joinpath("src", "pyo3_host.jl")]
+Pages = [joinpath("src", "pyo3", "pyo3_host.jl")]
 ```

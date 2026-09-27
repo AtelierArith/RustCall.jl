@@ -26,9 +26,9 @@ The project conventions live in `CLAUDE.md` (the `@CLAUDE.md` line above include
 - No `(@ref)` links to internal bindings in `src/*.jl` docstrings.
 - No `include` lines in `test/runtests.jl`; `test_*.jl` files are discovered automatically.
 - No regexes over Rust source in `src/`; Rust syntax is parsed only in `deps/rustcall_julia_core`.
-- One artifact-identity function (`src/artifact_id.jl`, enforced by `scripts/lint_artifact_identity.sh`) and one FFI type table (`src/ffi_contract.jl`, legacy tables deleted in #286). One load path through `src/loadpolicy.jl` is enforced by `scripts/lint_load_path.sh` from #277 Phase B (PR #289) onward; before that, `src/loadpolicy.jl` is the policy model only and `test/test_loadpolicy.jl` pins the open-coded `dlopen` sites.
+- One artifact-identity function (`src/artifacts/artifact_id.jl`, enforced by `scripts/lint_artifact_identity.sh`) and one FFI type table (`src/ffi/ffi_contract.jl`, legacy tables deleted in #286). One load path through `src/loading/loadpolicy.jl` is enforced by `scripts/lint_load_path.sh` from #277 Phase B (PR #289) onward; before that, `src/loading/loadpolicy.jl` is the policy model only and `test/test_loadpolicy.jl` pins the open-coded `dlopen` sites.
 - Windows: unload libraries before deleting temp trees; a mapped DLL cannot be removed.
-- Finalizers must never lock, `dlsym`, or log — enforced by `test/test_finalizers.jl` from PR #289 onward; the older finalizers in `src/types.jl` and `src/crate_bindings.jl` are migrated there.
+- Finalizers must never lock, `dlsym`, or log — enforced by `test/test_finalizers.jl` from PR #289 onward; the older finalizers in `src/ffi/types.jl` and `src/crate_bindings/crate_bindings.jl` are migrated there.
 
 ## Rust crate versions
 

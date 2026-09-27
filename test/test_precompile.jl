@@ -1,8 +1,8 @@
 # `using RustCall` used to JIT-compile the `__init__` helper-load path in every
 # process: `_state_mutate` was a `do`-block closure specialised on the concrete
 # state-container type, so each registry written during the load paid a fresh
-# 40–80 ms compile. `src/precompile.jl` now caches that path in the package
-# image, and `_StateMutation` (`src/state_filter.jl`) replaces the per-type
+# 40–80 ms compile. `src/macros/precompile.jl` now caches that path in the package
+# image, and `_StateMutation` (`src/loading/state_filter.jl`) replaces the per-type
 # closures with one non-specialising callable.
 #
 # Two things are pinned here:
@@ -176,7 +176,7 @@ end
     leaked = filter(line -> any(occursin(name, line) for name in entry_points), compiled)
     # A hit here means the image was built without the workload's inputs — a
     # `using RustCall` that precompiled before `Pkg.build` produced the
-    # extractor, most likely. Touch `src/precompile.jl` to rebuild the image.
+    # extractor, most likely. Touch `src/macros/precompile.jl` to rebuild the image.
     @test isempty(leaked)
     isempty(leaked) || foreach(println, leaked)
     rm(trace; force = true)

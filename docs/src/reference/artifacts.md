@@ -3,18 +3,18 @@
 Every compiled artifact — a direct `rustc` build, a generated Cargo project, a
 monomorphized generic, a `@rust_crate` library — is named by an
 [`RustCall.ArtifactId`](@ref) and looked up by its [`RustCall.artifact_key`](@ref).
-Identity is computed in exactly one place, `src/artifact_id.jl`; the cache in
-`src/cache.jl` stores what that identity names, in a Scratch.jl space (#252,
+Identity is computed in exactly one place, `src/artifacts/artifact_id.jl`; the cache in
+`src/artifacts/cache.jl` stores what that identity names, in a Scratch.jl space (#252,
 #278).
 
-## Artifact identity (`src/artifact_id.jl`)
+## Artifact identity (`src/artifacts/artifact_id.jl`)
 
 ```@autodocs
 Modules = [RustCall]
-Pages = [joinpath("src", "artifact_id.jl")]
+Pages = [joinpath("src", "artifacts", "artifact_id.jl")]
 ```
 
-## Short names owned by the full key (`src/short_name.jl`)
+## Short names owned by the full key (`src/artifacts/short_name.jl`)
 
 Where Windows' path limit makes a short id a location — a crate's Cargo target
 directory, the PyO3 wrapper's Cargo package, the PyO3 host extension's cache
@@ -27,12 +27,12 @@ claim lock cannot keep two claimants apart there (#507 review).
 
 ```@autodocs
 Modules = [RustCall]
-Pages = [joinpath("src", "short_name.jl")]
+Pages = [joinpath("src", "artifacts", "short_name.jl")]
 ```
 
-## Cache (`src/cache.jl`)
+## Cache (`src/artifacts/cache.jl`)
 
 ```@autodocs
 Modules = [RustCall]
-Pages = [joinpath("src", "cache.jl")]
+Pages = [joinpath("src", "artifacts", "cache.jl")]
 ```

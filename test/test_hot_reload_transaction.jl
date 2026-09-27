@@ -18,11 +18,11 @@ using Libdl
 using RustCall
 
 const _HRT_SRC = read(joinpath(dirname(dirname(pathof(RustCall))), "src",
-                               "hot_reload.jl"), String)
+                               "loading", "hot_reload.jl"), String)
 _src_loadpolicy() = read(joinpath(dirname(dirname(pathof(RustCall))), "src",
-                                  "loadpolicy.jl"), String)
+                                  "loading", "loadpolicy.jl"), String)
 _src_structs() = read(joinpath(dirname(dirname(pathof(RustCall))), "src",
-                               "structs.jl"), String)
+                               "ffi", "structs.jl"), String)
 
 const _HRT_CARGO = try
     success(run(pipeline(`cargo --version`, devnull, devnull); wait = true))
@@ -199,7 +199,7 @@ end
     # (1b) A generation record is published whole, or not at all (#402).
     # ------------------------------------------------------------------
     @testset "the generation cell is published atomically (#402)" begin
-        # `CrateGeneration` holds a `Ref{Bool}`, and `src/loadpolicy.jl` used to
+        # `CrateGeneration` holds a `Ref{Bool}`, and `src/loading/loadpolicy.jl` used to
         # reason from that: not `isbits`, so a `RefValue` of it holds a
         # *pointer* and publishing is a single store. That is wrong — Julia
         # stores the struct inline, `sizeof(Ref{CrateGeneration})` is 24 — and a

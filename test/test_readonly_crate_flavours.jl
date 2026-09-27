@@ -128,7 +128,7 @@ end
             # So must the generated wrapper's package name, which Cargo puts
             # in `build/<package>-<16>/` for the wrapper's own build script.
             @test occursin("with_short_name(target, key; prefix = \"rustcall_wrapper_\")",
-                           read(joinpath(pkgdir(RustCall), "src", "pyo3.jl"), String))
+                           read(joinpath(pkgdir(RustCall), "src", "pyo3", "pyo3.jl"), String))
             @test length(RustCall.short_name("f"^64; prefix = "rustcall_wrapper_")) ==
                   length("rustcall_wrapper_") + RustCall.ARTIFACT_SHORT_ID_LEN
 

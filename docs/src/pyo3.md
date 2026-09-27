@@ -136,7 +136,7 @@ imports it. With the artifact already cached that is a few subprocesses (the
 extractor, the toolchain probes, `cargo tree`, one start of the interpreter for
 its `EXT_SUFFIX` and fingerprint) and **no compilation of RustCall's code**:
 RustCall's own package image carries the scan and the cache lookup
-(`src/precompile.jl` runs that interpreter-free half against a throwaway crate
+(`src/macros/precompile.jl` runs that interpreter-free half against a throwaway crate
 while RustCall precompiles), and `RustCallPyO3HostExt`'s image carries the
 import. A downstream package needs no `precompile` directive of its own for it.
 Before #449 the same first call spent most of a second compiling RustCall's

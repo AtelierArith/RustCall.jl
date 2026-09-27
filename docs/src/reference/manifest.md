@@ -15,14 +15,14 @@ crate (`@rust_crate`), whose features and build script RustCall does not
 control, decides target predicates alone (`cfg = :lenient`, `--cfg-lenient`).
 The predicate of every reported item is recorded in its `cfg` field.
 
-## Extractor interface (`src/manifest.jl`)
+## Extractor interface (`src/macros/manifest.jl`)
 
 ```@autodocs
 Modules = [RustCall]
-Pages = [joinpath("src", "manifest.jl")]
+Pages = [joinpath("src", "macros", "manifest.jl")]
 ```
 
-## Toolchain check (`src/toolchain_check.jl`)
+## Toolchain check (`src/artifacts/toolchain_check.jl`)
 
 `RustCall.check_toolchain()` reports the `rustc` / `cargo` RustToolChain
 resolves, the minimum supported `rustc`, and the extractor's status, without
@@ -30,5 +30,5 @@ building anything (#490).
 
 ```@autodocs
 Modules = [RustCall]
-Pages = [joinpath("src", "toolchain_check.jl")]
+Pages = [joinpath("src", "artifacts", "toolchain_check.jl")]
 ```

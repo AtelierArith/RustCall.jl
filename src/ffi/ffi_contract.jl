@@ -1,0 +1,2240 @@
+# The FFI type contract: single source of truth (issue #276)
+#
+# RustCall used to decide "what does this Rust type mean at the C boundary?" in
+# five independent places, each with its own table and its own domain — plus
+# `RUST_TO_JULIA_TYPE_MAP`, a sixth and wider one. They disagreed: `u16` was
+# `UInt16` in a free function and `Any` in a struct field, `usize` was
+# `Csize_t` in two of them and `UInt64` in a third, `i128` and `char` were in
+# none of them although the Rust side generates wrappers for both, and `str`
+# was a `Cstring` — a NUL-terminated pointer, which a Rust string is not.
+#
+# This file is the one table they collapsed into (Phase B). It also makes
+# explicit two things the manifest leaves implicit:
+#
+#   * the **C ABI form** of a value — by value, behind a pointer, as a
+#     `(ptr, len)` pair, as a `(ptr, len, cap)` triple, ...
+#   * **ownership** — who is responsible for releasing the memory a C slot
+#     points at, and through which symbol.
+#
+# What remains outside it, deliberately: `is_ffi_compatible_type` /
+# `is_non_ffi_type` (`deps/rustcall_julia_core/src/types.rs`) is the *acceptance
+# gate* on the Rust side — it decides whether a wrapper is generated at all,
+# not what the type means — and `JULIA_TO_RUST_TYPE_MAP` covers the reverse
+# direction, which a Julia type does not determine on its own.
+#
+# The manifest, not the Rust spelling, is the authority on how a value was
+# lowered. The `abi` column (`Arg.abi`, `Function.return_abi`,
+# `Method.return_abi`, `Field.abi`) takes the values `""` (as written),
+# `"string"` and `"str"`; every entry point here accepts it verbatim as the
+# `abi` keyword and lets it override the ABI derived from the spelling.
+#
+# `test/test_ffi_contract.jl` holds what were the divergence tests and are now
+# the regression tests for #245, #246 and #249.
+
+# ============================================================================
+# Vocabulary
+# ============================================================================
+
+"""
+    FFI_ABI_KINDS
+
+The C ABI forms a Rust value can take when it crosses the boundary.
+
+| kind             | C slots                              | notes |
+| ---------------- | ------------------------------------ | ----- |
+| `:void`          | none                                 | the Rust unit type `()` |
+| `:by_value`      | one, the scalar itself               | primitives, `#[repr(C)]` aggregates |
+| `:pointer`       | one, `Ptr{T}`                        | raw pointers, opaque handles |
+| `:ptr_len`       | `Ptr{UInt8}` + `Csize_t`             | `&str` and `&[T]` slices |
+| `:ptr_len_cap`   | `Ptr{UInt8}` + 2 × `Csize_t`         | an owned Rust `String` / `Vec<T>` buffer |
+| `:callback`      | `Ptr{Cvoid}`                         | a C-ABI function pointer built from a Julia function, argument position only (#296) |
+| `:unknown`       | undefined                            | the type is not in the contract |
+
+The two multi-word kinds reach a `ccall` differently depending on direction:
+as **separate argument slots** in argument position, and as **one `#[repr(C)]`
+aggregate** (`CRustStr` / `CRustString`) in return position, since a `ccall` has
+exactly one return type. [`FFIContract`](@ref) records both — `ccall_types` for
+the calling convention, `layout` for the word list.
+
+`:unknown` exists so that callers can *fail closed* (issue #276 acceptance
+criterion 2) rather than fall back to a guess, the way the removed
+`call_rust_function_infer` once did (#417).
+"""
+const FFI_ABI_KINDS = (:void, :by_value, :pointer, :ptr_len, :ptr_len_cap, :callback, :unknown)
+
+"""
+    FFI_OWNERSHIP_KINDS
+
+Who owns the memory a C slot refers to, and therefore who must release it.
+
+| kind                   | meaning |
+| ---------------------- | ------- |
+| `:none`                | nothing is owned; the value is a scalar passed by value |
+| `:borrowed`            | the pointee belongs to the other side and is only valid for the duration of the call |
+| `:owned_by_julia`      | Julia allocated the buffer; Julia frees it, and must keep it rooted (`GC.@preserve`) across the call |
+| `:owned_by_rust`       | Rust allocated it; Julia releases it **within the call** by calling `free_symbol` (#246) |
+| `:transferred_to_julia`| the *responsibility* to release moved to Julia, which **must** do so by calling `free_symbol` — never through Julia's allocator |
+| `:unknown`             | the contract does not say — callers must fail rather than assume |
+
+# `:owned_by_rust` vs `:transferred_to_julia`
+
+The release **mechanism is identical**: both call the Rust export named by
+`free_symbol`, so the Rust destructor runs on the allocator that allocated the
+value. Julia never frees Rust memory itself — not with `Libc.free`, not with its
+own GC. Freeing a `Box::into_raw` handle any other way skips `Drop` and, once a
+crate installs a `#[global_allocator]`, corrupts the heap (#249).
+
+What differs is **when**, and therefore who holds the pointer:
+
+* `:owned_by_rust` — the value does not outlive the call. The wrapper copies it
+  into Julia memory and calls `free_symbol` before returning, as
+  `_call_rust_owned_string` already does in a `finally`
+  (`src/ffi/structs.jl`). Julia never stores the raw pointer.
+* `:transferred_to_julia` — the value outlives the call. Julia keeps the handle
+  (a `Box::into_raw` pointer inside a struct wrapper, from a generated
+  constructor wrapper in `rustcall_julia_core::codegen`) and
+  is responsible for calling `free_symbol` later, from a finalizer.
+
+Both are in [`FFI_OWNERSHIP_NEEDS_FREE`], so both always name that symbol. A
+missing `free_symbol` on either is the root of #246 (leaked `String` returns)
+and #249 (the drop symbol picked from the Julia-side type tag instead of from
+the library that allocated the value).
+"""
+const FFI_OWNERSHIP_KINDS =
+    (:none, :borrowed, :owned_by_julia, :owned_by_rust, :transferred_to_julia, :unknown)
+
+"""
+    FFIType
+
+One row of the contract: what a Rust type spelling means at the boundary.
+
+# Fields
+- `rust::String` — the canonical Rust spelling (`"i32"`, `"String"`, `"&str"`, `"()"`).
+- `ccall_type::Type` — the Julia type of the single C slot in the *by value*
+  form. For multi-slot ABIs (`:ptr_len`, `:ptr_len_cap`) this is the type of the
+  leading pointer slot; use [`ffi_argument_contract`](@ref) /
+  [`ffi_return_contract`](@ref) for the full slot list.
+- `surface_type::Type` — the type a Julia caller sees.
+- `julia_expr::Union{Symbol,Expr}` — how the surface type is *spelled* in
+  generated code, as a Julia AST fragment ready to splice with `\$`: a `Symbol`
+  for a plain name (`:Int32`, `:Cvoid`, `:RustString`) and an `Expr` for a
+  parametric one (`:(Ptr{Ptr{Int32}})`). Kept separate from `surface_type`
+  because Julia aliases erase spellings: `Cvoid === Nothing` and
+  `Csize_t === UInt64`, and the existing generators emit `:Cvoid` / `:Csize_t`.
+  Evaluating it in the `RustCall` module yields `surface_type`.
+- `abi::Symbol` — one of [`FFI_ABI_KINDS`], the ABI when the type appears as a
+  plain by-value argument or return.
+- `ownership::Symbol` — one of [`FFI_OWNERSHIP_KINDS`].
+- `note::String` — why this row is the way it is, when that is not obvious.
+"""
+struct FFIType
+    rust::String
+    ccall_type::Type
+    surface_type::Type
+    julia_expr::Union{Symbol, Expr}
+    abi::Symbol
+    ownership::Symbol
+    note::String
+end
+
+"""
+    FFIContract
+
+The contract for one *position* — a single argument, or the return value — of a
+function, i.e. an [`FFIType`](@ref) resolved for a direction and (optionally)
+for the manifest `abi` column.
+
+# Fields
+- `rust_type::String` — the Rust spelling this was resolved from.
+- `direction::Symbol` — `:argument` or `:return`.
+- `abi::Symbol` — the resolved [`FFI_ABI_KINDS`] entry.
+- `ccall_types::Vector{Type}` — **what this position contributes to a `ccall`
+  signature**, which is direction-dependent for the multi-word ABIs:
+  * `:void` return — empty;
+  * `:by_value` / `:pointer` — one entry;
+  * `:ptr_len` / `:ptr_len_cap` as an *argument* — the two or three separate
+    argument slots the wrapper takes;
+  * `:ptr_len` / `:ptr_len_cap` as a *return* — exactly one entry, the
+    `#[repr(C)]` aggregate the wrapper returns, because a `ccall` has one
+    return type. See `aggregate_type`.
+- `aggregate_type::Union{Nothing,Type}` — the single `#[repr(C)]` struct the C
+  value *is*, when this position passes an aggregate. Set for `:ptr_len` /
+  `:ptr_len_cap` in return position (`CRustStr` / `CRustString`, matching
+  `<fn>_RustCallBorrowedString` / `<fn>_RustCallOwnedString` emitted by
+  `rustcall_julia_core::codegen`), `nothing` otherwise — arguments
+  are expanded into separate slots, not passed as an aggregate.
+- `layout::Vector{Type}` — the C field layout of the value, in order, for the
+  multi-word ABIs (`[Ptr{UInt8}, Csize_t]` / `[Ptr{UInt8}, Csize_t, Csize_t]`).
+  Direction-independent: it describes the value, not the calling convention.
+  Empty for the single-word ABIs.
+- `surface_type::Type` — the Julia type the user sees at this position.
+- `ownership::Symbol` — one of [`FFI_OWNERSHIP_KINDS`].
+- `free_symbol::Union{Nothing,String}` — for `:owned_by_rust`, the name of the
+  symbol that releases the value. The name is per-owner
+  (`<fn|Struct>_free_rust_string`, emitted by `rustcall_julia_core::codegen`), so
+  it is filled in only when the caller passes `owner`; `nothing` otherwise.
+- `known::Bool` — `false` when the Rust spelling is not in the contract. A
+  caller that must fail closed checks this instead of inspecting the fallback.
+"""
+struct FFIContract
+    rust_type::String
+    direction::Symbol
+    abi::Symbol
+    ccall_types::Vector{Type}
+    aggregate_type::Union{Nothing, Type}
+    layout::Vector{Type}
+    surface_type::Type
+    ownership::Symbol
+    free_symbol::Union{Nothing, String}
+    known::Bool
+end
+
+# ============================================================================
+# The table
+# ============================================================================
+
+_ffi_row(rust, ccall_type, surface_type, julia_expr, abi, ownership, note = "") =
+    FFIType(rust, ccall_type, surface_type, julia_expr, abi, ownership, note)
+
+_ffi_scalar(rust, T, sym = Symbol(T)) = _ffi_row(rust, T, T, sym, :by_value, :none)
+
+"""
+    FFI_TYPE_TABLE :: Dict{String, FFIType}
+
+The single source of truth: Rust type spelling → [`FFIType`](@ref).
+
+Built by merging the domains of the five existing tables (see the header of
+this file). Every spelling accepted by *any* of them is present here, so a type
+that one layer accepts can no longer be silently mistranslated by the next
+(#245 item 2). Spellings the contract deliberately refuses are absent, and
+[`ffi_lookup`](@ref) returns `nothing` for them.
+"""
+const FFI_TYPE_TABLE = _state_view(:ffi_type_table, Dict{String, FFIType}())
+
+function _ffi_register!(entry::FFIType)
+    FFI_TYPE_TABLE[entry.rust] = entry
+    return entry
+end
+
+# -- Rust primitives ---------------------------------------------------------
+# The `PRIMITIVES` list of `deps/rustcall_julia_core/src/types.rs` in full. The
+# Julia-side tables stop at 13 of them; `i128`, `u128` and `char` are accepted
+# by the Rust side and map to `:Any` on the Julia side today (#245 item 2).
+# `i128` / `u128` do not round-trip on `x86_64-pc-windows-msvc`: MSVC has no
+# native 128-bit integer, so Rust and Julia disagree on how `extern "C"` passes
+# one (rust-lang/rust#54341). That is a platform ABI mismatch, not a mapping
+# choice — the row below is the only honest one, and no Julia-side type would
+# make the two agree.
+for (rust, T) in (
+    ("i8", Int8),
+    ("i16", Int16),
+    ("i32", Int32),
+    ("i64", Int64),
+    ("i128", Int128),
+    ("u8", UInt8),
+    ("u16", UInt16),
+    ("u32", UInt32),
+    ("u64", UInt64),
+    ("u128", UInt128),
+    ("f32", Float32),
+    ("f64", Float64),
+    ("bool", Bool),
+)
+    _ffi_register!(_ffi_scalar(rust, T))
+end
+
+# `usize` / `isize` are spelled with the C aliases because that is what the
+# generated code emits; `Csize_t === UInt64` and `Cssize_t === Int64` on every
+# platform RustCall supports, so this agrees as a *type* with the `UInt` / `Int`
+# the retired `RUST_TO_JULIA_TYPE_MAP` used, while differing as a *spelling*.
+_ffi_register!(_ffi_scalar("usize", Csize_t, :Csize_t))
+_ffi_register!(_ffi_scalar("isize", Cssize_t, :Cssize_t))
+
+# Rust `char` is a 4-byte Unicode scalar value. Julia's `Char` is also 4 bytes
+# but stores UTF-8 code units left-aligned, so the bit patterns differ: the C
+# slot must be `UInt32` and the surface value converted, never reinterpreted.
+_ffi_register!(FFIType(
+    "char", UInt32, Char, :Char, :by_value, :none,
+    "Rust char is a code point; Julia Char is left-aligned UTF-8. Convert, do not reinterpret.",
+))
+
+# -- The unit type -----------------------------------------------------------
+_ffi_register!(FFIType("()", Cvoid, Cvoid, :Cvoid, :void, :none, ""))
+
+# -- `std::os::raw` aliases --------------------------------------------------
+for (rust, T, sym) in (
+    ("c_char", Cchar, :Cchar),
+    ("c_int", Cint, :Cint),
+    ("c_uint", Cuint, :Cuint),
+    ("c_long", Clong, :Clong),
+    ("c_ulong", Culong, :Culong),
+    ("c_longlong", Clonglong, :Clonglong),
+    ("c_ulonglong", Culonglong, :Culonglong),
+    ("c_float", Cfloat, :Cfloat),
+    ("c_double", Cdouble, :Cdouble),
+)
+    _ffi_register!(_ffi_scalar(rust, T, sym))
+end
+
+# -- Strings -----------------------------------------------------------------
+# **The spelling does not determine the ABI. Only the manifest does.**
+#
+# Before #274 string lowering differed between wrapper flavours (only the
+# inline method wrapper lowered strings into `(ptr, len)` arguments and a
+# `<fn>_RustCallOwnedString` / `<fn>_RustCallBorrowedString` return). #274 made
+# the lowering uniform *and* recorded it in the manifest as `Arg.abi` /
+# `Method.return_abi`, and the rule stays: **the manifest `abi` column is the
+# only authority on whether lowering happened.** These rows therefore carry
+# `:unknown` — a bare `String`
+# spelling with `abi == ""` fails closed rather than describing a lowering the
+# wrapper may not have performed. `abi = "string"` / `"str"` selects the lowered
+# form, and only then does the contract name the slots, the aggregate and the
+# ownership:
+#
+#   * as an argument, both arrive as `(ptr, len)` bytes — Julia owns the buffer
+#     and must keep it rooted for the call; the wrapper copies (`String`) or
+#     borrows (`&str`);
+#   * as a return, `"string"` is an owned `(ptr, len, cap)` buffer that Julia
+#     must hand back to the library that allocated it, and `"str"` is a borrowed
+#     `(ptr, len)` view.
+#
+# The `surface_type` / `julia_expr` columns stay meaningful regardless: they
+# describe the Julia-visible type, not the calling convention.
+_ffi_register!(FFIType(
+    "String", Ptr{UInt8}, RustString, :RustString, :unknown, :unknown,
+    "Owned Rust buffer, never a Cstring (#246) — but only the manifest abi column says whether the wrapper lowered it.",
+))
+_ffi_register!(FFIType(
+    "&str", Ptr{UInt8}, RustStr, :RustStr, :unknown, :unknown,
+    "Fat pointer (ptr, len) when lowered; the manifest abi column says whether it was.",
+))
+# Bare `str` is unsized and cannot cross the boundary by value; the existing
+# it is a `(ptr, len)` view like `&str`, never the `Cstring` the retired
+# `RUST_TO_JULIA_TYPE_MAP` claimed (#246).
+_ffi_register!(FFIType(
+    "str", Ptr{UInt8}, RustStr, :RustStr, :unknown, :unknown,
+    "Unsized; only ever reachable behind a reference, so it travels as (ptr, len), never as a Cstring.",
+))
+
+# ============================================================================
+# Lookup
+# ============================================================================
+
+const _FFI_PTR_CONST_PREFIX = "*const "
+const _FFI_PTR_MUT_PREFIX = "*mut "
+
+# The only path prefixes under which a trailing primitive segment is guaranteed
+# to *be* that primitive. `rustcall_julia_core::types::is_ffi_compatible_type`
+# (`deps/rustcall_julia_core/src/types.rs`) is laxer: it matches on `last_ident`
+# alone, so it also accepts `mycrate::i32`, where `i32` may be a user type
+# alias with a completely different layout. The contract deliberately does not
+# follow it that far — an unqualified last segment is not evidence — so
+# `mycrate::i32` stays unknown and fails closed. That gap is a recorded
+# divergence in `test/test_ffi_contract.jl`, and closing it needs the extractor
+# to resolve the path (#270), not a wider guess here.
+const FFI_PRIMITIVE_PATH_PREFIXES = ("core::primitive::", "std::primitive::")
+
+"""
+    ffi_normalize_spelling(rust_type::AbstractString) -> String
+
+The table key for a Rust type spelling: whitespace trimmed, and a
+`core::primitive::` / `std::primitive::` qualifier stripped so that
+`core::primitive::i32` resolves like `i32`. A leading `::` (the rooted form
+`::core::primitive::i32`, which `type_to_string` preserves) is stripped first.
+
+Only those two prefixes are stripped; see [`FFI_PRIMITIVE_PATH_PREFIXES`] for
+why an arbitrary `mycrate::i32` — rooted or not — is not normalized even though
+`rustcall_julia_core` accepts it.
+"""
+function ffi_normalize_spelling(rust_type::AbstractString)
+    key = String(strip(rust_type))
+    # A rooted path (`::core::primitive::i32`) names the same type as the
+    # unrooted one; only the primitive prefixes below act on it, so an
+    # unrecognised rooted path is returned untouched and still fails closed.
+    rooted = startswith(key, "::") ? key[3:end] : key
+    for prefix in FFI_PRIMITIVE_PATH_PREFIXES
+        if startswith(rooted, prefix)
+            tail = rooted[(length(prefix) + 1):end]
+            # Only a bare final segment: `core::primitive::i32`, never
+            # `core::primitive::foo::bar`.
+            occursin("::", tail) && return key
+            return tail
+        end
+    end
+    return key
+end
+
+"""
+    ffi_lookup(rust_type::AbstractString) -> Union{FFIType, Nothing}
+
+The contract row for a Rust type spelling, or `nothing` when the contract does
+not cover it. The spelling is normalized with [`ffi_normalize_spelling`](@ref)
+first, so `core::primitive::u8` resolves like `u8`.
+
+Raw pointer spellings (`*const T`, `*mut T`) are synthesised on demand: they map
+to `Ptr{J}` where `J` is the pointee's Julia type. The pointee is resolved
+*recursively* through `ffi_lookup`, so `*const *mut i32` is `Ptr{Ptr{Int32}}`;
+only a pointee the contract genuinely cannot map (an opaque handle, or a
+multi-word type like `String` that has no single-word C form) degrades to
+`Ptr{Cvoid}`. This mirrors `rustcall_julia_core`'s `Type::Ptr => true`
+(`is_ffi_compatible_type` in `deps/rustcall_julia_core/src/types.rs`), which
+accepts every pointer wholesale.
+
+`nothing` is the fail-closed answer. Callers must not substitute a default for
+it; that is the guess this file exists to remove (#245 item 1).
+"""
+function ffi_lookup(rust_type::AbstractString)
+    key = ffi_normalize_spelling(rust_type)
+    entry = get(FFI_TYPE_TABLE, key, nothing)
+    entry === nothing || return entry
+    return _ffi_pointer_row(key)
+end
+
+function _ffi_pointer_row(key::AbstractString)
+    if startswith(key, _FFI_PTR_CONST_PREFIX)
+        return _ffi_pointer_row(key, strip(key[(length(_FFI_PTR_CONST_PREFIX) + 1):end]))
+    elseif startswith(key, _FFI_PTR_MUT_PREFIX)
+        return _ffi_pointer_row(key, strip(key[(length(_FFI_PTR_MUT_PREFIX) + 1):end]))
+    end
+    return nothing
+end
+
+function _ffi_pointer_row(key::AbstractString, pointee::AbstractString)
+    # Recursive: the pointee may itself be a pointer spelling.
+    inner = ffi_lookup(pointee)
+    T = if inner === nothing || !(inner.abi === :by_value || inner.abi === :pointer)
+        Ptr{Cvoid}
+    else
+        Ptr{inner.ccall_type}
+    end
+    note = inner === nothing ? "Opaque pointee: the contract does not know $(pointee)." : ""
+    # Ownership of a raw pointer is NOT derivable from the spelling. A generated
+    # constructor returns `Box::into_raw` (`rustcall_julia_core::codegen`),
+    # which Julia owns and must free, while another `*mut T` may be a pointer
+    # into memory Rust keeps. `:borrowed` — valid only for the duration of the
+    # call — is reserved for `&T` / `&mut T` references, which `rustcall_julia_core`
+    # rejects as non-FFI anyway (`is_ffi_compatible_type`). So the default is `:unknown`,
+    # and a consumer that has the metadata states it: see
+    # [`ffi_return_contract`](@ref)'s `ownership` / `free_symbol` keywords.
+    return FFIType(String(key), T, T, ffi_type_expr(T), :pointer, :unknown, note)
+end
+
+"""
+    ffi_known(rust_type::AbstractString) -> Bool
+
+Whether the contract has a row for this Rust type spelling.
+
+Note that a row is not by itself enough to build a call: the string rows carry
+`abi === :unknown` because the spelling does not say whether the wrapper lowered
+them (see the Strings section above). Use
+[`ffi_argument_contract`](@ref) / [`ffi_return_contract`](@ref), whose `known`
+field answers the question a call site actually asks — "can I build this
+position?" — and is `false` for a string spelling without a manifest `abi`.
+"""
+ffi_known(rust_type::AbstractString) = ffi_lookup(rust_type) !== nothing
+
+"""
+    ffi_ccall_type(rust_type::AbstractString) -> Union{Type, Nothing}
+
+The Julia type of the single C slot this Rust type occupies, or `nothing` when
+the contract cannot say — either because the type is unknown, or because the
+spelling alone does not determine its ABI (the string rows). For multi-word
+ABIs use [`ffi_argument_contract`](@ref) / [`ffi_return_contract`](@ref).
+"""
+function ffi_ccall_type(rust_type::AbstractString)
+    entry = ffi_lookup(rust_type)
+    entry === nothing && return nothing
+    entry.abi === :unknown && return nothing
+    return entry.ccall_type
+end
+
+"""
+    ffi_surface_type(rust_type::AbstractString) -> Union{Type, Nothing}
+
+The Julia type a caller sees for this Rust type, or `nothing` when unknown.
+"""
+function ffi_surface_type(rust_type::AbstractString)
+    entry = ffi_lookup(rust_type)
+    return entry === nothing ? nothing : entry.surface_type
+end
+
+"""
+    ffi_julia_symbol(rust_type::AbstractString) -> Union{Symbol, Expr, Nothing}
+
+How the surface type should be *spelled* in generated code, as a Julia AST
+fragment, or `nothing` when the type is unknown.
+
+A plain name comes back as a `Symbol` (`:Cvoid`, `:Csize_t`, `:RustString`); a
+parametric one comes back as an `Expr` (`:(Ptr{Ptr{Int32}})`), never as a
+`Symbol` of its printed form — `Symbol("Ptr{Int32}")` would splice into
+generated code as `var"Ptr{Int32}"`, an undefined binding. Both forms can be
+interpolated into a quote directly:
+
+```julia
+T = RustCall.ffi_julia_symbol("*const *mut i32")   # :(Ptr{Ptr{Int32}})
+:(x::\$T)
+```
+
+Use [`ffi_julia_type`](@ref) when you want the `Type` itself rather than its
+spelling.
+
+This replaced `_rust_type_to_julia_type_symbol` (`src/macros/julia_functions.jl`) and
+`rust_to_julia_type_sym` (`src/ffi/structs.jl`), both of which answered `:Any` for
+an unknown type; this answers `nothing`, so a caller can fail closed. Return
+sites should call [`ffi_return_symbol_or_throw`](@ref), which does exactly
+that.
+"""
+function ffi_julia_symbol(rust_type::AbstractString)
+    entry = ffi_lookup(rust_type)
+    return entry === nothing ? nothing : entry.julia_expr
+end
+
+"""
+    ffi_julia_type(rust_type::AbstractString) -> Union{Type, Nothing}
+
+The `Type` that [`ffi_julia_symbol`](@ref)'s expression names — the surface type
+as a value, for callers that want to compare types without `eval`. `nothing`
+when the type is unknown.
+
+```julia
+RustCall.ffi_julia_type("*const *mut i32") === Ptr{Ptr{Int32}}
+```
+"""
+ffi_julia_type(rust_type::AbstractString) = ffi_surface_type(rust_type)
+
+"""
+    ffi_type_expr(T::Type) -> Union{Symbol, Expr}
+
+Render a Julia type as an AST fragment that names it: `:Int32`, `:Cvoid`,
+`:(Ptr{Ptr{Int32}})`. Parametric `Ptr`s are rendered recursively so the result
+is always valid Julia, never a `Symbol` of a printed type.
+
+`Cvoid` is spelled `:Cvoid` rather than `:Nothing`, matching what the existing
+generators emit.
+"""
+function ffi_type_expr(T::Type)
+    T === Cvoid && return :Cvoid
+    if T <: Ptr && T !== Ptr && isconcretetype(T)
+        return Expr(:curly, :Ptr, ffi_type_expr(eltype(T)))
+    end
+    # `nameof`, not `Symbol(T)`: the latter renders a module-qualified string for
+    # types outside `Base`, which is not a `Symbol` any generated code can use.
+    return T isa DataType ? nameof(T) : Symbol(T)
+end
+
+"""
+    ffi_ownership(rust_type::AbstractString) -> Symbol
+
+The ownership tag of a Rust type in return position, or `:unknown`.
+"""
+function ffi_ownership(rust_type::AbstractString)
+    entry = ffi_lookup(rust_type)
+    return entry === nothing ? :unknown : entry.ownership
+end
+
+# ============================================================================
+# Positional contracts
+# ============================================================================
+
+const _FFI_UNKNOWN_SLOTS = _state_view(:ffi_unknown_slots, Type[])
+
+"""
+    ffi_manifest_abi_kind(abi::AbstractString) -> Union{Symbol, Nothing}
+
+Translate the manifest `abi` column (`Arg.abi`, `Method.return_abi`; #270 and
+PR #274) into an [`FFI_ABI_KINDS`] entry, given the direction it appears in.
+
+The column is a small closed vocabulary of strings:
+
+| column     | argument     | return          |
+| ---------- | ------------ | --------------- |
+| `""`         | as written   | as written      |
+| `"string"`   | `:ptr_len`   | `:ptr_len_cap`  |
+| `"str"`      | `:ptr_len`   | `:ptr_len`      |
+| `"callback"` | `:callback`  | *refused*       |
+
+`""` means "the Rust type spelling decides", and is returned as `nothing`.
+An unrecognised column value is an error rather than a fallback, and so is
+`"callback"` in return position: a Rust function handing a function pointer
+*back* to Julia has no owner for it (#296).
+"""
+function ffi_manifest_abi_kind(abi::AbstractString, direction::Symbol)
+    _ffi_check_direction(direction)
+    column = strip(abi)
+    isempty(column) && return nothing
+    if column == "string"
+        return direction === :return ? :ptr_len_cap : :ptr_len
+    elseif column == "str"
+        return :ptr_len
+    elseif column == "callback"
+        direction === :argument && return :callback
+        throw(ArgumentError("a callback (C-ABI function pointer) is supported in argument position only (#296)"))
+    end
+    throw(ArgumentError("unknown manifest abi column \"$column\"; expected \"\", \"string\", \"str\" or \"callback\""))
+end
+
+function _ffi_check_direction(direction::Symbol)
+    direction === :argument || direction === :return ||
+        throw(ArgumentError("direction must be :argument or :return, got :$direction"))
+    return direction
+end
+
+"""
+    ffi_slots(abi::Symbol) -> Vector{Type}
+
+The C field layout of a multi-word ABI kind, in order. Direction-independent:
+it describes the value, not the calling convention. For how those words reach a
+`ccall` — separate argument slots, or one aggregate return type — see
+[`ffi_argument_contract`](@ref) / [`ffi_return_contract`](@ref).
+
+Scalar and pointer kinds depend on the concrete type and have no fixed layout
+here.
+"""
+function ffi_slots(abi::Symbol)
+    if abi === :ptr_len
+        return Type[Ptr{UInt8}, Csize_t]
+    elseif abi === :ptr_len_cap
+        return Type[Ptr{UInt8}, Csize_t, Csize_t]
+    elseif abi === :callback
+        return Type[Ptr{Cvoid}]
+    elseif abi === :void
+        return Type[]
+    end
+    throw(ArgumentError("ffi_slots is only defined for :void, :ptr_len and :ptr_len_cap, got :$abi"))
+end
+
+"""
+    ffi_aggregate_type(abi::Symbol) -> Union{Type, Nothing}
+
+The `#[repr(C)]` struct a multi-word ABI kind is returned as: `CRustStr` for
+`:ptr_len`, `CRustString` for `:ptr_len_cap`, `nothing` for every single-word
+kind.
+
+These mirror the `<fn>_RustCallBorrowedString { ptr, len }` and
+`<fn>_RustCallOwnedString { ptr, len, cap }` helpers the wrapper generator emits
+(`rustcall_julia_core::codegen`) and that `_call_rust_owned_string`
+/ `_call_rust_borrowed_string` already receive (`src/ffi/structs.jl`).
+"""
+function ffi_aggregate_type(abi::Symbol)
+    abi === :ptr_len && return CRustStr
+    abi === :ptr_len_cap && return CRustString
+    return nothing
+end
+
+"""
+    ffi_free_symbol(owner::AbstractString) -> String
+
+The name of the symbol that releases an `:owned_by_rust` string produced by
+`owner` (a function or struct name): `<owner>_free_rust_string`, matching the
+helper `rustcall_julia_core::codegen` emits.
+"""
+ffi_free_symbol(owner::AbstractString) = string(owner, "_free_rust_string")
+
+"""
+    ffi_panic_symbol(symbol::AbstractString) -> String
+
+The panic-channel reader a generated wrapper exports next to itself:
+`<wrapper symbol>_take_panic`, matching
+`rustcall_julia_core::codegen::panic_symbol` (#244).
+
+`(out, cap) -> len` semantics: the length of the pending panic message, or 0
+when the wrapper did not panic. The message is copied into `out` and the slot
+cleared **only** when it fits in `cap`, so a caller that guessed too small a
+buffer calls again with the length it was told. Nothing crosses the boundary
+that has to be freed.
+
+Derived from the wrapper symbol rather than carried in the manifest on
+purpose: the caller already resolved the symbol to make the call, so it can
+resolve the channel without a schema change. A library that predates #244
+simply has no such symbol, and the lookup falls back to "no channel".
+"""
+ffi_panic_symbol(symbol::AbstractString) = string(symbol, "_take_panic")
+
+"""
+    ffi_struct_free_symbol(struct_name::AbstractString) -> String
+
+The destructor of a `#[julia]` struct: `<Struct>_free`, matching what
+`deps/rustcall_julia_core/src/codegen.rs` emits (`crate_free_fn` and its inline
+twin).
+
+One place, because four call sites used to build this string by hand
+(`src/ffi/structs.jl` twice, `src/crate_bindings/crate_bindings.jl` for the in-memory module and
+for the emitted template) and a finalizer that calls the wrong symbol is a
+leak at best (#249, #277 Phase B4).
+"""
+ffi_struct_free_symbol(struct_name::AbstractString) = string(struct_name, "_free")
+
+"""
+Prefix of every exported symbol that stands in for a user-written Rust item.
+
+`#[julia]` is additive (#279): the annotated item keeps its name and the
+`extern "C"` entry point is emitted next to it under this prefix. Mirrors
+`rustcall_julia_core::codegen::SYMBOL_PREFIX`.
+"""
+const FFI_SYMBOL_PREFIX = "rustcall_"
+
+"""
+    ffi_method_symbol(struct_name, method_name) -> String
+
+The exported symbol of the wrapper of the `#[julia]` method `Struct::method`
+(`rustcall_<Struct>_<method>`, see `deps/rustcall_julia_core/src/codegen.rs`).
+
+This is the fallback for a `RustMethod` built by hand rather than read from a
+manifest: its six-argument constructor cannot know the struct name, so it
+records no `symbol` and the emitters derive one here. A manifest-backed method
+always carries its own `symbol` and never reaches this (#279).
+"""
+ffi_method_symbol(struct_name::AbstractString, method_name::AbstractString) =
+    string(FFI_SYMBOL_PREFIX, struct_name, "_", method_name)
+
+"""
+    ffi_argument_contract(rust_type; abi = "") -> FFIContract
+
+The contract for one argument position. Multi-word values are **expanded into
+separate argument slots** here, because that is how the generated wrapper takes
+them.
+
+`abi` is the manifest `Arg.abi` column (PR #274); when non-empty it overrides
+the ABI derived from the Rust spelling, which is what makes the manifest
+normative (#270). It is also the *only* thing that selects the lowered string
+form: `ffi_argument_contract("String")` is unknown, `abi = "string"` makes it
+`:ptr_len`.
+
+When the position cannot be described the returned contract has `known = false`,
+empty `ccall_types` and `:unknown` ownership — callers must raise rather than
+substitute a default.
+
+```julia
+c = RustCall.ffi_argument_contract("&str"; abi = "str")
+c.ccall_types     # Type[Ptr{UInt8}, Csize_t]  — two argument slots
+c.aggregate_type  # nothing
+c.ownership       # :owned_by_julia  (Julia's buffer, rooted for the call)
+```
+"""
+function ffi_argument_contract(rust_type::AbstractString; abi::AbstractString = "")
+    return _ffi_contract(rust_type, :argument, abi, nothing, nothing, nothing)
+end
+
+"""
+    ffi_return_contract(rust_type; abi = "", owner = nothing,
+                        ownership = nothing, free_symbol = nothing) -> FFIContract
+
+The contract for the return position. `abi` is the manifest `Method.return_abi`
+column (PR #274). See [`ffi_argument_contract`](@ref).
+
+A `ccall` has exactly one return type, so a multi-word value is **not** expanded
+here: `ccall_types` holds the single `#[repr(C)]` aggregate the wrapper returns
+(also available as `aggregate_type`), and `layout` holds its fields.
+
+# Stating ownership the spelling cannot express
+
+A raw-pointer return defaults to `:unknown` ownership, because the spelling does
+not say: a generated constructor returns `Box::into_raw`
+(`rustcall_julia_core::codegen`), which Julia owns and must free,
+while another `*mut T` may point into memory Rust keeps. A consumer that *has*
+the metadata states it with `ownership` (and, where a release is required, the
+`free_symbol` that performs it):
+
+```julia
+c = RustCall.ffi_return_contract("*mut Point";
+                                 ownership = :transferred_to_julia,
+                                 free_symbol = "Point_free")
+c.ownership    # :transferred_to_julia
+c.free_symbol  # "Point_free"
+```
+
+# The free-symbol invariant
+
+A contract whose ownership is one of [`FFI_OWNERSHIP_NEEDS_FREE`] **always**
+names the `free_symbol` that releases the value; an owned value with no way to
+free it is the shape of #246 and #249 and is never recorded. Concretely:
+
+* declaring `:owned_by_rust` / `:transferred_to_julia` without a `free_symbol`
+  is an `ArgumentError`;
+* a *derived* owned return with no symbol available (a lowered `String` return
+  where the caller named no owner) reports `:unknown` ownership rather than an
+  unfreeable `:owned_by_rust`.
+
+`owner` is the function or struct name the wrapper belongs to. It supplies only
+the **string** release convention (`<owner>_free_rust_string`,
+emitted by `rustcall_julia_core::codegen`), so it stands in for `free_symbol` only
+on a lowered owned-string return (`:ptr_len_cap`). For a pointer return — where
+the releasing symbol is whatever the crate exports, e.g. `Point_free` — it does
+not apply and `free_symbol` must be given.
+
+```julia
+c = RustCall.ffi_return_contract("String"; abi = "string", owner = "shout")
+c.abi             # :ptr_len_cap
+c.ccall_types     # Type[CRustString]  — one return type
+c.layout          # Type[Ptr{UInt8}, Csize_t, Csize_t]
+c.ownership       # :owned_by_rust — Julia must free it through the owning library (#246)
+c.free_symbol     # "shout_free_rust_string"
+```
+"""
+function ffi_return_contract(rust_type::AbstractString; abi::AbstractString = "",
+                             owner::Union{Nothing, AbstractString} = nothing,
+                             ownership::Union{Nothing, Symbol} = nothing,
+                             free_symbol::Union{Nothing, AbstractString} = nothing)
+    ownership === nothing || ownership in FFI_OWNERSHIP_KINDS || throw(ArgumentError(
+        "unknown ownership :$ownership for $rust_type; " *
+        "expected one of $(FFI_OWNERSHIP_KINDS)"))
+    return _ffi_contract(rust_type, :return, abi, owner, ownership, free_symbol)
+end
+
+"""
+    ffi_return_ccall_type(rust_type; abi = "") -> Union{Type, Nothing}
+
+The single Julia type to put in the return slot of a `ccall` for this Rust type,
+or `nothing` when the contract cannot describe the position (`Cvoid` for `()`).
+"""
+function ffi_return_ccall_type(rust_type::AbstractString; abi::AbstractString = "")
+    c = ffi_return_contract(rust_type; abi = abi)
+    c.known || return nothing
+    c.abi === :void && return Cvoid
+    return only(c.ccall_types)
+end
+
+function _ffi_contract(rust_type::AbstractString, direction::Symbol, abi::AbstractString,
+                       owner::Union{Nothing, AbstractString},
+                       stated_ownership::Union{Nothing, Symbol},
+                       stated_free_symbol::Union{Nothing, AbstractString})
+    _ffi_check_direction(direction)
+    key = ffi_normalize_spelling(rust_type)
+    override = ffi_manifest_abi_kind(abi, direction)
+    entry = ffi_lookup(key)
+    stated = (stated_ownership,
+              stated_free_symbol === nothing ? nothing : String(stated_free_symbol))
+
+    if entry === nothing
+        override === nothing && return _ffi_unknown_contract(key, direction)
+        # The manifest named the ABI even though the spelling is unknown to the
+        # table: the manifest wins, which is the whole point of #270.
+        ownership = _ffi_ownership_for(override, direction)
+        surface = direction === :argument ? (override === :callback ? Function : String) :
+            (override === :ptr_len_cap ? RustString : RustStr)
+        return _ffi_positional(key, direction, override, surface, ownership, owner,
+                               nothing, stated...)
+    end
+
+    kind = override === nothing ? _ffi_directional_abi(entry, direction) : override
+    # No manifest column and a spelling whose ABI it does not determine (the
+    # string rows): fail closed instead of describing a lowering the wrapper may
+    # never have performed.
+    kind === :unknown && return _ffi_unknown_contract(key, direction)
+
+    ownership = if entry.abi === :by_value || entry.abi === :void || entry.abi === :pointer
+        # Scalars own nothing; for a raw pointer the contract cannot know who
+        # owns the pointee, so it stays `:unknown` until a consumer states it.
+        entry.ownership
+    else
+        _ffi_ownership_for(kind, direction)
+    end
+    surface = direction === :argument && (kind === :ptr_len || kind === :ptr_len_cap) ?
+        String : entry.surface_type
+    return _ffi_positional(key, direction, kind, surface, ownership, owner,
+                           entry.ccall_type, stated...)
+end
+
+_ffi_unknown_contract(key, direction) = FFIContract(
+    key, direction, :unknown, copy(_FFI_UNKNOWN_SLOTS), nothing,
+    copy(_FFI_UNKNOWN_SLOTS), Any, :unknown, nothing, false,
+)
+
+"""
+    FFI_OWNERSHIP_NEEDS_FREE
+
+The ownership tags that oblige someone to release the value. The contract keeps
+the invariant that a position tagged with one of these **always** names the
+`free_symbol` that performs the release — an owned value with no way to free it
+is the shape of #246 and #249, and is refused rather than recorded.
+"""
+const FFI_OWNERSHIP_NEEDS_FREE = (:owned_by_rust, :transferred_to_julia)
+
+# Turn an ABI kind into the ccall slots / aggregate / layout for one position.
+function _ffi_positional(key, direction, kind, surface, ownership, owner,
+                         scalar_type::Union{Nothing, Type} = nothing,
+                         stated_ownership::Union{Nothing, Symbol} = nothing,
+                         stated_free_symbol::Union{Nothing, String} = nothing)
+    layout = kind === :ptr_len || kind === :ptr_len_cap ? ffi_slots(kind) : Type[]
+    aggregate = direction === :return ? ffi_aggregate_type(kind) : nothing
+    slots = if kind === :void
+        Type[]
+    elseif kind === :by_value || kind === :pointer
+        Type[scalar_type === nothing ? Ptr{Cvoid} : scalar_type]
+    elseif kind === :callback
+        # The function pointer itself, one word; what it points at is built
+        # by the wrapper from `Arg.callback_args` / `callback_return`.
+        Type[Ptr{Cvoid}]
+    elseif aggregate !== nothing
+        # One return type, not N words: `ccall` has a single return slot.
+        Type[aggregate]
+    else
+        copy(layout)
+    end
+    # A stated ownership wins over the derived one: the consumer has metadata
+    # the spelling does not carry (a constructor's `Box::into_raw`, say).
+    final_ownership = stated_ownership === nothing ? ownership : stated_ownership
+
+    # `owner` only names the *string* release convention
+    # (`<owner>_free_rust_string`, emitted by `rustcall_julia_core::codegen`), so it
+    # may stand in for `free_symbol` only where that convention applies: the
+    # lowered owned-string return. Every other owned value must name its own
+    # symbol explicitly.
+    derived_free = owner !== nothing && kind === :ptr_len_cap && direction === :return ?
+        ffi_free_symbol(owner) : nothing
+    free_symbol = stated_free_symbol === nothing ? derived_free : stated_free_symbol
+
+    if final_ownership in FFI_OWNERSHIP_NEEDS_FREE && free_symbol === nothing
+        if stated_ownership === nothing
+            # Derived, not asserted: the ABI says the value is owned but nobody
+            # named the releasing symbol. Fail closed rather than hand back an
+            # owned value a consumer cannot free (#246, #249).
+            final_ownership = :unknown
+        else
+            throw(ArgumentError(
+                "ownership :$stated_ownership for $key requires an explicit free_symbol" *
+                (kind === :ptr_len_cap ? " (or an owner, for the string convention)" : "") *
+                ": an owned value with no way to release it cannot be recorded"))
+        end
+    end
+
+    return FFIContract(key, direction, kind, slots, aggregate, layout, surface,
+                       final_ownership, free_symbol, true)
+end
+
+# When the manifest says `"string"` for an argument, the wrapper takes the words
+# as `(ptr, len)` — `ffi_manifest_abi_kind` already resolves that. This only
+# handles the (now unreachable for strings) case of a table row whose own ABI is
+# `:ptr_len_cap`, kept so future owned-aggregate rows behave consistently.
+function _ffi_directional_abi(entry::FFIType, direction::Symbol)
+    if direction === :argument && entry.abi === :ptr_len_cap
+        return :ptr_len
+    end
+    return entry.abi
+end
+
+function _ffi_ownership_for(kind::Symbol, direction::Symbol)
+    kind === :void && return :none
+    kind === :by_value && return :none
+    direction === :argument && return :owned_by_julia
+    kind === :ptr_len_cap && return :owned_by_rust
+    # A lowered `&str` return: a view into memory Rust keeps, valid only for as
+    # long as the callee guarantees. This is the one place `:borrowed` is
+    # derived — a raw pointer never is.
+    kind === :ptr_len && return :borrowed
+    return :unknown
+end
+
+"""
+    ffi_callback_plan(callback_args, callback_return, ctx) -> NamedTuple
+
+What a generated wrapper needs to build the `@cfunction` for a callback
+argument (#296): `ret_expr` and `arg_exprs`, the Julia spellings of the C
+**slot** types of the pointer's return and parameters (`:Int64`, `:Cvoid`,
+`:(Ptr{UInt8})`), and `ret_type`, the return slot as a `Type`, for the
+trampoline's conversion.
+
+`callback_args` / `callback_return` are the manifest's `Arg.callback_args` /
+`Arg.callback_return` — the Rust spellings the extractor reported for the
+`extern "C" fn(A...) -> R` type; Julia never reads that syntax itself (#264).
+`ctx` names the position for the error.
+
+The decision is the contract's, and it fails closed: every parameter and the
+return must be a type the contract passes **by value or as a raw pointer in
+one slot whose slot type is its surface type** — the numeric primitives,
+`bool`, `usize`/`isize`, `*const T` / `*mut T`, and `()` for the return.
+Refused with a `RustError` naming the position: strings (`&str`, `String`),
+`char` (its slot is a `UInt32` code point, not a `Char`), aggregates, and any
+spelling outside the table. A refused signature fails at wrapper generation,
+never at call time.
+"""
+function ffi_callback_plan(callback_args::AbstractVector{<:AbstractString},
+                           callback_return::AbstractString, ctx::AbstractString)
+    refuse(what, why) = throw(RustError(
+        "cannot build a callback for $(ctx): $(what) — $(why). A callback's parameters " *
+        "and return must be types the FFI contract passes by value or as a raw pointer " *
+        "(numeric primitives, bool, usize/isize, *const T / *mut T; `()` for the return)."))
+    arg_exprs = Union{Symbol, Expr}[]
+    for (i, t) in enumerate(callback_args)
+        c = ffi_argument_contract(t)
+        c.known || refuse("parameter $(i) `$(t)`", "not in the FFI contract")
+        (c.abi === :by_value || c.abi === :pointer) && length(c.ccall_types) == 1 ||
+            refuse("parameter $(i) `$(t)`", "not passed in one slot by value")
+        slot = only(c.ccall_types)
+        slot === c.surface_type || refuse("parameter $(i) `$(t)`",
+            "its C slot ($(slot)) is not its Julia type ($(c.surface_type))")
+        push!(arg_exprs, ffi_type_expr(slot))
+    end
+    ret = strip(callback_return)
+    if isempty(ret) || ret == "()"
+        ret_type = Cvoid
+    else
+        c = ffi_return_contract(ret)
+        c.known || refuse("return `$(ret)`", "not in the FFI contract")
+        (c.abi === :by_value || c.abi === :pointer) && length(c.ccall_types) == 1 ||
+            refuse("return `$(ret)`", "not returned in one slot by value")
+        ret_type = only(c.ccall_types)
+        ret_type === c.surface_type || refuse("return `$(ret)`",
+            "its C slot ($(ret_type)) is not its Julia type ($(c.surface_type))")
+    end
+    return (; ret_expr = ffi_type_expr(ret_type), arg_exprs, ret_type)
+end
+
+"""
+    ffi_describe(rust_type; direction = :return, abi = "") -> String
+
+A one-line human-readable rendering of a contract, for error messages and for
+the documentation of the supported-type matrix (#245 item 4).
+"""
+function ffi_describe(rust_type::AbstractString; direction::Symbol = :return, abi::AbstractString = "")
+    c = _ffi_contract(rust_type, direction, abi, nothing, nothing, nothing)
+    c.known || return "$(c.rust_type): not in the FFI contract"
+    slots = isempty(c.ccall_types) ? "no slots" : join(string.(c.ccall_types), ", ")
+    return "$(c.rust_type) [$(c.direction)]: abi=$(c.abi), slots=($slots), surface=$(c.surface_type), ownership=$(c.ownership)"
+end
+
+# ============================================================================
+# The one return decision (issue #276 Phase B)
+# ============================================================================
+
+"""
+    FFI_STRICT :: Ref{Symbol}
+
+What generated code does when the FFI contract cannot describe a **return**
+position:
+
+| value    | behaviour |
+| -------- | --------- |
+| `:error` | raise a `RustError` naming the signature (the default) |
+| `:warn`  | warn once per signature and emit `Any`, the pre-#276 behaviour |
+| `:none`  | emit `Any` silently |
+
+`Any` in a `ccall` return slot was never well defined — it is the guess #245
+is about — so `:warn` and `:none` exist only to get an existing crate compiling
+again while its unsupported types are dealt with. `write_bindings_to_file`
+binds this per call through its `strict` keyword.
+"""
+const FFI_STRICT = _state_view(:ffi_strict, Ref{Symbol}(:error))
+
+const _FFI_WARNED_CONTEXTS = _state_view(:ffi_warned_contexts, Set{String}())
+
+# The strictness one emission runs at, when it names one (`strict` of
+# `write_bindings_to_file` / `emit_crate_module_code`): every emitter and every
+# contract decision it reaches reads `_ffi_strict()`, so the renaming probe and
+# the expression emitter a caller does not hand a keyword run at the same
+# setting as the emission itself (PR #527 review). Scoped, never global: two
+# concurrent emissions at different settings cannot see each other's.
+const _EMISSION_STRICT = Base.ScopedValues.ScopedValue{Union{Nothing, Symbol}}(nothing)
+
+"""
+    _ffi_strict() -> Symbol
+
+The strictness in force: the emission's own (`_with_emission_strict`), or
+`FFI_STRICT[]` outside one.
+"""
+_ffi_strict() = something(_EMISSION_STRICT[], FFI_STRICT[])
+
+"""
+    _with_emission_strict(f, strict)
+
+Run `f()` with `_ffi_strict()` answering `strict`.
+"""
+_with_emission_strict(f, strict::Symbol) = Base.ScopedValues.with(f, _EMISSION_STRICT => strict)
+
+# Set while the renaming probe emits (`_probe_emission`): a decision it makes
+# is the emission's, but its side effects are not — `:warn` warns once per
+# signature, and the probe must not use up the emission's warning.
+const _EMISSION_PROBING = Base.ScopedValues.ScopedValue{Bool}(false)
+
+# ============================================================================
+# The collecting mode of the wrapper generators (#454)
+# ============================================================================
+
+"""
+    BoundaryPosition
+
+One argument or return position a wrapper generator examined: the item it
+belongs to, the position's label (``"argument `x`"``, `"return"`,
+`"Ok payload"`, `"Err payload"`, `"Some payload"`, `"field getter"`,
+`"field setter"`), the Rust spelling, the manifest `abi` column, and `reason`
+— `nothing` when the FFI contract describes it, otherwise why it does not.
+"""
+const BoundaryPosition = NamedTuple{(:item, :position, :rust_type, :abi, :reason),
+                                    Tuple{String, String, String, String, Union{Nothing, String}}}
+
+"""
+    BoundaryNote
+
+Something a generator decided that the FFI contract *does* describe but that
+leaves a responsibility with the author (#490): the item, the position or
+`"entry point"` it concerns, the Rust spelling, and what to check. A note is
+not a refusal and is not counted among the positions; `boundary_report` lists
+notes after the findings. Recorded by `_boundary_note!`, from the generator
+that made the decision — the rules are `_boundary_raw_pointer_return!` and
+`_boundary_unguarded_export!` below.
+"""
+const BoundaryNote = NamedTuple{(:item, :position, :rust_type, :note), NTuple{4, String}}
+
+"""
+    BoundaryCollector
+
+What `boundary_report` is computed from (#454): every argument and return
+position the wrapper generators examined while they ran in collecting mode,
+in the order they examined them, with the reason for each one the contract
+cannot describe.
+
+The generators *are* the report. Each records the positions it decides as it
+decides them: `_string_arg_plan` its arguments; `_ffi_function_return`,
+`_ffi_method_return`, `_ffi_field_return` and the `ffi_*_or_throw` family a
+return position; `ffi_payload_symbols` a `Result` / `Option` payload. A
+refusal that raises a `RustError` outside collecting mode is recorded instead
+(`_boundary_refuse`, `_ffi_unsupported_return`) and generation carries on with
+a placeholder, so the item's remaining positions are still examined. A rule
+added to a generator is therefore in the report by construction; nothing
+walks the manifest a second time.
+
+`item` is the Rust item being generated — module-qualified, `Struct::member`
+for a method or a field (`_boundary_label`) — named by each emitter's entry
+point through `_boundary_item!`. A position recorded while no item is named
+is an error, so an emitter that forgets fails the report instead of misfiling
+its findings. Positions are keyed by `(item, position)`: the emitters decide
+one position more than once (the surface symbol and the C slot, a field's
+getter and its setter, an expression and its source text), and the first
+refusal recorded for a key is the one kept.
+"""
+mutable struct BoundaryCollector
+    item::String
+    positions::Vector{BoundaryPosition}
+    index::Dict{Tuple{String, String}, Int}
+    notes::Vector{BoundaryNote}
+end
+
+BoundaryCollector() = BoundaryCollector("", BoundaryPosition[], Dict{Tuple{String, String}, Int}(),
+                                        BoundaryNote[])
+
+const _BOUNDARY_COLLECTOR_KEY = :rustcall_boundary_collector
+
+"""
+    _boundary_collector() -> Union{Nothing, BoundaryCollector}
+
+The collector of the current task, or `nothing` outside collecting mode — the
+generators' normal case, in which every recording helper below is a no-op and
+every refusal raises exactly as it always has.
+"""
+_boundary_collector() =
+    get(task_local_storage(), _BOUNDARY_COLLECTOR_KEY, nothing)::Union{Nothing, BoundaryCollector}
+
+_boundary_collecting() = _boundary_collector() !== nothing
+
+"""
+    _collect_boundary(f) -> BoundaryCollector
+
+Run `f()` — the wrapper generators — in collecting mode on the current task
+and return what they examined. Task-local, like the callback frame stack
+(#296): a `rust\"\"\"` block expanding on another task meanwhile generates
+normally. Does not nest: a report is one run of the generators.
+"""
+function _collect_boundary(f)
+    tls = task_local_storage()
+    haskey(tls, _BOUNDARY_COLLECTOR_KEY) &&
+        throw(ArgumentError("the generators' collecting mode does not nest (#454)"))
+    collector = BoundaryCollector()
+    tls[_BOUNDARY_COLLECTOR_KEY] = collector
+    try
+        f()
+    finally
+        delete!(tls, _BOUNDARY_COLLECTOR_KEY)
+    end
+    return collector
+end
+
+"""
+    _boundary_item!(label)
+
+Name the Rust item whose wrapper the emitter is about to generate; every
+position recorded until the next call is filed under it. Called at each
+emitter's entry point — before its argument plan, which is the first thing
+that records. A no-op outside collecting mode.
+"""
+function _boundary_item!(label::AbstractString)
+    c = _boundary_collector()
+    c === nothing || (c.item = String(label))
+    return nothing
+end
+
+"""
+    _boundary_examined!(position, rust_type, abi, reason)
+
+Record that generation examined `position` of the current item; `reason` is
+`nothing` when the contract describes it and the reason otherwise. Recording
+the same `(item, position)` again keeps the first reason and adds one where
+the earlier record had none, so a helper that examines a position on the way
+to the decision (the contract lookup) and the decision itself (an `or_throw`)
+count as one. A no-op outside collecting mode.
+"""
+function _boundary_examined!(position::AbstractString, rust_type::AbstractString,
+                             abi::AbstractString, reason::Union{Nothing, AbstractString})
+    c = _boundary_collector()
+    c === nothing && return nothing
+    isempty(c.item) && throw(ArgumentError(
+        "a wrapper generator examined $(position) (`$(rust_type)`) with no item named; " *
+        "the emitter's entry point must call `_boundary_item!` first (#454)"))
+    key = (c.item, String(position))
+    i = get(c.index, key, 0)
+    if i == 0
+        push!(c.positions, (; item = c.item, position = String(position),
+                              rust_type = String(rust_type), abi = String(abi),
+                              reason = reason === nothing ? nothing : String(reason)))
+        c.index[key] = length(c.positions)
+    elseif reason !== nothing && c.positions[i].reason === nothing
+        c.positions[i] = merge(c.positions[i], (; reason = String(reason)))
+    end
+    return nothing
+end
+
+"""
+    _boundary_note!(position, rust_type, note)
+
+Record a note (`BoundaryNote`) against the current item: a decision the
+contract accepts that still leaves something to the author. The same
+`(item, position, note)` recorded twice — by the surface and the slot helper,
+say — is one note. A no-op outside collecting mode.
+"""
+function _boundary_note!(position::AbstractString, rust_type::AbstractString,
+                         note::AbstractString)
+    c = _boundary_collector()
+    c === nothing && return nothing
+    isempty(c.item) && throw(ArgumentError(
+        "a wrapper generator noted $(position) (`$(rust_type)`) with no item named; " *
+        "the emitter's entry point must call `_boundary_item!` first (#454)"))
+    entry = BoundaryNote((c.item, String(position), String(rust_type), String(note)))
+    any(n -> n.item == entry.item && n.position == entry.position && n.note == entry.note,
+        c.notes) || push!(c.notes, entry)
+    return nothing
+end
+
+const _RAW_POINTER_RETURN_NOTE =
+    "returns a raw pointer, and RustCall derives no release function for one; if it " *
+    "transfers ownership, export a matching release function from the Rust side " *
+    "(e.g. `#[no_mangle] pub extern \"C\" fn <name>_free(p)`) and call it from Julia"
+
+"""
+    _boundary_raw_pointer_return!(position, rust_type, c::FFIContract)
+
+Note a position that hands a raw pointer (`*const T` / `*mut T`) back to Julia
+(#490). Every owned value RustCall generates carries its release symbol
+(`free_symbol`, derived in one place); a raw pointer carries none, and whether
+it transfers ownership is not in the signature — so this is a note, not a
+refusal. Called by the generators that decide a return or payload position
+(`_ffi_item_return`, `ffi_payload_symbols`, `_manifest_return_type`); a field
+getter's pointer is borrowed from its struct and is not noted.
+"""
+function _boundary_raw_pointer_return!(position::AbstractString, rust_type::AbstractString,
+                                       c::FFIContract)
+    (c.known && c.abi === :pointer) || return nothing
+    _boundary_note!(position, rust_type, _RAW_POINTER_RETURN_NOTE)
+    return nothing
+end
+
+const _UNGUARDED_EXPORT_NOTE =
+    "a hand-written `#[no_mangle] extern \"C\"` function: RustCall generates no panic " *
+    "boundary for it, so a panic aborts the process instead of raising `RustPanicError`; " *
+    "put the entry point behind `#[julia]`, or catch the panic in its body"
+
+"""
+    _boundary_unguarded_export!(rust_type)
+
+Note a hand-written `#[no_mangle] extern "C"` export that `@rust` can call with
+no generated panic boundary (#490). Called by `_manifest_registry_entries`, the
+generator that registers such an export's name and return type for `@rust`.
+"""
+_boundary_unguarded_export!(rust_type::AbstractString) =
+    _boundary_note!("entry point", rust_type, _UNGUARDED_EXPORT_NOTE)
+
+"""
+    _boundary_refuse(position, rust_type, abi, message)
+
+How a wrapper generator refuses a position of its own accord — beyond what
+the contract's `or_throw` helpers decide. Outside collecting mode this throws
+`RustError(message)`, exactly as the generator always has; in collecting mode
+the refusal is recorded against the current item and the generator continues
+(the caller skips the position). Every such refusal goes through here, so it
+is in the report by construction.
+"""
+function _boundary_refuse(position::AbstractString, rust_type::AbstractString,
+                          abi::AbstractString, message::AbstractString)
+    _boundary_collecting() || throw(RustError(message))
+    _boundary_examined!(position, rust_type, abi, message)
+    return nothing
+end
+
+"""
+    RUST_CODEGEN_REFUSALS
+
+Every `skip_reason` kind with which the Rust codegen refuses a `#[julia]` item
+outright — a `compile_error!` at the item — mapped to how the boundary report
+spells the refused item (`"unsafe fn danger"`). The kinds are
+`rustcall_julia_core::manifest::skip_reason::CODEGEN_REFUSALS`, decided in one
+place on the Rust side (`rustcall_julia_core::refusal`, #503);
+`test/test_boundary_report.jl` checks that the extractor produces each of them
+and that the report lists it.
+"""
+const RUST_CODEGEN_REFUSALS = Base.ImmutableDict(Base.ImmutableDict{String, String}(),
+    "unsafe_fn" => "unsafe fn",                      # #491
+    "generic_signature" => "generic",                # #462, #471, #477
+    "impl_trait" => "impl Trait in",                 # #462, #471
+    "non_ffi_payload" => "non-FFI payload of",       # #159
+    "self_trait_path" => "trait-path `Self::` in",   # #482
+    "unspellable_self" => "unspellable `Self` in",   # #482
+    "lowered_str_borrow" => "borrowed `&str` return of", # #484
+    "lowered_str_lifetime" => "`&str` lifetime of",  # #482
+    "receiver_type" => "receiver type of",           # #497, #509
+    # v0.7.1's name for `receiver_type` (trait impls only): no longer emitted,
+    # kept so a manifest of that extractor still reads as refused (schema 0.7
+    # is additive, PR #511 review).
+    "trait_receiver" => "trait receiver of",         # #497
+)
+
+"""
+    _rust_refuses(skip_reason) -> Bool
+
+Whether a manifest `skip_reason` says the Rust codegen refuses the item
+outright (a kind of `RUST_CODEGEN_REFUSALS`: an `unsafe fn`, a generic or
+`impl Trait` signature the flavour cannot bind, a payload or a `Self` or a
+lowered `&str` the wrapper cannot express — #491, #503), so it gets no Julia
+binding. Pure: the recording form is `_rust_refused_item!`.
+"""
+_rust_refuses(skip_reason::AbstractString) =
+    haskey(RUST_CODEGEN_REFUSALS, partition_skip_reason(skip_reason)[1])
+
+"""
+    _rust_refused_item!(skip_reason, name) -> Bool
+
+Whether the Rust codegen refuses the current item outright, as the manifest's
+`skip_reason` says (`_rust_refuses`) — a `#[julia]` function, method or struct
+the codegen refuses with a `compile_error!` (#491, #503). A wrapper generator
+asks at its entry point, after `_boundary_item!`, and emits no wrapper for such
+an item.
+
+In collecting mode the refusal is a finding, recorded through
+`_boundary_refuse` at the item's `"entry point"`; the item's argument and
+return positions are not examined, since no wrapper exists to have them.
+Outside it the refusal is the codegen's own — a `compile_error!` at the item,
+gated by the item's `#[cfg]` — so nothing is raised here: a crate is scanned
+leniently, and raising would refuse a build that configures the item away.
+"""
+function _rust_refused_item!(skip_reason::AbstractString, name::AbstractString)
+    _rust_refuses(skip_reason) || return false
+    _boundary_collecting() &&
+        _boundary_refuse("entry point",
+                         "$(RUST_CODEGEN_REFUSALS[partition_skip_reason(skip_reason)[1]]) $(name)",
+                         "", pyo3_skip_explanation(skip_reason))
+    return true
+end
+
+"""
+    ffi_return_symbol_or_throw(rust_type, abi, ctx; strict = FFI_STRICT[], position = "return") -> Union{Symbol, Expr}
+
+How the return position of `ctx` is spelled in generated code, as a Julia AST
+fragment ready to splice.
+
+This is the single entry point every return site uses — the `Expr` generators
+of `src/crate_bindings/crate_bindings.jl` and the source-text emitters alike — so the two
+copies cannot drift apart again (#276 acceptance criterion 2). `ctx` is the
+signature the position belongs to (`"mycrate::shout(s) -> String"`), and it is
+what an unsupported type is reported against.
+
+Multi-word returns are *not* handled here: a lowered `String` / `&str` return
+is a `#[repr(C)]` buffer with an owner, which the caller must take from
+[`ffi_return_contract`](@ref) so it also gets `free_symbol`. Asking for a
+single symbol for one is treated as unsupported.
+
+The C **slot** is what generated code needs, which is not always the surface
+type: Rust `char` arrives as a `UInt32` code point and must be converted, never
+reinterpreted as Julia's left-aligned UTF-8 `Char`.
+"""
+function ffi_return_symbol_or_throw(rust_type::AbstractString, abi::AbstractString,
+                                    ctx::AbstractString; strict::Symbol = _ffi_strict(),
+                                    position::AbstractString = "return")
+    c = ffi_return_contract(rust_type; abi = abi)
+    if c.known && (c.abi === :void || c.abi === :by_value || c.abi === :pointer)
+        # A decided position of the report (#454): `position` says which one
+        # of the item this is — the plain return unless the caller says a
+        # payload or a field.
+        _boundary_examined!(position, rust_type, abi, nothing)
+        c.abi === :void && return :Cvoid
+        # The **surface** spelling, not the raw C slot: `call_rust_function`
+        # lowers it to the slot and converts the value back
+        # (`ccall_return_type` / `convert_return` in `src/ffi/codegen.jl`), so
+        # the slot-to-surface conversion lives in one place instead of at
+        # every return site. Rust `char` is where the two differ.
+        return something(ffi_julia_symbol(rust_type), ffi_type_expr(c.surface_type))
+    end
+    return _ffi_unsupported_return(rust_type, abi, ctx, strict, :Any; position = position)
+end
+
+"""
+    ffi_return_slot_symbol_or_throw(rust_type, abi, ctx; strict = FFI_STRICT[]) -> Union{Symbol, Expr}
+
+The spelling of the **C slot** a return position occupies, where
+[`ffi_return_symbol_or_throw`](@ref) gives the Julia surface type it is read
+back as.
+
+The two differ only for Rust `char` (a `UInt32` Unicode scalar value read back
+as a `Char`), and a plain return never needs this: `call_rust_function` takes
+the surface type and does the lowering itself. It is needed where the value is
+a **field of a `#[repr(C)]` aggregate** — the `CResult_<fn>` / `COption_<fn>`
+payloads — because the field must be declared with the type Rust actually
+stored, and the conversion to the surface type happens after the call
+(`convert_return`).
+"""
+function ffi_return_slot_symbol_or_throw(rust_type::AbstractString, abi::AbstractString,
+                                         ctx::AbstractString; strict::Symbol = _ffi_strict(),
+                                         position::AbstractString = "return")
+    c = ffi_return_contract(rust_type; abi = abi)
+    if c.known && (c.abi === :void || c.abi === :by_value || c.abi === :pointer)
+        _boundary_examined!(position, rust_type, abi, nothing)
+        c.abi === :void && return :Cvoid
+        return _ffi_slot_expr(rust_type, c)
+    end
+    return _ffi_unsupported_return(rust_type, abi, ctx, strict, :Any; position = position)
+end
+
+"""
+    ffi_payload_is_owned_string(rust_type, abi) -> Bool
+
+Whether a `Result` / `Option` **payload** travels as an owned string buffer.
+
+The manifest states this in `ok_abi` / `err_abi` / `inner_abi` (schema 6,
+#268): a `String` or `&str` payload cannot be a field of the `#[repr(C)]`
+aggregate the wrapper returns, so it is lowered to the very
+`<owner>_RustCallOwnedString { ptr, len, cap }` buffer a string-returning
+wrapper hands back, released through `<owner>_free_rust_string`. Exactly the
+active payload is initialized, and exactly it must be released.
+"""
+ffi_payload_is_owned_string(rust_type::AbstractString, abi::AbstractString) =
+    ffi_owned_string_return(ffi_return_contract(rust_type; abi = abi))
+
+"""
+    ffi_payload_symbols(rust_type, abi, ctx; position, strict = FFI_STRICT[]) -> (surface, slot)
+
+How one `Result` / `Option` payload is spelled in generated code: the Julia
+surface type the caller sees, and the C slot the aggregate field is declared
+with.
+
+For a plain payload these are what the return-position helpers give (they
+differ only for `char`). For a lowered string payload the slot is `CRustString`
+— the buffer the wrapper wrote — and the surface type is `String`, decoded and
+released by `RustCall._result_payload`.
+
+`position` names the payload for the boundary report (#454) — `"Ok payload"`,
+`"Err payload"` or `"Some payload"` — and has no default: a payload is never
+the item's plain return, and the two payloads of one `Result` must not share
+a record.
+"""
+function ffi_payload_symbols(rust_type::AbstractString, abi::AbstractString,
+                             ctx::AbstractString; position::AbstractString,
+                             strict::Symbol = _ffi_strict())
+    # Qualified: the spelling is spliced into code that lives in the user's
+    # module or in a generated `@rust_crate` module, where only `RustCall`
+    # itself is reliably in scope.
+    if ffi_payload_is_owned_string(rust_type, abi)
+        _boundary_examined!(position, rust_type, abi, nothing)
+        return (:String, :(RustCall.CRustString))
+    end
+    # A raw pointer payload carries no release function (#490).
+    _boundary_raw_pointer_return!(position, rust_type, ffi_return_contract(rust_type; abi = abi))
+    return (ffi_return_symbol_or_throw(rust_type, abi, ctx; strict = strict, position = position),
+            ffi_return_slot_symbol_or_throw(rust_type, abi, ctx; strict = strict,
+                                            position = position))
+end
+
+"""
+    ffi_return_type_or_throw(rust_type, abi, ctx; strict = FFI_STRICT[]) -> Type
+
+[`ffi_return_symbol_or_throw`](@ref) as a `Type` rather than as a spelling, for
+the sites that splice a concrete type into generated code instead of a name —
+`src/ffi/structs.jl` used to pass a `Symbol` through the call and re-resolve it at
+run time through a nine-entry table, which is how a `u16` struct field became
+`Any` (#245).
+"""
+function ffi_return_type_or_throw(rust_type::AbstractString, abi::AbstractString,
+                                  ctx::AbstractString; strict::Symbol = _ffi_strict(),
+                                  position::AbstractString = "return")
+    c = ffi_return_contract(rust_type; abi = abi)
+    if c.known && (c.abi === :void || c.abi === :by_value || c.abi === :pointer)
+        _boundary_examined!(position, rust_type, abi, nothing)
+        c.abi === :void && return Cvoid
+        # The surface type; see [`ffi_return_symbol_or_throw`](@ref).
+        return c.surface_type
+    end
+    return _ffi_unsupported_return(rust_type, abi, ctx, strict, Any; position = position)
+end
+
+"""
+    ffi_char_code_point(c) -> UInt32
+
+The Unicode scalar value of a Julia `Char` (or of an integer already holding
+one), as it must reach a Rust `char` slot. Julia stores a `Char` as left-aligned
+UTF-8 code units, so its bit pattern is **not** the code point and
+reinterpreting it would hand Rust a different character (#245).
+
+Rejects anything that is not a Unicode scalar value: Rust's `char` has that as a
+validity invariant, and constructing one from a surrogate or an out-of-range
+value is undefined behaviour there.
+"""
+function ffi_char_code_point(c::AbstractChar)
+    isvalid(c) || throw(RustError(
+        "cannot pass $(repr(c)) to a Rust `char`: it is not a Unicode scalar value"))
+    return UInt32(c)
+end
+
+ffi_char_code_point(x::Integer) = _ffi_checked_code_point(UInt32(x))
+
+"""
+    ffi_char_from_code_point(value) -> Char
+
+The Julia `Char` a Rust `char` slot denotes — the inverse of
+[`ffi_char_code_point`](@ref), and equally strict. A Rust `char` is always a
+Unicode scalar value, so a slot that is not one did not come from a `char`; it
+is refused rather than turned into an invalid `Char`.
+"""
+ffi_char_from_code_point(value::Integer) = Char(_ffi_checked_code_point(UInt32(value)))
+
+function _ffi_checked_code_point(value::UInt32)
+    isvalid(Char, value) || throw(RustError(
+        "0x$(string(value, base = 16)) is not a Unicode scalar value and so is not a " *
+        "valid Rust `char`: code points above 0x10ffff and the surrogate range " *
+        "0xd800-0xdfff are excluded"))
+    return value
+end
+
+"""
+    ffi_slot_convert(::Type{T}, x)
+
+Convert a Julia value into the C slot type `T` the contract recorded for its
+position. Identity wherever the slot and the surface type agree; Rust `char`,
+whose slot is a `UInt32` code point, is the one case that differs.
+
+Used by the paths that convert at run time — monomorphized generics, which only
+learn their argument types after specialization. The generators splice the same
+conversion at macro-expansion time instead.
+"""
+ffi_slot_convert(::Type{UInt32}, x::AbstractChar) = ffi_char_code_point(x)
+ffi_slot_convert(::Type{Any}, x) = x
+ffi_slot_convert(::Type{T}, x) where {T} = convert(T, x)
+
+# The spelling of the single C slot: the contract's own spelling (`:Csize_t`)
+# when the slot and the surface type agree, the slot otherwise (`char`).
+function _ffi_slot_expr(rust_type::AbstractString, c::FFIContract)
+    slot = only(c.ccall_types)
+    slot === c.surface_type || return ffi_type_expr(slot)
+    return something(ffi_julia_symbol(rust_type), ffi_type_expr(slot))
+end
+
+function _ffi_unsupported_return(rust_type, abi, ctx, strict::Symbol, fallback;
+                                 position::AbstractString = "return")
+    strict in (:error, :warn, :none) || throw(ArgumentError(
+        "FFI_STRICT must be :error, :warn or :none, got :$strict"))
+    if _boundary_collecting()
+        # Collecting mode (#454): the refusal is a finding — the contract's
+        # own description of the position; the remedy is the report — and
+        # generation continues with the fallback whatever `strict` says, so
+        # the item's remaining positions are still examined.
+        _boundary_examined!(position, rust_type, abi,
+                            ffi_describe(rust_type; direction = :return, abi = abi))
+        return fallback
+    end
+    strict === :none && return fallback
+    # The probe decides as the emission does, and leaves the warning to it.
+    strict === :warn && _EMISSION_PROBING[] && return fallback
+    detail = ffi_describe(rust_type; direction = :return, abi = abi)
+    if strict === :error
+        throw(RustError(
+            "the FFI contract cannot describe the return type of `$ctx`: $detail. " *
+            "Add a `::T` return annotation at the call site, change the Rust " *
+            "signature to a supported type, or set " *
+            "`RustCall.FFI_STRICT[] = :warn` to fall back to `Any` (see " *
+            "https://github.com/AtelierArith/RustCall.jl/issues/276)."))
+    end
+    # Test and insert atomically: reading the set outside the lock let two
+    # threads both see the context as new and warn twice — and raced with the
+    # insert itself.
+    key = String(ctx)
+    first_time = lock(REGISTRY_LOCK) do
+        key in _FFI_WARNED_CONTEXTS && return false
+        push!(_FFI_WARNED_CONTEXTS, key)
+        return true
+    end
+    if first_time
+        @warn "the FFI contract cannot describe the return type of `$ctx`; \
+               emitting `Any`, which is not a well-defined ccall return slot. \
+               Set `RustCall.FFI_STRICT[] = :error` to make this fail instead." detail
+    end
+    return fallback
+end
+
+"""
+    ffi_owned_string_return(c) -> Bool
+    ffi_borrowed_string_return(c) -> Bool
+    ffi_owned_vec_return(c) -> Bool
+
+Whether a return contract describes a lowered **owned** (`CRustString`,
+`(ptr, len, cap)`) or **borrowed** (`CRustStr`, `(ptr, len)`) string buffer.
+
+Every generator branches on these rather than on `return_abi == "string"`, on
+`has_owned_string_helper`, or on the Rust spelling — the three vocabularies
+#276 collapses. An owned contract also carries the `free_symbol` that releases
+it, which is the half #246 and #249 are about. `ffi_owned_vec_return` identifies
+the schema-10 `CRustVec` aggregate separately because it stays owned by Julia.
+"""
+ffi_owned_string_return(c::FFIContract) = c.aggregate_type === CRustString
+ffi_borrowed_string_return(c::FFIContract) = c.aggregate_type === CRustStr
+ffi_owned_vec_return(c::FFIContract) = c.aggregate_type === CRustVec
+
+"""
+    ffi_owned_vec_contract(rust_type, element_type, free_symbol) -> FFIContract
+
+Build the manifest-stated contract for a `Vec<T>` field getter. Unlike an
+owned String, a vector remains live on the Julia side as `RustVec{T}`, so its
+release function accepts the complete `CRustVec` aggregate and is retained by
+the resulting object together with the producing library generation.
+"""
+function ffi_owned_vec_contract(rust_type::AbstractString,
+                                element_type::AbstractString,
+                                free_symbol::AbstractString)
+    isempty(element_type) && throw(ArgumentError(
+        "the vec field ABI for $rust_type is missing vec_element"))
+    isempty(free_symbol) && throw(ArgumentError(
+        "the vec field ABI for $rust_type is missing free_symbol"))
+    surface = Core.apply_type(RustVec, ffi_vec_element_type(element_type))
+    return FFIContract(ffi_normalize_spelling(rust_type), :return, :ptr_len_cap,
+                       Type[CRustVec], CRustVec,
+                       Type[Ptr{Cvoid}, Csize_t, Csize_t], surface,
+                       :transferred_to_julia, String(free_symbol), true)
+end
+
+function ffi_vec_element_type(element_type::AbstractString)
+    element = ffi_lookup(element_type)
+    element === nothing && throw(ArgumentError(
+        "the vec field ABI has unsupported element type `$element_type`"))
+    element.abi in (:by_value, :pointer) || throw(ArgumentError(
+        "the vec field ABI requires a scalar or pointer element, got `$element_type`"))
+    isbitstype(element.surface_type) || throw(ArgumentError(
+        "the vec field ABI requires an isbits Julia element, got $(element.surface_type)"))
+    return element.surface_type
+end
+
+"""
+    ffi_signature_context(name, arg_types, return_type; owner = nothing) -> String
+
+The human-readable signature an unsupported type is reported against:
+`"Struct::method(i32, String) -> Vec<f64>"`.
+"""
+function ffi_signature_context(name::AbstractString, arg_types, return_type::AbstractString;
+                               owner::Union{Nothing, AbstractString} = nothing)
+    prefix = owner === nothing ? "" : string(owner, "::")
+    args = join(arg_types, ", ")
+    return string(prefix, name, "(", args, ") -> ", isempty(return_type) ? "()" : return_type)
+end
+
+# ============================================================================
+# UTF-8 validity is checked on the Julia side (issue #246)
+# ============================================================================
+
+"""
+    ffi_string_argument(value, arg_name, context) -> String
+
+The `String` a `(ptr, len)` argument slot is built from, checked to be valid
+UTF-8 before the pointer is handed to Rust (#246).
+
+A Julia `String` is a byte vector: `String([0xff, 0xfe])` is a perfectly
+ordinary value that is not UTF-8. The generated wrapper turns a string argument
+into `slice::from_raw_parts` plus `String::from_utf8_lossy`, so an invalid byte
+was silently replaced by U+FFFD and the Rust function ran on data the caller
+never wrote — a wrong answer with no error anywhere. The `from_utf8_lossy` on
+the Rust side stays as defence in depth (a `&str` built from invalid bytes is
+undefined behaviour, and nothing may reach it); this is the check that turns
+the same condition into a catchable Julia exception, at the call site, naming
+the argument that carries the bad bytes.
+
+`arg_name` is the parameter as the Rust signature spells it and `context` the
+function or method it belongs to, so the message points at one argument of one
+function rather than at "a string". A caller that has only the position — a
+monomorphized generic, whose `FunctionInfo` records ABIs but not names — passes
+an `Integer` instead, and the message says `argument #2`.
+"""
+ffi_string_argument(value, arg_name::AbstractString, context::AbstractString) =
+    _ffi_string_argument(value, string("`", arg_name, "`"), context)
+
+ffi_string_argument(value, position::Integer, context::AbstractString) =
+    _ffi_string_argument(value, string("#", position), context)
+
+function _ffi_string_argument(value, descriptor::AbstractString, context::AbstractString)
+    s = String(value)
+    isvalid(s) && return s
+    bad = nothing
+    for (i, c) in pairs(s)
+        if !isvalid(c)
+            bad = i
+            break
+        end
+    end
+    where = bad === nothing ? "" :
+            " (first invalid byte at index $bad, 0x$(string(codeunit(s, bad), base = 16, pad = 2)))"
+    throw(RustError(
+        "argument $descriptor of `$context` is not valid UTF-8$where. Rust's " *
+        "`&str` and `String` are UTF-8 by definition, and a Julia `String` is " *
+        "a byte vector that need not be — the bytes would have been silently " *
+        "replaced with U+FFFD on the Rust side, so the function would have run " *
+        "on data you did not pass (#246). Fix the encoding before the call: " *
+        "`isvalid(s)` says whether a string is UTF-8, and `String(transcode(" *
+        "UInt8, transcode(UInt16, s)))` or an explicit re-encode from the bytes' " *
+        "real encoding produces one that is. To send bytes that are not text at " *
+        "all, take them as a `*const u8` plus a length on the Rust side; a " *
+        "`&[u8]` slice argument is not lowered by the `#[julia]` pipeline."))
+end
+
+# By-value aggregates are opt-in (issue #245 item 3)
+# ============================================================================
+
+"""
+    FFIByValue
+
+Marker supertype for the `#[repr(C)]` mirror aggregates **RustCall itself
+generates**: the `CResult_<fn>` / `COption_<fn>` structs the wrapper generators
+emit next to a `Result`- or `Option`-returning function, in every flavour
+(macro-expanded and source-emitted, crate and inline).
+
+They need no registration at all, and must not depend on one: the generated
+code may be precompiled into a downstream package, and a subtype relation is a
+static property of the type — it survives because it *is* the type. (The
+`ffi_by_value_layout` method table exists for the same reason, one level up: a
+method is precompiled too. This is the cheaper answer for types RustCall itself
+emits, because it needs no call at all.)
+"""
+abstract type FFIByValue end
+
+"""
+    ffi_by_value_layout(::Type{T}) -> Symbol
+
+`:repr_c` when someone has asserted that `T` may cross the boundary **by
+value**, `:unknown` otherwise. The registry of #245, expressed as a **method
+table** rather than a container.
+
+`is_supported_arg_type` used to be `isbitstype(T)`, and `ccall_arg_type` the
+identity — so any isbits Julia struct or tuple was passed by value on the
+assumption that its layout matches the Rust side's. Rust's default
+`repr(Rust)` layout is explicitly unspecified (fields may be reordered, niches
+exploited), so that assumption holds only until a rustc upgrade decides
+otherwise, and then it is silent corruption rather than an error. This function
+is the record of who asserted otherwise, and about which type.
+
+# Why dispatch and not a `Set`
+
+Because a registration has to survive precompilation. `register_ffi_struct` is
+meant to be called at a package's top level, next to the struct it is about —
+and a `push!` into a global that lives in **RustCall** happens during that
+package's precompilation and is *not* replayed when the package is later loaded
+from its cache. The assertion would hold in the session that compiled the
+package and be gone in every session after it, with the by-value call failing
+before it reached Rust.
+
+A **method definition** is precompiled: `register_ffi_struct` defines
+`ffi_by_value_layout(::Type{Point}) = :repr_c` in the module that owns `Point`,
+so the method is stored in that module's cache image and reinstated on load,
+exactly like any other method the package defines. Dispatch also expresses the
+narrow and the wide assertion natively — `::Type{Point{Float64}}` for one
+instantiation, `::Type{<:Point}` for all of them — which a keyed container has
+to fake.
+
+Withdrawal (`unregister_ffi_struct`) deletes the method it is about, and only
+that one, so there is no exception list to keep in step with the table — and no
+bookkeeping container of any kind beside it.
+"""
+ffi_by_value_layout(@nospecialize(::Type)) = :unknown
+
+# RustCall's own boundary types mirror `#[repr(C)]` Rust definitions (see the
+# comments beside each in `src/ffi/types.jl`), so the layout assertion #245 asks a
+# user to make is one the package already makes about these. The parametric
+# ones are asserted for *every* instantiation deliberately: `RustPtr{T}` is one
+# pointer whatever `T` is.
+ffi_by_value_layout(::Type{CRustResult}) = :repr_c
+ffi_by_value_layout(::Type{CRustOption}) = :repr_c
+ffi_by_value_layout(::Type{CRustString}) = :repr_c
+ffi_by_value_layout(::Type{CRustStr}) = :repr_c
+ffi_by_value_layout(::Type{CRustVec}) = :repr_c
+ffi_by_value_layout(::Type{CRustSlice}) = :repr_c
+ffi_by_value_layout(::Type{RustStr}) = :repr_c
+ffi_by_value_layout(::Type{<:RustSlice}) = :repr_c
+ffi_by_value_layout(::Type{<:RustPtr}) = :repr_c
+ffi_by_value_layout(::Type{<:RustRef}) = :repr_c
+
+"""
+    _ffi_layout_signature(T) -> Type
+
+The `ffi_by_value_layout` method signature `register_ffi_struct(T)` defines:
+`Tuple{typeof(ffi_by_value_layout), Type{T}}`, for the one concrete type `T`
+and nothing else. Reconstructed rather than remembered, so
+`unregister_ffi_struct` can find a method a *previous* session defined and a
+precompile cache restored.
+"""
+_ffi_layout_signature(@nospecialize(T::Type)) =
+    Tuple{typeof(ffi_by_value_layout), Type{T}}
+
+"""
+    _ffi_layout_method(T) -> Union{Method, Nothing}
+
+The `ffi_by_value_layout` method that `register_ffi_struct(T)` defined for
+**exactly** `T`, or `nothing` when there is none.
+
+Exactness is the point, twice over. A user registration is always for one
+concrete type, but RustCall's own mirrors are asserted with covering methods
+(`ffi_by_value_layout(::Type{<:RustPtr})`), and `which` alone would hand one of
+those back — so a `register_ffi_struct` call could be elided as "already
+asserted", or an `unregister_ffi_struct` could delete the package's own claim
+about every `RustPtr{T}`. Comparing the signature to `_ffi_layout_signature`
+means each operation sees only the assertion `register_ffi_struct(T)` itself
+would make.
+
+`invokelatest`, because the method may have been defined in this very world —
+which is also what lets `ffi_by_value_registered` answer for a registration
+made in the same top-level expression, with no bookkeeping on the side.
+"""
+function _ffi_layout_method(@nospecialize(T::Type))
+    m = try
+        Base.invokelatest(which, ffi_by_value_layout, (Type{T},))
+    catch
+        return nothing
+    end
+    return m.sig === _ffi_layout_signature(T) ? m : nothing
+end
+
+"""
+    _ffi_registration_module(T) -> Module
+
+Where the `ffi_by_value_layout` method for `T` is defined: the module that owns
+`T`, so the method lands in **that** module's precompile cache and comes back
+with it.
+
+A type Julia itself owns (a `Tuple`, whose `parentmodule` is `Core`) has no
+such home; the method goes to RustCall instead, and a registration of one from
+a package's top level is therefore session-local. Register the struct rather
+than the tuple when that matters.
+"""
+function _ffi_registration_module(@nospecialize(T::Type))
+    owner = parentmodule(T)
+    (owner === Core || owner === Base) && return @__MODULE__
+    return owner
+end
+
+"""
+    ffi_is_aggregate(T) -> Bool
+
+Whether `T` is an *aggregate* at the C boundary — a struct with fields, or a
+tuple — as opposed to a scalar whose ABI is fixed by its width.
+
+Primitive types (`Int32`, `Float64`, a user `primitive type`), pointers and
+zero-field singletons are not aggregates: there is nothing about them a layout
+decision can change. Everything else has a field order, and Rust does not
+promise one without `#[repr(C)]`.
+"""
+function ffi_is_aggregate(@nospecialize(T::Type))
+    T <: Tuple && return true
+    T <: Ptr && return false
+    isconcretetype(T) || return false
+    isprimitivetype(T) && return false
+    isstructtype(T) || return false
+    return fieldcount(T) > 0
+end
+
+"""
+    _validate_ffi_by_value(T; repr_c = true, form = "register_ffi_struct")
+
+Everything `register_ffi_struct` refuses, in one place, so the macro form
+refuses exactly the same things. `form` is how the call was spelled, so the
+message quotes back what the caller wrote.
+
+Returns `T`, or throws `ArgumentError`.
+"""
+function _validate_ffi_by_value(@nospecialize(T::Type); repr_c::Bool = true,
+                                form::AbstractString = "register_ffi_struct")
+    call = form == "register_ffi_struct" ? "register_ffi_struct($T)" :
+                                           "@register_ffi_struct $T"
+    repr_c || throw(ArgumentError(
+        "$call with `repr_c = false` asserts nothing: a type may " *
+        "only be passed by value when the Rust type it mirrors is declared " *
+        "`#[repr(C)]`. Fix the Rust definition, or pass the value behind a " *
+        "pointer instead."))
+    T isa UnionAll && throw(ArgumentError(
+        "$call: a `UnionAll` cannot be registered. Its " *
+        "instantiations do not share a layout — a type parameter changes field " *
+        "sizes, alignment and even ABI register classes — so asserting one for " *
+        "the whole family would license `$T{...}` instantiations you never " *
+        "matched against a Rust struct, which is the fail-open behaviour this " *
+        "opt-in exists to remove. Register each concrete type you actually " *
+        "pass, e.g. `$T{Float64}`."))
+    (isconcretetype(T) && isstructtype(T)) || throw(ArgumentError(
+        "$call: only a concrete struct type can be passed by " *
+        "value — $T is $(isabstracttype(T) ? "abstract, and its subtypes share " *
+                                             "no layout" : "not a concrete struct type"). " *
+        "Register the concrete types you actually pass."))
+    isbitstype(T) || throw(ArgumentError(
+        "$call: only an `isbitstype` type can be passed by " *
+        "value — $T is not one" *
+        (ismutabletype(T) ? " (it is mutable; a mutable struct is a Julia heap " *
+                            "object, and Rust must receive it behind a " *
+                            "pointer)." : ".")))
+    return T
+end
+
+# The state-owned gate that serializes `ffi_by_value_layout` method-table edits
+# (`register_ffi_struct`, `@register_ffi_struct`, `unregister_ffi_struct`). It
+# is never taken while STATE is held: fetch it, release STATE, then lock it.
+const FFI_METHOD_LOCK = _state_view(:ffi_method_lock, ReentrantLock())
+
+"""
+    _ffi_by_value_needs_method(T) -> Bool
+
+Whether a `ffi_by_value_layout` method for **exactly** `T` still has to be
+defined. See `register_ffi_struct` for why only an exact duplicate is skipped.
+
+Uses the state-owned method-definition gate, never STATE, because the macro
+form cannot hold the gate across
+its definition: a method definition has to be a top-level expression in the
+calling module, and a `lock(...) do ... end` body would make it a local.
+Serializing the check alone is enough there — a macro used at a module's top
+level expands while that module is being loaded, on one task.
+"""
+_ffi_by_value_needs_method(@nospecialize(T::Type)) =
+    lock(() -> _ffi_layout_method(T) === nothing, FFI_METHOD_LOCK[])
+
+"""
+    _ffi_by_value_agrees(T, layout) -> Nothing
+
+Raise when `T` already carries an *exact* assertion recording a different
+layout than the one now being made.
+
+A re-registration that says the same thing is idempotent — the same claim, made
+twice — and silently redefining the method would warn under
+`--warn-overwrite=yes` and be rejected during package precompilation. A
+re-registration that says something *else* is not a duplicate at all: one of the
+two callers is wrong about the Rust type, and quietly keeping either answer is
+how a layout assertion stops meaning anything.
+
+Today `:repr_c` is the only layout there is, so this can only fire if a future
+kind is added — which is exactly when it must.
+"""
+function _ffi_by_value_agrees(@nospecialize(T::Type), layout::Symbol)
+    existing = Base.invokelatest(ffi_by_value_layout, T)
+    existing === layout && return nothing
+    throw(ArgumentError(
+        "$T is already asserted as `$existing`, and this registration says " *
+        "`$layout`. Two different layouts for one type cannot both be true: " *
+        "one of the two callers has the wrong Rust type in mind. Withdraw the " *
+        "first with `unregister_ffi_struct($T)` if the second is the correct " *
+        "one."))
+end
+
+"""
+    register_ffi_struct(T::Type; repr_c::Bool = true) -> Type
+
+Assert that values of `T` may be passed to and from Rust **by value**, because
+the Rust type they correspond to is declared `#[repr(C)]` and its fields match
+`T`'s in order and in type.
+
+This is the opt-in issue #245 asks for. Without it, `@rust f(x)` with an
+aggregate `x` raises rather than assuming the layouts agree: Rust's default
+`repr(Rust)` layout is unspecified, so an unannotated Julia struct that "works"
+today can be silently reordered by the next rustc.
+
+The assertion is recorded as a **method** of `ffi_by_value_layout`, defined in
+the module that owns `T`. Calling this at a package's top level therefore
+survives precompilation — the method is stored in that package's cache image
+and reinstated when it is loaded, in every later session:
+
+```julia
+module MyPkg
+using RustCall
+
+struct Point   # matches #[repr(C)] pub struct Point { x: f64, y: f64 }
+    x::Float64
+    y::Float64
+end
+RustCall.register_ffi_struct(Point)
+end
+```
+
+You do **not** need this for:
+
+- scalars, pointers, `Cstring`, `Char`, `Bool` — their ABI is their width;
+- the struct wrappers RustCall generates from a `#[julia] struct`
+  (`RustStructInfo`, `src/ffi/structs.jl`), which cross the boundary as an opaque
+  handle, never as a field-by-field copy;
+- RustCall's own `#[repr(C)]` mirrors: `CRustString`, `CRustSlice` and friends
+  have `ffi_by_value_layout` methods here, and the `CResult_<fn>` /
+  `COption_<fn>` aggregates the wrapper generators emit subtype `FFIByValue`.
+
+`repr_c = false` is rejected: there is no layout to assert. The keyword exists
+so the call site states what is being claimed.
+
+# Concrete types only
+
+`T` must be a concrete, immutable, `isbitstype` struct. A `UnionAll` or an
+abstract type is rejected: instantiations of `Point{T}` do not share a layout —
+a type parameter changes field sizes, alignment and even ABI register classes —
+and subtypes of an `abstract type Shape{T}` share even less. Registering a
+family would license values you never matched against a Rust struct, which is
+the fail-open behaviour this opt-in exists to remove. Register each concrete
+type you actually pass: `register_ffi_struct(Point{Float64})` says exactly that,
+and says nothing about `Point{Int32}`.
+
+!!! warning "Not precompile-safe for a type Julia owns"
+    `parentmodule(Tuple{Int32, Float64})` is `Core`, and there is no method
+    RustCall may add there — so the method lands in RustCall itself, which is a
+    cross-module mutation of a dependency and is **not** replayed from a
+    downstream package's precompile cache. The assertion would hold in the
+    session that compiled the package and be gone in every one after it.
+
+    Use `@register_ffi_struct` at a package's top level. It expands in the
+    *calling* module and is precompile-safe for every `T`. This function is the
+    runtime form: fine in the REPL, in a script, or inside a function.
+
+See also `@register_ffi_struct`, `unregister_ffi_struct`,
+`ffi_by_value_registered`, `ffi_by_value_layout`.
+"""
+function register_ffi_struct(@nospecialize(T::Type); repr_c::Bool = true)
+    _validate_ffi_by_value(T; repr_c = repr_c)
+    # Method-table edits are serialized separately from STATE. Capture the
+    # gate first and release STATE before acquiring it; eval and method
+    # invalidation must never execute inside a registry transaction.
+    gate = FFI_METHOD_LOCK[]
+    while true
+        existing = lock(gate) do
+            method = _ffi_layout_method(T)
+            method === nothing || return method
+            Core.eval(_ffi_registration_module(T),
+                      :($(GlobalRef(@__MODULE__, :ffi_by_value_layout))(::Type{$T}) =
+                            $(QuoteNode(:repr_c))))
+            nothing
+        end
+        existing === nothing && return T
+        # A caller-defined layout method is arbitrary Julia code. Run it with
+        # neither STATE nor the definition gate held, then verify that it was
+        # not replaced while we were outside the gate.
+        _ffi_by_value_agrees(T, :repr_c)
+        unchanged = lock(gate) do
+            _ffi_layout_method(T) === existing
+        end
+        unchanged && return T
+    end
+end
+
+"""
+    @register_ffi_struct T
+
+Assert that values of `T` may cross the boundary **by value** — the same claim
+`register_ffi_struct(T)` makes, recorded in a way that survives *this* module's
+precompilation whatever `T` is.
+
+Use this at a package's top level. It expands to a method definition:
+
+```julia
+RustCall.ffi_by_value_layout(::Type{T}) = :repr_c
+```
+
+written **in the calling module**, so Julia stores it in that module's cache
+image and reinstates it on load, like any other method the package defines.
+
+# Why the macro exists
+
+`register_ffi_struct(T)` is a function and cannot define a method in its
+caller's module; it uses `parentmodule(T)` instead. For a struct the package
+itself defines, that *is* the caller's module and everything works. For a type
+Julia owns — a `Tuple{Int32, Float64}`, whose `parentmodule` is `Core` — there
+is no such home, the method lands in RustCall, and a cross-module mutation of a
+dependency is **not** replayed from a downstream package's cache: the assertion
+would hold in the session that compiled the package and be gone in every one
+after it (#245 review). A macro has the caller's module by construction and has
+neither problem.
+
+```julia
+module MyPkg
+using RustCall
+
+struct Point
+    x::Float64
+    y::Float64
+end
+
+@register_ffi_struct Point
+@register_ffi_struct Tuple{Int32, Float64}
+end
+```
+
+The same rules apply as to the function: concrete, immutable, `isbitstype`
+struct types only, and the Rust type it mirrors must be `#[repr(C)]`. A
+`UnionAll` or an abstract type raises an `ArgumentError` where the macro's
+expansion runs — during precompilation, if that is where you wrote it, so a bad
+assertion fails the build rather than the first call.
+
+See also `register_ffi_struct` (the runtime form), `unregister_ffi_struct`,
+`ffi_by_value_layout`.
+"""
+macro register_ffi_struct(T)
+    ty = esc(T)
+    validate = GlobalRef(@__MODULE__, :_validate_ffi_by_value)
+    layout = GlobalRef(@__MODULE__, :ffi_by_value_layout)
+    needs = GlobalRef(@__MODULE__, :_ffi_by_value_needs_method)
+    agrees = GlobalRef(@__MODULE__, :_ffi_by_value_agrees)
+    return quote
+        # Validation first, and as its own statement: a type that cannot be
+        # asserted must raise rather than leave a method behind. `form` so the
+        # message quotes the macro back at the caller, not the function.
+        $validate($ty; form = "@register_ffi_struct")
+        # Idempotent, exactly as the function form is. Expanding the macro
+        # twice for one `T` — or after `register_ffi_struct(T)` already
+        # registered it — would otherwise redefine the same method, which warns
+        # under `--warn-overwrite=yes` and is rejected outright during package
+        # precompilation, in the very place this macro is documented for
+        # (#245 review). Only an *exact* duplicate is skipped; a broader method
+        # that happens to cover `T` is a different assertion.
+        if $needs($ty)
+            $layout(::Type{$ty}) = $(QuoteNode(:repr_c))
+        else
+            # Already asserted. Idempotent when it says the same thing, an
+            # error when it does not.
+            $agrees($ty, $(QuoteNode(:repr_c)))
+        end
+        $ty
+    end
+end
+
+"""
+    unregister_ffi_struct(T::Type) -> Bool
+
+Take back the `register_ffi_struct` assertion for `T`. Returns whether there was
+one to take back.
+
+It deletes the `ffi_by_value_layout` method that was defined for **exactly**
+`T` — `register_ffi_struct` accepts only concrete types, so that is the one
+`Type{T}` method — and nothing else: withdrawing `Point{Float64}` leaves a
+separate `Point{Int32}` assertion standing, and a covering method RustCall
+defines for its own mirrors is never matched. An assertion made in a *previous*
+session (restored from a precompile cache) is withdrawn just as well: the method
+is found by reconstructing its signature, not by remembering it.
+
+Deleting a method invalidates code that dispatched through it, so this is not
+something to do in a loop; it is a correction, made by a test or by a user who
+changed their mind. It uses the same method-definition gate as
+`register_ffi_struct`, without holding STATE.
+"""
+function unregister_ffi_struct(@nospecialize(T::Type))
+    # One transaction, paired with `register_ffi_struct`: see the comment there.
+    return lock(FFI_METHOD_LOCK[]) do
+        m = _ffi_layout_method(T)
+        m === nothing && return false
+        Base.delete_method(m)
+        return true
+    end
+end
+
+"""
+    ffi_by_value_registered(T) -> Bool
+
+Whether `T` carries a by-value assertion — a `ffi_by_value_layout` method
+covering it, whether that method was defined in an earlier session or a moment
+ago in this one.
+"""
+function ffi_by_value_registered(@nospecialize(T::Type))
+    # `invokelatest`, and no fast path in front of it. A plain call would be
+    # answered in the caller's world, which is stale in **both** directions: it
+    # cannot see a method `register_ffi_struct` defined a moment ago, and — the
+    # half that matters — it still sees one `unregister_ffi_struct` has already
+    # deleted. Being stale-true is fail-open, which is the whole thing this
+    # check exists to prevent, so the latest world is the only acceptable
+    # answer. The cost lands only on aggregates that are not `FFIByValue`, next
+    # to a dynamic `ccall`.
+    return Base.invokelatest(ffi_by_value_layout, T) === :repr_c
+end
+
+"""
+    ffi_by_value_allowed(T) -> Bool
+
+Whether a value of `T` may cross the boundary by value: true for everything
+that is not an aggregate, for RustCall's own generated mirrors (`FFIByValue`),
+and for other aggregates only once asserted.
+"""
+function ffi_by_value_allowed(@nospecialize(T::Type))
+    return !ffi_is_aggregate(T) || T <: FFIByValue || ffi_by_value_registered(T)
+end
+
+"""
+    ffi_by_value_error(T, position) -> RustError
+
+The error raised when an unregistered aggregate reaches the boundary by value.
+`position` names where it appeared, e.g. `"argument 2"` or `"the return type"`.
+"""
+function ffi_by_value_error(@nospecialize(T::Type), position::AbstractString)
+    fields = join(["$(fieldname(T, i))::$(fieldtype(T, i))" for i in 1:fieldcount(T)], ", ")
+    return RustError(
+        "cannot pass `$T` to Rust by value as $position: RustCall has no " *
+        "layout assertion for it (#245). Rust's default `repr(Rust)` layout " *
+        "is unspecified — field order and niche placement may change between " *
+        "compiler versions — so matching `$T`'s fields ($fields) against a " *
+        "Rust struct is a claim only you can make.\n" *
+        "If the Rust side declares that struct `#[repr(C)]` and its fields " *
+        "line up in order and in type, opt in with " *
+        "`RustCall.register_ffi_struct($T)`. Otherwise pass the value behind " *
+        "a pointer, or define the struct on the Rust side with `#[julia]` and " *
+        "let RustCall generate the wrapper (`RustStructInfo`, `src/ffi/structs.jl`), " *
+        "which crosses as an opaque handle. The supported-type matrix is in " *
+        "the type-mapping documentation.")
+end
+
+"""
+    ffi_check_by_value(R, arg_types)
+
+Fail closed on any unregistered aggregate in a call's signature, before a
+`ccall` is generated for it. Called from `call_rust_function`, the one runtime
+entry point every `@rust` call goes through — not from the `@generated` body
+below it, because a generated method is not re-generated when
+`register_ffi_struct` is called later.
+"""
+function ffi_check_by_value(@nospecialize(R::Type), arg_types)
+    ffi_by_value_allowed(R) || throw(ffi_by_value_error(R, "the return type"))
+    for (i, T) in enumerate(arg_types)
+        ffi_by_value_allowed(T) || throw(ffi_by_value_error(T, "argument $i"))
+    end
+    return nothing
+end
+
+"""
+    ffi_check_by_value_signature(R, A)
+
+`ffi_check_by_value` for a call whose whole signature is known as a
+type: the return type `R` and the argument tuple type `A`.
+
+Same decision, taken at compile time in the case where it cannot depend on
+runtime state (#253). `ffi_by_value_allowed` is
+`!ffi_is_aggregate(T) || T <: FFIByValue || ffi_by_value_registered(T)`, and only
+the last of those three reads state `register_ffi_struct` may add to later — it
+is reached only for an *aggregate*. So when no type in the signature is an
+aggregate, the answer is `true` for every element, unconditionally and for the
+whole session; a signature that does contain one keeps the runtime check in
+full, which is what makes a later `register_ffi_struct` still take effect.
+
+This is not a second copy of the policy: the predicate it branches on is
+`ffi_is_aggregate`, the same one `ffi_by_value_allowed` consults.
+
+Scalar calls paid 128 ns per call for this, against the 5.1 ns `ccall` it
+guards.
+"""
+@generated function ffi_check_by_value_signature(::Type{R}, ::Type{A}) where {R, A <: Tuple}
+    if !ffi_is_aggregate(R) && !any(ffi_is_aggregate, A.parameters)
+        return :(nothing)
+    end
+    # An aggregate is in play, so the registration table decides and must be
+    # read on every call.
+    return :(ffi_check_by_value($R, $(A.parameters)))
+end

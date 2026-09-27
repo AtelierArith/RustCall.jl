@@ -15,7 +15,7 @@
 #   raw        `ccall` on a pointer resolved once, by hand. The floor: no
 #              lookup, no lock, no panic-channel read.
 #   generated  the Julia function a `#[julia]` item defines. What most user
-#              code calls, and the path `src/julia_functions.jl` emits.
+#              code calls, and the path `src/macros/julia_functions.jl` emits.
 #   typed      `@rust f(a, b)::T`.
 #   dynamic    `@rust f(a, b)`, the return type taken from the snapshot.
 #   crate      a wrapper of a `@rust_crate` module. A separate code path with a

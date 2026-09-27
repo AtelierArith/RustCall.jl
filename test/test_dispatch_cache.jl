@@ -49,7 +49,7 @@ using RustCall
         # stamped with an epoch taken *after* a concurrent write would look
         # current forever. `_refresh_call_target!` samples before resolving, so
         # the stale stamp loses the race instead of winning it.
-        source = read(joinpath(dirname(@__DIR__), "src", "ruststr.jl"), String)
+        source = read(joinpath(dirname(@__DIR__), "src", "macros", "ruststr.jl"), String)
         body = source[findfirst("function _refresh_call_target!", source)[1]:end]
         body = body[1:findfirst("\nend", body)[1]]
         @test findfirst("artifact_epoch()", body)[1] <
@@ -242,7 +242,7 @@ using RustCall
             # *second* recorded block fails to load in a fresh process, which
             # cannot be staged without making the test depend on how a build is
             # made to fail.
-            source = read(joinpath(dirname(@__DIR__), "src", "rustmacro.jl"), String)
+            source = read(joinpath(dirname(@__DIR__), "src", "macros", "rustmacro.jl"), String)
             # Comments only: the prose below explains this ordering and names
             # both `try` and `_resolve_lib`, so searching the raw text would
             # measure the comment rather than the code.

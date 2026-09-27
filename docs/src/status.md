@@ -21,37 +21,37 @@ Last updated: 2026-09-07
 File and line counts are not maintained by hand in this page (a hand-kept table drifted; see [#261](https://github.com/AtelierArith/RustCall.jl/issues/261)). Measure the current tree instead:
 
 ```bash
-git ls-files 'src/*.jl' 'test/test_*.jl' 'benchmark/*.jl' 'deps/*/src/*.rs' | xargs wc -l
+git ls-files 'src/*.jl' 'src/**/*.jl' 'test/test_*.jl' 'benchmark/*.jl' 'deps/*/src/*.rs' | xargs wc -l
 ```
 
 ## Architecture Map
 
 ### Julia entry points
 - `src/RustCall.jl`: module entrypoint, exports, initialization.
-- `src/ruststr.jl`: `rust"""` processing, compilation/load integration.
-- `src/rustmacro.jl`: `@rust`, `@irust`, call expansion.
+- `src/macros/ruststr.jl`: `rust"""` processing, compilation/load integration.
+- `src/macros/rustmacro.jl`: `@rust`, `@irust`, call expansion.
 
 ### Compilation and code generation
-- `src/compiler.jl`: rustc invocation and compile orchestration.
-- `src/codegen.jl`: `ccall` generation utilities.
+- `src/build/compiler.jl`: rustc invocation and compile orchestration.
+- `src/ffi/codegen.jl`: `ccall` generation utilities.
 
 ### Type and runtime layer
-- `src/types.jl`: Rust wrapper types (`RustResult`, `RustOption`, ownership types).
-- `src/ffi_contract.jl`: the single source of truth for Rust/Julia type mapping — ABI form, `ccall` slots, surface type, ownership and release symbol (#276).
-- `src/typetranslation.jl`: `rusttype_to_julia` (a shim over the contract) and the Julia-to-Rust direction.
-- `src/exceptions.jl`: error conversion and diagnostics.
-- `src/memory.jl`: ownership helper interop.
+- `src/ffi/types.jl`: Rust wrapper types (`RustResult`, `RustOption`, ownership types).
+- `src/ffi/ffi_contract.jl`: the single source of truth for Rust/Julia type mapping — ABI form, `ccall` slots, surface type, ownership and release symbol (#276).
+- `src/ffi/typetranslation.jl`: `rusttype_to_julia` (a shim over the contract) and the Julia-to-Rust direction.
+- `src/ffi/exceptions.jl`: error conversion and diagnostics.
+- `src/ffi/memory.jl`: ownership helper interop.
 
 ### Cargo/crate workflows
-- `src/dependencies.jl`, `src/dependency_resolution.jl`: dependency parsing/resolution.
-- `src/cargoproject.jl`, `src/cargobuild.jl`: Cargo project/build flow.
-- `src/julia_functions.jl`: `#[julia]` parsing/transform/wrapper support.
-- `src/crate_bindings.jl`: includes the crate scanning, build, emission, and runtime components; see [the component map](project_guide.md#Crate-binding-components).
-- `src/hot_reload.jl`: crate hot reload support.
+- `src/build/dependencies.jl`, `src/build/dependency_resolution.jl`: dependency parsing/resolution.
+- `src/build/cargoproject.jl`, `src/build/cargobuild.jl`: Cargo project/build flow.
+- `src/macros/julia_functions.jl`: `#[julia]` parsing/transform/wrapper support.
+- `src/crate_bindings/crate_bindings.jl`: includes the crate scanning, build, emission, and runtime components; see [the component map](project_guide.md#Crate-binding-components).
+- `src/loading/hot_reload.jl`: crate hot reload support.
 
 ### Caching and generics
-- `src/cache.jl`: compiled artifact cache.
-- `src/generics.jl`: monomorphization and generic function support.
+- `src/artifacts/cache.jl`: compiled artifact cache.
+- `src/macros/generics.jl`: monomorphization and generic function support.
 
 ## Test and CI Status
 
