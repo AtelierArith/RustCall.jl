@@ -15,13 +15,14 @@ Argument: the PR number (default: the PR of the current branch, via
 ## Rules
 
 - Work on the PR's branch. Never commit to `main`.
-- Commit messages follow the repository convention (see CLAUDE.md), one commit per
-  logical fix, then `git push`.
+- Use one commit per logical fix. Do not push individual fixes while working a
+  review round; push all commits for that round together after collecting and
+  addressing its actionable CI and review findings.
+- Follow CLAUDE.md's rule to request `@codex review` immediately after every push.
 - Track CI and review results against the current head SHA; a result for an older
   head does not count for the current one.
 - Gather the feedback available for a head before editing. Keep one review round
-  quiet until its findings are in, then batch related fixes and push them together.
-  Follow CLAUDE.md's rule to request `@codex review` immediately after every push.
+  quiet until its findings are in, then batch the round's fixes into one push.
 - Reply on a review thread only after the fix is pushed, and quote the short SHA
   and the test that covers the finding.
 - Resolve a thread only if you actually addressed it. If you disagree with a
@@ -35,11 +36,25 @@ Argument: the PR number (default: the PR of the current branch, via
 
 ## Pass
 
+At the beginning of every pass, record the current PR head before collecting CI
+results, logs, reviews, or threads:
+
+```bash
+HEAD_SHA=$(gh pr view <PR> --json headRefOid --jq .headRefOid)
+```
+
 ### 1. CI
 
 ```bash
-gh pr checks <PR>
+gh api repos/<OWNER>/<REPO>/commits/$HEAD_SHA/check-runs \
+  -f per_page=100 \
+  --jq '.check_runs[] | [.id, .name, .status, .conclusion, .details_url] | @tsv'
 ```
+
+This lists check runs for the captured SHA. Use its job IDs and details URLs for
+failure logs; do not add results from another head to this pass's ledger. After
+collecting checks and logs, fetch the PR head again. If it differs from
+`HEAD_SHA`, discard this pass's CI ledger and end as pending without editing.
 
 For each job that is `fail`:
 
@@ -54,7 +69,9 @@ reproducer. Do not edit code during this collection pass. Platform-only failures
 (Windows path/CRLF, Linux linker) usually cannot be reproduced; record what the
 log establishes and what needs CI confirmation.
 
-If any job is `pending`, note it and move on; the next pass picks it up.
+If any check is queued or in progress, note it and end this pass as pending
+without editing or pushing; a later pass can collect the completed result. If no
+check run exists yet for `HEAD_SHA`, treat that as pending too.
 
 ### 2. Review comments
 
@@ -74,12 +91,15 @@ while collecting or classifying findings.
 Also read top-level review bodies (`gh api repos/<OWNER>/<REPO>/pulls/<PR>/reviews`)
 and add any requests without inline threads to the finding ledger.
 
-Record the PR head SHA, then wait until the requested Codex review for that exact
-SHA is complete before editing. Check the review status summary as well as review
-records and threads. A missing result or a `Running` status is pending, not a clean
-round. Once the review is complete, fetch review bodies and threads again and
-confirm the PR still points to the same SHA. If review is pending, its status is
-unavailable, or the head changed, end this pass as pending without editing.
+Wait until the requested Codex review for `HEAD_SHA` is complete before editing.
+Check the review status summary as well as review records and threads.
+A missing result or a `Running` status is pending, not a clean round.
+Once the review is complete, rerun the check-runs query for `HEAD_SHA` and
+refresh review bodies and threads. Re-read the PR head. Continue only if the PR
+still points to `HEAD_SHA` and the review has completed. All check runs for
+`HEAD_SHA` must be complete. If the head changed, no check run exists, or any
+check or review is pending or unavailable, end this pass as pending without
+editing.
 
 After that gate, make a review-only pass over all findings for the unchanged head.
 Inspect the cited code, relevant callers, and tests, then keep a small finding
@@ -98,12 +118,13 @@ path or missed case instead of applying the same symptom-level patch again.
 
 ### 3. Fix and re-review
 
-Fix the CI failures and actionable review findings from the collection pass,
-grouping related changes where that keeps the patch understandable. Run the
-relevant regression tests and repository-required checks before pushing. Do not
-push while a review round is still in progress. Immediately after pushing, request
-a Codex review as required by CLAUDE.md. Then reply on each fixed thread (the
-`databaseId` of its first comment is the reply target):
+After the CI and review collection gates complete for `HEAD_SHA`, fix all CI
+failures and actionable review findings from that round, grouping related changes
+where that keeps the patch understandable. Use one commit per logical fix, then
+push those commits together once the whole round is addressed. Run the relevant
+regression tests and repository-required checks before pushing. Immediately after
+the push, request a Codex review as required by CLAUDE.md. Then reply on each
+fixed thread using the first comment's `databaseId` as the reply target:
 
 ```bash
 gh api -X POST repos/<OWNER>/<REPO>/pulls/<PR>/comments/<COMMENT_ID>/replies \
