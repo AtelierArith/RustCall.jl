@@ -31,8 +31,22 @@ const PR_BABYSIT_SKILL_PATH = joinpath(@__DIR__, "..", ".claude", "skills", "pr-
         r"gh api --method GET repos/<OWNER>/<REPO>/commits/\$HEAD_SHA/check-runs \\\n\s+-f per_page=100",
         skill,
     )
-    @test occursin("For each job whose conclusion is `failure`:", skill)
-    @test !occursin("For each job that is `fail`:", skill)
+    @test occursin(
+        "For each completed check whose conclusion is not `success`, `neutral`, or\n`skipped`,",
+        skill,
+    )
+    @test occursin("add it to the blocking-results ledger and collect logs where\navailable.", skill)
+    @test occursin("An unsuccessful conclusion remains\nan actionable CI finding even when no log is available", skill)
+    for conclusion in (
+        "failure",
+        "timed_out",
+        "startup_failure",
+        "action_required",
+        "cancelled",
+        "stale",
+    )
+        @test occursin(string("`", conclusion, "`"), skill)
+    end
 
     command = match(r"(?m)^rg -n -e \"([^\"]+)\" /tmp/job\.log \| head$", skill)
     @test command !== nothing

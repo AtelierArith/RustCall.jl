@@ -56,7 +56,12 @@ failure logs; do not add results from another head to this pass's ledger. After
 collecting checks and logs, fetch the PR head again. If it differs from
 `HEAD_SHA`, discard this pass's CI ledger and end as pending without editing.
 
-For each job whose conclusion is `failure`:
+For each completed check whose conclusion is not `success`, `neutral`, or
+`skipped`, add it to the blocking-results ledger and collect logs where
+available. This includes `failure`, `timed_out`, `startup_failure`,
+`action_required`, `cancelled`, and `stale`. An unsuccessful conclusion remains
+an actionable CI finding even when no log is available; record its conclusion,
+check ID, and details URL instead of treating the check as clean.
 
 ```bash
 gh run view --job <JOB_ID> --log > /tmp/job.log
