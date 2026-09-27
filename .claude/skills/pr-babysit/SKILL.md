@@ -45,7 +45,7 @@ For each job that is `fail`:
 
 ```bash
 gh run view --job <JOB_ID> --log > /tmp/job.log
-rg -nE "Test Failed|Error During|ERROR:|error\[" /tmp/job.log | head
+rg -n -e "Test Failed|Error During|ERROR:|error\[" /tmp/job.log | head
 ```
 
 Reproduce locally when possible (`julia --project test/<file>.jl`, or the
