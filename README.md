@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/atelierarith/RustCall.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/atelierarith/RustCall.jl/actions/workflows/CI.yml)
 
-RustCall.jl is a Julia package for calling Rust code directly. It covers the common paths from this repository: inline Rust via `rust"""..."""`, explicit FFI calls with `@rust`, lightweight inline expressions with `@irust`, `#[julia]`-based wrapper generation, and external crate loading with `@rust_crate`.
+RustCall.jl is a Julia package for calling Rust code directly. It covers the common paths from this repository: inline Rust via `rust"""..."""`, explicit FFI calls with `@rust`, `#[julia]`-based wrapper generation, and external crate loading with `@rust_crate`.
 
 It is inspired by [Cxx.jl](https://github.com/JuliaInterop/Cxx.jl), but targets Rust.
 
@@ -64,66 +64,32 @@ pub extern "C" fn multiply(a: i32, b: i32) -> i32 {
 @rust multiply(Int32(6), Int32(7))::Int32 # 42
 ```
 
-For small expressions inside Julia functions, `@irust` captures Julia variables with `$var`.
+### `@irust` is deprecated
+
+`@irust` / `irust"..."` are deprecated ([#538](https://github.com/AtelierArith/RustCall.jl/issues/538)) and will be removed in a later minor release. Each expansion site logs one deprecation warning. Every snippet can be written as a `#[julia]` function: the snippet becomes the body, and each `$name` becomes a typed parameter.
 
 ```julia
-using RustCall
+# before
+affine_irust(a, x, b) = @irust("\$a * \$x + \$b")
 
-function affine(a, x, b)
-    @irust("\$a * \$x + \$b")
-end
+# after
+rust"""
+#[julia]
+fn affine(a: i32, x: i32, b: i32) -> i32 {
+    a * x + b
+}
+"""
 
 affine(Int32(2), Int32(10), Int32(3)) # 23
 ```
 
-The snippet is the body of the generated function — a trailing expression is
-its value, `return` works, and statements and multi-line snippets are fine —
-and its return type is taken from rustc rather than guessed from the text.
-`$$` is a literal `$` (for a `macro_rules!` metavariable), and a Rust panic
-inside a snippet is a catchable `RustCall.RustPanicError`.
-
-### When not to use `@irust`
-
-`@irust` is for exploration at the REPL or in a notebook. It is deliberately
-small:
-
-- **scalars only** — arguments *and results* must be `Int8`…`Int64`,
-  `UInt8`…`UInt64`, `Float32`, `Float64` or `Bool`; no `String`, arrays,
-  structs or 128-bit integers;
-- **`$name` substitution is textual**, so it happens inside Rust string
-  literals too, and `$obj.field` interpolates `obj` only;
-- **not type-stable** — the return type is decided at run time from the
-  snippet;
-- **compiler invocations per new snippet** (on first use: the type probe, a
-  confirmation of its answer, and the build), memoized for the rest of the
-  session.
-
-Anything beyond a small scalar expression belongs in `rust"""..."""` with
-`@rust`: it takes its types from the Rust side, generates the wrapper once, is
-type-stable, and handles `String`, `Result`/`Option` and `#[julia]` structs.
-The same computation both ways:
-
-```julia
-# @irust — a one-off scalar expression
-hypot_irust(a, b) = @irust("(\$a * \$a + \$b * \$b).sqrt()")
-hypot_irust(3.0, 4.0)   # 5.0
-
-# rust""" — what a package should ship
-rust"""
-#[julia]
-fn hypot_rs(a: f64, b: f64) -> f64 {
-    (a * a + b * b).sqrt()
-}
-"""
-hypot_rs(3.0, 4.0)      # 5.0
-```
+The `#[julia]` form is compiled once and is type-stable, and it is not limited to scalars. "Migrating from `@irust`" in the manual covers the other cases.
 
 ## Main APIs
 
 - `rust"""..."""` / `@rust_str`: compile Rust code, cache the build artifact, and make it available in the current Julia module
 - `#[julia]`: generate Julia-callable wrappers for Rust functions and structs
 - `@rust`: call exported functions through a C-compatible ABI
-- `@irust`: compile a small Rust expression with Julia variable capture
 - `@rust_crate`: build and load an external crate annotated with `#[julia]`
 
 Rust dependencies can be declared inline with `// cargo-deps:` or fenced `cargo` blocks. The first build may need network access.

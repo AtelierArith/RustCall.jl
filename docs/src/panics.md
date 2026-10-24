@@ -82,7 +82,7 @@ points at a closure whose code is gone.
 
 **Where it applies.** To every artifact RustCall loads that has at least one
 generated wrapper: inline `rust"""` blocks (both the direct-`rustc` and the Cargo
-flavour), `@irust`, monomorphized generics, the generated `@rust_crate` wrapper
+flavour), `@irust` (deprecated), monomorphized generics, the generated `@rust_crate` wrapper
 crate, **and a crate of your own annotated with `#[julia]`**. Nothing has to
 declare that: `__rustcall_install_panic_hook` is exported exactly by those
 artifacts, so the loader asks the image rather than a policy, and a door cannot

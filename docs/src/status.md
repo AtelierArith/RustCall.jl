@@ -6,7 +6,8 @@ Last updated: 2026-09-07
 
 | Item | Current State |
 |------|---------------|
-| Core FFI (`rust"""`, `@rust`, `@irust`) | ✅ Implemented |
+| Core FFI (`rust"""`, `@rust`) | ✅ Implemented |
+| `@irust` / `irust"..."` | ⚠️ Deprecated (#538), to be removed in a later minor release |
 | Cargo dependency integration | ✅ Implemented |
 | Struct/object mapping | ✅ Implemented |
 | `#[julia]` attribute support | ✅ Implemented |
@@ -28,8 +29,8 @@ git ls-files 'src/*.jl' 'src/**/*.jl' 'test/test_*.jl' 'benchmark/*.jl' 'deps/*/
 
 ### Julia entry points
 - `src/RustCall.jl`: module entrypoint, exports, initialization.
-- `src/macros/ruststr.jl`: `rust"""` processing, compilation/load integration.
-- `src/macros/rustmacro.jl`: `@rust`, `@irust`, call expansion.
+- `src/macros/ruststr.jl`: `rust"""` processing, compilation/load integration, and the deprecated `@irust`.
+- `src/macros/rustmacro.jl`: `@rust`, call expansion.
 
 ### Compilation and code generation
 - `src/build/compiler.jl`: rustc invocation and compile orchestration.

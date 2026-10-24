@@ -14,7 +14,7 @@ Pages = [joinpath("src", "RustCall.jl")]
 
 - [`@rust_str`](@ref) — `rust"""..."""`: compile a Rust snippet and register its functions.
 - [`@rust`](@ref) — call a registered Rust function.
-- [`@irust`](@ref) / [`@irust_str`](@ref) — inline Rust with `$var` binding.
+- [`@irust`](@ref) / [`@irust_str`](@ref) — inline Rust with `$var` binding. **Deprecated** (#538): use a `#[julia]` function in `rust"""..."""`.
 - [`@rust_crate`](@ref) — bind an external crate.
 
 `@rust_llvm` and the LLVM IR integration path were removed in 0.3.0
