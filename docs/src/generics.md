@@ -41,8 +41,7 @@ When you define a generic function in a `rust""` block, RustCall.jl automaticall
 ```julia
 
 rust"""
-#[no_mangle]
-pub extern "C" fn identity<T>(x: T) -> T {
+pub fn identity<T>(x: T) -> T {
     x
 }
 """
@@ -134,8 +133,7 @@ The specialized function is compiled and cached. Subsequent calls with the same 
 
 ```julia
 rust"""
-#[no_mangle]
-pub extern "C" fn first<T, U>(a: T, b: U) -> T {
+pub fn first<T, U>(a: T, b: U) -> T {
     a
 }
 """
@@ -308,8 +306,7 @@ from source text.
 
 ```@example generics
 rust"""
-#[no_mangle]
-pub extern "C" fn identity<T>(x: T) -> T {
+pub fn identity<T>(x: T) -> T {
     x
 }
 """
@@ -325,8 +322,7 @@ println("Float64 result: $result2")
 
 ```@example generics
 rust"""
-#[no_mangle]
-pub extern "C" fn first<T, U>(a: T, b: U) -> T {
+pub fn first<T, U>(a: T, b: U) -> T {
     a
 }
 """

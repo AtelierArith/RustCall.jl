@@ -1026,8 +1026,7 @@ Use generics for type-safe, reusable code:
 ```julia
 # Register a generic identity function
 code = """
-#[no_mangle]
-pub extern "C" fn identity<T>(x: T) -> T {
+pub fn identity<T>(x: T) -> T {
     x
 }
 """
