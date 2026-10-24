@@ -27,7 +27,8 @@ _deprecations(logs) = filter(l -> l.level == Logging.Warn && l.group === :depwar
 
 # The migration section of the manual, as `(before/after code block)` strings.
 function _migration_blocks()
-    text = read(joinpath(dirname(@__DIR__), "docs", "src", "index.md"), String)
+    # A Windows checkout may have CRLF line endings.
+    text = replace(read(joinpath(dirname(@__DIR__), "docs", "src", "index.md"), String), "\r\n" => "\n")
     start = findfirst("### 3. Migrating from `@irust`", text)
     start === nothing && error("docs/src/index.md has no \"Migrating from `@irust`\" section")
     stop = findnext("\n### ", text, last(start))
