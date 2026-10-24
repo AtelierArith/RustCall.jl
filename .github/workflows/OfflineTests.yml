@@ -68,9 +68,14 @@ jobs:
         # fixtures' pinned one, which it does today and need not tomorrow
         # (#384 review). `--locked` also fails loudly when a lockfile has gone
         # stale against its Cargo.toml, which is the right moment to notice.
+        # The one example crate the suite builds is fetched too:
+        # `test_integration_example` builds `examples/SafeLedger.jl`, whose
+        # lockfile pins `syn 3.0.6`; the run failed once no other manifest
+        # happened to resolve that version.
         run: |
           cargo fetch --manifest-path deps/rustcall_julia_macros/Cargo.toml
-          for lock in deps/*/Cargo.lock test/fixtures/*/Cargo.lock; do
+          for lock in deps/*/Cargo.lock test/fixtures/*/Cargo.lock \
+              examples/SafeLedger.jl/deps/safe_ledger/Cargo.lock; do
             cargo fetch --locked --manifest-path "$(dirname "$lock")/Cargo.toml"
           done
       - name: Build the release extractor
