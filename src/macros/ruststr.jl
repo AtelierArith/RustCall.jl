@@ -1351,6 +1351,13 @@ const IRUST_FUNCTIONS = _state_view(:irust_functions, Dict{String, IrustSnippet}
 
 Compile one Rust **expression** into a throwaway function and call it.
 
+!!! warning "Deprecated"
+    `@irust` is deprecated and will be removed in a later minor release
+    (#538); each expansion site warns once. Write the snippet as the body of
+    a `#[julia]` function in a `rust\"\"\"...\"\"\"` block, with each `\$name` as
+    a typed parameter, and call that function: see "Migrating from `@irust`"
+    in the manual.
+
 `@irust` is the small end of RustCall: a scalar expression typed at the REPL or
 in a notebook. For anything larger — several functions, a `String`, a
 `Result`/`Option`, a struct, or code you want to keep — use `rust\"\"\"...\"\"\"`
@@ -1395,7 +1402,8 @@ type-check, the error carries rustc's own diagnostic.
 
 # Limitations
 
-See "Limitations of `@irust`" in the manual. In short:
+These are why `@irust` is deprecated; "Migrating from `@irust`" in the manual
+shows the `rust\"\"\"...\"\"\"` form of each. In short:
 
 - arguments **and results** are **scalars only**: `Int8`…`Int64`,
   `UInt8`…`UInt64`, `Float32`, `Float64`, `Bool` (`IRUST_SCALAR_TYPES`). No
@@ -1429,6 +1437,7 @@ end
 ```
 """
 macro irust(code, args...)
+    _irust_deprecation("@irust", __module__, __source__)
     return _irust_expansion(code, args, "@irust")
 end
 
@@ -1436,6 +1445,11 @@ end
     @irust_str(code)
 
 String-literal form of `@irust`: `irust"\$x * 2"`.
+
+!!! warning "Deprecated"
+    `irust"..."` is deprecated together with `@irust` (#538); each expansion
+    site warns once. Use a `#[julia]` function in a `rust\"\"\"...\"\"\"` block
+    instead: see "Migrating from `@irust`" in the manual.
 
 Julia does not interpolate inside a non-standard string literal, so `\$name`
 reaches the macro as written and needs no backslash. Everything else — the
@@ -1452,7 +1466,34 @@ irust"\$x * 2"          # => 42
 ```
 """
 macro irust_str(code)
+    _irust_deprecation("@irust_str", __module__, __source__)
     return _irust_expansion(code, (), "@irust_str")
+end
+
+"""
+    _irust_deprecation(macro_name, mod, source)
+
+Warn that `@irust` / `irust"..."` is deprecated (#538), once per expansion
+site, at the caller's file and line.
+
+It runs when the macro is expanded, not when the snippet is called: the
+warning costs nothing on the call path, and a package that uses `@irust` sees
+it when it is precompiled. It follows `Base.depwarn`'s conventions — the
+`:depwarn` log group, and an `ErrorException` under `--depwarn=error` — but is
+shown whatever `--depwarn` says, since the default `--depwarn=no` of an
+interactive session would otherwise hide it from the people who type `@irust`.
+"""
+function _irust_deprecation(macro_name::String, mod::Module, source::LineNumberNode)
+    form = macro_name == "@irust_str" ? "irust\"...\"" : "@irust"
+    msg = string("`", form, "` is deprecated and will be removed in a later minor ",
+        "release of RustCall (#538). Write the snippet as the body of a `#[julia]` ",
+        "function in a `rust\"\"\"...\"\"\"` block, with each `\$name` as a typed ",
+        "parameter, and call that function; see \"Migrating from `@irust`\" in the manual.")
+    Base.JLOptions().depwarn == 2 && throw(ErrorException(msg))
+    file = source.file === nothing ? "none" : String(source.file)
+    @warn msg _group = :depwarn _module = mod _file = file _line = source.line _id = (
+        Symbol(macro_name), file, source.line) maxlog = 1
+    return nothing
 end
 
 """

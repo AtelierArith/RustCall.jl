@@ -9,7 +9,7 @@
 ### Phase 1: C-Compatible ABI ✅
 - **`@rust` macro**: Call Rust functions directly from Julia
 - **`rust""` string literal**: Compile and load Rust code as shared libraries
-- **`@irust` macro**: Execute Rust code at function scope
+- **`@irust` macro** (deprecated, see "Migrating from `@irust`"): Execute Rust code at function scope
 - **Type mapping**: Automatic conversion between Rust and Julia types
 - **Result/Option support**: Handle Rust's `Result<T, E>` and `Option<T>` types
 - **String support**: Pass Julia strings to Rust functions expecting C strings
@@ -137,133 +137,143 @@ pub extern "C" fn multiply(a: i32, b: i32) -> i32 {
 @rust multiply(Int32(5), Int32(7))::Int32  # => 35
 ```
 
-### 3. Inline Rust with `@irust`
+### 3. Migrating from `@irust`
 
-Execute a small Rust expression directly, with Julia variables bound by name:
+!!! warning "Deprecated"
+    `@irust` and `irust"..."` are deprecated
+    ([#538](https://github.com/AtelierArith/RustCall.jl/issues/538)) and will be
+    removed in a later minor release. They still work. Each expansion site logs
+    one deprecation warning, and `--depwarn=error` makes the warning an error.
+
+Anything an `@irust` snippet computes can be written as a `#[julia]` function
+in a `rust"""..."""` block:
+
+1. The snippet becomes the function **body**. Its trailing expression is the
+   function's value, and statements, loops and `return` stay as they are.
+2. Each `$name` (or `arg1`, `arg2`, …) becomes a **typed parameter**: the Rust
+   type of the Julia value you passed (`Int64` → `i64`, `Int32` → `i32`,
+   `Float64` → `f64`, `Bool` → `bool`, …).
+3. The type the snippet evaluated to is written as the **return type**.
+4. Define the block once, at top level, and call the generated Julia function
+   wherever the snippet used to be.
+
+`@irust` decided at run time what step 3 says, with several `rustc` runs per
+new snippet. That is why it handled scalars only, why a function containing it
+could not be inferred, and why `$name` was a textual substitution that reached
+inside Rust string literals. A `#[julia]` function has none of these limits.
+It is compiled once, its call is type-stable, and it handles `String`, slices,
+`Result` / `Option` and `#[julia]` structs.
+
+Each pair below computes the same value. `test/test_irust_deprecation.jl` checks
+every pair.
+
+**A captured expression.**
 
 ```julia
-function compute(x, y)
-    @irust("\$x * \$y + 10")
-end
+# before
+compute_irust(x, y) = @irust("\$x * \$y + 10")
+compute_irust(Int32(3), Int32(4))   # => 22
 
-compute(Int32(3), Int32(4))  # => 22
+# after
+rust"""
+#[julia]
+fn compute(x: i32, y: i32) -> i32 {
+    x * y + 10
+}
+"""
+compute(Int32(3), Int32(4))         # => 22
 ```
 
-`@irust` is the *exploratory* end of RustCall — a scalar expression at the REPL
-or in a notebook. Anything more than that belongs in `rust"""..."""`; the
-"Limitations of `@irust`" section below says exactly where the line is.
-
-#### Interpolation
-
-`$name` is replaced by the value of the Julia variable `name`, which is passed
-to the generated Rust function as an argument.
-
-| you write | what happens |
-| --- | --- |
-| `$name` | an ASCII letter or `_` followed by letters, digits and `_`; the variable is passed as an argument |
-| `$name` twice | one argument, not two |
-| `$obj.field` | `obj` is interpolated; `.field` is left as Rust source |
-| `"$x"` | substituted **inside Rust string literals too** — the substitution is textual and unconditional |
-| `$$` | a literal `$`, consuming no variable — this is how a `macro_rules!` metavariable is written |
-| `$` before anything else | left exactly as written |
-
-Julia interpolates a bare `$` inside `"..."` itself, which is why the examples
-write `@irust("\$x * 2")`. The string-literal form is not interpolated by
-Julia, so it needs no backslash:
+**No captured variable** (`irust"..."`), and **explicit arguments** (`arg1`, …).
 
 ```julia
+# before
+irust"40 + 2"                       # => 42
 x = Int64(21)
-irust"$x * 2"    # => 42
+@irust("arg1 * 2", x)               # => 42
+
+# after
+rust"""
+#[julia]
+fn answer() -> i64 {
+    40 + 2
+}
+
+#[julia]
+fn twice(arg1: i64) -> i64 {
+    arg1 * 2
+}
+"""
+answer()                            # => 42
+twice(x)                            # => 42
 ```
 
-Variables can also be passed explicitly and referenced as `arg1`, `arg2`, …:
+**Statements and loops.** The body is unchanged.
 
 ```julia
-@irust("arg1 * 2", x)   # => 42
-```
-
-#### The snippet is a function body
-
-The snippet is placed as the body of the generated function, so a trailing
-expression is its value, an explicit `return` works, and statements, `let`
-bindings, loops and multi-line snippets need no special treatment:
-
-```julia
+# before
 k = Int64(10)
 @irust("let mut s = 0i64; for i in 0..\$k { s += i; } s")   # => 45
 
-@irust("""
+# after
+rust"""
+#[julia]
+fn sum_below(k: i64) -> i64 {
     let mut s = 0i64;
-    for i in 0..\$k {
+    for i in 0..k {
         s += i;
     }
     s
-    """)                                                     # => 45
-```
-
-#### The return type comes from rustc
-
-The snippet is type-checked on its own before it is built, and the type it
-evaluates to becomes the generated function's return type. Nothing is guessed
-from the source text:
-
-```julia
-x = Int64(7); f = 3.5
-
-@irust("\$x as f64")                       # => 7.0    :: Float64
-@irust("if \$x > 0 { 1 } else { -1 }")     # => 1      :: Int64
-@irust("\$f.is_finite()")                  # => true   :: Bool
-@irust("{ fn sq(v: i64) -> i64 { v * v }  sq(\$x) }")   # => 49 :: Int64
-```
-
-An unsuffixed integer literal becomes an `i64` and an unsuffixed float literal
-an `f64`, as in Julia; write `1u8`, `2.0f32` and so on for anything else. A
-snippet whose value is `()` returns `nothing`. When the snippet does not
-type-check, the error carries rustc's own diagnostic about *your* snippet, not
-about generated source.
-
-### Limitations of `@irust`
-
-`@irust` is deliberately small. These are the edges, and `rust"""..."""` with
-`@rust` is the answer to every one of them:
-
-- **Scalars only.** Arguments *and results* must be `Int8`…`Int64`,
-  `UInt8`…`UInt64`, `Float32`, `Float64` or `Bool`. No `String`, no arrays, no
-  structs, no 128-bit integers (`i128`/`u128` do not round-trip on
-  `x86_64-pc-windows-msvc`). `@irust("\$s.len()")` with a `String` raises
-  `Unsupported Julia type for @irust: String`, and a snippet whose *value* is
-  outside the set is refused with a message that names `rust"""..."""`.
-- **`$name` substitution is textual.** It happens inside Rust string literals
-  too, and `$obj.field` interpolates `obj` only. Use `$$` for a literal `$`.
-- **Not type-stable.** The return type is decided at run time from the snippet,
-  so a function containing `@irust` cannot be inferred through.
-- **Compiler invocations per new snippet.** The first use of a snippet costs a
-  few `rustc` runs — the type probe, a confirmation of its answer, and the
-  build — and is memoized afterwards for the rest of the session, keyed by the
-  snippet *and* its argument types.
-
-#### The same computation, both ways
-
-```julia
-# @irust: fine for a one-off scalar expression
-function hypot_irust(a, b)
-    @irust("(\$a * \$a + \$b * \$b).sqrt()")
-end
-hypot_irust(3.0, 4.0)   # => 5.0
-
-# rust""": what a package should ship — the types are Rust's, the wrapper is
-# generated once, the call is type-stable, and String / Result / structs work
-rust"""
-#[julia]
-fn hypot_rs(a: f64, b: f64) -> f64 {
-    (a * a + b * b).sqrt()
 }
 """
-hypot_rs(3.0, 4.0)      # => 5.0
+sum_below(k)                        # => 45
 ```
 
-Both raise a catchable `RustCall.RustPanicError` if the Rust code panics; the
-"Panics, Visibility and Lifetime" page has the full contract.
+**The return type.** `@irust` asked rustc for it. Now you write it, and it is
+the Julia result type.
+
+```julia
+# before
+x = Int64(7); f = 3.5
+@irust("\$x as f64")                       # => 7.0  :: Float64
+@irust("if \$x > 0 { 1 } else { -1 }")     # => 1    :: Int64
+@irust("\$f.is_finite()")                  # => true :: Bool
+@irust("(\$f * \$f).sqrt()")               # => 3.5  :: Float64
+
+# after
+rust"""
+#[julia]
+fn as_float(x: i64) -> f64 {
+    x as f64
+}
+
+#[julia]
+fn sign_of(x: i64) -> i64 {
+    if x > 0 { 1 } else { -1 }
+}
+
+#[julia]
+fn finite(f: f64) -> bool {
+    f.is_finite()
+}
+
+#[julia]
+fn magnitude(f: f64) -> f64 {
+    (f * f).sqrt()
+}
+"""
+as_float(x)                         # => 7.0  :: Float64
+sign_of(x)                          # => 1    :: Int64
+finite(f)                           # => true :: Bool
+magnitude(f)                        # => 3.5  :: Float64
+```
+
+A nested helper `fn` inside a snippet becomes a top-level function in the same
+block. A snippet that used `$$` for a `macro_rules!` metavariable writes `$`
+directly, since a `rust"""` block does no substitution. A panic stays a
+catchable `RustCall.RustPanicError` (see "Panics, Visibility and Lifetime").
+If you would rather call through the C ABI, write `#[no_mangle] pub extern "C"`
+instead of `#[julia]` and call the function with `@rust name(args...)::T`.
 
 ### 4. Use External Crates
 

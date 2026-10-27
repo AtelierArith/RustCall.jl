@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Deprecated
+- **`@irust` and `irust"..."` are deprecated**
+  ([#538](https://github.com/AtelierArith/RustCall.jl/issues/538)) and will
+  be removed in a later minor release. Their behaviour is unchanged. Each
+  expansion site now logs one deprecation warning (log group `:depwarn`),
+  whatever `--depwarn` is set to, at the caller's file and line, and
+  `--depwarn=error` turns it into an error. A package that uses `@irust` sees
+  the warning when it precompiles. Every snippet can be written as a
+  `#[julia]` function in a `rust"""..."""` block: the snippet becomes the
+  body, and each `$name` becomes a typed parameter with the Rust type of the
+  value. "Migrating from `@irust`" in the manual gives the `rust"""` form of
+  each documented example, and `test/test_irust_deprecation.jl` checks that
+  each pair computes the same value. The `#[julia]` form is compiled once and
+  is type-stable, and it handles strings, slices, `Result` / `Option` and
+  structs, none of which `@irust` supports.
+
 ### Fixed
 - **A Python-owned `#[pyclass]` object (one with `extends`, or with methods
   that take PyO3 defaults) is dropped again under CPython 3.14** when it was

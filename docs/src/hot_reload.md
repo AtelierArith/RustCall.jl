@@ -15,7 +15,7 @@ using RustCall
 | `@rust_crate` on a crate whose `[lib]` has `crate-type = ["cdylib"]` | **Supported**: `RustCall.enable_hot_reload_for_crate` |
 | `@rust_crate` on a crate with no `cdylib` target (bound through a generated wrapper crate) | Not supported: both forms refuse it with an `ArgumentError` when hot reload is enabled |
 | `rust"""..."""` with `// cargo-deps: my_crate = { path = "..." }` | **Not supported.** Evaluate the block again instead (see below) |
-| `rust"""..."""`, `@irust`, generics | Not applicable: evaluating the source again builds a new library |
+| `rust"""..."""`, `@irust` (deprecated), generics | Not applicable: evaluating the source again builds a new library |
 
 Why `rust"""` with a path dependency is not a hot reload target: the block is
 compiled into a library of its own, registered as `rust_cargo_<id>`, that links

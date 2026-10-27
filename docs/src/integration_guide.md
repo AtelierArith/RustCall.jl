@@ -34,9 +34,9 @@ This design has three useful properties:
 3. The FFI contract remains small enough to test exhaustively.
 
 Use `#[julia]` for stable package APIs whenever possible. Use `@rust` when an
-explicit C-ABI call is required, and reserve `@irust` for small scalar
-experiments at the REPL or in notebooks. `@irust` is intentionally not
-type-stable and does not support strings, arrays, structs, or 128-bit integers.
+explicit C-ABI call is required. Do not use `@irust` in new code: it is
+deprecated (#538), and every snippet has a `#[julia]` equivalent (see
+"Migrating from `@irust`" on the home page).
 
 ## Worked example: `examples/SafeLedger.jl`
 
@@ -236,7 +236,7 @@ and same-thread execution; it is not a general asynchronous callback system.
 | Threads | calls from any Julia thread | concurrent `&mut self` calls on one object (RustCall does not lock objects) | serialize access to a handle, e.g. with a `ReentrantLock` in the wrapper |
 | Lifetime | finalizers, `finalize(obj)` for explicit release | use after `unload_library(...; close = true)` (the call raises, the object leaks) | close images only when nothing still uses them |
 | Generics | generic functions and structs, monomorphized on demand | trait objects, explicit lifetime parameters | expose concrete facade functions |
-| `@irust` | scalar snippets at the REPL | strings, arrays, structs, 128-bit integers; type stability | `rust"""..."""` or a crate with `#[julia]` |
+| `@irust` (deprecated, #538) | scalar snippets, until it is removed | strings, arrays, structs, 128-bit integers; type stability | a `#[julia]` function in `rust"""..."""` |
 
 ## Build and CI practices
 
