@@ -479,7 +479,7 @@ fn python_owned_borrowed_string_returns_are_lowered_to_owned() {
     assert!(!wrapped.lib_rs.contains("PyResult<&str>"));
     assert!(wrapped
         .lib_rs
-        .contains("::rustcall_pyo3::Python::attach(|py| -> ::rustcall_pyo3::PyResult<String>"));
+        .contains("crate::__rustcall_attach(|py| -> ::rustcall_pyo3::PyResult<String>"));
 }
 
 /// ...and the lowering stays inside the Python-owned flavours. A plain

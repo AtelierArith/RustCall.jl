@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A Python-owned `#[pyclass]` object (one with `extends`, or with methods
+  that take PyO3 defaults) is dropped again under CPython 3.14** when it was
+  used from a Julia task (#542). CPython 3.14 treated every task stack as
+  exhausted and deferred freeing the dispatcher's argument containers forever,
+  so their reference to the object kept it alive. The generated `@rust_crate`
+  wrapper now tells CPython the current task's stack bounds on every attach
+  (Linux and macOS; CPython 3.14.1+). This changes `rustcall_julia_core`'s
+  sources, so, as in 0.7.2, cached wrappers are rebuilt and a file written by
+  `write_bindings_to_file` under an earlier RustCall must be regenerated.
+
 ## [0.7.2] - 2026-09-26
 
 ### Breaking

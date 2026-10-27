@@ -408,6 +408,26 @@ const PYO3_MIXED_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_mixed
                 finalize(inherited)
                 sleep(0.05)
                 @test M.dropped_inherited() == before + 1
+
+                # The same on a task's stack, explicitly, whatever task the
+                # test itself runs on (#542): CPython 3.14 judged every task
+                # stack to be at its limit and deferred the deallocation of the
+                # dispatcher's argument containers forever, so `self` never
+                # dropped. `increment()` and `defaulted_label()` go through
+                # PyO3's dispatcher, which builds those containers.
+                on_task = fetch(@async begin
+                    counter = Base.invokelatest(M.InheritedCounter).value
+                    M.increment(counter)
+                    M.defaulted_label(counter)
+                    counter
+                end)
+                before = M.dropped_inherited()
+                fetch(@async finalize(on_task))
+                for _ in 1:100
+                    M.dropped_inherited() == before + 1 && break
+                    sleep(0.01)
+                end
+                @test M.dropped_inherited() == before + 1
             end
 
             # `PyResult<T>` -> `RustResult{T, String}`; the error is opaque and
