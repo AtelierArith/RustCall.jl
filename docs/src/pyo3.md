@@ -566,6 +566,23 @@ background Python-attached safe point performs the actual decref. The wrapper
 image is process-pinned because PyO3's registered type and that safe point keep
 callbacks into it after a logical RustCall unload.
 
+Every call the wrapper attaches to Python from Julia first tells CPython which
+stack it is on (#542). A Julia task runs on a stack of its own, and CPython
+3.14 judges "close to the stack limit" against the OS thread's stack: on a task
+stack it always says yes, defers the deallocation of every container it frees
+to a list that is never drained there, and whatever those containers referenced
+— the `self` of a dispatched method call — is never released, so a Python-owned
+object's Rust `Drop` never runs. The attached closure reads the current task's
+stack bounds from Julia (`jl_active_task_stack`) and passes them to
+`PyUnstable_ThreadState_SetStackProtection` (CPython 3.14.1 and later), and puts
+the thread's own bounds back (`PyUnstable_ThreadState_ResetStackProtection`)
+before it detaches, so nothing else that enters Python on that thread
+(PythonCall, for example) inherits a task's stack. These functions are looked up
+at run time, so an older Python is unaffected. On Linux and macOS
+this is complete; on Windows the lookup is not implemented yet, and a
+Python-owned object used from a task under CPython 3.14 may not be dropped
+until the process exits.
+
 ### PyO3 defaults keep their original Rust scope
 
 For `#[pyo3(signature = (...))]` (including the signature nested in

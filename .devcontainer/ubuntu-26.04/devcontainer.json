@@ -1,0 +1,6 @@
+{
+    "name": "RustCall.jl (CI image: Ubuntu 26.04, Python 3.14)",
+    "build": { "dockerfile": "Dockerfile" },
+    "postCreateCommand": "git config --global --add safe.directory '*' && julia --project -e 'using Pkg; Pkg.instantiate(); Pkg.build(\"RustCall\")'",
+    "remoteEnv": { "JULIA_PROJECT": "@." }
+}
