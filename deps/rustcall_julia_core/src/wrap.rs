@@ -326,8 +326,12 @@ fn render(krate: &Ident, items: TokenStream2, uses_user_crate: bool) -> String {
 /// a `#[pyclass]` object's Rust `Drop` never runs. The attached closure first
 /// tells CPython the current task's stack bounds, read from Julia
 /// (`jl_active_task_stack`), through `PyUnstable_ThreadState_SetStackProtection`
-/// (3.14.1+). Both are looked up at run time, so an older Python, a process
-/// without Julia, or a caller outside any task's stack gets plain `attach`.
+/// (3.14.1+), and restores the thread's own bounds
+/// (`PyUnstable_ThreadState_ResetStackProtection`) before it detaches, on
+/// unwind too, so nothing else that enters Python on this thread — PythonCall,
+/// another library — inherits a task's stack. Both are looked up at run time,
+/// so an older Python, a process without Julia, or a caller outside any task's
+/// stack gets plain `attach`.
 /// Windows has no lookup here yet and always gets plain `attach`.
 fn python_attach_items() -> TokenStream2 {
     quote! {
@@ -336,7 +340,7 @@ fn python_attach_items() -> TokenStream2 {
             F: for<'py> ::std::ops::FnOnce(::rustcall_pyo3::Python<'py>) -> R,
         {
             ::rustcall_pyo3::Python::attach(|py| {
-                __rustcall_python_stack::fit_current_stack();
+                let _stack = __rustcall_python_stack::fit_current_stack();
                 f(py)
             })
         }
@@ -352,6 +356,8 @@ fn python_attach_items() -> TokenStream2 {
                     *mut c_void,
                     usize,
                 ) -> c_int;
+                type ResetStackProtection =
+                    unsafe extern "C" fn(*mut ::rustcall_pyo3::ffi::PyThreadState);
                 type CurrentTask = unsafe extern "C" fn() -> *mut c_void;
                 type ActiveTaskStack = unsafe extern "C" fn(
                     *mut c_void,
@@ -363,6 +369,7 @@ fn python_attach_items() -> TokenStream2 {
 
                 struct Api {
                     set_stack_protection: SetStackProtection,
+                    reset_stack_protection: ResetStackProtection,
                     current_task: CurrentTask,
                     active_task_stack: ActiveTaskStack,
                 }
@@ -422,7 +429,11 @@ fn python_attach_items() -> TokenStream2 {
                             python,
                             c"PyUnstable_ThreadState_SetStackProtection".as_ptr(),
                         );
-                        if set_stack_protection.is_null() {
+                        let reset_stack_protection = dlsym(
+                            python,
+                            c"PyUnstable_ThreadState_ResetStackProtection".as_ptr(),
+                        );
+                        if set_stack_protection.is_null() || reset_stack_protection.is_null() {
                             return None;
                         }
                         Some(Api {
@@ -430,6 +441,10 @@ fn python_attach_items() -> TokenStream2 {
                                 *mut c_void,
                                 SetStackProtection,
                             >(set_stack_protection),
+                            reset_stack_protection: ::std::mem::transmute::<
+                                *mut c_void,
+                                ResetStackProtection,
+                            >(reset_stack_protection),
                             current_task: ::std::mem::transmute::<*mut c_void, CurrentTask>(
                                 current_task,
                             ),
@@ -441,17 +456,28 @@ fn python_attach_items() -> TokenStream2 {
                     }
                 }
 
+                /// Restores the thread's own stack bounds when dropped, which
+                /// happens inside the attached closure, before it detaches.
+                pub struct Restore {
+                    tstate: *mut ::rustcall_pyo3::ffi::PyThreadState,
+                    reset: ResetStackProtection,
+                }
+
+                impl ::std::ops::Drop for Restore {
+                    fn drop(&mut self) {
+                        unsafe { (self.reset)(self.tstate) }
+                    }
+                }
+
                 // Called attached: the thread state is the caller's own.
-                pub fn fit_current_stack() {
+                pub fn fit_current_stack() -> ::std::option::Option<Restore> {
                     static API: ::std::sync::OnceLock<::std::option::Option<Api>> =
                         ::std::sync::OnceLock::new();
-                    let Some(api) = API.get_or_init(resolve) else {
-                        return;
-                    };
+                    let api = API.get_or_init(resolve).as_ref()?;
                     unsafe {
                         let task = (api.current_task)();
                         if task.is_null() {
-                            return;
+                            return None;
                         }
                         let mut active_start: *mut c_char = ::std::ptr::null_mut();
                         let mut active_end: *mut c_char = ::std::ptr::null_mut();
@@ -467,19 +493,26 @@ fn python_attach_items() -> TokenStream2 {
                         let here = &task as *const _ as usize;
                         let (start, end) = (total_start as usize, total_end as usize);
                         if start == 0 || end <= start || here <= start || here > end {
-                            return;
+                            return None;
                         }
                         let tstate = ::rustcall_pyo3::ffi::PyThreadState_Get();
                         if (api.set_stack_protection)(tstate, total_start.cast(), end - start) != 0 {
                             ::rustcall_pyo3::ffi::PyErr_Clear();
+                            return None;
                         }
+                        Some(Restore {
+                            tstate,
+                            reset: api.reset_stack_protection,
+                        })
                     }
                 }
             }
 
             #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             mod imp {
-                pub fn fit_current_stack() {}
+                pub fn fit_current_stack() -> ::std::option::Option<()> {
+                    None
+                }
             }
 
             pub use imp::fit_current_stack;

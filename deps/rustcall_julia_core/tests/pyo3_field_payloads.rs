@@ -542,3 +542,46 @@ fn python_owned_handle_decision_survives_a_skipped_defaulted_method() {
         .lib_rs
         .contains("struct FilteredOwned_RustCallPythonHandle"));
 }
+
+/// Every attach a Julia call makes fits CPython 3.14's stack protection to the
+/// calling Julia task's stack, and puts the thread's own back before it
+/// detaches (#542): only `__rustcall_attach` and the drain thread, which runs
+/// on an OS stack, call `Python::attach` themselves.
+#[test]
+fn julia_entered_attaches_fit_and_restore_the_stack_protection() {
+    let scan = extract(
+        r#"
+        fn private_default() -> i32 { 37 }
+        #[pyfunction(signature = (value = private_default()))]
+        pub fn calculate(value: i32) -> i32 { value }
+        #[pyclass]
+        pub struct Base;
+        #[pyclass(extends = Base)]
+        pub struct Child { #[pyo3(get, set)] pub value: i32 }
+        #[pymethods]
+        impl Child {
+            #[new]
+            pub fn new() -> (Self, Base) { (Self { value: 1 }, Base) }
+            #[pyo3(signature = (by = private_default()))]
+            pub fn bump(&mut self, by: i32) -> i32 { self.value += by; self.value }
+        }
+        "#,
+        Mode::Crate,
+    )
+    .unwrap();
+    let lib_rs = wrapper_crate(&scan, "user_crate", true).lib_rs;
+    let direct: Vec<_> = lib_rs
+        .lines()
+        .filter(|line| line.contains("::rustcall_pyo3::Python::attach("))
+        .map(str::trim)
+        .collect();
+    assert_eq!(direct.len(), 2, "{direct:#?}");
+    assert!(direct
+        .iter()
+        .any(|line| line.contains("__rustcall_drain_Child")));
+    assert!(lib_rs.contains("crate::__rustcall_attach("));
+    assert!(lib_rs.contains("let _stack = __rustcall_python_stack::fit_current_stack();"));
+    assert!(lib_rs.contains("PyUnstable_ThreadState_SetStackProtection"));
+    assert!(lib_rs.contains("PyUnstable_ThreadState_ResetStackProtection"));
+    assert!(lib_rs.contains("impl ::std::ops::Drop for Restore"));
+}
