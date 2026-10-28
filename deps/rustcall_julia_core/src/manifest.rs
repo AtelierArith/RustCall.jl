@@ -12,7 +12,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The manifest compatibility identifier: the **`MAJOR.MINOR` of the RustCall
-/// release** this crate ships in, so `"0.7"` for every v0.7.x. Julia derives
+/// release** this crate ships in, so `"0.8"` for every v0.8.x. Julia derives
 /// the same string from its `Project.toml` and refuses a manifest whose
 /// `schema_version` differs (#372).
 ///
@@ -160,7 +160,7 @@ use serde::{Deserialize, Serialize};
 ///   payload that cannot cross the C ABI, a `Self` the wrapper cannot spell,
 ///   a lowered string whose lifetime the wrapper cannot honour — decided by
 ///   [`crate::refusal`], the one place the `compile_error!` comes from too.
-pub const SCHEMA_VERSION: &str = "0.7";
+pub const SCHEMA_VERSION: &str = "0.8";
 
 #[cfg(test)]
 mod schema_version_tests {

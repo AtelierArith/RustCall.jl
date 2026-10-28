@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-28
+
+### Breaking
+- **The manifest schema identifier and the bindings format are `0.8`**. As
+  for every minor release, both follow `Project.toml`'s `MAJOR.MINOR`: the
+  extractor's source digest moves once, every cached artifact is rebuilt on
+  first use, an installed v0.7.x extractor is refused until
+  `Pkg.build("RustCall")` rebuilds it, and a file written by
+  `write_bindings_to_file` under v0.7.x is refused with a message to
+  regenerate it.
+
 ### Deprecated
 - **`@irust` and `irust"..."` are deprecated**
   ([#538](https://github.com/AtelierArith/RustCall.jl/issues/538)) and will
@@ -33,6 +44,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (Linux and macOS; CPython 3.14.1+). This changes `rustcall_julia_core`'s
   sources, so, as in 0.7.2, cached wrappers are rebuilt and a file written by
   `write_bindings_to_file` under an earlier RustCall must be regenerated.
+
+### Rust crates
+- **`rustcall_julia_core`, `rustcall_julia_macros_impl` and
+  `rustcall_julia_macros` are `0.4.1`**. The only change since `0.4.0` is the
+  code `rustcall_julia_core` generates for a PyO3 wrapper crate (#542 above);
+  no public item changed, so this is a patch bump. Each crate still pins the
+  one below it exactly (`version = "=0.4.1"`), and a `#[julia]` crate keeps
+  writing `rustcall_julia_macros = "0.4"`.
 
 ## [0.7.2] - 2026-09-26
 
@@ -3100,7 +3119,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integration tests for Rust helpers library
 - Documentation examples tests
 
-[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/atelierarith/RustCall.jl/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/atelierarith/RustCall.jl/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/atelierarith/RustCall.jl/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/atelierarith/RustCall.jl/compare/v0.6.6...v0.7.0

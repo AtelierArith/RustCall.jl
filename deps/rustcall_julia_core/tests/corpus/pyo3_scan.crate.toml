@@ -1,4 +1,4 @@
-schema_version = "0.7"
+schema_version = "0.8"
 mode = "crate"
 
 [[functions]]

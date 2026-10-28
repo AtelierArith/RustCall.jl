@@ -109,7 +109,9 @@ const _REMEDY_RECOMPILE = "Pkg.precompile(; force = true)"
             "_warn_if_build_env_changed(_BUILD_RECORD; strict = true)" =>
             "_warn_if_build_env_changed(_BUILD_RECORD; strict = true, origin = :bindings_file)"))
         modex = only(filter(x -> x isa Expr && x.head === :module, with_origin.args))
-        findings = _bindings_surface_findings(modex)
+        # The keyword exists from v0.7.2 on, so the counterexample is judged
+        # against the recorded 0.7.0 surface, whatever the current format line.
+        findings = _bindings_surface_findings(modex; surface = _bindings_surface("0.7"))
         @test length(findings) == 1
         @test occursin("_warn_if_build_env_changed", only(findings))
     end
