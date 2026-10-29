@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-29
+
 ### Fixed
 - **Deep recursion in a PyO3 wrapper's Python call on a Julia task raises
   `RecursionError` again instead of crashing** under CPython 3.14.1+
@@ -37,6 +39,15 @@ rebuilt and a file written by `write_bindings_to_file` must be regenerated.
   regenerated copy without it. `test/test_docs_generated.jl` checks that
   `type_contract.md` is exactly what its generator writes and runs the
   page's example.
+
+### Rust crates
+- **`rustcall_julia_core`, `rustcall_julia_macros_impl` and
+  `rustcall_julia_macros` are `0.4.2`**. The only change since `0.4.1` is the
+  code `rustcall_julia_core` generates for a PyO3 wrapper crate (#546 and #547
+  above); `python_stack.rs` is compiled into the crate only for its tests, so
+  no public item changed and this is a patch bump. Each crate still pins the
+  one below it exactly (`version = "=0.4.2"`), and a `#[julia]` crate keeps
+  writing `rustcall_julia_macros = "0.4"`.
 
 ## [0.8.0] - 2026-10-29
 
@@ -3150,7 +3161,8 @@ rebuilt and a file written by `write_bindings_to_file` must be regenerated.
 - Integration tests for Rust helpers library
 - Documentation examples tests
 
-[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/atelierarith/RustCall.jl/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/atelierarith/RustCall.jl/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/atelierarith/RustCall.jl/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/atelierarith/RustCall.jl/compare/v0.7.0...v0.7.1
