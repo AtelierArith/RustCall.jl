@@ -578,7 +578,8 @@ end
     sources = _state_source_files(dirname(pathof(RustCall)))
     for file in ("loading/loadpolicy.jl", "ffi/structs.jl", "crate_bindings/crate_runtime.jl",
                  "pyo3/pyo3_host.jl", "RustCall.jl")
-        @test joinpath(dirname(pathof(RustCall)), file) in sources
+        # Segment by segment, so the separator is the platform's, as walkdir's.
+        @test joinpath(dirname(pathof(RustCall)), split(file, '/')...) in sources
     end
     for file in sources
         callouts = _state_transaction_callouts(read(file, String), file)
