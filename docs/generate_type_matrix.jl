@@ -285,12 +285,19 @@ function _matrix_rows()
               (entry.surface_type === RustCall.RustString ? "string" : "str") : ""
         arg = RustCall.ffi_argument_contract(key; abi = abi)
         ret = RustCall.ffi_return_contract(key; abi = abi, owner = "Owner")
+        # A scalar spelled with a C alias (`Clong`, `Cchar`, `Csize_t`) is shown
+        # by that alias: what it stands for differs between platforms (`Clong`
+        # is `Int32` on Windows), and the page must not depend on the machine
+        # that built it (#544 review).
+        alias = entry.abi === :by_value && entry.julia_expr isa Symbol &&
+                entry.julia_expr !== Symbol(entry.surface_type) ? entry.julia_expr : nothing
+        name(t) = alias !== nothing && t === entry.surface_type ? string(alias) : string(t)
         slots(c) = isempty(c.ccall_types) ? "—" :
-                   join(("`" * string(t) * "`" for t in c.ccall_types), ", ")
+                   join(("`" * name(t) * "`" for t in c.ccall_types), ", ")
         free = ret.free_symbol === nothing ? "—" : "`<owner>_free_rust_string`"
         push!(rows, string(
             "| `", key, "` | ", string(ret.abi), " | ", slots(arg), " | ", slots(ret),
-            " | `", string(ret.surface_type), "` | ", string(ret.ownership), " | ",
+            " | `", name(ret.surface_type), "` | ", string(ret.ownership), " | ",
             free, " |"))
     end
     return rows

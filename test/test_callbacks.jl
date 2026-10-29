@@ -2,7 +2,7 @@
 # Julia function — a closure included — is handed to it through a
 # `@cfunction` the wrapper builds from the manifest's record of the pointer's
 # signature. The rules (synchronous borrow, same thread, no exception unwinds
-# through Rust) are in docs/src/type_contract.md.
+# through Rust) are in docs/src/callbacks.md.
 using RustCall
 using Test
 

@@ -63,15 +63,15 @@ edit by hand.
 | `()` | void | — | — | `Nothing` | none | — |
 | `String` | ptr_len_cap | `Ptr{UInt8}`, `UInt64` | `RustCall.CRustString` | `RustCall.RustString` | owned_by_rust | `<owner>_free_rust_string` |
 | `bool` | by_value | `Bool` | `Bool` | `Bool` | none | — |
-| `c_char` | by_value | `Int8` | `Int8` | `Int8` | none | — |
-| `c_double` | by_value | `Float64` | `Float64` | `Float64` | none | — |
-| `c_float` | by_value | `Float32` | `Float32` | `Float32` | none | — |
-| `c_int` | by_value | `Int32` | `Int32` | `Int32` | none | — |
-| `c_long` | by_value | `Int64` | `Int64` | `Int64` | none | — |
-| `c_longlong` | by_value | `Int64` | `Int64` | `Int64` | none | — |
-| `c_uint` | by_value | `UInt32` | `UInt32` | `UInt32` | none | — |
-| `c_ulong` | by_value | `UInt64` | `UInt64` | `UInt64` | none | — |
-| `c_ulonglong` | by_value | `UInt64` | `UInt64` | `UInt64` | none | — |
+| `c_char` | by_value | `Cchar` | `Cchar` | `Cchar` | none | — |
+| `c_double` | by_value | `Cdouble` | `Cdouble` | `Cdouble` | none | — |
+| `c_float` | by_value | `Cfloat` | `Cfloat` | `Cfloat` | none | — |
+| `c_int` | by_value | `Cint` | `Cint` | `Cint` | none | — |
+| `c_long` | by_value | `Clong` | `Clong` | `Clong` | none | — |
+| `c_longlong` | by_value | `Clonglong` | `Clonglong` | `Clonglong` | none | — |
+| `c_uint` | by_value | `Cuint` | `Cuint` | `Cuint` | none | — |
+| `c_ulong` | by_value | `Culong` | `Culong` | `Culong` | none | — |
+| `c_ulonglong` | by_value | `Culonglong` | `Culonglong` | `Culonglong` | none | — |
 | `char` | by_value | `UInt32` | `UInt32` | `Char` | none | — |
 | `f32` | by_value | `Float32` | `Float32` | `Float32` | none | — |
 | `f64` | by_value | `Float64` | `Float64` | `Float64` | none | — |
@@ -80,14 +80,14 @@ edit by hand.
 | `i32` | by_value | `Int32` | `Int32` | `Int32` | none | — |
 | `i64` | by_value | `Int64` | `Int64` | `Int64` | none | — |
 | `i8` | by_value | `Int8` | `Int8` | `Int8` | none | — |
-| `isize` | by_value | `Int64` | `Int64` | `Int64` | none | — |
+| `isize` | by_value | `Cssize_t` | `Cssize_t` | `Cssize_t` | none | — |
 | `str` | ptr_len | `Ptr{UInt8}`, `UInt64` | `RustCall.CRustStr` | `RustCall.RustStr` | borrowed | — |
 | `u128` | by_value | `UInt128` | `UInt128` | `UInt128` | none | — |
 | `u16` | by_value | `UInt16` | `UInt16` | `UInt16` | none | — |
 | `u32` | by_value | `UInt32` | `UInt32` | `UInt32` | none | — |
 | `u64` | by_value | `UInt64` | `UInt64` | `UInt64` | none | — |
 | `u8` | by_value | `UInt8` | `UInt8` | `UInt8` | none | — |
-| `usize` | by_value | `UInt64` | `UInt64` | `UInt64` | none | — |
+| `usize` | by_value | `Csize_t` | `Csize_t` | `Csize_t` | none | — |
 
 ### Raw pointers
 
