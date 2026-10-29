@@ -32,6 +32,71 @@ const PYO3_MIXED_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_mixed
 # generation, Cargo, loading, calling, and destructing are hard assertions.
 @testset "PyO3 wrapper crate (#275 Phase 2)" begin
 
+    @testset "where a task-stack call is expected to release its objects (#548)" begin
+        for windows in (false, true)
+            @test _task_stack_fit_applies(nothing; windows)
+            @test _task_stack_fit_applies(v"3.9.6"; windows)
+            @test _task_stack_fit_applies(v"3.13.5"; windows)
+        end
+        @test !_task_stack_fit_applies(v"3.14.0"; windows = false)
+        @test _task_stack_fit_applies(v"3.14.1"; windows = false)
+        @test _task_stack_fit_applies(v"3.15.0"; windows = false)
+        @test !_task_stack_fit_applies(v"3.14.1"; windows = true)
+        @test !_task_stack_fit_applies(v"3.15.0"; windows = true)
+    end
+
+    @testset "deep recursion on a task raises RecursionError, not a fault (#546)" begin
+        mktempdir() do root
+            mkpath(joinpath(root, "src"))
+            manifest = replace(read(joinpath(PYO3_ONLY_CRATE, "Cargo.toml"), String),
+                               "sample_crate_pyo3_only" => "deep_recursion_546")
+            write(joinpath(root, "Cargo.toml"), manifest)
+            # `repr` of a deeply nested list recurses in C. CPython stops it
+            # at the stack limit the wrapper set for the task; with the limit
+            # on Julia's guard region it faulted instead (a `StackOverflowError`
+            # through foreign frames). The PyO3 default sends the call through
+            # the dispatcher, the path that attaches to Python and fits the
+            # stack; a plain `#[pyfunction]` is called without an interpreter.
+            write(joinpath(root, "src", "lib.rs"), raw"""
+                use pyo3::prelude::*;
+                use pyo3::types::PyList;
+                #[pyfunction(signature = (depth = 3))]
+                pub fn nested_repr(depth: usize) -> PyResult<usize> {
+                    Python::attach(|py| {
+                        let mut value = PyList::empty(py).into_any();
+                        for _ in 0..depth {
+                            value = PyList::new(py, [value])?.into_any();
+                        }
+                        Ok(value.repr()?.to_str()?.len())
+                    })
+                }
+                """)
+            wrapper = _link_libpython_wrapper(root)
+            if wrapper === nothing
+                @test_skip "no linkable Python here"
+            else
+                # A child process: a regression is a crash.
+                script = """
+                    using RustCall
+                    bindings = @rust_crate $(repr(root))
+                    f = Base.invokelatest(getproperty, bindings, :nested_repr)
+                    shallow = fetch(@async Base.invokelatest(f, UInt(3)))
+                    deep = fetch(@async Base.invokelatest(f, UInt(1_000_000)))
+                    println("shallow=", RustCall.is_ok(shallow) ? RustCall.unwrap(shallow) : "err")
+                    println("deep=", RustCall.is_ok(deep) ? "ok" : "err")
+                    """
+                project = dirname(@__DIR__)
+                proc = run(pipeline(ignorestatus(`$(Base.julia_cmd()) --startup-file=no --project=$project -e $script`);
+                                    stdout = (out = IOBuffer()), stderr = (err = IOBuffer())))
+                text = String(take!(out))
+                @test success(proc)
+                @test occursin("shallow=8", text)
+                @test occursin("deep=err", text)
+                success(proc) || @info "child output" text String(take!(err))
+            end
+        end
+    end
+
     @testset "a symbol-excluded function releases its Julia surface name (#303)" begin
         mktempdir() do dir
             mkpath(joinpath(dir, "src"))
@@ -427,7 +492,13 @@ const PYO3_MIXED_CRATE = joinpath(@__DIR__, "fixtures", "sample_crate_pyo3_mixed
                     M.dropped_inherited() == before + 1 && break
                     sleep(0.01)
                 end
-                @test M.dropped_inherited() == before + 1
+                # CPython 3.14.0, and Windows with 3.14+, have no fit: the
+                # known gap is reported, not passed (#548).
+                if _task_stack_fit_applies(_linked_python_version())
+                    @test M.dropped_inherited() == before + 1
+                else
+                    @test_broken M.dropped_inherited() == before + 1
+                end
             end
 
             # `PyResult<T>` -> `RustResult{T, String}`; the error is opaque and

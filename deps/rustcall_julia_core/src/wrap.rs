@@ -48,7 +48,7 @@
 //! user can read.
 
 use proc_macro2::TokenStream as TokenStream2;
-use quote::{format_ident, quote};
+use quote::{format_ident, quote, ToTokens};
 use syn::{Ident, Type};
 
 use crate::codegen::{
@@ -326,14 +326,26 @@ fn render(krate: &Ident, items: TokenStream2, uses_user_crate: bool) -> String {
 /// a `#[pyclass]` object's Rust `Drop` never runs. The attached closure first
 /// tells CPython the current task's stack bounds, read from Julia
 /// (`jl_active_task_stack`), through `PyUnstable_ThreadState_SetStackProtection`
-/// (3.14.1+), and restores the thread's own bounds
-/// (`PyUnstable_ThreadState_ResetStackProtection`) before it detaches, on
-/// unwind too, so nothing else that enters Python on this thread — PythonCall,
-/// another library — inherits a task's stack. Both are looked up at run time,
+/// (3.14.1+), starting above Julia's guard region so CPython's limits are on
+/// usable stack (#546), and before it detaches, on unwind too, puts back what
+/// the thread had before: the bounds of a call it is nested in (#547), or the
+/// thread's own (`PyUnstable_ThreadState_ResetStackProtection`), so nothing
+/// else that enters Python on this thread — PythonCall, another library —
+/// inherits a task's stack. The bookkeeping is `src/python_stack.rs`, embedded
+/// as written and tested in this crate. Both are looked up at run time,
 /// so an older Python, a process without Julia, or a caller outside any task's
 /// stack gets plain `attach`.
 /// Windows has no lookup here yet and always gets plain `attach`.
 fn python_attach_items() -> TokenStream2 {
+    // The bookkeeping is a file of its own, tested in this crate (#546, #547);
+    // its tests stay behind.
+    let logic: syn::File =
+        syn::parse_str(include_str!("python_stack.rs")).expect("src/python_stack.rs is valid Rust");
+    let logic = logic.items.into_iter().filter(|item| {
+        !matches!(item, syn::Item::Mod(m) if m.attrs.iter().any(|a| {
+            a.path().is_ident("cfg") && a.to_token_stream().to_string().contains("test")
+        }))
+    });
     quote! {
         fn __rustcall_attach<F, R>(f: F) -> R
         where
@@ -347,17 +359,16 @@ fn python_attach_items() -> TokenStream2 {
 
         #[allow(non_camel_case_types, dead_code)]
         mod __rustcall_python_stack {
+            mod logic {
+                #(#logic)*
+            }
+
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             mod imp {
                 use ::std::ffi::{c_char, c_int, c_void};
 
-                type SetStackProtection = unsafe extern "C" fn(
-                    *mut ::rustcall_pyo3::ffi::PyThreadState,
-                    *mut c_void,
-                    usize,
-                ) -> c_int;
-                type ResetStackProtection =
-                    unsafe extern "C" fn(*mut ::rustcall_pyo3::ffi::PyThreadState);
+                use super::logic::{ResetStackProtection, SetStackProtection};
+
                 type CurrentTask = unsafe extern "C" fn() -> *mut c_void;
                 type ActiveTaskStack = unsafe extern "C" fn(
                     *mut c_void,
@@ -456,21 +467,8 @@ fn python_attach_items() -> TokenStream2 {
                     }
                 }
 
-                /// Restores the thread's own stack bounds when dropped, which
-                /// happens inside the attached closure, before it detaches.
-                pub struct Restore {
-                    tstate: *mut ::rustcall_pyo3::ffi::PyThreadState,
-                    reset: ResetStackProtection,
-                }
-
-                impl ::std::ops::Drop for Restore {
-                    fn drop(&mut self) {
-                        unsafe { (self.reset)(self.tstate) }
-                    }
-                }
-
                 // Called attached: the thread state is the caller's own.
-                pub fn fit_current_stack() -> ::std::option::Option<Restore> {
+                pub fn fit_current_stack() -> ::std::option::Option<super::logic::Restore> {
                     static API: ::std::sync::OnceLock<::std::option::Option<Api>> =
                         ::std::sync::OnceLock::new();
                     let api = API.get_or_init(resolve).as_ref()?;
@@ -491,19 +489,20 @@ fn python_attach_items() -> TokenStream2 {
                             &mut total_end,
                         );
                         let here = &task as *const _ as usize;
-                        let (start, end) = (total_start as usize, total_end as usize);
-                        if start == 0 || end <= start || here <= start || here > end {
-                            return None;
-                        }
-                        let tstate = ::rustcall_pyo3::ffi::PyThreadState_Get();
-                        if (api.set_stack_protection)(tstate, total_start.cast(), end - start) != 0 {
-                            ::rustcall_pyo3::ffi::PyErr_Clear();
-                            return None;
-                        }
-                        Some(Restore {
+                        let (start, size) =
+                            super::logic::fit(total_start as usize, total_end as usize, here)?;
+                        let tstate = ::rustcall_pyo3::ffi::PyThreadState_Get().cast::<c_void>();
+                        let restore = super::logic::enter(
                             tstate,
-                            reset: api.reset_stack_protection,
-                        })
+                            start,
+                            size,
+                            api.set_stack_protection,
+                            api.reset_stack_protection,
+                        );
+                        if restore.is_none() {
+                            ::rustcall_pyo3::ffi::PyErr_Clear();
+                        }
+                        restore
                     }
                 }
             }

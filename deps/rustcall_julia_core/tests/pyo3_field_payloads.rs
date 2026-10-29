@@ -583,5 +583,45 @@ fn julia_entered_attaches_fit_and_restore_the_stack_protection() {
     assert!(lib_rs.contains("let _stack = __rustcall_python_stack::fit_current_stack();"));
     assert!(lib_rs.contains("PyUnstable_ThreadState_SetStackProtection"));
     assert!(lib_rs.contains("PyUnstable_ThreadState_ResetStackProtection"));
-    assert!(lib_rs.contains("impl ::std::ops::Drop for Restore"));
+    // The bookkeeping is `src/python_stack.rs` as written, minus its tests
+    // (#546, #547): what the wrapper runs is what that file's tests test.
+    let generated: syn::File = syn::parse_str(&lib_rs).unwrap();
+    let stack = generated
+        .items
+        .iter()
+        .find_map(|item| match item {
+            syn::Item::Mod(m) if m.ident == "__rustcall_python_stack" => m.content.as_ref(),
+            _ => None,
+        })
+        .unwrap();
+    let logic = stack
+        .1
+        .iter()
+        .find_map(|item| match item {
+            syn::Item::Mod(m) if m.ident == "logic" => m.content.as_ref(),
+            _ => None,
+        })
+        .unwrap();
+    let source: syn::File = syn::parse_str(include_str!("../src/python_stack.rs")).unwrap();
+    // Both sides through the printer the wrapper is written with, which
+    // normalises trailing commas.
+    let print = |items: Vec<syn::Item>| {
+        prettyplease::unparse(&syn::File {
+            shebang: None,
+            attrs: Vec::new(),
+            items,
+        })
+    };
+    let expected = print(
+        source
+            .items
+            .into_iter()
+            .filter(|item| !matches!(item, syn::Item::Mod(m) if m.ident == "tests"))
+            .collect(),
+    );
+    assert_eq!(print(logic.1.clone()), expected);
+    assert!(lib_rs.contains("impl Drop for Restore"));
+    assert!(lib_rs.contains("super::logic::fit("));
+    assert!(lib_rs.contains("super::logic::enter("));
+    assert!(!lib_rs.contains("a_nested_call_gives_the_outer_call_its_bounds_back"));
 }

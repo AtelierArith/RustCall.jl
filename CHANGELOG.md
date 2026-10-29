@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Deep recursion in a PyO3 wrapper's Python call on a Julia task raises
+  `RecursionError` again instead of crashing** under CPython 3.14.1+
+  ([#546](https://github.com/AtelierArith/RustCall.jl/issues/546)). The stack
+  bounds 0.8.0 gave CPython for a task (#542) started at Julia's guard region,
+  so CPython's limit lay on unmapped memory. The range now starts 64 KiB higher.
+- **A nested PyO3 wrapper call leaves the outer call's stack bounds in place**
+  ([#547](https://github.com/AtelierArith/RustCall.jl/issues/547)). Finishing
+  a call reset the thread to its own bounds, so an outer call still running on
+  the task (Python calling Julia calling a wrapper again, or another task's call
+  ending out of order) lost the #542 fix for the rest of the call. The
+  bookkeeping is `deps/rustcall_julia_core/src/python_stack.rs`, embedded in
+  every generated wrapper and unit-tested in the crate.
+- **The #542 task-stack test reports the known gaps instead of failing**
+  ([#548](https://github.com/AtelierArith/RustCall.jl/issues/548)): on CPython
+  3.14.0 and on Windows with 3.14+ it is a `@test_broken`. `docs/src/pyo3.md`
+  names both.
+
+These change `rustcall_julia_core`'s sources, so cached PyO3 wrappers are
+rebuilt and a file written by `write_bindings_to_file` must be regenerated.
+
 ### Documentation
 - **The callbacks section is back, as its own page**
   ([#544](https://github.com/AtelierArith/RustCall.jl/issues/544)):
