@@ -130,8 +130,8 @@ every front door keeps a name.
 
 - `registry_key_kind::Symbol` — the shape of the key used with
   `:rust_libraries`: `:content_hash` (`rust_<hash>` from the inline paths),
-  `:lib_basename` (unused since #278), `:irust_hash` (`irust_<short id>`),
-  `:crate_lib_name` (hot reload), or `:none`.
+  `:lib_basename` (unused since #278), `:crate_lib_name` (hot reload), or
+  `:none`. `:irust_hash` went with `@irust` (#538).
 
 - `registration_mode::Symbol` — what `load_artifact!` does when the name is
   already registered: `:replace` (install the new image and retire the old
@@ -143,7 +143,7 @@ every front door keeps a name.
 - `finalizer_frees::Bool` — whether objects produced by this artifact free
   their Rust allocation in their finalizer.  `true` for inline `#[julia]`
   structs (since #277 Phase B4) and `@rust_crate` structs alike (#249);
-  `false` for the generics and `@irust` policies.
+  `false` for the generics policy.
 
 - `call_sites::Vector{String}` — the sites this policy was written to subsume
   (#277).  Kept as a record of that inventory; its `file:line` references
@@ -172,7 +172,7 @@ end
 
 const _VALID_PANIC_STRATEGIES = (:abort, :unwind, :cargo_default, :crate_profile)
 const _VALID_REGISTRIES = (:rust_libraries, :module_local, :helper_slot, :none)
-const _VALID_KEY_KINDS = (:content_hash, :lib_basename, :irust_hash, :crate_lib_name, :none)
+const _VALID_KEY_KINDS = (:content_hash, :lib_basename, :crate_lib_name, :none)
 const _VALID_REGISTRATION_MODES = (:replace, :insert_only)
 
 """
@@ -435,37 +435,6 @@ generics_policy() = LoadPolicy("generics-monomorphization";
             "written only when absent, unlike every other RUST_LIBRARIES writer.")
 
 """
-    irust_policy() -> LoadPolicy
-
-`@irust` snippet compilation, registered under an `irust_<artifact_short_id>`
-key together with the `IRUST_FUNCTIONS` entry. Since #278 the snippet's identity
-is `artifact_key` of an `ArtifactId` over the source and the argument types it
-is compiled for; it used to be Julia's session-randomized `hash`.
-
-`boundary_catches_panics` is `true` since #346: the snippet is compiled as a
-`#[julia]` item and expanded by `rustcall-extract`, so it gets the same
-generated wrapper as every other RustCall-owned door — `catch_unwind` plus the
-thread-local panic channel. Until then `@irust` hand-wrote a bare
-`#[no_mangle] pub extern "C"` entry point, and this field said so: an unwinding
-artifact with no boundary, which is exactly the undefined behaviour #244 is
-about (it aborted the process).
-"""
-irust_policy() = LoadPolicy("irust";
-    dlopen_flags = Libdl.RTLD_LOCAL | Libdl.RTLD_NOW,
-    panic_strategy = :unwind,
-    boundary_catches_panics = true,
-    registry = :rust_libraries,
-    registry_key_kind = :irust_hash,
-    sets_current_lib = false,
-    finalizer_frees = false,
-    call_sites = ["src/macros/ruststr.jl (_compile_and_call_irust)"],
-    issues = [250, 278, 346],
-    notes = "IRUST_FUNCTIONS is dropped with the library by " *
-            "unload_artifact! since B1, so an unloaded snippet leaves no memo " *
-            "behind. The snippet is a #[julia] item since #346, so the boundary " *
-            "catches.")
-
-"""
     hot_reload_policy() -> LoadPolicy
 
 Hot reload of a `@rust_crate` crate (`_reload_library_once` in
@@ -509,7 +478,6 @@ const ALL_LOAD_POLICIES = (
     crate_wrapper_policy,
     helper_library_policy,
     generics_policy,
-    irust_policy,
     hot_reload_policy,
 )
 
@@ -2154,7 +2122,7 @@ the per-wrapper attempt in #302.
 
 **The image decides, not the policy.** `__rustcall_install_panic_hook` is
 exported exactly when the image carries the quiet-panic state: a file RustCall
-writes whole (inline blocks, `@irust`, generics) defines it at its root, and a
+writes whole (inline blocks, generics) defines it at its root, and a
 `#[julia]` crate — hand-written, or the generated `@rust_crate` wrapper crate —
 gets it from the `rustcall_julia_macros` rlib it links, as long as some
 generated wrapper references that crate. Asking the image therefore cannot be
@@ -2663,7 +2631,7 @@ locked block — the `RUST_LIBRARIES` entry and its function-pointer cache, the
 name-to-symbol mappings and return-type hints, the library-scoped
 `FUNCTION_REGISTRY_BY_LIB` rows, the `MONOMORPHIZED_FUNCTIONS` entries that
 point into it (stale pointers into an image nothing reaches are a
-use-after-free, #73), its `IRUST_FUNCTIONS` rows, its panic channels, the
+use-after-free, #73), its panic channels, the
 module mirrors that were reading its handle, and `CURRENT_LIB` if it pointed
 here.  Every name of the handle goes, not just the one asked for: an alias is a
 second name for the same image.

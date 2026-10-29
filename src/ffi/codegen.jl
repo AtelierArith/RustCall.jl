@@ -743,7 +743,7 @@ return-type hints (`clear_library_metadata!`), its `FUNCTION_REGISTRY_BY_LIB`
 entries, the `MONOMORPHIZED_FUNCTIONS` entries whose function pointers point
 into it (stale pointers into an unloaded image are a use-after-free, #73) —
 together with their `MONOMORPHIZATION_OWNERS` rows and the image's
-`GENERIC_IMAGE_PATHS` record (#397) — and its `IRUST_FUNCTIONS` rows.
+`GENERIC_IMAGE_PATHS` record (#397).
 
 The caller must hold `REGISTRY_LOCK`. Called from `unload_artifact!`, which is
 the only place a library leaves `RUST_LIBRARIES` (#277 Phase B).
@@ -767,9 +767,6 @@ function purge_library_state!(lib_name::AbstractString)
         delete!(MONOMORPHIZATION_OWNERS, key)
     end
     delete!(GENERIC_IMAGE_PATHS, name)
-    for (key, snippet) in collect(IRUST_FUNCTIONS)
-        snippet.lib_name == name && delete!(IRUST_FUNCTIONS, key)
-    end
     return nothing
 end
 

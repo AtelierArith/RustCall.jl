@@ -219,8 +219,9 @@ end
     end
 
     @testset "named constructors cover every front door" begin
-        # Eight since #265 Phase 2 removed the `llvm-ir` policy with its path.
-        @test length(RustCall.ALL_LOAD_POLICIES) == 8
+        # Eight since #265 Phase 2 removed the `llvm-ir` policy with its path,
+        # seven since #538 removed `irust` with `@irust`.
+        @test length(RustCall.ALL_LOAD_POLICIES) == 7
         names = String[]
         for ctor in RustCall.ALL_LOAD_POLICIES
             p = ctor()
@@ -428,14 +429,6 @@ end
             @test !RustCall.requires_catch_unwind_boundary(policy)
             @test !RustCall.must_assume_unwind(policy)
         end
-        # `@irust` joined them in #346: its snippet is a `#[julia]` item now,
-        # so the generated wrapper carries the boundary. Before that this
-        # policy honestly reported an unwinding artifact with no boundary —
-        # the undefined behaviour of #244, which aborted the process.
-        @test RustCall.irust_policy().panic_strategy === :unwind
-        @test RustCall.irust_policy().boundary_catches_panics
-        @test !RustCall.requires_catch_unwind_boundary(RustCall.irust_policy())
-        @test !RustCall.must_assume_unwind(RustCall.irust_policy())
 
         # PARITY: the two inline doors agree, which is the acceptance criterion
         # "panic behavior is identical regardless of which compile path
@@ -572,11 +565,9 @@ end
         @test RustCall.inline_rustc_policy().sets_current_lib
         @test RustCall.inline_cargo_policy().sets_current_lib
         @test !RustCall.generics_policy().sets_current_lib
-        @test !RustCall.irust_policy().sets_current_lib
         @test !RustCall.hot_reload_policy().sets_current_lib
 
         @test RustCall.generics_policy().registry_key_kind === :content_hash
-        @test RustCall.irust_policy().registry_key_kind === :irust_hash
         @test RustCall.hot_reload_policy().registry_key_kind === :crate_lib_name
         @test RustCall.inline_rustc_policy().registry_key_kind === :content_hash
 
@@ -630,7 +621,7 @@ end
         # Every policy frees.
         for ctor in RustCall.ALL_LOAD_POLICIES
             p = ctor()
-            p.name in ("irust", "generics-monomorphization") && continue
+            p.name == "generics-monomorphization" && continue
             @test RustCall.finalizer_frees(p)
         end
         @test RustCall.finalizer_frees(RustCall.inline_rustc_policy()) ===
@@ -680,7 +671,6 @@ end
         # change of policy one edit rather than a search.
         @test occursin("inline_rustc_policy()", _src("ruststr.jl"))
         @test occursin("inline_cargo_policy()", _src("ruststr.jl"))
-        @test occursin("irust_policy()", _src("ruststr.jl"))
         @test occursin("generics_policy()", _src("generics.jl"))
         @test occursin("hot_reload_policy()", _src("hot_reload.jl"))
         @test occursin("helper_library_policy()", _src("memory.jl"))

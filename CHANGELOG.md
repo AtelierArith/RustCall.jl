@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+- **`@irust` and `irust"..."` are removed**
+  ([#538](https://github.com/AtelierArith/RustCall.jl/issues/538)), after
+  their deprecation in 0.8.0. Code that still uses them fails with
+  ``UndefVarError: `@irust` not defined``. Write the snippet as a `#[julia]`
+  function in a `rust"""..."""` block: "Migrating from `@irust`" in the manual
+  gives the replacement for each form, and `test/test_irust_migration.jl` runs
+  every one. The macros' machinery went with them: the `IRUST_FUNCTIONS`
+  registry, `irust_policy()` and the `:irust_hash` registry key kind, rustc's
+  type probe (`probe_rust_expression_type`, `confirm_rust_return_type`) and
+  the readers of rustc's JSON diagnostics (`rustc_diagnostics`,
+  `diagnostic_level`, ...), which only the probe used. The JSON reader itself
+  stays for Cargo's output and is `src/build/json.jl` (was `rustc_json.jl`).
+  `scripts/lint_rust_syntax_regex.sh` no longer allowlists
+  `src/macros/ruststr.jl`. This makes the next release a minor one.
+
 ## [0.8.1] - 2026-10-29
 
 ### Fixed
