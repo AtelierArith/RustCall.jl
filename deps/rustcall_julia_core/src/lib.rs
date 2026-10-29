@@ -25,6 +25,9 @@ pub mod model;
 pub mod paths;
 pub mod public_routes;
 pub mod pyo3;
+// Embedded verbatim in generated PyO3 wrapper crates; compiled here for its tests.
+#[cfg(test)]
+mod python_stack;
 pub mod receiver;
 pub mod refusal;
 pub mod specialize;

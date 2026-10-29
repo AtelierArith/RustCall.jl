@@ -41,3 +41,31 @@ function _link_libpython_wrapper(crate; features::Vector{String} = String[],
                          default_features = default_features,
                          cache_enabled = cache_enabled)
 end
+
+# The version of the Python a wrapper links, as the interpreter
+# `python_link_source` names reports it; `nothing` when it names none or the
+# interpreter cannot be asked (#548).
+function _linked_python_version()
+    exe = RustCall.python_link_source()[2]
+    isempty(exe) && return nothing
+    out = try
+        read(`$exe -c "import platform; print(platform.python_version())"`, String)
+    catch
+        return nothing
+    end
+    m = match(r"^(\d+)\.(\d+)\.(\d+)", strip(out))
+    return m === nothing ? nothing : VersionNumber(parse.(Int, m.captures)...)
+end
+
+# Whether a wrapper call on a Julia task's stack is expected to release a
+# Python-owned object (#542, #548). Before 3.14 CPython's limit is a call
+# count, not an address, so a task stack is no different. From 3.14 on it is
+# an address range the wrapper re-fits to the task, which needs CPython's
+# `PyUnstable_ThreadState_SetStackProtection` (3.14.1+) and is implemented for
+# Linux and macOS only. An unknown version is held to the fix.
+function _task_stack_fit_applies(version; windows::Bool = Sys.iswindows())
+    version === nothing && return true
+    version < v"3.14" && return true
+    windows && return false
+    return version >= v"3.14.1"
+end

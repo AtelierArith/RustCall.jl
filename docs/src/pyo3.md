@@ -574,14 +574,21 @@ to a list that is never drained there, and whatever those containers referenced
 — the `self` of a dispatched method call — is never released, so a Python-owned
 object's Rust `Drop` never runs. The attached closure reads the current task's
 stack bounds from Julia (`jl_active_task_stack`) and passes them to
-`PyUnstable_ThreadState_SetStackProtection` (CPython 3.14.1 and later), and puts
-the thread's own bounds back (`PyUnstable_ThreadState_ResetStackProtection`)
-before it detaches, so nothing else that enters Python on that thread
-(PythonCall, for example) inherits a task's stack. These functions are looked up
-at run time, so an older Python is unaffected. On Linux and macOS
-this is complete; on Windows the lookup is not implemented yet, and a
-Python-owned object used from a task under CPython 3.14 may not be dropped
-until the process exits.
+`PyUnstable_ThreadState_SetStackProtection` (CPython 3.14.1 and later). The
+range starts 64 KiB above the bottom Julia reports, clear of the guard region
+Julia puts at the bottom of a task stack, so that CPython's limit lies on usable
+stack and deep recursion in C raises `RecursionError` (#546). Before it detaches
+the closure puts back what the thread had: the bounds of the wrapper call it is
+nested in, if any (a wrapper call whose Python code calls Julia, which calls a
+wrapper again), or the thread's own bounds
+(`PyUnstable_ThreadState_ResetStackProtection`), so nothing else that enters
+Python on that thread (PythonCall, for example) inherits a task's stack (#547).
+These functions are looked up at run time. Python before 3.14 limits recursion
+by call count, not by address, and is unaffected. On Linux and macOS with
+CPython 3.14.1 or later this is complete. Two configurations are not covered,
+and a Python-owned object used from a task there may not be dropped until the
+process exits: **CPython 3.14.0**, which lacks the function, and **Windows** with
+CPython 3.14 or later, where the lookup is not implemented yet (#548).
 
 ### PyO3 defaults keep their original Rust scope
 
