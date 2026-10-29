@@ -517,6 +517,10 @@ function _mutable_module_registries(mod::Module)
     return sort!(found)
 end
 
+# The `.jl` files of a source tree, recursively (#545).
+_state_source_files(root) = [joinpath(dir, file) for (dir, _, files) in walkdir(root)
+                             for file in files if endswith(file, ".jl")]
+
 function _state_transaction_callouts(source::String, file = "fixture")
     tailname(x) = x isa Symbol ? x : x isa QuoteNode ? tailname(x.value) :
                   x isa Expr && x.head == :. ? tailname(x.args[end]) : nothing
@@ -569,10 +573,26 @@ end
     @test last.(_state_transaction_callouts(bad)) ==
           [:ccall, Symbol("@warn"), :run, Symbol("@info")]
     @test isempty(_state_transaction_callouts("lock(() -> read(io), other_lock)"))
-    for file in readdir(dirname(pathof(RustCall)); join = true)
-        endswith(file, ".jl") || continue
-        callouts = _state_transaction_callouts(read(file, String), basename(file))
+    # Every source file, however deep: `src/` has subdirectories since #534,
+    # and a top-level `readdir` saw only two files of the tree (#545).
+    sources = _state_source_files(dirname(pathof(RustCall)))
+    for file in ("loading/loadpolicy.jl", "ffi/structs.jl", "crate_bindings/crate_runtime.jl",
+                 "pyo3/pyo3_host.jl", "RustCall.jl")
+        @test joinpath(dirname(pathof(RustCall)), file) in sources
+    end
+    for file in sources
+        callouts = _state_transaction_callouts(read(file, String), file)
         @test isempty(callouts)
+    end
+    # A callout in a nested file is found.
+    mktempdir() do root
+        mkpath(joinpath(root, "a", "b"))
+        write(joinpath(root, "top.jl"), "f() = 1\n")
+        nested = joinpath(root, "a", "b", "nested.jl")
+        write(nested, "g() = lock(REGISTRY_LOCK) do\n    @warn \"inside\"\nend\n")
+        found = _state_source_files(root)
+        @test sort(found) == sort([joinpath(root, "top.jl"), nested])
+        @test !isempty(_state_transaction_callouts(read(nested, String), nested))
     end
 end
 
