@@ -17,7 +17,6 @@
 #                   `build_cargo_project_cached`
 #   generics        `_monomorphization_id` (src/macros/generics.jl)
 #   crate bindings  `compute_crate_hash` (src/crate_bindings/crate_bindings.jl)
-#   @irust          `_compile_and_call_irust` (src/macros/ruststr.jl)
 #
 # `scripts/lint_artifact_identity.sh` keeps it that way: no other file in src/
 # may concatenate key material, truncate a digest, or name an artifact with

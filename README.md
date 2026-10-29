@@ -64,13 +64,13 @@ pub extern "C" fn multiply(a: i32, b: i32) -> i32 {
 @rust multiply(Int32(6), Int32(7))::Int32 # 42
 ```
 
-### `@irust` is deprecated
+### `@irust` was removed in 0.9
 
-`@irust` / `irust"..."` are deprecated ([#538](https://github.com/AtelierArith/RustCall.jl/issues/538)) and will be removed in a later minor release. Each expansion site logs one deprecation warning. Every snippet can be written as a `#[julia]` function: the snippet becomes the body, and each `$name` becomes a typed parameter.
+`@irust` / `irust"..."` were deprecated in 0.8 and removed in 0.9 ([#538](https://github.com/AtelierArith/RustCall.jl/issues/538)). Every snippet can be written as a `#[julia]` function: the snippet becomes the body, and each `$name` becomes a typed parameter.
 
 ```julia
-# before
-affine_irust(a, x, b) = @irust("\$a * \$x + \$b")
+# before (0.8 and earlier)
+# affine_irust(a, x, b) = @irust("\$a * \$x + \$b")
 
 # after
 rust"""

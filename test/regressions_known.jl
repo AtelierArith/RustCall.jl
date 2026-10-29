@@ -62,38 +62,6 @@
         end
     end
 
-    @testset "@irust stale cache after unload_all_libraries" begin
-        if !RustCall.check_rustc_available()
-            @test_skip "rustc is required for @irust compilation"
-        else
-            empty!(RustCall.IRUST_FUNCTIONS)
-            RustCall.unload_all_libraries()
-            @test RustCall._compile_and_call_irust("arg1 + 1", Int32(1)) == Int32(2)
-            @test !isempty(RustCall.IRUST_FUNCTIONS)
-            RustCall.unload_all_libraries()
-            @test isempty(RustCall.RUST_LIBRARIES)
-            # Since #277 Phase B the memo goes with the library: unloading is
-            # one transaction that drops the handle and every registry row
-            # naming it, `IRUST_FUNCTIONS` included, so there is no stale entry
-            # left to detect. Recompiling transparently is still what happens.
-            @test isempty(RustCall.IRUST_FUNCTIONS)
-            @test RustCall._compile_and_call_irust("arg1 + 1", Int32(2)) == Int32(3)
-            empty!(RustCall.IRUST_FUNCTIONS)
-            RustCall.unload_all_libraries()
-        end
-    end
-
-    @testset "@irust rejects unsupported argument types" begin
-        err = try
-            RustCall._compile_and_call_irust("arg1", 1 + 2im)
-            nothing
-        catch e
-            e
-        end
-        @test err isa ErrorException
-        @test occursin("Unsupported Julia type for @irust", sprint(showerror, err))
-    end
-
     @testset "Qualified @rust calls resolve libraries consistently" begin
         qualified = Expr(:call, Expr(:(::), :fake_lib, :fake_fn), :(Int32(1)))
         expansion = RustCall.rust_impl(@__MODULE__, qualified)
@@ -303,7 +271,7 @@
                 try
                     RustCall.is_generic_function("concurrent_$(t)_$(i)")
                     lock(RustCall.REGISTRY_LOCK) do
-                        haskey(RustCall.IRUST_FUNCTIONS, "concurrent_$(t)_$(i)")
+                        haskey(RustCall.FUNCTION_REGISTRY, "concurrent_$(t)_$(i)")
                     end
                 catch
                     Threads.atomic_add!(errors, 1)

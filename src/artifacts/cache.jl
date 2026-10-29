@@ -5,8 +5,8 @@
 # ===========================================
 # Julia's built-in `hash()` is randomized per session (hash flooding protection).
 # Every cache key, library name and temporary project name derives from the
-# artifact identity in `src/artifacts/artifact_id.jl` (`artifact_key`, #278) — the
-# `@irust` snippet keys included — and `scripts/lint_artifact_identity.sh` fails
+# artifact identity in `src/artifacts/artifact_id.jl` (`artifact_key`, #278), and
+# `scripts/lint_artifact_identity.sh` fails
 # CI on a `hash()`-named artifact anywhere else. `stable_content_hash()` (below)
 # is a plain SHA-256 of a string for content digests that are not keys.
 

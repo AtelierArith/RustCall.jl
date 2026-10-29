@@ -9,7 +9,6 @@
 ### Phase 1: C-Compatible ABI ✅
 - **`@rust` macro**: Call Rust functions directly from Julia
 - **`rust""` string literal**: Compile and load Rust code as shared libraries
-- **`@irust` macro** (deprecated, see "Migrating from `@irust`"): Execute Rust code at function scope
 - **Type mapping**: Automatic conversion between Rust and Julia types
 - **Result/Option support**: Handle Rust's `Result<T, E>` and `Option<T>` types
 - **String support**: Pass Julia strings to Rust functions expecting C strings
@@ -139,13 +138,12 @@ pub extern "C" fn multiply(a: i32, b: i32) -> i32 {
 
 ### 3. Migrating from `@irust`
 
-!!! warning "Deprecated"
-    `@irust` and `irust"..."` are deprecated
-    ([#538](https://github.com/AtelierArith/RustCall.jl/issues/538)) and will be
-    removed in a later minor release. They still work. Each expansion site logs
-    one deprecation warning, and `--depwarn=error` makes the warning an error.
+!!! note "Removed in 0.9.0"
+    `@irust` and `irust"..."` were deprecated in 0.8.0 and removed in 0.9.0
+    ([#538](https://github.com/AtelierArith/RustCall.jl/issues/538)). Code
+    that still uses them fails with ``UndefVarError: `@irust` not defined``.
 
-Anything an `@irust` snippet computes can be written as a `#[julia]` function
+Anything an `@irust` snippet computed can be written as a `#[julia]` function
 in a `rust"""..."""` block:
 
 1. The snippet becomes the function **body**. Its trailing expression is the
@@ -164,15 +162,15 @@ inside Rust string literals. A `#[julia]` function has none of these limits.
 It is compiled once, its call is type-stable, and it handles `String`, slices,
 `Result` / `Option` and `#[julia]` structs.
 
-Each pair below computes the same value. `test/test_irust_deprecation.jl` checks
-every pair.
+Each block below shows the removed form as a comment, then its replacement.
+`test/test_irust_migration.jl` runs every replacement and checks the values.
 
 **A captured expression.**
 
 ```julia
-# before
-compute_irust(x, y) = @irust("\$x * \$y + 10")
-compute_irust(Int32(3), Int32(4))   # => 22
+# before (0.8 and earlier)
+# compute_irust(x, y) = @irust("\$x * \$y + 10")
+# compute_irust(Int32(3), Int32(4))   # 22
 
 # after
 rust"""
@@ -187,10 +185,9 @@ compute(Int32(3), Int32(4))         # => 22
 **No captured variable** (`irust"..."`), and **explicit arguments** (`arg1`, …).
 
 ```julia
-# before
-irust"40 + 2"                       # => 42
-x = Int64(21)
-@irust("arg1 * 2", x)               # => 42
+# before (0.8 and earlier)
+# irust"40 + 2"                     # 42
+# @irust("arg1 * 2", x)             # 42
 
 # after
 rust"""
@@ -204,6 +201,7 @@ fn twice(arg1: i64) -> i64 {
     arg1 * 2
 }
 """
+x = Int64(21)
 answer()                            # => 42
 twice(x)                            # => 42
 ```
@@ -211,9 +209,8 @@ twice(x)                            # => 42
 **Statements and loops.** The body is unchanged.
 
 ```julia
-# before
-k = Int64(10)
-@irust("let mut s = 0i64; for i in 0..\$k { s += i; } s")   # => 45
+# before (0.8 and earlier)
+# @irust("let mut s = 0i64; for i in 0..\$k { s += i; } s")   # 45
 
 # after
 rust"""
@@ -226,6 +223,7 @@ fn sum_below(k: i64) -> i64 {
     s
 }
 """
+k = Int64(10)
 sum_below(k)                        # => 45
 ```
 
@@ -233,12 +231,11 @@ sum_below(k)                        # => 45
 the Julia result type.
 
 ```julia
-# before
-x = Int64(7); f = 3.5
-@irust("\$x as f64")                       # => 7.0  :: Float64
-@irust("if \$x > 0 { 1 } else { -1 }")     # => 1    :: Int64
-@irust("\$f.is_finite()")                  # => true :: Bool
-@irust("(\$f * \$f).sqrt()")               # => 3.5  :: Float64
+# before (0.8 and earlier)
+# @irust("\$x as f64")                       # 7.0  :: Float64
+# @irust("if \$x > 0 { 1 } else { -1 }")     # 1    :: Int64
+# @irust("\$f.is_finite()")                  # true :: Bool
+# @irust("(\$f * \$f).sqrt()")               # 3.5  :: Float64
 
 # after
 rust"""
@@ -262,6 +259,7 @@ fn magnitude(f: f64) -> f64 {
     (f * f).sqrt()
 }
 """
+x = Int64(7); f = 3.5
 as_float(x)                         # => 7.0  :: Float64
 sign_of(x)                          # => 1    :: Int64
 finite(f)                           # => true :: Bool
@@ -347,10 +345,13 @@ pub extern "C" fn is_even(n: i32) -> bool {
 """
 @rust is_even(Int32(42))::Bool  # => true
 
-# Multiple variables with @irust
-function quadratic(a, b, c, x)
-    @irust("\$a * \$x * \$x + \$b * \$x + \$c")
-end
+# Several arguments, through `#[julia]`
+rust"""
+#[julia]
+fn quadratic(a: f64, b: f64, c: f64, x: f64) -> f64 {
+    a * x * x + b * x + c
+}
+"""
 quadratic(1.0, 2.0, 1.0, 3.0)  # => 16.0 (x² + 2x + 1 at x=3)
 ```
 

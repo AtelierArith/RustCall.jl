@@ -7,11 +7,6 @@
 # regression of that design and must go through the manifest instead.
 #
 # Allowlist (RustCall's own syntax or best-effort diagnostics, not Rust grammar):
-#   src/macros/ruststr.jl      `$var` interpolation in @irust — and nothing else since
-#                       #348: the @irust return type is asked of rustc
-#                       (probe_rust_expression_type in src/build/compiler.jl, reading
-#                       --error-format=json diagnostics as data) instead of
-#                       being guessed from the snippet's text
 #   src/build/dependencies.jl `// cargo-deps:` / `//! ```cargo` dependency comment DSL
 #   src/ffi/exceptions.jl   brace counting for compile-error hints (diagnostics only)
 #
@@ -20,7 +15,7 @@
 set -euo pipefail
 
 dir="${1:-src}"
-allow='^(src/macros/ruststr\.jl|src/build/dependencies\.jl|src/ffi/exceptions\.jl):'
+allow='^(src/build/dependencies\.jl|src/ffi/exceptions\.jl):'
 
 # Regex literals (r"..."), Regex("...") constructors and eachmatch/match calls
 # whose pattern mentions Rust item keywords or attribute syntax.

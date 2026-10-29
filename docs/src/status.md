@@ -7,7 +7,7 @@ Last updated: 2026-09-07
 | Item | Current State |
 |------|---------------|
 | Core FFI (`rust"""`, `@rust`) | ✅ Implemented |
-| `@irust` / `irust"..."` | ⚠️ Deprecated (#538), to be removed in a later minor release |
+| `@irust` / `irust"..."` | Removed in 0.9 (#538); deprecated in 0.8 |
 | Cargo dependency integration | ✅ Implemented |
 | Struct/object mapping | ✅ Implemented |
 | `#[julia]` attribute support | ✅ Implemented |
@@ -29,7 +29,7 @@ git ls-files 'src/*.jl' 'src/**/*.jl' 'test/test_*.jl' 'benchmark/*.jl' 'deps/*/
 
 ### Julia entry points
 - `src/RustCall.jl`: module entrypoint, exports, initialization.
-- `src/macros/ruststr.jl`: `rust"""` processing, compilation/load integration, and the deprecated `@irust`.
+- `src/macros/ruststr.jl`: `rust"""` processing, and compilation/load integration.
 - `src/macros/rustmacro.jl`: `@rust`, call expansion.
 
 ### Compilation and code generation
@@ -95,7 +95,7 @@ diagnostics for unsafe or unsupported boundary patterns are tracked in
 
 ## Delivered Milestones
 
-- Phase 1: direct `rust"""..."""`, `@rust`, `@irust`, type mapping, string support, and cache-backed compilation.
+- Phase 1: direct `rust"""..."""`, `@rust`, `@irust` (removed in 0.9, #538), type mapping, string support, and cache-backed compilation.
 - Phase 2: ownership/runtime helpers and generics support. (The experimental LLVM IR path of this phase was deprecated in 0.2.0 and removed in 0.3.0, [#265](https://github.com/AtelierArith/RustCall.jl/issues/265).)
 - Phase 3: Cargo dependency parsing and external crate use inside inline Rust code.
 - Phase 4: Rust struct and method mapping into Julia-facing objects.

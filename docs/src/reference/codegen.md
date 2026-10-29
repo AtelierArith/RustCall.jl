@@ -1,8 +1,8 @@
 # Compiler and codegen
 
-What the [front doors](compilation.md) run: the `rustc` invocation, the
-compiler's diagnostics read as data, and the `ccall` expressions generated from
-the [FFI manifest](manifest.md).
+What the [front doors](compilation.md) run: the `rustc` invocation, the JSON
+reader for Cargo's machine-readable output, and the `ccall` expressions
+generated from the [FFI manifest](manifest.md).
 
 ## Compiler (`src/build/compiler.jl`)
 
@@ -11,15 +11,13 @@ Modules = [RustCall]
 Pages = [joinpath("src", "build", "compiler.jl")]
 ```
 
-## rustc diagnostics (`src/build/rustc_json.jl`)
+## Reading Cargo's JSON (`src/build/json.jl`)
 
-`rustc --error-format=json` output, read as data. This is what lets `@irust`
-ask the compiler for a snippet's type instead of guessing it from the source
-([#348](https://github.com/AtelierArith/RustCall.jl/issues/348)).
+`cargo metadata` and `--message-format=json` output, read as data.
 
 ```@autodocs
 Modules = [RustCall]
-Pages = [joinpath("src", "build", "rustc_json.jl")]
+Pages = [joinpath("src", "build", "json.jl")]
 ```
 
 ## Code generation (`src/ffi/codegen.jl`)

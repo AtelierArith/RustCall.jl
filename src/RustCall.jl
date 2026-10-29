@@ -256,7 +256,7 @@ include("ffi/ffi_contract.jl")
 include("ffi/emitted_names.jl")
 # rustc's `--error-format=json` diagnostics, read as data rather than as text
 # (#348). Depends on nothing; must precede compiler.jl, which probes with it.
-include("build/rustc_json.jl")
+include("build/json.jl")
 include("build/compiler.jl")
 include("ffi/codegen.jl")
 include("ffi/exceptions.jl")
@@ -346,7 +346,7 @@ include("macros/precompile.jl")
 
 # Export public API — only macros/string literals are exported.
 # All other identifiers are accessible via RustCall.XXX or import RustCall: XXX.
-export @rust, @rust_str, @irust, @irust_str
+export @rust, @rust_str
 export @rust_crate
 # The by-value opt-in of #245. A macro, because it must define its method in
 # the *calling* module for that method to survive the caller's precompilation.

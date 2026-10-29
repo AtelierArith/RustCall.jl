@@ -14,11 +14,14 @@ Pages = [joinpath("src", "RustCall.jl")]
 
 - [`@rust_str`](@ref) — `rust"""..."""`: compile a Rust snippet and register its functions.
 - [`@rust`](@ref) — call a registered Rust function.
-- [`@irust`](@ref) / [`@irust_str`](@ref) — inline Rust with `$var` binding. **Deprecated** (#538): use a `#[julia]` function in `rust"""..."""`.
 - [`@rust_crate`](@ref) — bind an external crate.
 
 `@rust_llvm` and the LLVM IR integration path were removed in 0.3.0
 ([#265](https://github.com/AtelierArith/RustCall.jl/issues/265)); use `@rust`.
+`@irust` and `irust"..."` were removed in 0.9.0
+([#538](https://github.com/AtelierArith/RustCall.jl/issues/538)); write the
+snippet as a `#[julia]` function in `rust"""..."""` (see "Migrating from
+`@irust`" on the home page).
 
 ## Pages
 
@@ -28,10 +31,10 @@ Pages = [joinpath("src", "RustCall.jl")]
 - [The FFI type contract](reference/ffi_contract.md) — the Rust ↔ Julia type
   table every code path consults, and the type translation shims over it
   (`ffi_contract.jl`, `typetranslation.jl`).
-- [Front doors](reference/compilation.md) — `rust"""..."""`, `@rust` and
-  `@irust` (`ruststr.jl`, `rustmacro.jl`).
-- [Compiler and codegen](reference/codegen.md) — the `rustc` invocation, its
-  JSON diagnostics and the generated `ccall`s (`compiler.jl`, `rustc_json.jl`,
+- [Front doors](reference/compilation.md) — `rust"""..."""` and `@rust`
+  (`ruststr.jl`, `rustmacro.jl`).
+- [Compiler and codegen](reference/codegen.md) — the `rustc` invocation, the
+  reader for Cargo's JSON and the generated `ccall`s (`compiler.jl`, `json.jl`,
   `codegen.jl`).
 - [The FFI manifest](reference/manifest.md) — the `rustcall-extract` interface:
   manifests, inline expansion, specialization and the toolchain fingerprint
