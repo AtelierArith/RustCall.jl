@@ -10,7 +10,7 @@ RustCall = "7ac5b1a4-9e37-4f0e-9aa3-3305a66bfb1c"
 RustCall = {path = "../.."}
 
 [compat]
-RustCall = "0.8"
+RustCall = "0.9"
 julia = "1.12"
 
 [extras]

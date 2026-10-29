@@ -113,13 +113,13 @@ every push.
 
 The extractor's manifest carries a `schema_version`, and RustCall refuses a
 manifest whose identifier is not its own. Since **v0.4.0** that identifier is
-the **`MAJOR.MINOR` of the release** — `"0.8"` for every v0.8.x — derived on
+the **`MAJOR.MINOR` of the release** — `"0.9"` for every v0.9.x — derived on
 the Julia side from `Project.toml`, and on the Rust side a **literal**,
 `rustcall_julia_core::manifest::SCHEMA_VERSION`, kept equal to it by hand and
 checked by `test/test_schema_version.jl` through the extractor's
 `schema-version` output (#372, #451). It is not derived from any crate's
 `Cargo.toml`: the three published crates carry a version of their own (`0.1.0`
-at first, `0.2.0` since #487, `0.3.0` since v0.7.1, `0.4.0` since v0.7.2, `0.4.1` since v0.8.0, `0.4.2` since v0.8.1), independent of the package's. Through v0.3.x the identifier was an
+at first, `0.2.0` since #487, `0.3.0` since v0.7.1, `0.4.0` since v0.7.2, `0.4.1` since v0.8.0, `0.4.2` since v0.8.1, `0.4.3` since v0.9.0), independent of the package's. Through v0.3.x the identifier was an
 integer bumped on every manifest edit, last `13`.
 
 What that means in practice:
