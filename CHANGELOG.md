@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+- **The callbacks section is back, as its own page**
+  ([#544](https://github.com/AtelierArith/RustCall.jl/issues/544)):
+  "Callbacks: passing a Julia function to Rust" (`docs/src/callbacks.md`).
+  #419 had written it into `type_contract.md`, which the docs build
+  regenerates, so no published build had it, and #534 then committed a
+  regenerated copy without it. `test/test_docs_generated.jl` checks that
+  `type_contract.md` is exactly what its generator writes and runs the
+  page's example.
+
 ## [0.8.0] - 2026-10-29
 
 ### Breaking

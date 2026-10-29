@@ -36,6 +36,7 @@ makedocs(
         "User Guide" => [
             "Safe Rust/Julia Integration" => "integration_guide.md",
             "The FFI Type Contract" => "type_contract.md",
+            "Callbacks" => "callbacks.md",
             "Struct Mapping" => "struct_mapping.md",
             "Generics" => "generics.md",
             "External Crate Bindings" => "crate_bindings.md",

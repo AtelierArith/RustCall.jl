@@ -232,7 +232,7 @@ and same-thread execution; it is not a general asynchronous callback system.
 | Structs | `#[julia]` structs, used as handles or with `pub` fields of supported types | borrowed references into a struct that outlive it | return owned values; see `examples/SafeLedger.jl` |
 | Errors | `Result<T, E>` / `Option<T>` of supported types, as `RustResult` / `RustOption` | — | turn them into Julia exceptions in your wrapper |
 | Panics | caught at a generated `#[julia]` boundary, raised as `RustPanicError` | raw `#[no_mangle] extern "C"` functions, and threads Rust spawns | put every entry point behind `#[julia]` |
-| Callbacks | `extern "C" fn` arguments, synchronous, on the calling thread | storing a callback for later, calling it from another thread | return control to Julia and call again |
+| Callbacks | `extern "C" fn` arguments ([Callbacks](callbacks.md)), synchronous, on the calling thread | storing a callback for later, calling it from another thread | return control to Julia and call again |
 | Threads | calls from any Julia thread | concurrent `&mut self` calls on one object (RustCall does not lock objects) | serialize access to a handle, e.g. with a `ReentrantLock` in the wrapper |
 | Lifetime | finalizers, `finalize(obj)` for explicit release | use after `unload_library(...; close = true)` (the call raises, the object leaks) | close images only when nothing still uses them |
 | Generics | generic functions and structs, monomorphized on demand | trait objects, explicit lifetime parameters | expose concrete facade functions |
