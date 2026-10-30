@@ -132,6 +132,47 @@ release, and what an object does once its library is unloaded:
 - After the retired image is closed, a call raises a `RustError` and release
   does nothing: the object leaks rather than running unmapped code.
 
+## Batch string pairs in one call
+
+[`examples/batch_strings/BatchStrings.jl`](https://github.com/AtelierArith/RustCall.jl/blob/main/examples/batch_strings/BatchStrings.jl)
+contains a runnable, tested example for passing a sequence of string pairs to
+one `#[julia]` call. It encodes each UTF-8 string as its **byte** length in
+ASCII decimal, a colon, and the string bytes. Pairs are concatenated in
+iteration order; an empty batch is an empty string. Length framing permits
+colons, empty values, Unicode and embedded NULs without escaping. The example
+applies text replacements sequentially; Symbolica-style expression replacement
+can use the same transport but must parse each key and value as an expression.
+For a `Dict`, the iteration order is whatever the dictionary supplies: pass a
+vector of pairs when order matters.
+
+```julia
+include("examples/batch_strings/BatchStrings.jl")
+BatchStrings.replace_batch("a+b", ["a" => "b", "b" => "猫"])
+# "猫+猫" (the second replacement also affects the first one's result)
+```
+
+The encoder rejects invalid Julia UTF-8. Rust validates every frame, integer
+overflow, UTF-8 boundary, pair completeness and the example's nonempty-key
+rule before applying anything; it returns `Err(String)` for malformed input.
+The Julia wrapper turns that into `ArgumentError`. For an object holding an
+`Atom`, parse **all** expressions and validate them first, apply them to a
+candidate, then replace the object's state only on success. This prevents a
+later invalid pair from leaving partial changes. The example is a transport
+pattern, not an implementation of Symbolica expression parsing or simultaneous
+substitution.
+
+RustCall copies both string arguments for the duration of the call and releases
+the returned `Result` payload through the owning library. The Rust `Vec` and
+its borrowed field slices remain local to that call; neither a Rust `Vec`
+layout nor a pointer into a Julia buffer crosses the ABI. On an error, the
+local collection is dropped and the RustCall result is released normally.
+Input and decoded collections use memory proportional to the batch size; impose
+application-specific size limits for untrusted or very large batches. For
+repeated batches, retain the expensive expression in an opaque owned handle,
+use the same single-string argument on its method, and serialize concurrent
+mutations of that handle. The pattern avoids one FFI call per pair, but does
+copy and parse the framed strings and has not been benchmarked.
+
 ## Ownership and lifetime rules
 
 - Prefer RustCall ownership types such as `RustBox`, `RustRc`, `RustArc`, and
