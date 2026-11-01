@@ -28,6 +28,24 @@ end
 
 filter_tests!(testsuite, args)
 
+# The Windows CI runner has two workers. Move its longest test files to a
+# second runner; all unlisted (including newly added) files stay in shard 1.
+# Each runner has its own depot, so the serial cache tests remain isolated.
+windows_slow_tests = Set(("test_crate_build_paths", "test_rust_crate_precompile",
+                          "test_hot_reload_record", "test_build_env_snapshot",
+                          "test_module_name_shadowing", "test_direct_build_target",
+                          "test_pyo3_link_plan"))
+shard = get(ENV, "RUSTCALL_CI_WINDOWS_SHARD", "")
+shard in ("", "1", "2") || error("Invalid RUSTCALL_CI_WINDOWS_SHARD: $shard")
+if !isempty(shard)
+    for name in collect(keys(testsuite))
+        in_slow_shard = name in windows_slow_tests
+        if in_slow_shard != (shard == "2")
+            delete!(testsuite, name)
+        end
+    end
+end
+
 for test_name in serial_test_names
     if haskey(testsuite, test_name)
         serial_testsuite[test_name] = pop!(testsuite, test_name)
