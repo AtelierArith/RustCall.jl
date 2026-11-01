@@ -245,6 +245,8 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
         const _VEC_TARGET = Tuple{Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}, Base.RefValue{Bool}}
         const _CTOR_TARGET = Tuple{Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid},
                                    Base.RefValue{Bool}, Ptr{Cvoid}}
+        const _CTOR_RESULT_TARGET = Tuple{Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid},
+                                          Base.RefValue{Bool}, Ptr{Cvoid}, Ptr{Cvoid}}
         const _FREE_TARGET = Tuple{Ptr{Cvoid}, Base.RefValue{Bool}, Ptr{Cvoid}}
 
         # One snapshot per call: the wrapper and its panic channel, resolved
@@ -323,6 +325,25 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
                  _symbol(handle, free_symbol),
                  gen.alive,
                  _symbol(handle, RustCall.ffi_panic_symbol(free_symbol))))
+        end
+
+        function _ctor_result_target(cache::RustCall.CrateTargetCache, symbol::String,
+                                     object_free::String, payload_free::String)
+            hit = RustCall.crate_target_hit(cache, _CTOR_RESULT_TARGET)
+            hit === nothing || return hit
+            epoch = RustCall.artifact_epoch()
+            gen = _LIB_GEN[]
+            handle = _live_handle(gen)
+            # Never read a result aggregate until the producer confirms the
+            # same boxed-Ok ABI; older macro releases returned Self by value.
+            _symbol(handle, symbol * "_boxed_result_v1") == C_NULL &&
+                error("incompatible boxed constructor ABI for $symbol; rebuild the crate with rustcall_julia_macros >= 0.5.0")
+            return RustCall.publish_crate_target!(cache, epoch,
+                (_required_symbol(handle, symbol),
+                 _symbol(handle, RustCall.ffi_panic_symbol(symbol)),
+                 _required_symbol(handle, object_free), gen.alive,
+                 _symbol(handle, RustCall.ffi_panic_symbol(object_free)),
+                 isempty(payload_free) ? C_NULL : _required_symbol(handle, payload_free)))
         end
 
         # The per-object half: a struct's destructor and the liveness flag of

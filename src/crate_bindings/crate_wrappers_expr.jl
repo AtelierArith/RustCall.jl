@@ -777,10 +777,17 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     if method.return_kind === :result || method.return_kind === :option
         plan = _method_payload_plan(info, method, helper_owner)
         push!(predefs, plan.definition)
-        payload_target = isempty(plan.free_symbol) ?
-            @_emitted(:(($ptr_sym, $channel_sym) = _call_target($cache_sym, $wrapper_name))) :
+        boxed_ctor = method.ok_abi == "boxed"
+        object_free_sym = _generated_local("object_free", method.arg_names)
+        payload_target = if boxed_ctor
+            @_emitted(:(($ptr_sym, $channel_sym, $object_free_sym, $alive_sym, $free_channel_sym, $free_sym) =
+                _ctor_result_target($cache_sym, $wrapper_name, $(ffi_struct_free_symbol(info.ffi_name)), $(plan.free_symbol))))
+        elseif isempty(plan.free_symbol)
+            @_emitted(:(($ptr_sym, $channel_sym) = _call_target($cache_sym, $wrapper_name)))
+        else
             @_emitted(:(($ptr_sym, $channel_sym, $free_sym) = _call_target($cache_sym, $wrapper_name, $(plan.free_symbol))))
-        free_expr = isempty(plan.free_symbol) ? @_emitted(:(C_NULL)) : free_sym
+        end
+        free_expr = boxed_ctor || !isempty(plan.free_symbol) ? free_sym : @_emitted(:(C_NULL))
         c_sym = _generated_local("c_payload", method.arg_names)
         method.is_static || pushfirst!(preserved, _emitter_local("self"))
         payload_body = @_emitted quote
@@ -793,7 +800,11 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
             # discriminant with an uninitialized payload — so the channel is
             # read *before* anything is decoded (#244).
             _guard_panic($c_sym, $channel_sym, $("$(struct_name_str)::$(method_name)"), $free_expr)
-            $(_payload_decode_expr(plan, c_sym, free_expr))
+            $(boxed_ctor ? @_emitted(:(if $c_sym.is_ok == 1
+                RustResult{$struct_name, $(last(plan.surface))}(true, $struct_name($c_sym.ok_value, $object_free_sym, $release_alive, $free_channel_sym))
+            else
+                RustResult{$struct_name, $(last(plan.surface))}(false, _result_payload($(last(plan.surface)), $c_sym.err_value, $free_expr))
+            end)) : _payload_decode_expr(plan, c_sym, free_expr))
         end
     end
     call = if payload_body !== nothing
@@ -904,7 +915,9 @@ function _method_payload_plan(info::RustStructInfo, method::RustMethod,
                               strict::Symbol = _ffi_strict())
     ctx = _ffi_context(method, info.name)
     if method.return_kind === :result
-        ok_t, ok_slot = _emitted_type(ffi_payload_symbols(method.ok_type, method.ok_abi, ctx;
+        ok_t, ok_slot = method.ok_abi == "boxed" ?
+            (_emitted_type(Symbol(julia_struct_name(info))), _emitted_type(:(Ptr{Cvoid}))) :
+            _emitted_type(ffi_payload_symbols(method.ok_type, method.ok_abi, ctx;
                                             position = "Ok payload", strict = strict))
         err_t, err_slot = _emitted_type(ffi_payload_symbols(method.err_type, method.err_abi, ctx;
                                               position = "Err payload", strict = strict))

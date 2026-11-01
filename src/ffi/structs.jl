@@ -781,7 +781,36 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
         bindings, preserved, expanded_call_args, frame = _string_arg_plan(m, esc)
 
         if m.is_static
-            if is_ctor
+            if is_ctor && m.return_kind === :result && m.ok_abi == "boxed"
+                ctx = _ffi_context(m, info.name)
+                err_t, err_slot = ffi_payload_symbols(m.err_type, m.err_abi, ctx; position = "Err payload")
+                aggregate = :(RustCall.CResultType{Ptr{Cvoid}, $err_slot})
+                owner = _method_string_owner(m, info.ffi_name)
+                payload_free = _payload_free_symbol(owner, (m.err_abi,))
+                payload_sym = gensym("payload_release")
+                target_sym = gensym("target")
+                result_sym = gensym("result")
+                push!(exprs, quote
+                    function (::Type{$esc_struct})($(esc_args...))
+                        $(bindings...)
+                        lib = RustCall.module_symbol_library(@__MODULE__, $wrapper_name)
+                        $target_sym = RustCall.resolve_call_target(lib, $wrapper_name;
+                            free_symbol = RustCall.ffi_struct_free_symbol($struct_stem))
+                        RustCall.Libdl.dlsym($target_sym.handle, $wrapper_name * "_boxed_result_v1")
+                        $payload_sym = isempty($payload_free) ? C_NULL : RustCall.Libdl.dlsym($target_sym.handle, $payload_free)
+                        $result_sym = $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) RustCall.call_rust_function($target_sym.func_ptr, $aggregate, $(expanded_call_args...)))))
+                        RustCall.check_rust_panic_ptr($target_sym.channel, $wrapper_name, $result_sym, $payload_sym)
+                        if $result_sym.is_ok == 1
+                            value = $esc_struct($result_sym.ok_value, $target_sym.lib_name,
+                                $target_sym.free_ptr, $target_sym.alive, $target_sym.free_channel)
+                            RustCall.RustResult{$esc_struct, $err_t}(true, value)
+                        else
+                            RustCall.RustResult{$esc_struct, $err_t}(false,
+                                RustCall._result_payload($err_t, $result_sym.err_value, $payload_sym))
+                        end
+                    end
+                end)
+            elseif is_ctor
                 push!(exprs, quote
                     function (::Type{$esc_struct})($(esc_args...))
                         $(bindings...)

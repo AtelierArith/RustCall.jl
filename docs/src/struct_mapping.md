@@ -555,15 +555,27 @@ exactly as anywhere else: the wrapper returns the `panicked()` sentinel (the
 `Err` / `None` discriminant with **no** payload initialized), Julia reads the
 panic channel *before* it decodes anything, and raises `RustCall.RustPanicError`.
 
+An inherent static constructor on a non-generic struct returning `Result<Self, E>`
+with a supported error payload is exposed as `RustResult{Wrapper,E}`. `Ok` owns a Julia wrapper
+with the allocating library generation's destructor; `Err` carries the error
+and does not allocate a wrapper. The panic channel is checked before decoding.
+Non-static and trait methods returning `Result<Self,E>` are not constructors.
+The producing crate must use `rustcall_julia_macros` 0.5.0 or later: before
+calling the constructor, the binding checks its producer's boxed-result ABI
+marker and refuses older producer libraries instead of interpreting a different
+ABI as an owning pointer. This requires a RustCall build containing #559;
+RustCall 0.9.0 does not support this constructor ABI. After upgrading RustCall,
+rebuild its extractor with `Pkg.build("RustCall")` and regenerate any written
+crate bindings before using a producer built with the 0.5 macro crate. RustCall
+0.9.0 with its default strict FFI policy rejects the unsupported `Self` payload
+before the call; do not disable strict FFI checking to bypass this incompatibility.
+
 ### What is not lowered
 
 - A payload the aggregate cannot carry (`Vec<T>`, `Box<T>`, a `HashMap`, …)
   keeps the previous behaviour: the method returns the type as written and the
   manifest reports `return_kind = plain`. On a **free** function the same
   payload is a compile error, which is the older and stricter rule.
-- A constructor — `new`, or any method returning `Self` — is boxed before the
-  `Result` lowering is consulted, so `fn new(...) -> Result<Self, E>` is not a
-  `RustResult`.
 - The methods of a **generic** struct are monomorphized on demand and return
   the type as written; `Result`/`Option` lowering does not apply to them.
 

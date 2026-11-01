@@ -399,7 +399,8 @@ fn methods_of(
                 },
                 is_static: m.is_static(),
                 is_mutable: m.is_mutable(),
-                is_constructor: m.is_constructor(struct_name),
+                is_constructor: m.is_constructor(struct_name)
+                    && (symbols || m.fallible_constructor(struct_name).is_none()),
                 is_classmethod: false,
                 vis: crate::attrs::visibility_string(&m.func.vis),
                 skip_reason: refusal.map(|r| r.skip_reason()).unwrap_or_default(),

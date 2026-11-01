@@ -166,6 +166,7 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     push!(lines, "const _STRING_TARGET = rustcall′Base.Tuple{rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.Ptr{rustcall′Base.Cvoid}}")
     push!(lines, "const _VEC_TARGET = rustcall′Base.Tuple{rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.RefValue{rustcall′Base.Bool}}")
     push!(lines, "const _CTOR_TARGET = rustcall′Base.Tuple{rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.RefValue{rustcall′Base.Bool}, rustcall′Base.Ptr{rustcall′Base.Cvoid}}")
+    push!(lines, "const _CTOR_RESULT_TARGET = rustcall′Base.Tuple{rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.RefValue{rustcall′Base.Bool}, rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.Ptr{rustcall′Base.Cvoid}}")
     push!(lines, "const _FREE_TARGET = rustcall′Base.Tuple{rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.RefValue{rustcall′Base.Bool}, rustcall′Base.Ptr{rustcall′Base.Cvoid}}")
     push!(lines, "")
     push!(lines, "# One snapshot per call, from ONE deref of `_LIB_GEN` (#277). `cache` is")
@@ -225,6 +226,21 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     push!(lines, "         _symbol(handle, free_symbol),")
     push!(lines, "         gen.alive,")
     push!(lines, "         _symbol(handle, rustcall′RustCall.ffi_panic_symbol(free_symbol))))")
+    push!(lines, "end")
+    push!(lines, "")
+    push!(lines, "function _ctor_result_target(cache::rustcall′RustCall.CrateTargetCache, symbol::rustcall′Base.String, object_free::rustcall′Base.String, payload_free::rustcall′Base.String)")
+    push!(lines, "    hit = rustcall′RustCall.crate_target_hit(cache, _CTOR_RESULT_TARGET)")
+    push!(lines, "    hit === rustcall′Base.nothing || return hit")
+    push!(lines, "    epoch = rustcall′RustCall.artifact_epoch()")
+    push!(lines, "    gen = _LIB_GEN[]")
+    push!(lines, "    handle = _live_handle(gen)")
+    push!(lines, "    _symbol(handle, symbol * \"_boxed_result_v1\") == rustcall′Base.C_NULL &&")
+    push!(lines, "        rustcall′Base.error(\"incompatible boxed constructor ABI for \" * symbol * \"; rebuild the crate with rustcall_julia_macros >= 0.5.0\")")
+    push!(lines, "    return rustcall′RustCall.publish_crate_target!(cache, epoch,")
+    push!(lines, "        (_required_symbol(handle, symbol), _symbol(handle, rustcall′RustCall.ffi_panic_symbol(symbol)),")
+    push!(lines, "         _required_symbol(handle, object_free), gen.alive,")
+    push!(lines, "         _symbol(handle, rustcall′RustCall.ffi_panic_symbol(object_free)),")
+    push!(lines, "         rustcall′Base.isempty(payload_free) ? rustcall′Base.C_NULL : _required_symbol(handle, payload_free)))")
     push!(lines, "end")
     push!(lines, "")
     push!(lines, "# A struct's destructor and the liveness flag of the image that exports it,")
@@ -740,15 +756,29 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
     if method.return_kind === :result || method.return_kind === :option
         plan = _method_payload_plan(struct_info, method, helper_owner; strict = strict)
         c_var = _generated_local("c_payload", method.arg_names)
-        payload_target = isempty(plan.free_symbol) ?
-            "$ptr_var, $channel_var = _call_target($cache_var, \"$wrapper_name\")" :
+        boxed_ctor = method.ok_abi == "boxed"
+        object_free_var = _generated_local("object_free", method.arg_names)
+        payload_target = if boxed_ctor
+            "$ptr_var, $channel_var, $object_free_var, $alive_var, $free_channel_var, $free_var = " *
+            "_ctor_result_target($cache_var, \"$wrapper_name\", \"$(ffi_struct_free_symbol(struct_info.ffi_name))\", \"$(plan.free_symbol)\")"
+        elseif isempty(plan.free_symbol)
+            "$ptr_var, $channel_var = _call_target($cache_var, \"$wrapper_name\")"
+        else
             "$ptr_var, $channel_var, $free_var = _call_target($cache_var, \"$wrapper_name\", \"$(plan.free_symbol)\")"
-        free_expr = isempty(plan.free_symbol) ? "rustcall′Base.C_NULL" : string(free_var)
+        end
+        free_expr = boxed_ctor || !isempty(plan.free_symbol) ? string(free_var) : "rustcall′Base.C_NULL"
+        err_t = _emitted_source(last(plan.surface))
+        decode = boxed_ctor ? """
+    if $c_var.is_ok == 1
+        rustcall′RustCall.RustResult{$struct_name, $err_t}(true, $struct_name($c_var.ok_value, $object_free_var, $release_alive, $free_channel_var))
+    else
+        rustcall′RustCall.RustResult{$struct_name, $err_t}(false, rustcall′RustCall._result_payload($err_t, $c_var.err_value, $free_expr))
+    end""" : _emit_payload_decode(plan, c_var, free_expr)
         payload_body = """
 $(prologue)    $payload_target
     $c_var = $(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "rustcall′RustCall.call_rust_function($ptr_var, $(plan.struct_name), $args_str)")))
     _guard_panic($c_var, $channel_var, "$method_label", $free_expr)
-$(_emit_payload_decode(plan, c_var, free_expr))"""
+$decode"""
         return _emit_method_definition(struct_name, method, arg_syms, payload_body;
                                        predef = _target_cache_source(:m, wrapper_name) *
                                                 "\n\n" * plan.source, bare = bare)
