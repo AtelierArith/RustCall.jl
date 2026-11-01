@@ -60,7 +60,7 @@ dependencies = [
 
 [[package]]
 name = "rustcall_extract"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "rustcall_julia_core",
  "serde",
