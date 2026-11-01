@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Scoped numeric buffers and explicit concrete generic crate facade generation
+  for Rust-backed Julia arrays and tensors ([#557](https://github.com/AtelierArith/RustCall.jl/issues/557), [#558](https://github.com/AtelierArith/RustCall.jl/issues/558)).
+- Fallible `#[julia]` constructors returning `Result<Self, E>` preserve the
+  error and own successful values in the originating library generation
+  ([#559](https://github.com/AtelierArith/RustCall.jl/issues/559)).
+
+### Rust crates
+- `rustcall_julia_core`, `rustcall_julia_macros_impl`, and
+  `rustcall_julia_macros` move from `0.4.3` to `0.5.0`: fallible constructors
+  now lower successful `Self` payloads to owned pointers, changing an existing
+  `#[julia]` ABI. Dependants of the published macro crate must update together.
+
 ## [0.9.0] - 2026-10-29
 
 ### Breaking

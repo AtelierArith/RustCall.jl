@@ -464,6 +464,11 @@ pub fn struct_claims(s: &Struct, policy: Policy) -> Vec<Claim> {
             // `COption_<Struct>_<m>` next to its wrapper, whichever buffers it
             // uses (`codegen::method_spec`, `crate::wrap`).
             let mut claims = wrapper_claims(&m.symbol);
+            if m.return_kind == ReturnKind::Result && m.ok_abi == "boxed" {
+                claims.push(Claim::exported(crate::codegen::boxed_result_marker(
+                    &m.symbol,
+                )));
+            }
             claims.extend(aggregate_claims(
                 m.return_kind,
                 &crate::codegen::method_string_owner(&s.ffi_name, &m.method_stem()),

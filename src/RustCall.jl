@@ -287,6 +287,7 @@ include("artifacts/artifact_id.jl")
 include("artifacts/build_env_snapshot.jl")
 
 include("ffi/memory.jl")
+include("ffi/numeric_buffer.jl")
 
 # Phase 3: External library integration
 include("build/dependencies.jl")
@@ -322,6 +323,7 @@ include("artifacts/toolchain_check.jl")
 
 # Phase 6: External crate bindings (Maturin-like feature)
 include("crate_bindings/crate_bindings.jl")
+include("crate_bindings/instances.jl")
 
 # The FFI surface report of #441: runs the wrapper generators of ruststr.jl
 # and crate_bindings.jl in collecting mode (#454) and builds nothing, so it

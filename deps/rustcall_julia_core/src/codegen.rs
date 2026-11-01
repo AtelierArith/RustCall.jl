@@ -502,6 +502,8 @@ pub(crate) enum WrapperPayload {
     /// A class value stored as an owning raw pointer. Julia reconstructs its
     /// opaque handle with the destructor from the same library generation.
     Boxed(syn::Path),
+    /// Boxed constructor payload requiring an explicit producer ABI marker.
+    BoxedVerified(syn::Path),
     /// `String` / `&str`, stored as `<helper> { ptr, len, cap }`.
     OwnedString {
         helper: Ident,
@@ -519,7 +521,9 @@ impl WrapperReturn {
     fn passed_types(&self) -> Vec<TokenStream2> {
         let payload = |p: &WrapperPayload| match p {
             WrapperPayload::Plain(ty) => Some(quote! { #ty }),
-            WrapperPayload::Boxed(path) => Some(quote! { #path }),
+            WrapperPayload::Boxed(path) | WrapperPayload::BoxedVerified(path) => {
+                Some(quote! { #path })
+            }
             WrapperPayload::OwnedString { .. } => None,
         };
         match self {
@@ -566,7 +570,9 @@ impl WrapperPayload {
     fn stored_type(&self) -> Type {
         match self {
             WrapperPayload::Plain(ty) => ty.clone(),
-            WrapperPayload::Boxed(ty) => syn::parse_quote!(*mut #ty),
+            WrapperPayload::Boxed(ty) | WrapperPayload::BoxedVerified(ty) => {
+                syn::parse_quote!(*mut #ty)
+            }
             WrapperPayload::OwnedString { helper, .. } => syn::parse_quote!(#helper),
         }
     }
@@ -576,7 +582,9 @@ impl WrapperPayload {
     fn store_expr(&self, value: &Ident) -> TokenStream2 {
         match self {
             WrapperPayload::Plain(_) => quote! { #value },
-            WrapperPayload::Boxed(_) => quote! { Box::into_raw(Box::new(#value)) },
+            WrapperPayload::Boxed(_) | WrapperPayload::BoxedVerified(_) => {
+                quote! { Box::into_raw(Box::new(#value)) }
+            }
             WrapperPayload::OwnedString { helper, .. } => quote! {{
                 // `ToString` covers both `String` and a `&str` payload, which
                 // is always copied (see the type docs).
@@ -1357,6 +1365,16 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
             }
         }
         WrapperReturn::CResult { name, ok, err } => {
+            if matches!(ok, WrapperPayload::BoxedVerified(_)) {
+                // Fail closed if a newer extractor sees a crate built with an
+                // older macro whose Result<Self, E> ABI returned Self by value.
+                let marker = format_ident!("{}", boxed_result_marker(&symbol.to_string()));
+                out.extend(quote! {
+                    #(#cfg_attrs)*
+                    #[no_mangle]
+                    pub extern "C" fn #marker() -> u8 { 1 }
+                });
+            }
             out.extend(payload_helpers(&cfg_attrs, &[&ok, &err]));
             out.extend(generate_c_result_type(
                 &name,
@@ -2297,6 +2315,11 @@ pub fn is_marked_module(item_mod: &ItemMod) -> bool {
 /// Whether the wrapper of a method returns a boxed `*mut Struct`: `new`, or any
 /// method (static or instance) returning `Self` / the struct type. This is what
 /// Julia needs to know; both codegen flavours box these cases.
+/// Exported ABI proof for a fallible constructor wrapper's boxed `Ok` payload.
+pub(crate) fn boxed_result_marker(symbol: &str) -> String {
+    format!("{symbol}_boxed_result_v1")
+}
+
 pub fn returns_boxed_struct(struct_name: &Ident, method: &syn::ImplItemFn) -> bool {
     returns_own_type(&method.sig.output, struct_name, None)
 }
@@ -2778,7 +2801,13 @@ fn method_spec(
         ty: self_path.clone(),
         path: crate::environment::method_item_path(m.host.as_ref(), self_path, &method_name),
     };
-    let ret = if inline_method_is_ctor(struct_name, m) {
+    let ret = if let Some(result) = m.fallible_constructor(struct_name) {
+        WrapperReturn::CResult {
+            name: format_ident!("CResult_{}_{}", stem, method_stem),
+            ok: WrapperPayload::BoxedVerified(self_path.clone()),
+            err: payload_of(&result.err_type, owned_helper, owned_free, declare),
+        }
+    } else if inline_method_is_ctor(struct_name, m) {
         // `new`, or any method returning `Self` / the struct type, hands Julia
         // an owning pointer. The string helpers are not involved.
         WrapperReturn::Boxed(self_path.clone())

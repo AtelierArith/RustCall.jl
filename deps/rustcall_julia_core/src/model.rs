@@ -155,12 +155,39 @@ impl MethodModel {
             )
     }
 
+    /// An inherent static constructor returning `Result<Self, E>` with an
+    /// FFI-representable error. Its successful value is boxed by codegen.
+    pub fn fallible_constructor(
+        &self,
+        struct_name: &syn::Ident,
+    ) -> Option<crate::types::ResultTypeInfo> {
+        if !self.receiver().is_static() || !self.trait_path().is_empty() {
+            return None;
+        }
+        let syn::ReturnType::Type(_, ty) = &self.func.sig.output else {
+            return None;
+        };
+        let result = crate::types::extract_result_type(ty)?;
+        if !crate::refusal::payload_is_representable(&result.err_type) {
+            return None;
+        }
+        let output = syn::ReturnType::Type(Default::default(), Box::new(result.ok_type.clone()));
+        crate::codegen::returns_own_type(
+            &output,
+            struct_name,
+            self.host.as_ref().map(|h| &h.self_ty),
+        )
+        .then_some(result)
+    }
+
     /// Whether Julia binds the method as the struct's constructor (`Buf(..)`):
     /// an inherent method returning the type. A trait's `Self`-returning
     /// function (`Default::default`, `From::from`) keeps its own name, and
     /// would otherwise shadow the inherent constructor (#506).
     pub fn is_constructor(&self, struct_name: &syn::Ident) -> bool {
-        self.trait_path().is_empty() && self.returns_boxed_struct(struct_name)
+        self.trait_path().is_empty()
+            && (self.returns_boxed_struct(struct_name)
+                || self.fallible_constructor(struct_name).is_some())
     }
 
     /// Whether `other` is this method: the same name in the same trait (or

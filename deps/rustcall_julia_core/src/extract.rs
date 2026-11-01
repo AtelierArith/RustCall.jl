@@ -131,6 +131,16 @@ pub fn method_return_shape(
         kind: plain_return_kind(output),
         ..Default::default()
     };
+    if wrapped {
+        if let Some(result) = m.fallible_constructor(struct_name) {
+            shape.kind = ReturnKind::Result;
+            shape.ok_type = type_to_string(&result.ok_type);
+            shape.err_type = type_to_string(&result.err_type);
+            shape.ok_abi = "boxed".into();
+            shape.err_abi = crate::codegen::payload_abi(&result.err_type).into();
+            return shape;
+        }
+    }
     // A constructor (`new`, or anything returning `Self`) is boxed before the
     // `Result` lowering is ever consulted, exactly as in `method_spec`.
     if !wrapped || m.returns_boxed_struct(struct_name) {

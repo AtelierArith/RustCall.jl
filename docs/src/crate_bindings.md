@@ -1071,3 +1071,101 @@ and `4` adds `RustCall.FFIByValue`, neither of which earlier versions have. A
 file at version `2` or below still loads — it uses only API that still exists —
 but does not get the unload, panic-containment, lifetime, UTF-8 or by-value
 guarantees described above.
+
+## Scoped numeric buffers
+
+`RustCall.with_numeric_buffer` is a copying helper for existing `#[julia]`
+methods with a primitive pointer and length. It does not lower Rust slices or
+return a Rust-owned `Vec`. For a Rust method `sum(*const f64, usize)`, for
+example:
+
+```julia
+value = RustCall.with_numeric_buffer(array; element_type=Float64) do ptr, len
+    bindings.sum(ptr, len)
+end
+```
+
+The helper passes an aligned, contiguous temporary in `eachindex` order,
+even for non-contiguous views. It keeps that buffer alive for the callback and
+passes a non-null aligned pointer for an empty array. The pointer must never be
+retained, used asynchronously, or accessed after the callback. The caller must
+ensure the Julia element layout is compatible with the Rust pointer type; the
+helper accepts only `Bool`, 8/16/32/64-bit signed and unsigned integers,
+`Float32`, `Float64`, `ComplexF32`, and `ComplexF64`, and `element_type`
+checks the caller-declared Julia element type against the array. The raw
+pointer cannot reveal the callback's Rust type, so the caller must ensure the
+actual Rust representation matches; no dtype conversion is performed.
+
+For a mutable output pointer, pass `write=true`. The temporary is copied back
+only after the callback returns normally; throw in the callback when the Rust
+method returns an error status if copy-back should be skipped. A successful
+return value representing an error is still a normal return. The caller must
+ensure Rust writes valid Julia values and must prevent concurrent access to the
+source array. Copy-back itself can fail if the array is immutable or implements
+throwing `setindex!`, and such a failure may leave it partly updated. Rust-owned
+bulk outputs still need explicit ownership and release handling.
+
+When an API transfers a Rust allocation as a pointer and length *and provides
+its matching release function*, `RustCall.copy_owned_numeric_buffer` copies the
+values and invokes that release callback in `finally`, including when Julia
+validation fails:
+
+```julia
+values = RustCall.copy_owned_numeric_buffer(ptr, len) do p, n
+    bindings.free_values(p, n)  # the allocator's own release function
+end
+```
+
+The pointer must be live, point to `len` initialized elements with a compatible
+layout, and belong to that release function. Neither provenance nor allocation
+length can be checked. The release callback is also responsible for handling
+an invalid length if the caller supplies one. No other task may read, mutate,
+or free the allocation while copying. A null pointer is accepted only for zero
+length; empty allocations are still passed to the release callback. This
+helper does not understand a Rust `Vec`'s ownership or capacity on its own.
+
+## Explicit instances of generic types
+
+`#[julia]` crate items themselves cannot be generic. If a dependency exposes a
+public generic struct, `RustCall.generate_crate_instances` can generate a Rust
+facade source file for explicitly declared concrete instances and methods:
+
+```julia
+instances = [(
+    name = "FloatCell",
+    rust_type = "generic_crate::Cell<f32>",
+    constructor = (name = "new", args = ["value" => "f32"]),
+    methods = [
+        (name = "get", args = Pair{String,String}[], return_type = "f32", mutable = false),
+        (name = "set", args = ["value" => "f32"], return_type = "()", mutable = true),
+    ],
+)]
+write("facade/src/lib.rs", RustCall.generate_crate_instances(instances))
+# Supply a Cargo.toml for the facade with dependencies on generic_crate and
+# rustcall_julia_macros, then load that facade with @rust_crate.
+```
+
+The generated structs own the concrete Rust values and RustCall's normal
+struct finalizers drop them. Generated methods do not add synchronization;
+callers must prevent concurrent access that violates Rust aliasing rules or
+the concrete type's thread-safety requirements. The source is deterministic for a given ordered
+specification; because it is written to the facade crate before loading,
+normal Cargo and RustCall build invalidation applies. Type expressions and
+method signatures are trusted Rust source: the caller chooses them, and
+`cargo` checks them. The generator does not inspect dependencies or infer
+methods, bounds, return conversions or lifetimes. A fallible constructor can
+specify `error_type = "String"` (or another supported error type); the
+resulting constructor returns a `RustResult` whose success value owns the
+wrapper. An optional trusted Rust `expression` supplies the underlying
+constructor call, for example to assemble a `Vec` from an input pointer and
+length and convert an error to `String`. The caller must ensure any such
+pointer is valid and preserve the source through the call; use the scoped
+buffer helper where appropriate. Unsupported ABI types, borrowed results
+and trait methods needing extra imports require a hand-written facade. It does
+not generate a `Cargo.toml`.
+
+```@docs
+RustCall.with_numeric_buffer
+RustCall.copy_owned_numeric_buffer
+RustCall.generate_crate_instances
+```
