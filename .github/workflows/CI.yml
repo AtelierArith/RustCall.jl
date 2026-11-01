@@ -70,8 +70,8 @@ jobs:
         run: cargo test --all-features
 
   test:
-    # The single-threaded jobs keep the historical names: they are the
-    # required status checks in the repository ruleset for `main`.
+    # Linux and macOS keep their historical required status check names.
+    # The Windows required check below aggregates the two shards.
     name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}${{ matrix.suffix }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -89,7 +89,15 @@ jobs:
             version: '1'
             test_args: --jobs=2
             threads: '1'
-            suffix: ''
+            suffix: ' - shard 1'
+            shard: '1'
+          - os: windows-latest
+            arch: x64
+            version: '1'
+            test_args: --jobs=2
+            threads: '1'
+            suffix: ' - shard 2'
+            shard: '2'
           - os: macos-latest
             arch: aarch64
             version: '1'
@@ -142,8 +150,19 @@ jobs:
       - uses: julia-actions/julia-runtest@v1
         env:
           JULIA_NUM_THREADS: ${{ matrix.threads }}
+          RUSTCALL_CI_WINDOWS_SHARD: ${{ matrix.shard }}
         with:
           test_args: ${{ matrix.test_args }}
+
+  windows-required:
+    # Preserve the ruleset's historical required check, and fail it if any
+    # matrix job fails or is cancelled, including either Windows shard.
+    name: Julia 1 - windows-latest - x64
+    if: always()
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - run: test '${{ needs.test.result }}' = success
 
   compile-benchmark:
     name: Compile benchmark - ${{ matrix.os }}
