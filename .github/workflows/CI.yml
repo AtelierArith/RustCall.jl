@@ -70,8 +70,8 @@ jobs:
         run: cargo test --all-features
 
   test:
-    # Linux and macOS keep their historical required status check names.
-    # The Windows required check below aggregates the two shards.
+    # Linux keeps its historical required status check name. Windows and
+    # macOS required checks below aggregate the matrix results.
     name: Julia ${{ matrix.version }} - ${{ matrix.os }} - ${{ matrix.arch }}${{ matrix.suffix }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -103,7 +103,15 @@ jobs:
             version: '1'
             test_args: --jobs=2
             threads: '1'
-            suffix: ''
+            suffix: ' - shard 1'
+            shard: '1'
+          - os: macos-latest
+            arch: aarch64
+            version: '1'
+            test_args: --jobs=2
+            threads: '1'
+            suffix: ' - shard 2'
+            shard: '2'
           # A multithreaded run. Several properties this package guarantees are
           # only *exercised* with more than one thread: the panic channel is a
           # thread-local, so its "the wrapper call and the channel read happen
@@ -118,7 +126,15 @@ jobs:
             version: '1'
             test_args: --jobs=2
             threads: '4'
-            suffix: ' - 4 threads'
+            suffix: ' - 4 threads - shard 1'
+            shard: '1'
+          - os: ubuntu-latest
+            arch: x64
+            version: '1'
+            test_args: --jobs=2
+            threads: '4'
+            suffix: ' - 4 threads - shard 2'
+            shard: '2'
     steps:
       - uses: actions/checkout@v6
       - uses: julia-actions/setup-julia@v2
@@ -140,7 +156,7 @@ jobs:
             deps/rustcall_extract -> target
       - uses: julia-actions/julia-buildpkg@v1
       - name: Bounds-checked state and mixed reload stress
-        if: matrix.threads == '4'
+        if: matrix.threads == '4' && matrix.shard == '1'
         env:
           RUSTCALL_EXTRACT: ${{ github.workspace }}/deps/rustcall_extract/target/release/rustcall-extract
         run: |
@@ -150,7 +166,7 @@ jobs:
       - uses: julia-actions/julia-runtest@v1
         env:
           JULIA_NUM_THREADS: ${{ matrix.threads }}
-          RUSTCALL_CI_WINDOWS_SHARD: ${{ matrix.shard }}
+          RUSTCALL_CI_SHARD: ${{ matrix.shard }}
         with:
           test_args: ${{ matrix.test_args }}
 
@@ -158,6 +174,15 @@ jobs:
     # Preserve the ruleset's historical required check, and fail it if any
     # matrix job fails or is cancelled, including either Windows shard.
     name: Julia 1 - windows-latest - x64
+    if: always()
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - run: test '${{ needs.test.result }}' = success
+
+  macos-required:
+    # Preserve the historical required status check across both macOS shards.
+    name: Julia 1 - macos-latest - aarch64
     if: always()
     needs: test
     runs-on: ubuntu-latest
