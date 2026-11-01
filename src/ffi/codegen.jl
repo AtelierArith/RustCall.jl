@@ -576,6 +576,49 @@ function _rethrow_callback_error!(channel::Ptr{Cvoid}, value = nothing,
     throw(first(stored))
 end
 
+# A fallible constructor's Ok payload is an owning Rust box, unlike the
+# scalar and string payloads understood by `_release_owned_return`. A failed
+# Julia callback can leave Rust running on its sentinel and returning a real
+# Ok box: free it through the allocating image before rethrowing. A Rust panic
+# instead returns an uninitialized aggregate, which must never be inspected.
+function guard_boxed_result_panic_ptr(value, channel::Ptr{Cvoid}, func_name::AbstractString,
+                                      payload_free::Ptr{Cvoid}, object_free::Ptr{Cvoid},
+                                      alive::Base.RefValue{Bool}, object_channel::Ptr{Cvoid})
+    if _CALLBACK_ERRORS_PENDING[] != 0
+        stored = _take_callback_error()
+        if stored !== nothing
+            panicked = false
+            if channel != C_NULL
+                len = ccall(channel, Csize_t, (Ptr{UInt8}, Csize_t), C_NULL, 0)
+                if len != 0
+                    panicked = true
+                    _fetch_rust_panic(channel, Int(len))
+                end
+            end
+            if !panicked
+                if value.is_ok == 1
+                    ptr = value.ok_value
+                    if ptr != C_NULL && alive[] && object_free != C_NULL
+                        try
+                            ccall(object_free, Cvoid, (Ptr{Cvoid},), ptr)
+                            if object_channel != C_NULL
+                                failed = ccall(object_channel, Csize_t, (Ptr{UInt8}, Csize_t), C_NULL, typemax(Csize_t))
+                                failed > 0 && Threads.atomic_add!(FINALIZER_FREE_FAILURES, 1)
+                            end
+                        catch
+                            Threads.atomic_add!(FINALIZER_FREE_FAILURES, 1)
+                        end
+                    end
+                else
+                    _release_owned_return(value, payload_free)
+                end
+            end
+            throw(first(stored))
+        end
+    end
+    return guard_rust_panic_ptr(value, channel, func_name, payload_free)
+end
+
 """
     _release_owned_return(value, free_ptr)
 

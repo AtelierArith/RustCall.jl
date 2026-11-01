@@ -774,10 +774,34 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
     else
         rustcall′RustCall.RustResult{$struct_name, $err_t}(false, rustcall′RustCall._result_payload($err_t, $c_var.err_value, $free_expr))
     end""" : _emit_payload_decode(plan, c_var, free_expr)
+        # Written bindings retain the 0.9 runtime contract: use only helpers
+        # already present there, rather than referencing a newly added runtime
+        # function. The panic sentinel has an initialized zero discriminant;
+        # neither uninitialized payload is read when it is zero.
+        guard = boxed_ctor ? """
+    try
+        _guard_panic($c_var, $channel_var, "$method_label", $free_expr)
+    catch
+        if $c_var.is_ok == 1 && $c_var.ok_value != rustcall′Base.C_NULL &&
+           $(release_alive)[] && $object_free_var != rustcall′Base.C_NULL
+            try
+                ccall($object_free_var, rustcall′Base.Cvoid, (rustcall′Base.Ptr{rustcall′Base.Cvoid},), $c_var.ok_value)
+                if $free_channel_var != rustcall′Base.C_NULL
+                    failed = ccall($free_channel_var, rustcall′Base.Csize_t,
+                        (rustcall′Base.Ptr{rustcall′Base.UInt8}, rustcall′Base.Csize_t),
+                        rustcall′Base.C_NULL, rustcall′Base.typemax(rustcall′Base.Csize_t))
+                    failed > 0 && rustcall′Base.Threads.atomic_add!(rustcall′RustCall.FINALIZER_FREE_FAILURES, 1)
+                end
+            catch
+                rustcall′Base.Threads.atomic_add!(rustcall′RustCall.FINALIZER_FREE_FAILURES, 1)
+            end
+        end
+        rustcall′Base.rethrow()
+    end""" : "_guard_panic($c_var, $channel_var, \"$method_label\", $free_expr)"
         payload_body = """
 $(prologue)    $payload_target
     $c_var = $(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "rustcall′RustCall.call_rust_function($ptr_var, $(plan.struct_name), $args_str)")))
-    _guard_panic($c_var, $channel_var, "$method_label", $free_expr)
+    $guard
 $decode"""
         return _emit_method_definition(struct_name, method, arg_syms, payload_body;
                                        predef = _target_cache_source(:m, wrapper_name) *

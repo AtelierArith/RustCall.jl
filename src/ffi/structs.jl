@@ -799,7 +799,8 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                         RustCall.Libdl.dlsym($target_sym.handle, $wrapper_name * "_boxed_result_v1")
                         $payload_sym = isempty($payload_free) ? C_NULL : RustCall.Libdl.dlsym($target_sym.handle, $payload_free)
                         $result_sym = $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) RustCall.call_rust_function($target_sym.func_ptr, $aggregate, $(expanded_call_args...)))))
-                        RustCall.check_rust_panic_ptr($target_sym.channel, $wrapper_name, $result_sym, $payload_sym)
+                        RustCall.guard_boxed_result_panic_ptr($result_sym, $target_sym.channel, $wrapper_name,
+                            $payload_sym, $target_sym.free_ptr, $target_sym.alive, $target_sym.free_channel)
                         if $result_sym.is_ok == 1
                             value = $esc_struct($result_sym.ok_value, $target_sym.lib_name,
                                 $target_sym.free_ptr, $target_sym.alive, $target_sym.free_channel)

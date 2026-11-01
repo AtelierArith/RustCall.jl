@@ -11,6 +11,27 @@ impl FallibleInline559 {
     }
     pub fn value(&self) -> i32 { self.value }
 }
+use std::sync::atomic::{AtomicU32, Ordering};
+static CALLBACK_DROPS559: AtomicU32 = AtomicU32::new(0);
+#[julia]
+pub fn callback_drops559() -> u32 { CALLBACK_DROPS559.load(Ordering::SeqCst) }
+#[julia]
+pub struct CallbackFallible559 { value: i32 }
+impl Drop for CallbackFallible559 {
+    fn drop(&mut self) {
+        CALLBACK_DROPS559.fetch_add(1, Ordering::SeqCst);
+        if self.value == 7 { panic!("drop panic"); }
+    }
+}
+#[julia]
+impl CallbackFallible559 {
+    pub fn new(cb: extern "C" fn(i64) -> i64, mode: i32) -> Result<Self, String> {
+        cb(1);
+        if mode == 1 { return Err("callback error payload".to_string()); }
+        if mode == 2 { panic!("callback then panic"); }
+        Ok(Self { value: if mode == 3 { 7 } else { 5 } })
+    }
+}
 #[julia]
 pub struct FallibleCode559 { value: i32 }
 #[julia]
@@ -37,6 +58,21 @@ impl FallibleCode559 {
     code_ok = FallibleCode559(Int32(5))
     @test RustCall.is_ok(code_ok)
     finalize(RustCall.unwrap(code_ok))
+    before = callback_drops559()
+    for mode in Int32[0, 1, 2, 3]
+        failures = RustCall.finalizer_failure_count()
+        try
+            @test_throws ErrorException CallbackFallible559(_ -> error("callback failed"), mode)
+            @test callback_drops559() == before + (mode in (0, 3) ? 1 : 0)
+            @test RustCall.finalizer_failure_count() == failures + (mode == 3 ? 1 : 0)
+            before = callback_drops559()
+            @test RustCall._CALLBACK_ERRORS_PENDING[] == 0
+        finally
+            # The intentional destructor panic must not contaminate later
+            # test files executed by the same ParallelTestRunner worker.
+            RustCall.FINALIZER_FREE_FAILURES[] = failures
+        end
+    end
 end
 
 @testset "fallible constructor crate and written bindings" begin
@@ -62,6 +98,19 @@ end
             #[julia]
             pub struct Fallible { value: i32 }
             impl Drop for Fallible { fn drop(&mut self) { DROPS.fetch_add(1, Ordering::SeqCst); } }
+            #[julia]
+            pub struct CallbackFallible { value: i32 }
+            impl Drop for CallbackFallible { fn drop(&mut self) { DROPS.fetch_add(1, Ordering::SeqCst); if self.value == 7 { panic!("drop panic"); } } }
+            #[julia]
+            impl CallbackFallible {
+                #[julia]
+                pub fn new(cb: extern "C" fn(i64) -> i64, mode: i32) -> Result<Self, String> {
+                    cb(1);
+                    if mode == 1 { return Err("callback error payload".to_string()); }
+                    if mode == 2 { panic!("callback then panic"); }
+                    Ok(Self { value: if mode == 3 { 7 } else { 5 } })
+                }
+            }
             #[julia]
             pub struct FallibleCode { value: i32 }
             #[julia]
@@ -100,6 +149,9 @@ end
         bindings = @rust_crate dir
         output = joinpath(dir, "Written.jl")
         RustCall.write_bindings_to_file(dir, output; output_module_name="WrittenFallible559")
+        # The persisted format remains loadable by RustCall 0.9: no newly
+        # introduced runtime helper may be referenced from the generated file.
+        @test !occursin("RustCall.guard_boxed_result_panic_ptr", read(output, String))
         sandbox = Module(:FallibleSandbox559)
         Base.include(sandbox, output)
         written = Base.invokelatest(getfield, sandbox, :WrittenFallible559)
@@ -116,6 +168,20 @@ end
             nested_error = Base.invokelatest(inner, Int32(-1))
             @test RustCall.is_err(nested_error)
             @test nested_error.value == "nested negative"
+            CT = Base.invokelatest(getfield, module_, :CallbackFallible)
+            getdrops = Base.invokelatest(getfield, module_, :drops)
+            for mode in Int32[0, 1, 2, 3]
+                before = Base.invokelatest(getdrops)
+                failures = RustCall.finalizer_failure_count()
+                try
+                    @test_throws ErrorException Base.invokelatest(CT, _ -> error("callback failed"), mode)
+                    @test Base.invokelatest(getdrops) == before + (mode in (0, 3) ? 1 : 0)
+                    @test RustCall.finalizer_failure_count() == failures + (mode == 3 ? 1 : 0)
+                    @test RustCall._CALLBACK_ERRORS_PENDING[] == 0
+                finally
+                    RustCall.FINALIZER_FREE_FAILURES[] = failures
+                end
+            end
             T = Base.invokelatest(getfield, module_, :Fallible)
             good = Base.invokelatest(T, Int32(3))
             @test RustCall.is_ok(good)

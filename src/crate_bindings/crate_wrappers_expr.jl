@@ -799,7 +799,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
             # A panic returns the `panicked()` sentinel — the Err / None
             # discriminant with an uninitialized payload — so the channel is
             # read *before* anything is decoded (#244).
-            _guard_panic($c_sym, $channel_sym, $("$(struct_name_str)::$(method_name)"), $free_expr)
+            $(boxed_ctor ? @_emitted(:(RustCall.guard_boxed_result_panic_ptr($c_sym, $channel_sym, $("$(struct_name_str)::$(method_name)"), $free_expr, $object_free_sym, $release_alive, $free_channel_sym))) : @_emitted(:(_guard_panic($c_sym, $channel_sym, $("$(struct_name_str)::$(method_name)"), $free_expr))))
             $(boxed_ctor ? @_emitted(:(if $c_sym.is_ok == 1
                 RustResult{$struct_name, $(last(plan.surface))}(true, $struct_name($c_sym.ok_value, $object_free_sym, $release_alive, $free_channel_sym))
             else
