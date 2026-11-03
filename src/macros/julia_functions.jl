@@ -106,6 +106,9 @@ struct RustFunctionSignature
     # `nothing` where the extractor described none (a `#[julia]` function).
     py_arg_shapes::Vector{Union{Nothing, PyO3Shape}}
     py_return_shape::Union{Nothing, PyO3Shape}
+    # The `#[julia]` struct each argument borrows (#565), aligned with
+    # `arg_names`; `nothing` for an argument that borrows none.
+    arg_handles::Vector{Union{Nothing, RustHandleArg}}
 end
 
 function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_types::Vector{String},
@@ -136,7 +139,11 @@ function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_type
                                python_path::Vector{String} = String[],
                                py_arg_shapes::Vector{Union{Nothing, PyO3Shape}} =
                                    Union{Nothing, PyO3Shape}[nothing for _ in arg_names],
-                               py_return_shape::Union{Nothing, PyO3Shape} = nothing)
+                               py_return_shape::Union{Nothing, PyO3Shape} = nothing,
+                               arg_handles::Vector{Union{Nothing, RustHandleArg}} =
+                                   Union{Nothing, RustHandleArg}[nothing for _ in arg_names])
+    length(arg_handles) == length(arg_names) ||
+        throw(ArgumentError("arg_handles must have one entry per argument"))
     length(arg_abis) == length(arg_types) ||
         throw(ArgumentError("arg_abis must have one entry per argument"))
     length(python_defaults) == length(arg_names) ||
@@ -153,7 +160,8 @@ function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_type
                           return_abi, vis, skip_reason, python_name, cfg_features,
                           ok_abi, err_abi, inner_abi, python_defaults, python_kinds,
                           isempty(ffi_name) ? name : ffi_name, callback_args,
-                          callback_returns, python_path, py_arg_shapes, py_return_shape)
+                          callback_returns, python_path, py_arg_shapes, py_return_shape,
+                          arg_handles)
 end
 
 """
@@ -202,32 +210,119 @@ as it is decided, and in collecting mode a refusal — a callback signature the
 plan cannot build, one callback past `CALLBACK_SLOTS` — is recorded and the
 argument skipped rather than thrown.
 """
-function _string_arg_plan(sig::RustFunctionSignature, escape::Function)
+function _string_arg_plan(sig::RustFunctionSignature, escape::Function;
+                          handle_scope::Union{Nothing, Vector{String}} = nothing)
     return _string_arg_plan(sig.arg_names, sig.arg_types, sig.arg_abis, escape;
                             context = sig.name,
-                            callbacks = collect(zip(sig.callback_args, sig.callback_returns)))
+                            callbacks = collect(zip(sig.callback_args, sig.callback_returns)),
+                            handles = sig.arg_handles, handle_scope)
 end
 
 # Same plan for a struct method (`RustMethod`), whose arguments follow `self`.
-function _string_arg_plan(method::RustMethod, escape::Function)
+# `receiver` is the expression of the `self` handle, which every borrowed
+# `#[julia]` argument is checked against (#565); `nothing` for a static method
+# or a receiver that is not a Rust-owned handle.
+function _string_arg_plan(method::RustMethod, escape::Function;
+                          handle_scope::Union{Nothing, Vector{String}} = nothing,
+                          receiver = nothing)
     return _string_arg_plan(method.arg_names, method.arg_types, method.arg_abis, escape;
                             context = method.name,
-                            callbacks = collect(zip(method.callback_args, method.callback_returns)))
+                            callbacks = collect(zip(method.callback_args, method.callback_returns)),
+                            handles = method.arg_handles, handle_scope,
+                            receiver = (method.is_static || receiver === nothing) ? nothing :
+                                       (receiver, method.is_mutable))
+end
+
+"""
+    _handle_type_ref(h::RustHandleArg, scope, escape) -> Any
+
+How a wrapper names the Julia handle type of the struct a borrowed argument
+names (#565). `scope` is the module path of the Julia module the wrapper is
+defined in — every crate submodule mirrors a Rust module (#300) — and the
+type is reached from there by `parentmodule` / `getfield`, so the reference
+needs no name of the root module; `nothing` is an inline `rust` string block, which binds
+every struct in its caller's module. Both emitters print the expression.
+"""
+function _handle_type_ref(h::RustHandleArg, scope::Union{Nothing, Vector{String}}, escape::Function)
+    type_name = Symbol(julia_binding_name(h.name))
+    (scope === nothing || scope == h.module_path) && return escape(type_name)
+    common = 0
+    while common < min(length(scope), length(h.module_path)) &&
+          scope[common + 1] == h.module_path[common + 1]
+        common += 1
+    end
+    ref = Expr(:macrocall, Symbol("@__MODULE__"), LineNumberNode(0, :none))
+    for _ in (common + 1):length(scope)
+        ref = @_emitted(:(parentmodule($ref)))
+    end
+    for segment in h.module_path[(common + 1):end]
+        ref = @_emitted(:(getfield($ref, $(QuoteNode(Symbol(_julia_module_name(segment)))))))
+    end
+    return @_emitted(:(getfield($ref, $(QuoteNode(type_name)))))
 end
 
 function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
                           arg_abis::Vector{String}, escape::Function;
                           context::AbstractString = "",
-                          callbacks = Tuple{Vector{String}, String}[(String[], "") for _ in arg_names])
+                          callbacks = Tuple{Vector{String}, String}[(String[], "") for _ in arg_names],
+                          handles = Union{Nothing, RustHandleArg}[nothing for _ in arg_names],
+                          handle_scope::Union{Nothing, Vector{String}} = nothing,
+                          receiver = nothing)
     bindings = Expr[]
     preserved = Symbol[]
     call_args = Any[]
     prefix = _string_temp_prefix(arg_names)
     trampolines = Any[]
     callbacks_seen = 0
-    for (name, rust_type, abi, callback) in zip(arg_names, arg_types, arg_abis, callbacks)
+    # Every Julia handle the call borrows from — `self` first — with the
+    # pointer it lends and whether the borrow is `&mut`, for the checks after
+    # the loop (#565).
+    # A label is a tuple of string literals with the parameter's name a literal
+    # of its own, so renaming a parameter (#526) changes nothing else.
+    borrows = Tuple{Any, Any, Bool, Tuple}[]
+    receiver === nothing ||
+        push!(borrows, (first(receiver), @_emitted(:(getfield($(first(receiver)), :ptr))),
+                        last(receiver), ("`self`",)))
+    for (index, (name, rust_type, abi, callback, handle)) in
+            enumerate(zip(arg_names, arg_types, arg_abis, callbacks, handles))
         arg_sym = escape(Symbol(name))
         position = "argument `$(name)`"
+        if _is_handle_abi(abi) && handle !== nothing
+            # A borrowed `#[julia]` struct (#565): the wrapper takes the
+            # reference as written, one thin pointer, so the call passes the
+            # pointer the Julia handle owns — never the object by value. The
+            # handle is checked to be of the struct's own Julia type (another
+            # crate's same-named type, or another module's, is refused), to
+            # be neither freed nor of a closed image, and is preserved for
+            # the whole call, so its finalizer cannot free the Rust value
+            # under the borrow. A handle the manifest describes no Rust-owned
+            # struct for (`_manifest_arg_handles`) is passed as before.
+            _boundary_examined!(position, rust_type, abi, nothing)
+            # Locals by position: a parameter's name appears only where the
+            # parameter does (#526).
+            obj = Symbol(_EMITTER_LOCAL_PREFIX, "handle′", index)
+            ptr = Symbol(_EMITTER_LOCAL_PREFIX, "handle_ptr′", index)
+            T = _handle_type_ref(handle, handle_scope, escape)
+            label = ("`", name, "`")
+            checker = GlobalRef(@__MODULE__, :check_not_freed)
+            push!(bindings, :($obj = $arg_sym))
+            # A raw pointer is passed through unchecked, as it was before
+            # handles were recognised: the caller vouches for it. Anything
+            # else must be the struct's own live handle.
+            push!(bindings, @_emitted(:($ptr = if $obj isa Ptr{Cvoid}
+                $obj
+            else
+                $obj isa $T || throw(ArgumentError(string(
+                    "argument ", $(label...), " of `", $context, "` borrows the Rust `",
+                    $(handle.name), "`: expected a `", $T, "` handle, got ", typeof($obj))))
+                $checker($obj, $(handle.name))
+                getfield($obj, :ptr)
+            end)))
+            push!(preserved, obj)
+            push!(call_args, ptr)
+            push!(borrows, (obj, ptr, _is_mut_handle_abi(abi), label))
+            continue
+        end
         # The contract, not the spelling, decides how many C slots this
         # position occupies and what goes in them (#276).
         c = ffi_argument_contract(rust_type; abi = abi)
@@ -311,6 +406,29 @@ function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
             # own Julia-type-keyed coercion, exactly as before.
             push!(call_args, arg_sym)
         end
+    end
+    # Every handle a call borrows comes from one library image (#565): its
+    # liveness flag is the image's identity (one image, one flag), so two
+    # objects of a retired and a replacement generation, which may disagree
+    # on the struct's layout, are never handed to one call together.
+    for j in 2:length(borrows)
+        (first_obj, _, _, first_label), (obj, _, _, label) = borrows[1], borrows[j]
+        push!(bindings, @_emitted(:($obj isa Ptr{Cvoid} || $first_obj isa Ptr{Cvoid} ||
+            getfield($obj, :alive) === getfield($first_obj, :alive) ||
+            throw(ArgumentError(string("`", $context, "` borrows ", $(first_label...), " and ",
+                $(label...), " from different library images (a hot reload replaced the ",
+                "library between their creation): pass objects of one generation"))))))
+    end
+    # Rust forbids a `&mut` borrow aliasing any other borrow of the call: one
+    # Julia object passed both as `&mut` and as another argument (or as
+    # `self`) is refused before Rust ever sees the two references (#565).
+    # Shared borrows may alias (`sum(a, a)`).
+    for i in eachindex(borrows), j in (i + 1):length(borrows)
+        (_, p, pmut, plabel), (_, q, qmut, qlabel) = borrows[i], borrows[j]
+        pmut || qmut || continue
+        push!(bindings, @_emitted(:($p == $q && throw(ArgumentError(string(
+            "`", $context, "` cannot borrow one Rust object as ", $(plabel...), " and ",
+            $(qlabel...), ": a `&mut` borrow may not alias another borrow"))))))
     end
     frame = nothing
     if !isempty(trampolines)
@@ -480,6 +598,8 @@ rooted for the call (#296). The plain wrapper has no `GC.@preserve` region.
 """
 function _uses_string_ffi(sig::RustFunctionSignature)
     _ffi_function_return(sig).aggregate_type === nothing || return true
+    # A borrowed `#[julia]` struct keeps its handle rooted for the call (#565).
+    any(_is_handle_abi, sig.arg_abis) && return true
     return any(zip(sig.arg_types, sig.arg_abis)) do (rust_type, abi)
         c = ffi_argument_contract(rust_type; abi = abi)
         c.abi === :ptr_len || c.abi === :ptr_len_cap || c.abi === :callback

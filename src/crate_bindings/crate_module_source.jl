@@ -235,7 +235,7 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     push!(lines, "    gen = _LIB_GEN[]")
     push!(lines, "    handle = _live_handle(gen)")
     push!(lines, "    _symbol(handle, symbol * \"_boxed_result_v1\") == rustcall′Base.C_NULL &&")
-    push!(lines, "        rustcall′Base.error(\"incompatible boxed constructor ABI for \" * symbol * \"; rebuild the crate with rustcall_julia_macros >= 0.5.0\")")
+    push!(lines, "        rustcall′Base.error(\"incompatible boxed Result<Self, E> ABI for \" * symbol * \"; rebuild the crate with rustcall_julia_macros >= 0.5.1\")")
     push!(lines, "    return rustcall′RustCall.publish_crate_target!(cache, epoch,")
     push!(lines, "        (_required_symbol(handle, symbol), _symbol(handle, rustcall′RustCall.ffi_panic_symbol(symbol)),")
     push!(lines, "         _required_symbol(handle, object_free), gen.alive,")
@@ -304,8 +304,15 @@ end
 Source-text counterpart of `_string_arg_plan` for the file emitter (free
 functions and struct methods alike).
 """
-function _emit_string_arg_plan(func::Union{RustFunctionSignature, RustMethod})
-    bindings, preserved, call_args, frame = _string_arg_plan(func, identity)
+function _emit_string_arg_plan(func::Union{RustFunctionSignature, RustMethod};
+                               handle_scope::Union{Nothing, Vector{String}} =
+                                   func isa RustFunctionSignature ? func.module_path : nothing,
+                               receiver = func isa RustMethod ? _emitter_local("self") : nothing)
+    # A method's receiver is `rustcall′self`, which every borrowed `#[julia]`
+    # argument is checked against (#565).
+    bindings, preserved, call_args, frame = func isa RustMethod ?
+        _string_arg_plan(func, identity; handle_scope, receiver) :
+        _string_arg_plan(func, identity; handle_scope)
     bindings_str = join(("    " * _emitted_source(b) for b in bindings), "\n")
     preserve_str = join(_emitted_source.(preserved), " ")
     # Printed as one argument list, not argument by argument: a lone
@@ -725,7 +732,10 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
     # Same shape as `_generate_crate_method_wrapper`: string arguments are
     # (ptr, len) pairs under GC.@preserve, string results come back through
     # the per-method `<Struct>_<method>_RustCallOwnedString` buffer.
-    bindings_str, preserve_str, converted_args_str, frame_str = _emit_string_arg_plan(method)
+    bindings_str, preserve_str, converted_args_str, frame_str =
+        _emit_string_arg_plan(method; handle_scope = struct_info.module_path,
+                              receiver = _python_owned_handle(struct_info) ? nothing :
+                                         _emitter_local("self"))
     prologue = isempty(bindings_str) ? "" : bindings_str * "\n"
     # `self` is preserved too: a borrowed `&str` result points into the Rust
     # object, which the finalizer of a temporary could free mid-call.

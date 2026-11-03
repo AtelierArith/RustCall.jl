@@ -1447,6 +1447,7 @@ functions whose `attribute` origin is in `origins` are returned — by default t
 function manifest_function_signatures(manifest::Dict; only_attributed::Bool = true,
                                       origins = RUSTCALL_ATTRIBUTE_ORIGINS)
     sigs = RustFunctionSignature[]
+    handles = _manifest_handle_table(manifest)
     for f in _mvec(manifest, "functions")
         attr = _mstr(f, "attribute")
         if only_attributed && !(attr in origins)
@@ -1491,9 +1492,52 @@ function manifest_function_signatures(manifest::Dict; only_attributed::Bool = tr
             py_arg_shapes = Union{Nothing, PyO3Shape}[_manifest_py_shape(a, "py_shape")
                                                       for a in args],
             py_return_shape = _manifest_py_shape(f, "py_return"),
+            arg_handles = _manifest_arg_handles(args, handles),
         ))
     end
     return sigs
+end
+
+"""
+    _is_handle_abi(abi) -> Bool
+
+Whether an argument borrows a `#[julia]` struct (`Arg.abi` `"handle"` /
+`"handle_mut"`, #565); `_is_mut_handle_abi` for the mutable borrow.
+"""
+_is_handle_abi(abi::AbstractString) = abi == "handle" || abi == "handle_mut"
+_is_mut_handle_abi(abi::AbstractString) = abi == "handle_mut"
+
+"""
+    _manifest_handle_table(manifest) -> Dict{String, RustHandleArg}
+
+Every struct of the manifest by `ffi_name`, as an argument borrowing it is
+described (#565). Read once per conversion.
+"""
+function _manifest_handle_table(manifest::Dict)
+    table = Dict{String, RustHandleArg}()
+    for s in _mvec(manifest, "structs")
+        # A handle that stores a Python object rather than a boxed Rust value
+        # (`Struct.python_owned_handle`) lends no Rust pointer.
+        _mbool(s, "python_owned_handle") && continue
+        ffi = _ffi_name_of(s)
+        table[ffi] = RustHandleArg(ffi, String[String(m) for m in _mvec(s, "module_path")],
+                                   _mstr(s, "name"))
+    end
+    return table
+end
+
+"""
+    _manifest_arg_handles(args, handles) -> Vector{Union{Nothing, RustHandleArg}}
+
+The borrowed struct of each argument (#565): its entry in `handles`, or
+`nothing` — for an argument that borrows none, and for a handle naming no
+Rust-owned struct of the manifest, which the argument plan then passes as it
+always did.
+"""
+function _manifest_arg_handles(args, handles::Dict{String, RustHandleArg})
+    return Union{Nothing, RustHandleArg}[
+        _is_handle_abi(_mstr(a, "abi")) ? get(handles, _mstr(a, "handle"), nothing) : nothing
+        for a in args]
 end
 
 """
@@ -1513,7 +1557,7 @@ function _manifest_py_shape(entry, key::AbstractString)
                      Int(get(table, "rank", 0)), inner)
 end
 
-function _manifest_method(m)
+function _manifest_method(m, handles::Dict{String, RustHandleArg} = Dict{String, RustHandleArg}())
     args = _mvec(m, "args")
     RustMethod(
         _mstr(m, "name"),
@@ -1564,6 +1608,7 @@ function _manifest_method(m)
         py_arg_shapes = Union{Nothing, PyO3Shape}[_manifest_py_shape(a, "py_shape")
                                                   for a in args],
         py_return_shape = _manifest_py_shape(m, "py_return"),
+        arg_handles = _manifest_arg_handles(args, handles),
     )
 end
 
@@ -1583,6 +1628,7 @@ empty tuple for no filtering at all.
 function manifest_struct_infos(manifest::Dict; origins = nothing)
     keep = origins === nothing ? ("julia", "derive_julia_struct", "none", "") : origins
     infos = RustStructInfo[]
+    handles = _manifest_handle_table(manifest)
     for s in _mvec(manifest, "structs")
         isempty(keep) || _mstr(s, "attribute") in keep || continue
         fields = Tuple{String, String}[]
@@ -1638,7 +1684,7 @@ function manifest_struct_infos(manifest::Dict; origins = nothing)
         push!(infos, RustStructInfo(
             _mstr(s, "name"),
             manifest_type_params(s),
-            RustMethod[_manifest_method(m) for m in _mvec(s, "methods")],
+            RustMethod[_manifest_method(m, handles) for m in _mvec(s, "methods")],
             _mstr(s, "context_source"),
             fields,
             true,

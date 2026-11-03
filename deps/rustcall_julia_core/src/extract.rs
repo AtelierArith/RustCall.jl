@@ -70,6 +70,7 @@ pub fn typed_arg(pt: &syn::PatType) -> Arg {
         },
         rust_type: type_to_string(&pt.ty),
         abi: arg_abi(&pt.ty).to_string(),
+        handle: String::new(),
         callback_args,
         callback_return,
         python_default: String::new(),
@@ -132,7 +133,7 @@ pub fn method_return_shape(
         ..Default::default()
     };
     if wrapped {
-        if let Some(result) = m.fallible_constructor(struct_name) {
+        if let Some(result) = m.boxed_self_result(struct_name) {
             shape.kind = ReturnKind::Result;
             shape.ok_type = type_to_string(&result.ok_type);
             shape.err_type = type_to_string(&result.err_type);
@@ -177,6 +178,58 @@ pub fn arg_abi(ty: &syn::Type) -> &'static str {
         "callback"
     } else {
         ""
+    }
+}
+
+/// The pointee of an argument that may borrow a `#[julia]` struct (#565):
+/// `&T` or `&mut T` (any lifetime) whose `T` is a plain path, with whether the
+/// borrow is mutable. Whether `T` names such a struct is the scan's to decide
+/// ([`crate::paths::locate_borrowed_type`], or `Self`). An argument the
+/// manifest already lowers (`&str`, a callback) is never one.
+pub fn borrowed_struct_arg(ty: &syn::Type) -> Option<(bool, &syn::Type)> {
+    if !arg_abi(ty).is_empty() {
+        return None;
+    }
+    let syn::Type::Reference(r) = crate::types::unparen(ty) else {
+        return None;
+    };
+    matches!(crate::types::unparen(&r.elem), syn::Type::Path(_))
+        .then_some((r.mutability.is_some(), &*r.elem))
+}
+
+/// Whether a borrowed pointee is `Self`, which names the impl's own type.
+pub fn is_self_type(ty: &syn::Type) -> bool {
+    matches!(crate::types::unparen(ty), syn::Type::Path(p)
+        if p.qself.is_none() && p.path.leading_colon.is_none()
+            && p.path.segments.len() == 1
+            && p.path.segments[0].ident == "Self"
+            && p.path.segments[0].arguments.is_none())
+}
+
+/// Record that `arg` borrows the `#[julia]` struct `ffi_name` (#565).
+pub fn mark_handle_arg(arg: &mut Arg, mutable: bool, ffi_name: &str) {
+    arg.abi = if mutable { "handle_mut" } else { "handle" }.to_string();
+    arg.handle = ffi_name.to_string();
+}
+
+/// Classify every argument of `args` (the typed inputs of `sig`, in order)
+/// that borrows a `#[julia]` struct: `resolve` maps the pointee to the
+/// struct's FFI name, or `None` when it cannot say with certainty.
+pub fn mark_handle_args(
+    args: &mut [Arg],
+    sig: &syn::Signature,
+    mut resolve: impl FnMut(&syn::Type) -> Option<String>,
+) {
+    let typed = sig.inputs.iter().filter_map(|a| match a {
+        FnArg::Typed(pt) => Some(&*pt.ty),
+        FnArg::Receiver(_) => None,
+    });
+    for (arg, ty) in args.iter_mut().zip(typed) {
+        if let Some((mutable, pointee)) = borrowed_struct_arg(ty) {
+            if let Some(ffi_name) = resolve(pointee) {
+                mark_handle_arg(arg, mutable, &ffi_name);
+            }
+        }
     }
 }
 
@@ -505,7 +558,10 @@ impl TreeScan {
     /// `::` path, which changed from crate-rooted to extern-rooted in 2018.
     pub fn with_edition(edition: &str) -> Self {
         Self {
-            julia: CrateScan::default(),
+            julia: CrateScan {
+                edition_2015: edition == "2015",
+                ..CrateScan::default()
+            },
             pyo3: crate::pyo3::Pyo3Scan::with_edition(edition),
         }
     }
@@ -530,6 +586,7 @@ impl TreeScan {
         Self {
             julia: CrateScan {
                 include_environment: Some(environment),
+                edition_2015: edition == "2015",
                 ..CrateScan::default()
             },
             pyo3: crate::pyo3::Pyo3Scan::with_edition(edition),
@@ -714,6 +771,22 @@ pub struct CrateScan {
     /// because an exported symbol is crate-global while a private item only
     /// has to be unique in its own module (#338).
     claimed: Vec<(crate::claims::Claim, String)>,
+    /// `#[julia]` functions with an argument that may borrow a `#[julia]`
+    /// struct (#565): resolved in [`CrateScan::finish`], once every struct
+    /// and `use` of the crate has been seen.
+    handle_fns: Vec<PendingHandleFn>,
+    /// The crate's edition is 2015, where a leading `::` is the crate root.
+    edition_2015: bool,
+}
+
+/// A free function whose borrowed arguments are classified at the end of the
+/// scan: its index in `manifest.functions`, the module it is written in and
+/// its signature.
+#[derive(Debug)]
+struct PendingHandleFn {
+    index: usize,
+    module_path: Vec<String>,
+    sig: syn::Signature,
 }
 
 #[derive(Debug)]
@@ -882,6 +955,15 @@ impl CrateScan {
                             self.claim(claim, owner, file, module_path)?;
                         }
                         manifest.functions.push(entry);
+                        if f.sig.inputs.iter().any(|a| {
+                            matches!(a, FnArg::Typed(pt) if borrowed_struct_arg(&pt.ty).is_some())
+                        }) {
+                            self.handle_fns.push(PendingHandleFn {
+                                index: manifest.functions.len() - 1,
+                                module_path: module_path.clone(),
+                                sig: f.sig.clone(),
+                            });
+                        }
                     }
                 }
                 // An `enum` or a `union` is a type an `impl` header resolves to
@@ -1212,8 +1294,64 @@ impl CrateScan {
             }
         }
 
-        for scanned in std::mem::take(&mut self.structs) {
-            let entry = crate_struct_entry(&scanned.model, &scanned.symbol_path, &scanned.cfg);
+        let scanned_structs = std::mem::take(&mut self.structs);
+        let mut entries: Vec<Struct> = scanned_structs
+            .iter()
+            .map(|scanned| crate_struct_entry(&scanned.model, &scanned.symbol_path, &scanned.cfg))
+            .collect();
+        // Borrowed `#[julia]` arguments (#565), resolved against every type
+        // of the crate — a plain one shadows a `#[julia]` one of its name —
+        // and pointing only at a struct Julia binds as an opaque handle.
+        let handle_names: Vec<Option<String>> = entries
+            .iter()
+            .map(|e| {
+                (e.type_params.is_empty() && e.skip_reason.is_empty()).then(|| e.ffi_name.clone())
+            })
+            .collect();
+        let edition_2015 = self.edition_2015;
+        let resolve = |ty: &syn::Type, module: &[String]| -> Option<String> {
+            let index = crate::paths::locate_borrowed_type(
+                &candidates,
+                ty,
+                module,
+                &self.imports,
+                edition_2015,
+            )?;
+            handle_names[candidates[index].julia?].clone()
+        };
+        for (i, (entry, scanned)) in entries.iter_mut().zip(&scanned_structs).enumerate() {
+            let own = handle_names[i].clone();
+            for method in entry.methods.iter_mut() {
+                let Some(model) = scanned
+                    .model
+                    .methods
+                    .iter()
+                    .find(|m| m.name() == method.name && m.trait_path() == method.trait_path)
+                else {
+                    continue;
+                };
+                let module = model
+                    .site
+                    .as_ref()
+                    .map(|site| site.module_path.clone())
+                    .unwrap_or_else(|| scanned.module_path.clone());
+                mark_handle_args(&mut method.args, &model.func.sig, |ty| {
+                    if is_self_type(ty) {
+                        own.clone()
+                    } else {
+                        resolve(ty, &module)
+                    }
+                });
+            }
+        }
+        for pending in std::mem::take(&mut self.handle_fns) {
+            let function = &mut manifest.functions[pending.index];
+            mark_handle_args(&mut function.args, &pending.sig, |ty| {
+                resolve(ty, &pending.module_path)
+            });
+        }
+
+        for (scanned, entry) in scanned_structs.into_iter().zip(entries) {
             for (claim, owner) in entry.claims() {
                 self.claim(claim, owner, &scanned.file, &scanned.module_path)?;
             }

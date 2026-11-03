@@ -534,6 +534,37 @@ pub fn names_struct<T: Located>(
     locate_with_fallback(structs, &header, imports, Fallback::None) == Ok(own)
 }
 
+/// The struct among `structs` that the pointee `ty` of a borrowed argument
+/// (`&Value`, `&mut a::Value`), written in `module_path`, names **with
+/// certainty** (#565): resolved as [`names_struct`] resolves a return type —
+/// the written qualifier, the module's own items, a `use` binding the name —
+/// and no further. A generic argument list, a qualified `<T as Tr>::X` or a
+/// path the resolver cannot follow names none. `structs` must include every
+/// type the scan saw, annotated or not, so a local plain type shadows a
+/// `#[julia]` one of the same name exactly as it does for rustc.
+pub fn locate_borrowed_type<T: Located>(
+    structs: &[T],
+    ty: &Type,
+    module_path: &[String],
+    imports: &[ScannedImport],
+    edition_2015: bool,
+) -> Option<usize> {
+    let Type::Path(path) = unparen(ty) else {
+        return None;
+    };
+    let qualifier = edition_type_qualifier(path, edition_2015)?;
+    let last = path.path.segments.last()?;
+    if !last.arguments.is_none() {
+        return None;
+    }
+    let header = ImplHeader {
+        target: last.ident.clone(),
+        qualifier,
+        module_path: module_path.to_vec(),
+    };
+    locate_with_fallback(structs, &header, imports, Fallback::None).ok()
+}
+
 /// How far [`locate_with_fallback`] may reach once the written path and the
 /// scope it was written in have said all they can.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

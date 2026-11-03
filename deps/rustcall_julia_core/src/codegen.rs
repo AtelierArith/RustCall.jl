@@ -502,7 +502,8 @@ pub(crate) enum WrapperPayload {
     /// A class value stored as an owning raw pointer. Julia reconstructs its
     /// opaque handle with the destructor from the same library generation.
     Boxed(syn::Path),
-    /// Boxed constructor payload requiring an explicit producer ABI marker.
+    /// A boxed `Result<Self, E>` payload, which also exports the producer's ABI
+    /// marker ([`boxed_result_marker`]).
     BoxedVerified(syn::Path),
     /// `String` / `&str`, stored as `<helper> { ptr, len, cap }`.
     OwnedString {
@@ -2312,14 +2313,17 @@ pub fn is_marked_module(item_mod: &ItemMod) -> bool {
     item_mod.attrs.iter().any(crate::attrs::is_julia_attr)
 }
 
-/// Whether the wrapper of a method returns a boxed `*mut Struct`: `new`, or any
-/// method (static or instance) returning `Self` / the struct type. This is what
-/// Julia needs to know; both codegen flavours box these cases.
-/// Exported ABI proof for a fallible constructor wrapper's boxed `Ok` payload.
+/// Exported ABI proof for a wrapper whose `Result<Self, E>` stores a boxed
+/// `Ok` payload — a fallible constructor (#559) or any other method returning
+/// the struct in a `Result` (#564). Julia refuses to decode the aggregate when
+/// the image lacks it: an older macro returned such a `Self` by value.
 pub(crate) fn boxed_result_marker(symbol: &str) -> String {
     format!("{symbol}_boxed_result_v1")
 }
 
+/// Whether the wrapper of a method returns a boxed `*mut Struct`: `new`, or any
+/// method (static or instance) returning `Self` / the struct type. This is what
+/// Julia needs to know; both codegen flavours box these cases.
 pub fn returns_boxed_struct(struct_name: &Ident, method: &syn::ImplItemFn) -> bool {
     returns_own_type(&method.sig.output, struct_name, None)
 }
@@ -2801,7 +2805,7 @@ fn method_spec(
         ty: self_path.clone(),
         path: crate::environment::method_item_path(m.host.as_ref(), self_path, &method_name),
     };
-    let ret = if let Some(result) = m.fallible_constructor(struct_name) {
+    let ret = if let Some(result) = m.boxed_self_result(struct_name) {
         WrapperReturn::CResult {
             name: format_ident!("CResult_{}_{}", stem, method_stem),
             ok: WrapperPayload::BoxedVerified(self_path.clone()),

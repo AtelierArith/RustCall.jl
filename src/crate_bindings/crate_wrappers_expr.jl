@@ -15,7 +15,8 @@ function _generate_crate_function_wrapper(func::RustFunctionSignature)
 
     # Build converted arguments (string arguments become (ptr, len) pairs kept
     # alive with GC.@preserve, see `_string_arg_plan`)
-    bindings, preserved, converted_args, frame = _string_arg_plan(func, identity)
+    bindings, preserved, converted_args, frame =
+        _string_arg_plan(func, identity; handle_scope = func.module_path)
 
     # Result<T, E> / Option<T> returns are reported by the manifest
     if func.return_kind == :result
@@ -62,7 +63,8 @@ function _generate_string_function_wrapper(func::RustFunctionSignature, arg_syms
     # The Julia wrapper keeps the Rust name; the exported symbol it calls is
     # `rustcall_<name>` since #279 (the helper types stay name-derived).
     symbol_str = func.symbol
-    bindings, preserved, call_args, frame = _string_arg_plan(func, identity)
+    bindings, preserved, call_args, frame =
+        _string_arg_plan(func, identity; handle_scope = func.module_path)
     # The helper types are named after the Rust item's FFI name, so that is the
     # owner and the contract derives `free_symbol` from it (#276, #300).
     c = _ffi_function_return(func)
@@ -745,7 +747,9 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     # (see `_string_arg_plan`); the other arguments are converted to the Julia
     # type of the Rust parameter. The pointer local must not shadow an
     # argument of the same name.
-    bindings, preserved, converted_args, frame = _string_arg_plan(method, identity)
+    bindings, preserved, converted_args, frame =
+        _string_arg_plan(method, identity; handle_scope = info.module_path,
+                         receiver = _python_owned_handle(info) ? nothing : _emitter_local("self"))
     ptr_sym = _generated_local("func_ptr", method.arg_names)
 
     # Crate method wrappers return strings through per-method buffers:
