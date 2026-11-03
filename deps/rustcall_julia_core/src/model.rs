@@ -156,7 +156,8 @@ impl MethodModel {
     }
 
     /// An inherent static constructor returning `Result<Self, E>` with an
-    /// FFI-representable error. Its successful value is boxed by codegen.
+    /// FFI-representable error: a [`MethodModel::boxed_self_result`] Julia
+    /// binds as the struct's constructor.
     pub fn fallible_constructor(
         &self,
         struct_name: &syn::Ident,
@@ -164,6 +165,21 @@ impl MethodModel {
         if !self.receiver().is_static() || !self.trait_path().is_empty() {
             return None;
         }
+        self.boxed_self_result(struct_name)
+    }
+
+    /// Any method returning `Result<Self, E>` (or the struct as the header
+    /// spells it) with an FFI-representable error, whatever its receiver:
+    /// codegen boxes the successful value, so Julia receives an owning
+    /// pointer of the image that ran the call (#559, #564). A receiver method
+    /// (`fn duplicate(&self) -> Result<Self, String>`) is not a constructor —
+    /// see [`MethodModel::fallible_constructor`] — but its `Ok` payload
+    /// crosses the boundary exactly like one; returning `Self` by value inside
+    /// the aggregate would hand Julia a Rust value it cannot own.
+    pub fn boxed_self_result(
+        &self,
+        struct_name: &syn::Ident,
+    ) -> Option<crate::types::ResultTypeInfo> {
         let syn::ReturnType::Type(_, ty) = &self.func.sig.output else {
             return None;
         };
@@ -396,6 +412,8 @@ pub fn wrapped_methods(
 #[derive(Debug, Default)]
 pub struct ModelTree {
     entries: Vec<LocatedModel>,
+    /// Every `use` of the block, for resolving borrowed arguments (#565).
+    imports: Vec<crate::paths::ScannedImport>,
 }
 
 #[derive(Debug)]
@@ -488,7 +506,26 @@ impl ModelTree {
                 );
             }
         }
+        tree.imports = imports;
         tree
+    }
+
+    /// The FFI name of the concrete struct of this block that the pointee
+    /// `ty` of a borrowed argument, written in `module_path`, names with
+    /// certainty ([`crate::paths::locate_borrowed_type`], #565). A generic
+    /// struct is never a handle: Julia binds its instantiations instead.
+    pub fn borrowed_handle(&self, ty: &Type, module_path: &[String]) -> Option<String> {
+        // Edition 2015, like every `rust"""` block (see `collect`).
+        let index = crate::paths::locate_borrowed_type(
+            &self.entries,
+            ty,
+            module_path,
+            &self.imports,
+            true,
+        )?;
+        let entry = &self.entries[index];
+        (!entry.model.is_generic())
+            .then(|| crate::codegen::symbol_stem(&entry.module_path, &entry.name))
     }
 
     fn walk(

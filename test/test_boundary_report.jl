@@ -66,7 +66,8 @@ _br_positions(report) = Set((u.item, u.position) for u in report.unsupported)
         # A `Vec` payload is refused by the Rust codegen itself (#159), so
         # the manifest marks it and the report names its entry point (#503).
         ("fallible", "entry point"),
-        ("Handle::combine", "argument `other`"),
+        # `Handle::combine`'s `other: &Handle` borrows a `#[julia]` struct and
+        # travels as its handle's pointer (#565): supported, so not listed.
         ("Handle::bytes", "return"),
         ("bad_callback", "argument `f`"),
         # Neither `Fields::xs` (`pub Vec<f64>`) nor `Handle::inner` (a private
@@ -93,7 +94,7 @@ _br_positions(report) = Set((u.item, u.position) for u in report.unsupported)
     # The printed summary names each position and its Rust type.
     text = sprint(io -> RustCall.inline_boundary_report(source; io))
     @test occursin("takes_vec", text) && occursin("Vec<f64>", text)
-    @test occursin("6 unsupported", text)
+    @test occursin("5 unsupported", text)
 end
 
 @testset "a clean surface reports nothing (#441)" begin

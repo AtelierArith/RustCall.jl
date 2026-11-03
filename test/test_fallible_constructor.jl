@@ -309,7 +309,7 @@ end
                     e
                 end
                 @test err isa ErrorException
-                @test occursin("incompatible boxed constructor ABI", sprint(showerror, err))
+                @test occursin("incompatible boxed Result<Self, E> ABI", sprint(showerror, err))
                 @test Base.invokelatest(Base.invokelatest(getfield, module_, :calls)) == UInt32(0)
             end
         finally

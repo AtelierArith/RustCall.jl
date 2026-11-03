@@ -287,7 +287,19 @@ _pn_text_of(x) = replace(string(Base.remove_linenums!(deepcopy(x))), r"##(\w+)#\
 # such name spells (PR #527 review), so none is excluded.
 _pn_rust_parameter(n::Symbol) =
     occursin(r"^[A-Za-z_][A-Za-z0-9_]*$", String(n)) &&
-    !(String(n) in ("self", "Self", "super", "crate", "_"))
+    !(String(n) in ("self", "Self", "super", "crate", "_")) &&
+    !(String(n) in _PN_RUST_KEYWORDS)
+
+# Rust's strict and reserved keywords: never a parameter's name (`typeof`, which
+# an emitter's `Base.typeof` puts among the probes, is reserved). A crate scan
+# with `--skip-unparsable` would otherwise drop the whole corpus silently.
+const _PN_RUST_KEYWORDS = (
+    "as", "break", "const", "continue", "else", "enum", "extern", "false", "fn",
+    "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub",
+    "ref", "return", "static", "struct", "trait", "true", "type", "unsafe", "use",
+    "where", "while", "async", "await", "dyn", "abstract", "become", "box", "do",
+    "final", "macro", "override", "priv", "typeof", "unsized", "virtual", "yield",
+    "try", "gen")
 
 # Every symbol of an expression.
 _pn_symbols(x, out = Set{Symbol}()) =

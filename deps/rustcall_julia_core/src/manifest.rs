@@ -442,9 +442,22 @@ pub struct Arg {
     /// How the wrapper receives the argument: `""` as written (`rust_type`),
     /// `"string"` (`String`: `(ptr, len)` bytes copied into an owned String),
     /// `"str"` (`&str`, any lifetime: `(ptr, len)` bytes borrowed),
-    /// `"callback"` (a C-ABI function pointer, passed as written; #296).
+    /// `"callback"` (a C-ABI function pointer, passed as written; #296),
+    /// `"handle"` / `"handle_mut"` (`&T` / `&mut T` of a `#[julia]` struct
+    /// of this scan, [`Arg::handle`]; #565).
     #[serde(default)]
     pub abi: String,
+    /// For `abi == "handle"` / `"handle_mut"`: the [`Struct::ffi_name`] of
+    /// the `#[julia]` struct the argument borrows (`&Self`, `&Value`,
+    /// `&mut crate::a::Value`). The wrapper takes the reference as written —
+    /// a thin pointer in the C ABI — so the consumer passes the pointer its
+    /// own handle object owns, never a value. Recorded only when the path
+    /// names that struct with certainty (`paths::locate_borrowed_type`);
+    /// anything else keeps `abi = ""`. Empty otherwise. Additive within
+    /// schema 0.9: a consumer that does not know the column passes the
+    /// object as before and fails at the call, as it did.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub handle: String,
     /// For `abi == "callback"`: the parameter spellings of the function
     /// pointer (`extern "C" fn(i64, f64) -> i64` → `["i64", "f64"]`), so the
     /// consumer builds the callback from the manifest rather than from Rust

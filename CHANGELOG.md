@@ -14,6 +14,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   error and own successful values in the originating library generation
   ([#559](https://github.com/AtelierArith/RustCall.jl/issues/559)).
 
+### Fixed
+- A `#[julia]` method with a receiver returning `Result<Self, E>`
+  (`fn duplicate(&self) -> Result<Self, String>`) no longer fails binding
+  generation with "`Self`: not in the FFI contract": its `Ok` value is boxed
+  like a fallible constructor's and returned as an independently owned handle
+  of the generation that ran the call, guarded by the same producer ABI marker
+  ([#564](https://github.com/AtelierArith/RustCall.jl/issues/564)).
+- An argument borrowing a `#[julia]` struct (`&Value`, `&Self`, `&mut Value`,
+  module-qualified or imported) is passed as the pointer its Julia handle owns
+  instead of being refused as a by-value struct with no layout assertion. The
+  handle's type, liveness and freedom are checked, it stays rooted for the
+  call, and a `&mut` borrow aliasing another borrow is refused. The manifest
+  gains `Arg.abi = "handle"` / `"handle_mut"` with `Arg.handle` (additive
+  within schema 0.9)
+  ([#565](https://github.com/AtelierArith/RustCall.jl/issues/565)).
+
 ### Rust crates
 - `rustcall_julia_core`, `rustcall_julia_macros_impl`, and
   `rustcall_julia_macros` move from `0.4.3` to `0.5.0`: fallible constructors

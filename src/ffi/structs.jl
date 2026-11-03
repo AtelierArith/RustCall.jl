@@ -30,6 +30,22 @@ PyO3Shape(kind::Symbol) = PyO3Shape(kind, "", 0, nothing)
 PyO3Shape(kind::Symbol, name::AbstractString) = PyO3Shape(kind, String(name), 0, nothing)
 
 """
+    RustHandleArg(ffi_name, module_path, name)
+
+The `#[julia]` struct an argument borrows (`&Value`, `&Self`, `&mut a::Value`;
+manifest `Arg.abi` `"handle"` / `"handle_mut"` with `Arg.handle`, #565): its
+`Struct.ffi_name`, and the module path and Rust name Julia binds its handle
+type under. The wrapper takes the reference as written, which is one thin
+pointer in the C ABI, so the Julia wrapper passes the pointer its handle
+object owns (`_string_arg_plan`), never the object by value.
+"""
+struct RustHandleArg
+    ffi_name::String
+    module_path::Vector{String}
+    name::String
+end
+
+"""
     RustMethod
 
 A method of a `#[julia]` struct as recorded in the manifest.
@@ -55,6 +71,8 @@ A method of a `#[julia]` struct as recorded in the manifest.
   states none; see `_method_string_owner`
 - `arg_names`: the Julia parameter names of the arguments after `self` —
   `julia_parameter_names` of the Rust names, applied by the constructor (#516)
+- `arg_handles`: per argument, the `#[julia]` struct it borrows
+  (`RustHandleArg`, #565), or `nothing`
 """
 struct RustMethod
     name::String
@@ -130,6 +148,9 @@ struct RustMethod
     # `nothing` where the extractor described none (a `#[julia]` method).
     py_arg_shapes::Vector{Union{Nothing, PyO3Shape}}
     py_return_shape::Union{Nothing, PyO3Shape}
+    # The `#[julia]` struct each argument borrows (#565), aligned with
+    # `arg_names`; `nothing` for an argument that borrows none.
+    arg_handles::Vector{Union{Nothing, RustHandleArg}}
 end
 
 function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::Vector{String},
@@ -158,9 +179,13 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
                     trait_path::String = "", julia_name::String = "",
                     py_arg_shapes::Vector{Union{Nothing, PyO3Shape}} =
                         Union{Nothing, PyO3Shape}[nothing for _ in arg_names],
-                    py_return_shape::Union{Nothing, PyO3Shape} = nothing)
+                    py_return_shape::Union{Nothing, PyO3Shape} = nothing,
+                    arg_handles::Vector{Union{Nothing, RustHandleArg}} =
+                        Union{Nothing, RustHandleArg}[nothing for _ in arg_names])
     length(python_defaults) == length(arg_names) ||
         throw(ArgumentError("python_defaults must have one entry per argument"))
+    length(arg_handles) == length(arg_names) ||
+        throw(ArgumentError("arg_handles must have one entry per argument"))
     length(python_kinds) == length(arg_names) ||
         throw(ArgumentError("python_kinds must have one entry per argument"))
     length(callback_args) == length(arg_names) && length(callback_returns) == length(arg_names) ||
@@ -172,7 +197,7 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
                return_kind, ok_type, err_type, inner_type, ok_abi, err_abi, inner_abi,
                string_owner, attribute, python_defaults, python_kinds,
                callback_args, callback_returns, is_classmethod, generic_wrapper_name,
-               trait_path, julia_name, py_arg_shapes, py_return_shape)
+               trait_path, julia_name, py_arg_shapes, py_return_shape, arg_handles)
 end
 
 # `julia_method_name(m)`, the name a method is bound under, is in `julia_names.jl` (#514).
@@ -495,6 +520,52 @@ function _static_method_collisions(functions, structs)
 end
 
 """
+    _inline_boxed_result_body(info, m, wrapper_name, esc_struct, bindings, preserved,
+                              call_args, frame, lib, leading_args) -> Expr
+
+The body of an inline wrapper whose `Result<Self, E>` stores a boxed `Ok`
+(`Method.ok_abi == "boxed"`): a fallible constructor (#559) or any other
+method returning the struct in a `Result` (#564). One snapshot supplies the
+wrapper, its channel and the destructor and liveness flag the new object
+carries, so the object is bound to the image that allocated it; the image
+must export the boxed-`Ok` marker, since an older macro returned `Self` by
+value. `lib` is the library expression, `leading_args` the receiver's
+pointer, if any.
+"""
+function _inline_boxed_result_body(info::RustStructInfo, m::RustMethod,
+                                   wrapper_name::AbstractString, esc_struct, bindings,
+                                   preserved, call_args, frame, lib, leading_args)
+    ctx = _ffi_context(m, info.name)
+    err_t, err_slot = ffi_payload_symbols(m.err_type, m.err_abi, ctx; position = "Err payload")
+    aggregate = :(RustCall.CResultType{Ptr{Cvoid}, $err_slot})
+    owner = _method_string_owner(m, info.ffi_name)
+    payload_free = _payload_free_symbol(owner, (m.err_abi,))
+    struct_stem = info.ffi_name
+    payload_sym = gensym("payload_release")
+    target_sym = gensym("target")
+    result_sym = gensym("result")
+    return quote
+        $(bindings...)
+        $target_sym = RustCall.resolve_call_target($lib, $wrapper_name;
+            free_symbol = RustCall.ffi_struct_free_symbol($struct_stem))
+        RustCall.Libdl.dlsym($target_sym.handle, $wrapper_name * "_boxed_result_v1")
+        $payload_sym = isempty($payload_free) ? C_NULL : RustCall.Libdl.dlsym($target_sym.handle, $payload_free)
+        $result_sym = $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) RustCall.call_rust_function(
+            $target_sym.func_ptr, $aggregate, $(leading_args...), $(call_args...)))))
+        RustCall.guard_boxed_result_panic_ptr($result_sym, $target_sym.channel, $wrapper_name,
+            $payload_sym, $target_sym.free_ptr, $target_sym.alive, $target_sym.free_channel)
+        if $result_sym.is_ok == 1
+            value = $esc_struct($result_sym.ok_value, $target_sym.lib_name,
+                $target_sym.free_ptr, $target_sym.alive, $target_sym.free_channel)
+            RustCall.RustResult{$esc_struct, $err_t}(true, value)
+        else
+            RustCall.RustResult{$esc_struct, $err_t}(false,
+                RustCall._result_payload($err_t, $result_sym.err_value, $payload_sym))
+        end
+    end
+end
+
+"""
     emit_julia_definitions(info::RustStructInfo; colliding = Set{String}())
 
 Generate Julia code to define a corresponding mutable struct and its methods.
@@ -778,37 +849,16 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
         # with GC.@preserve (see `_string_arg_plan`); the temporaries are
         # hygienic here, the user's arguments are escaped. `self` is preserved
         # as well: a borrowed `&str` result points into the Rust object.
-        bindings, preserved, expanded_call_args, frame = _string_arg_plan(m, esc)
+        bindings, preserved, expanded_call_args, frame =
+            _string_arg_plan(m, esc; receiver = :self)
 
         if m.is_static
             if is_ctor && m.return_kind === :result && m.ok_abi == "boxed"
-                ctx = _ffi_context(m, info.name)
-                err_t, err_slot = ffi_payload_symbols(m.err_type, m.err_abi, ctx; position = "Err payload")
-                aggregate = :(RustCall.CResultType{Ptr{Cvoid}, $err_slot})
-                owner = _method_string_owner(m, info.ffi_name)
-                payload_free = _payload_free_symbol(owner, (m.err_abi,))
-                payload_sym = gensym("payload_release")
-                target_sym = gensym("target")
-                result_sym = gensym("result")
                 push!(exprs, quote
                     function (::Type{$esc_struct})($(esc_args...))
-                        $(bindings...)
-                        lib = RustCall.module_symbol_library(@__MODULE__, $wrapper_name)
-                        $target_sym = RustCall.resolve_call_target(lib, $wrapper_name;
-                            free_symbol = RustCall.ffi_struct_free_symbol($struct_stem))
-                        RustCall.Libdl.dlsym($target_sym.handle, $wrapper_name * "_boxed_result_v1")
-                        $payload_sym = isempty($payload_free) ? C_NULL : RustCall.Libdl.dlsym($target_sym.handle, $payload_free)
-                        $result_sym = $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) RustCall.call_rust_function($target_sym.func_ptr, $aggregate, $(expanded_call_args...)))))
-                        RustCall.guard_boxed_result_panic_ptr($result_sym, $target_sym.channel, $wrapper_name,
-                            $payload_sym, $target_sym.free_ptr, $target_sym.alive, $target_sym.free_channel)
-                        if $result_sym.is_ok == 1
-                            value = $esc_struct($result_sym.ok_value, $target_sym.lib_name,
-                                $target_sym.free_ptr, $target_sym.alive, $target_sym.free_channel)
-                            RustCall.RustResult{$esc_struct, $err_t}(true, value)
-                        else
-                            RustCall.RustResult{$esc_struct, $err_t}(false,
-                                RustCall._result_payload($err_t, $result_sym.err_value, $payload_sym))
-                        end
+                        $(_inline_boxed_result_body(info, m, wrapper_name, esc_struct, bindings,
+                              preserved, expanded_call_args, frame,
+                              :(RustCall.module_symbol_library(@__MODULE__, $wrapper_name)), ()))
                     end
                 end)
             elseif is_ctor
@@ -1092,6 +1142,28 @@ function _inline_method_payload_wrapper(info::RustStructInfo, m::RustMethod, fna
                                         preserved, call_args; self = nothing,
                                         static_type = nothing,
                                         frame::Union{Nothing, Symbol} = nothing)
+    if m.return_kind === :result && m.ok_abi == "boxed"
+        # `Result<Self, E>` (#564): the `Ok` value is an owned handle.
+        if self === nothing
+            static_type === nothing && throw(ArgumentError("a static method needs `static_type`"))
+            inner = _inline_boxed_result_body(info, m, wrapper_name, static_type, bindings,
+                preserved, call_args, frame,
+                :(RustCall.module_symbol_library(@__MODULE__, $wrapper_name)), ())
+            return quote
+                function $fname(::Type{$static_type}, $(esc_args...))
+                    $inner
+                end
+            end
+        end
+        inner = _inline_boxed_result_body(info, m, wrapper_name, self, bindings,
+            (:self, preserved...), call_args, frame, :(self.lib_name), (:(self.ptr),))
+        return quote
+            function $fname(self::$self, $(esc_args...))
+                RustCall.check_not_freed(self, $(julia_struct_name(info)))
+                $inner
+            end
+        end
+    end
     ctx = _ffi_context(m, info.name)
     # The manifest says which buffers this wrapper uses: the struct's when it
     # was emitted next to the struct, its own when it was emitted at a

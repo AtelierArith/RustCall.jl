@@ -158,10 +158,17 @@ fn expand_items(
                         // The entry carries the codegen's refusal, if any, as
                         // its `skip_reason` (#503): the same decision
                         // `transform_function` emits the `compile_error!` for.
-                        push_fn(
-                            manifest,
-                            function_entry(&f, attribute, Mode::Inline, module_path, enclosing_cfg),
-                        );
+                        let mut entry =
+                            function_entry(&f, attribute, Mode::Inline, module_path, enclosing_cfg);
+                        // A borrowed `#[julia]` struct travels as its handle's
+                        // pointer (#565); a generic function is specialized
+                        // later and keeps its arguments as written.
+                        if !has_type_params(&f.sig.generics) {
+                            crate::extract::mark_handle_args(&mut entry.args, &f.sig, |ty| {
+                                tree.borrowed_handle(ty, module_path)
+                            });
+                        }
+                        push_fn(manifest, entry);
                         let refusal =
                             crate::refusal::function_refusal(&f, module_path, Mode::Inline);
                         if refusal.is_none() && !has_type_params(&f.sig.generics) {
@@ -227,7 +234,8 @@ fn expand_items(
                 } else {
                     let (tokens, meta) = inline_struct_wrappers(model, module_path);
                     out.extend(items_of(tokens)?);
-                    let entry = concrete_struct_entry(model, &meta, module_path, enclosing_cfg);
+                    let mut entry = concrete_struct_entry(model, &meta, module_path, enclosing_cfg);
+                    mark_method_handles(&mut entry, model, module_path, tree);
                     manifest.structs.push(entry);
                 }
             }
@@ -286,6 +294,42 @@ fn expand_items(
     }
 
     Ok(out)
+}
+
+/// Classify the borrowed `#[julia]` struct arguments of a concrete struct's
+/// methods (#565): `&Self` is the struct itself, any other pointee is
+/// resolved where the method's impl block sits.
+fn mark_method_handles(
+    entry: &mut crate::manifest::Struct,
+    model: &StructModel,
+    module_path: &[String],
+    tree: &ModelTree,
+) {
+    for method in entry.methods.iter_mut() {
+        let Some(m) = model
+            .methods
+            .iter()
+            .find(|m| m.name() == method.name && m.trait_path() == method.trait_path)
+        else {
+            continue;
+        };
+        let site = m
+            .site
+            .as_ref()
+            .map(|site| site.module_path.clone())
+            .unwrap_or_else(|| module_path.to_vec());
+        crate::extract::mark_handle_args(&mut method.args, &m.func.sig, |ty| {
+            if crate::extract::is_self_type(ty) {
+                Some(entry_ffi_name(module_path, model))
+            } else {
+                tree.borrowed_handle(ty, &site)
+            }
+        });
+    }
+}
+
+fn entry_ffi_name(module_path: &[String], model: &StructModel) -> String {
+    crate::codegen::symbol_stem(module_path, &model.name())
 }
 
 /// Rust name-resolution namespace of an item: `struct Foo` and `fn Foo` may

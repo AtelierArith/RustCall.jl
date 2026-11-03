@@ -372,6 +372,71 @@ covers a type alias (`self: Ref<'_, Self>`), a smart pointer (`Box<Self>`,
 from the header (`self: &crate::Buf` in `impl Buf`). To expose such a method,
 add a method with an accepted receiver that calls it.
 
+### Borrowed struct arguments
+
+An argument that borrows a `#[julia]` struct of the same crate or block —
+`&Self`, `&Value`, `&mut Value`, `&super::Value`, `&crate::a::Other`, a name
+a `use` brings into scope — is passed as the pointer the Julia handle owns
+(#565):
+
+```rust
+#[julia]
+impl Value {
+    #[julia]
+    pub fn sum(&self, other: &Value) -> i32 { self.n + other.n }
+    #[julia]
+    pub fn absorb(&mut self, other: &Value) { self.n += other.n; }
+}
+#[julia]
+pub fn total(a: &Value, b: &Value) -> i32 { a.n + b.n }
+```
+
+```julia
+a, b = bindings.Value(Int32(2)), bindings.Value(Int32(3))
+bindings.sum(a, b)    # 5
+bindings.sum(a, a)    # 4: shared borrows may alias
+bindings.absorb(a, a) # ArgumentError: a `&mut` borrow may not alias another
+```
+
+The wrapper takes the reference as written, which crosses the C ABI as one
+thin pointer, so nothing is copied and no `register_ffi_struct` layout is
+involved. Before the call the Julia wrapper checks every borrowed argument:
+
+- It must be the struct's own Julia handle type. Another struct, another
+  module's type of the same name, or the same crate bound twice (an
+  `@rust_crate` module and a written one) is refused with an `ArgumentError`.
+- It must not be freed, and its library image must not be closed, exactly as
+  for `self`.
+- Every handle the call borrows, `self` included, must come from one library
+  image. After a hot reload, an object of the retired generation and one of
+  the replacement are refused together, because the two may disagree on the
+  struct's layout.
+- A `&mut` borrow may not alias the receiver or another argument. Rust forbids
+  that, so the call is refused before Rust sees the two references.
+
+Julia roots a borrowed handle for the call only, so only a borrow that ends
+with the call is converted: its lifetime must be elided, `'_`, or one the
+function declares itself without bounds and that neither its `where` clause nor
+its return type names. A borrow Rust may keep — `&'static Value`, a lifetime of
+the impl block, `'a: 'static` — is left as written and is not passed from a
+handle.
+
+A raw `Ptr{Cvoid}` (`b.ptr`) is still accepted and passed through unchecked,
+as it was before handles were recognised; the caller then vouches for it.
+
+Every borrowed handle is kept rooted for the whole call, so the finalizer of a
+temporary (`total(Value(1), Value(2))`) cannot free it mid-call. As for a
+receiver alone, objects of one retired generation are still passed to the
+image that runs the call, so a reload that changes a struct's layout needs
+fresh objects.
+
+Only a path that names the struct with certainty is classified. The pointee is
+resolved the way an impl header is: by its qualifier, by the module's own
+items, or by a `use` that binds the name. A local type of the same name shadows
+the `#[julia]` struct, as it does for rustc. A generic pointee
+(`&Holder<i32>`), a glob import or a type alias is left as written, and Julia
+cannot pass it.
+
 ### Returned references
 
 A method or function may return a reference with an elided lifetime
@@ -555,20 +620,26 @@ exactly as anywhere else: the wrapper returns the `panicked()` sentinel (the
 `Err` / `None` discriminant with **no** payload initialized), Julia reads the
 panic channel *before* it decodes anything, and raises `RustCall.RustPanicError`.
 
-An inherent static constructor on a non-generic struct returning `Result<Self, E>`
-with a supported error payload is exposed as `RustResult{Wrapper,E}`. `Ok` owns a Julia wrapper
-with the allocating library generation's destructor; `Err` carries the error
-and does not allocate a wrapper. The panic channel is checked before decoding.
-Non-static and trait methods returning `Result<Self,E>` are not constructors.
-The producing crate must use `rustcall_julia_macros` 0.5.0 or later: before
-calling the constructor, the binding checks its producer's boxed-result ABI
-marker and refuses older producer libraries instead of interpreting a different
-ABI as an owning pointer. This requires a RustCall build containing #559;
-RustCall 0.9.0 does not support this constructor ABI. After upgrading RustCall,
+A method of a non-generic struct returning `Result<Self, E>` (or the struct
+as the impl header spells it) with a supported error payload is exposed as
+`RustResult{Wrapper,E}`. The wrapper boxes the `Ok` value, so `Ok` owns a new
+Julia wrapper with the destructor and liveness flag of the library generation
+that ran the call; `Err` carries the error and allocates no wrapper. The panic
+channel is checked before anything is decoded. An inherent **static** method is
+bound as the struct's constructor (`Value(n)`, #559); a method with a receiver
+(`fn duplicate(&self) -> Result<Self, String>`, `fn split(&mut self) ->
+Result<Value, i32>`) or a trait method keeps its own name and returns an
+independent object, leaving the receiver valid (#564).
+
+The producing crate must use `rustcall_julia_macros` 0.5.0 or later for a
+constructor, and 0.5.1 or later for any other method. Before the call, the
+binding checks the producer's boxed-result ABI marker
+(`<symbol>_boxed_result_v1`) and refuses an older producer library instead of
+interpreting its by-value `Self` as an owning pointer. After upgrading RustCall,
 rebuild its extractor with `Pkg.build("RustCall")` and regenerate any written
-crate bindings before using a producer built with the 0.5 macro crate. RustCall
-0.9.0 with its default strict FFI policy rejects the unsupported `Self` payload
-before the call; do not disable strict FFI checking to bypass this incompatibility.
+crate bindings. RustCall 0.9.0 with its default strict FFI policy rejects the
+unsupported `Self` payload before the call; do not disable strict FFI checking
+to bypass this incompatibility.
 
 ### What is not lowered
 
