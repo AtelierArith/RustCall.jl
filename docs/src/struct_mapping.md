@@ -632,7 +632,7 @@ Result<Value, i32>`) or a trait method keeps its own name and returns an
 independent object, leaving the receiver valid (#564).
 
 The producing crate must use `rustcall_julia_macros` 0.5.0 or later for a
-constructor, and 0.5.1 or later for any other method. Before the call, the
+constructor, and 0.6.0 or later for any other method. Before the call, the
 binding checks the producer's boxed-result ABI marker
 (`<symbol>_boxed_result_v1`) and refuses an older producer library instead of
 interpreting its by-value `Self` as an owning pointer. After upgrading RustCall,

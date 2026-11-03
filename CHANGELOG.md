@@ -27,13 +27,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Rust crates
 - `rustcall_julia_core`, `rustcall_julia_macros_impl` and
-  `rustcall_julia_macros` are `0.5.1`. The code `rustcall_julia_macros`
-  generates for a method with a receiver returning `Result<Self, E>` now boxes
-  the `Ok` value and exports the `<symbol>_boxed_result_v1` marker (#564);
-  `rustcall_julia_core` also gains the borrowed-handle classification of #565
-  and `Arg::handle`. A crate built with `0.5.0` keeps working for everything
-  else; RustCall refuses such a method of a `0.5.0` build before calling it,
-  with a message to rebuild against `0.5.1`.
+  `rustcall_julia_macros` move from `0.5.0` to `0.6.0`, a minor bump under
+  the crates' own semver: `rustcall_julia_core::manifest::Arg` gains the public
+  `handle` field (#565), and `#[julia]` now lowers a method with a receiver
+  returning `Result<Self, E>` differently — the `Ok` value is boxed and the
+  `<symbol>_boxed_result_v1` marker exported (#564). Each crate still pins the
+  one below it exactly (`version = "=0.6.0"`). RustCall refuses such a method
+  of an older build before calling it, with a message to rebuild against
+  `0.6.0`.
 
 ## [0.9.1] - 2026-11-01
 
