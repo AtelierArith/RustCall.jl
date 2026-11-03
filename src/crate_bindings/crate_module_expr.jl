@@ -337,9 +337,9 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
             # Never read a result aggregate until the producer confirms the
             # same boxed-Ok ABI; older macro releases returned Self by value
             # (from a constructor before 0.5.0, from any other method before
-            # 0.5.1, #564).
+            # 0.6.0, #564).
             _symbol(handle, symbol * "_boxed_result_v1") == C_NULL &&
-                error("incompatible boxed Result<Self, E> ABI for $symbol; rebuild the crate with rustcall_julia_macros >= 0.5.1")
+                error("incompatible boxed Result<Self, E> ABI for $symbol; rebuild the crate with rustcall_julia_macros >= 0.6.0")
             return RustCall.publish_crate_target!(cache, epoch,
                 (_required_symbol(handle, symbol),
                  _symbol(handle, RustCall.ffi_panic_symbol(symbol)),

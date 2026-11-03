@@ -235,7 +235,7 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     push!(lines, "    gen = _LIB_GEN[]")
     push!(lines, "    handle = _live_handle(gen)")
     push!(lines, "    _symbol(handle, symbol * \"_boxed_result_v1\") == rustcall′Base.C_NULL &&")
-    push!(lines, "        rustcall′Base.error(\"incompatible boxed Result<Self, E> ABI for \" * symbol * \"; rebuild the crate with rustcall_julia_macros >= 0.5.1\")")
+    push!(lines, "        rustcall′Base.error(\"incompatible boxed Result<Self, E> ABI for \" * symbol * \"; rebuild the crate with rustcall_julia_macros >= 0.6.0\")")
     push!(lines, "    return rustcall′RustCall.publish_crate_target!(cache, epoch,")
     push!(lines, "        (_required_symbol(handle, symbol), _symbol(handle, rustcall′RustCall.ffi_panic_symbol(symbol)),")
     push!(lines, "         _required_symbol(handle, object_free), gen.alive,")

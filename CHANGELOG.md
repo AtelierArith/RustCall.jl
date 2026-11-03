@@ -7,12 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- Scoped numeric buffers and explicit concrete generic crate facade generation
-  for Rust-backed Julia arrays and tensors ([#557](https://github.com/AtelierArith/RustCall.jl/issues/557), [#558](https://github.com/AtelierArith/RustCall.jl/issues/558)).
-- Fallible `#[julia]` constructors returning `Result<Self, E>` preserve the
-  error and own successful values in the originating library generation
-  ([#559](https://github.com/AtelierArith/RustCall.jl/issues/559)).
+## [0.9.2] - 2026-11-03
 
 ### Fixed
 - A `#[julia]` method with a receiver returning `Result<Self, E>`
@@ -29,6 +24,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gains `Arg.abi = "handle"` / `"handle_mut"` with `Arg.handle` (additive
   within schema 0.9)
   ([#565](https://github.com/AtelierArith/RustCall.jl/issues/565)).
+
+### Rust crates
+- `rustcall_julia_core`, `rustcall_julia_macros_impl` and
+  `rustcall_julia_macros` move from `0.5.0` to `0.6.0`, a minor bump under
+  the crates' own semver: `rustcall_julia_core::manifest::Arg` gains the public
+  `handle` field (#565), and `#[julia]` now lowers a method with a receiver
+  returning `Result<Self, E>` differently — the `Ok` value is boxed and the
+  `<symbol>_boxed_result_v1` marker exported (#564). Each crate still pins the
+  one below it exactly (`version = "=0.6.0"`). RustCall refuses such a method
+  of an older build before calling it, with a message to rebuild against
+  `0.6.0`.
+
+## [0.9.1] - 2026-11-01
+
+### Added
+- Scoped numeric buffers and explicit concrete generic crate facade generation
+  for Rust-backed Julia arrays and tensors ([#557](https://github.com/AtelierArith/RustCall.jl/issues/557), [#558](https://github.com/AtelierArith/RustCall.jl/issues/558)).
+- Fallible `#[julia]` constructors returning `Result<Self, E>` preserve the
+  error and own successful values in the originating library generation
+  ([#559](https://github.com/AtelierArith/RustCall.jl/issues/559)).
 
 ### Rust crates
 - `rustcall_julia_core`, `rustcall_julia_macros_impl`, and
@@ -3223,7 +3238,9 @@ rebuilt and a file written by `write_bindings_to_file` must be regenerated.
 - Integration tests for Rust helpers library
 - Documentation examples tests
 
-[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/atelierarith/RustCall.jl/compare/v0.9.1...v0.9.2
+[0.9.1]: https://github.com/atelierarith/RustCall.jl/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/atelierarith/RustCall.jl/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/atelierarith/RustCall.jl/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/atelierarith/RustCall.jl/compare/v0.7.2...v0.8.0
