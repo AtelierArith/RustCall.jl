@@ -414,6 +414,13 @@ involved. Before the call the Julia wrapper checks every borrowed argument:
 - A `&mut` borrow may not alias the receiver or another argument. Rust forbids
   that, so the call is refused before Rust sees the two references.
 
+Julia roots a borrowed handle for the call only, so only a borrow that ends
+with the call is converted: its lifetime must be elided, `'_`, or one the
+function declares itself without bounds and that neither its `where` clause nor
+its return type names. A borrow Rust may keep — `&'static Value`, a lifetime of
+the impl block, `'a: 'static` — is left as written and is not passed from a
+handle.
+
 A raw `Ptr{Cvoid}` (`b.ptr`) is still accepted and passed through unchecked,
 as it was before handles were recognised; the caller then vouches for it.
 

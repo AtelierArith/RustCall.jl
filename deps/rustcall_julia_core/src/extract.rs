@@ -212,9 +212,62 @@ pub fn mark_handle_arg(arg: &mut Arg, mutable: bool, ffi_name: &str) {
     arg.handle = ffi_name.to_string();
 }
 
+/// Whether the borrow `ty` (a reference) provably ends with the call, so the
+/// Julia handle that lends it — rooted only for the call — outlives it
+/// (#565 review). Its lifetime must be elided, `'_`, or one the function
+/// declares itself without bounds and that neither its `where` clause nor its
+/// return type names. `&'static Value`, a lifetime of the impl block, or
+/// `'a: 'static` would let Rust keep the reference after Julia frees the
+/// object, so such an argument is left as written.
+pub fn borrow_is_call_scoped(ty: &syn::Type, sig: &syn::Signature) -> bool {
+    let syn::Type::Reference(r) = crate::types::unparen(ty) else {
+        return false;
+    };
+    let Some(lifetime) = &r.lifetime else {
+        return true;
+    };
+    let name = lifetime.ident.to_string();
+    if name == "_" {
+        return true;
+    }
+    if name == "static" {
+        return false;
+    }
+    let declared_unbounded = sig.generics.params.iter().any(|p| {
+        matches!(p, syn::GenericParam::Lifetime(lp)
+            if lp.lifetime.ident == lifetime.ident && lp.bounds.is_empty())
+    });
+    if !declared_unbounded {
+        return false;
+    }
+    let where_clause = &sig.generics.where_clause;
+    let output = &sig.output;
+    !names_lifetime(quote::quote!(#where_clause), &name)
+        && !names_lifetime(quote::quote!(#output), &name)
+}
+
+/// Whether `tokens` spell the lifetime `'name` anywhere.
+fn names_lifetime(tokens: proc_macro2::TokenStream, name: &str) -> bool {
+    let mut previous_tick = false;
+    for tree in tokens {
+        match tree {
+            proc_macro2::TokenTree::Punct(p) => {
+                previous_tick = p.as_char() == '\'';
+                continue;
+            }
+            proc_macro2::TokenTree::Ident(i) if previous_tick && i == name => return true,
+            proc_macro2::TokenTree::Group(g) if names_lifetime(g.stream(), name) => return true,
+            _ => {}
+        }
+        previous_tick = false;
+    }
+    false
+}
+
 /// Classify every argument of `args` (the typed inputs of `sig`, in order)
-/// that borrows a `#[julia]` struct: `resolve` maps the pointee to the
-/// struct's FFI name, or `None` when it cannot say with certainty.
+/// that borrows a `#[julia]` struct for the call only
+/// ([`borrow_is_call_scoped`]): `resolve` maps the pointee to the struct's FFI
+/// name, or `None` when it cannot say with certainty.
 pub fn mark_handle_args(
     args: &mut [Arg],
     sig: &syn::Signature,
@@ -225,6 +278,9 @@ pub fn mark_handle_args(
         FnArg::Receiver(_) => None,
     });
     for (arg, ty) in args.iter_mut().zip(typed) {
+        if !borrow_is_call_scoped(ty, sig) {
+            continue;
+        }
         if let Some((mutable, pointee)) = borrowed_struct_arg(ty) {
             if let Some(ffi_name) = resolve(pointee) {
                 mark_handle_arg(arg, mutable, &ffi_name);

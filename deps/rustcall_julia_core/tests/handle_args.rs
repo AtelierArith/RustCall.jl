@@ -183,3 +183,43 @@ fn handle_columns_round_trip_through_toml() {
     let back: Manifest = toml::from_str(&text).unwrap();
     assert_eq!(back, m);
 }
+
+#[test]
+fn a_borrow_that_may_outlive_the_call_is_not_a_handle() {
+    // Julia roots a handle for the call only (#565 review): a reference Rust
+    // may keep past it is left as written.
+    let source = r#"
+        #[julia]
+        pub struct Value { n: i32 }
+        #[julia]
+        impl Value {
+            #[julia]
+            pub fn new(n: i32) -> Self { Self { n } }
+            #[julia]
+            pub fn keep(&self, v: &'static Value) -> i32 { v.n }
+            #[julia]
+            pub fn named<'a>(&self, v: &'a Value) -> i32 { v.n }
+            #[julia]
+            pub fn anon(&self, v: &'_ Value) -> i32 { v.n }
+            #[julia]
+            pub fn bounded<'a: 'static>(&self, v: &'a Value) -> i32 { v.n }
+            #[julia]
+            pub fn wherebound<'a>(&self, v: &'a Value) -> i32 where 'a: 'static { v.n }
+        }
+        #[julia]
+        pub fn keep_mut(v: &'static mut Value) -> i32 { v.n }
+    "#;
+    let m = rustcall_julia_core::extract::extract_crate(source).unwrap();
+    assert_handle(arg(&m, Some("Value"), "keep", "v"), "", "");
+    assert_handle(arg(&m, Some("Value"), "named", "v"), "handle", "Value");
+    assert_handle(arg(&m, Some("Value"), "anon", "v"), "handle", "Value");
+    assert_handle(arg(&m, Some("Value"), "bounded", "v"), "", "");
+    assert_handle(arg(&m, Some("Value"), "wherebound", "v"), "", "");
+    assert_handle(arg(&m, None, "keep_mut", "v"), "", "");
+    let inline = rustcall_julia_core::expand::expand(
+        &source.replace("#[julia]\n            pub fn", "pub fn"),
+    )
+    .unwrap();
+    assert_handle(arg(&inline.manifest, Some("Value"), "keep", "v"), "", "");
+    assert_handle(arg(&inline.manifest, None, "keep_mut", "v"), "", "");
+}
