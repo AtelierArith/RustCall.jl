@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Borrowed `#[julia]` handles are checked against the actual call snapshot,
+  not only against each other. Inline, crate and written free-function
+  wrappers reject handles from a retired image after hot reload, including
+  a single old handle or multiple handles of the same old generation.
+  Receiver and static methods perform the same check. Panic channels and owned-string
+  release functions stay bound to that snapshot; rejection leaves no callback
+  frame installed. Explicit raw pointers remain unchecked. Regenerate existing
+  written bindings to apply these checks.
+
 ## [0.9.2] - 2026-11-03
 
 ### Fixed

@@ -791,46 +791,68 @@ function _generate_single_wrapper(sig::RustFunctionSignature)
     end
 end
 
+# Insert the snapshot and its borrow checks after argument validation, but
+# before the argument plan pushes a callback frame. A failed image check must
+# neither enter Rust nor leave a callback frame behind.
+function _inline_handle_target_bindings!(bindings, sig, target, frame, snapshot)
+    checks = Expr[snapshot]
+    for (i, (abi, handle)) in enumerate(zip(sig.arg_abis, sig.arg_handles))
+        _is_handle_abi(abi) && handle !== nothing || continue
+        obj = Symbol(_EMITTER_LOCAL_PREFIX, "handle′", i)
+        push!(checks, @_emitted(:($obj isa Ptr{Cvoid} ||
+            getfield($obj, :alive) === $target.alive ||
+            throw(ArgumentError("borrowed handle and call target belong to different library images; recreate the object after hot reload")))))
+    end
+    at = length(bindings) + (frame === nothing ? 1 : 0)
+    for check in checks
+        insert!(bindings, at, check)
+        at += 1
+    end
+    return bindings
+end
+
 # String / &str arguments and returns (#242): arguments travel as (ptr, len)
 # byte pairs kept alive with GC.@preserve; a `String` return is an owned
 # `<fn>_RustCallOwnedString` released through `<fn>_free_rust_string`, a `&str`
 # return a borrowed `<fn>_RustCallBorrowedString`.
 function _generate_inline_string_wrapper(sig, func_name, symbol_str, arg_syms)
     bindings, preserved, call_args, frame = _string_arg_plan(sig, esc)
-    lib_sym = _generated_local("lib_name", sig.arg_names)
-    # The string helpers are named after the Rust item's FFI name, not the
-    # symbol; the contract turns that owner into `free_symbol` (#300).
     c = _ffi_function_return(sig)
     rust_name = sig.name
     channel_sym = _generated_local("panic_channel", sig.arg_names)
+    raw_sym = _generated_local("string_result", sig.arg_names)
+    string_cache = RustCall.CallTargetCache()
+    snapshot = if ffi_owned_string_return(c)
+        # The release function, panic channel and borrow identity all come
+        # from the very image executing the call, never a later name lookup.
+        :($channel_sym = RustCall.resolve_call_target(
+            RustCall.module_symbol_library(@__MODULE__, $symbol_str), $symbol_str;
+            free_symbol = $(c.free_symbol)))
+    else
+        :($channel_sym = RustCall.cached_call_target($string_cache, @__MODULE__, $symbol_str))
+    end
+    _inline_handle_target_bindings!(bindings, sig, channel_sym, frame, snapshot)
     call = if ffi_owned_string_return(c)
-        # The release stays indirect — the symbol is resolved inside the
-        # allocating library, which is the #249 half (#277 swaps the mechanism).
-        # `_call_rust_owned_string` reads the panic channel itself, before it
-        # decodes the buffer: on a panic the buffer is the empty sentinel and
-        # would otherwise decode to "" (#244).
-        free_name = c.free_symbol
-        :(RustCall._call_rust_owned_string($lib_sym, $symbol_str, $free_name, $(call_args...)))
+        quote
+            $raw_sym = RustCall.call_rust_function($channel_sym.func_ptr, RustCall.CRustString, $(call_args...))
+            RustCall.check_rust_panic_ptr($channel_sym.channel, $rust_name, $raw_sym, $channel_sym.free_ptr)
+            RustCall._take_owned_string($raw_sym, $channel_sym.free_ptr)
+        end
     elseif ffi_borrowed_string_return(c)
-        :(RustCall._call_rust_borrowed_string($lib_sym, $symbol_str, $(call_args...)))
+        quote
+            $raw_sym = RustCall.call_rust_function($channel_sym.func_ptr, RustCall.CRustStr, $(call_args...))
+            RustCall.check_rust_panic_ptr($channel_sym.channel, $rust_name)
+            RustCall._crust_str_to_julia($raw_sym)
+        end
     else
         ret = ffi_return_symbol_or_throw(sig.return_type, sig.return_abi, _ffi_context(sig))
         :(RustCall.guard_rust_panic_ptr(
               RustCall.call_rust_function($channel_sym.func_ptr, $ret, $(call_args...)),
               $channel_sym.channel, $rust_name))
     end
-    string_cache = RustCall.CallTargetCache()
     quote
         function $func_name($(arg_syms...))
             $(bindings...)
-            # The owning library is resolved once; the string helpers take
-            # their own single snapshot, free pointer included (#277). One
-            # snapshot serves as both, where this used to resolve twice: the
-            # second call re-resolved the same symbol in the library the first
-            # had already named as its owner, so it could only return the same
-            # target (#253).
-            $channel_sym = RustCall.cached_call_target($string_cache, @__MODULE__, $symbol_str)
-            $lib_sym = $channel_sym.lib_name
             $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) begin
                 $call
             end)))
@@ -855,15 +877,16 @@ function _generate_inline_result_wrapper(sig, func_name, symbol_str, arg_syms, b
     c_sym = _generated_local("c_result", sig.arg_names)
     channel_sym = _generated_local("panic_channel", sig.arg_names)
     rust_name = sig.name
+    snapshot = :($channel_sym = RustCall.resolve_call_target(
+        RustCall.module_symbol_library(@__MODULE__, $symbol_str), $symbol_str;
+        free_symbol = $free_sym))
+    _inline_handle_target_bindings!(bindings, sig, channel_sym, frame, snapshot)
     quote
         function $func_name($(arg_syms...))
             $(bindings...)
             # One snapshot: the wrapper, its panic channel and — when a payload
             # is an owned string — the `<fn>_free_rust_string` that releases it,
             # all from the generation that will run the call (#277).
-            $channel_sym =
-                RustCall.resolve_call_target(RustCall.module_symbol_library(@__MODULE__, $symbol_str), $symbol_str;
-                                             free_symbol = $free_sym)
             $c_sym = $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) RustCall.call_rust_function($channel_sym.func_ptr, RustCall.CResultType{$ok_slot, $err_slot}, $(converted_args...)))))
             # A panic returns `CResult::panicked()` — the Err discriminant with
             # an uninitialized payload — so the channel must be read before the
@@ -885,12 +908,13 @@ function _generate_inline_option_wrapper(sig, func_name, symbol_str, arg_syms, b
     c_sym = _generated_local("c_option", sig.arg_names)
     channel_sym = _generated_local("panic_channel", sig.arg_names)
     rust_name = sig.name
+    snapshot = :($channel_sym = RustCall.resolve_call_target(
+        RustCall.module_symbol_library(@__MODULE__, $symbol_str), $symbol_str;
+        free_symbol = $free_sym))
+    _inline_handle_target_bindings!(bindings, sig, channel_sym, frame, snapshot)
     quote
         function $func_name($(arg_syms...))
             $(bindings...)
-            $channel_sym =
-                RustCall.resolve_call_target(RustCall.module_symbol_library(@__MODULE__, $symbol_str), $symbol_str;
-                                             free_symbol = $free_sym)
             $c_sym = $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) RustCall.call_rust_function($channel_sym.func_ptr, RustCall.COptionType{$inner_slot}, $(converted_args...)))))
             RustCall.check_rust_panic_ptr($channel_sym.channel, $rust_name, $c_sym,
                                           $channel_sym.free_ptr)

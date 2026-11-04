@@ -206,7 +206,7 @@ symbol cache and the panic guard. One definition per module tree, so a reload
 swaps the image for every submodule at once.
 """
 const _CRATE_MODULE_HELPERS = (:_LIB_NAME, :_LIB_GEN, :_symbol, :_required_symbol,
-                               :_live_handle, :_get_func_ptr, :_call_target, :_vec_target, :_ctor_target,
+                               :_live_handle, :_get_func_ptr, :_check_call_borrows, :_call_target, :_vec_target, :_ctor_target,
                                :_ctor_result_target, :_struct_generation, :_guard_panic,
                                :_CALL_TARGET, :_STRING_TARGET, :_VEC_TARGET, :_CTOR_TARGET,
                                :_CTOR_RESULT_TARGET, :_FREE_TARGET)

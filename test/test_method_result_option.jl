@@ -269,11 +269,11 @@ end
     @test occursin("struct COption_Divider_ratio <: rustcall′RustCall.FFIByValue", code)
     # The release function is snapshotted with the call pointer: a crate method
     # names its buffer after `<Struct>_<method>` (#268, #277).
-    @test occursin("rustcall′func_ptr, rustcall′panic_channel, rustcall′free_ptr = _call_target(var\"#TC#m#rustcall_Divider_checked_div\", \"rustcall_Divider_checked_div\", \"Divider_checked_div_free_rust_string\")",
+    @test occursin("rustcall′func_ptr, rustcall′panic_channel, rustcall′free_ptr = _call_target(var\"#TC#m#rustcall_Divider_checked_div\", \"rustcall_Divider_checked_div\", \"Divider_checked_div_free_rust_string\"; borrows = (rustcall′self,))",
                    code)
     @test occursin("_result_payload(rustcall′Base.String, rustcall′c_payload.err_value, rustcall′free_ptr)", code)
     # No payload is a string here, so nothing is resolved to release.
-    @test occursin("rustcall′func_ptr, rustcall′panic_channel = _call_target(var\"#TC#m#rustcall_Divider_ratio\", \"rustcall_Divider_ratio\")", code)
+    @test occursin("rustcall′func_ptr, rustcall′panic_channel = _call_target(var\"#TC#m#rustcall_Divider_ratio\", \"rustcall_Divider_ratio\"; borrows = (rustcall′self,))", code)
     @test occursin("_result_payload(rustcall′Base.Float64, rustcall′c_payload.value, rustcall′Base.C_NULL)", code)
     # The channel is read before either payload is decoded (#244).
     at = findfirst("function checked_div(rustcall′self::Divider, d)", code)

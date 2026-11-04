@@ -364,7 +364,7 @@
         # — and the function that releases the buffer is resolved *with* the
         # call, in the same snapshot, so a reload cannot make the buffer be
         # freed through the replacement image's allocator (#277).
-        @test occursin("_call_target(var\"#TC#m#rustcall_Point_shout\", \"rustcall_Point_shout\", \"Point_shout_free_rust_string\")",
+        @test occursin("_call_target(var\"#TC#m#rustcall_Point_shout\", \"rustcall_Point_shout\", \"Point_shout_free_rust_string\"; borrows = (rustcall′self,))",
                        RustCall._emit_method_code(struct_info, shout))
 
         # In-memory emitter (@rust_crate).

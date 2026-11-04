@@ -115,25 +115,26 @@ function _handle_crate(dir; macro_dep)
         #[julia]
         pub fn drops() -> u32 { DROPS.load(Ordering::SeqCst) }
         #[julia]
-        pub struct Value { n: i32 }
+        #[repr(C)]
+        pub struct Value { n: i32, pad: i32 }
         impl Drop for Value { fn drop(&mut self) { DROPS.fetch_add(1, Ordering::SeqCst); } }
         #[julia]
         impl Value {
             #[julia]
-            pub fn new(n: i32) -> Self { Self { n } }
+            pub fn new(n: i32) -> Self { Self { n, pad: 100 } }
             #[julia]
             pub fn get(&self) -> i32 { self.n }
             #[julia]
             pub fn duplicate(&self) -> Result<Self, String> {
                 if self.n == -2 { panic!("duplicate panic"); }
-                if self.n < 0 { Err("negative".to_owned()) } else { Ok(Self { n: self.n }) }
+                if self.n < 0 { Err("negative".to_owned()) } else { Ok(Self { n: self.n, pad: 100 }) }
             }
             #[julia]
             pub fn split(&mut self) -> Result<Value, i32> {
                 if self.n < 2 { return Err(self.n); }
                 let half = self.n / 2;
                 self.n -= half;
-                Ok(Value { n: half })
+                Ok(Value { n: half, pad: 100 })
             }
             #[julia]
             pub fn sum(&self, other: &Value) -> i32 { self.n + other.n }
@@ -146,6 +147,16 @@ function _handle_crate(dir; macro_dep)
         }
         #[julia]
         pub fn total(a: &Value, b: &crate::Value) -> i32 { a.n + b.n }
+        #[julia]
+        pub fn read_one(a: &Value) -> i32 { a.n }
+        #[julia]
+        pub fn describe(a: &Value) -> String { a.n.to_string() }
+        #[julia]
+        pub fn checked(a: &Value) -> Result<i32, String> { Ok(a.n) }
+        #[julia]
+        pub fn optional(a: &Value) -> Option<i32> { Some(a.n) }
+        #[julia]
+        pub fn apply(a: &Value, f: extern "C" fn(i32) -> i32) -> i32 { f(a.n) }
         #[julia]
         pub mod a {
             use rustcall_julia_macros::julia;
@@ -246,13 +257,32 @@ end
             try
                 V = f(mem, :Value)
                 old = call(V, Int32(4))
+                written_old = call(f(wr, :Value), Int32(4))
+                # Warm each target before replacement, including its cache.
+                for (mod, obj) in ((mem, old), (wr, written_old))
+                    @test call(f(mod, :read_one), obj) == 4
+                    @test call(f(mod, :total), obj, obj) == 8
+                    @test call(f(mod, :describe), obj) == "4"
+                    @test RustCall.unwrap(call(f(mod, :checked), obj)) == 4
+                    @test RustCall.unwrap(call(f(mod, :optional), obj)) == 4
+                    @test call(f(mod, :apply), obj, x -> x + Int32(1)) == 5
+                end
                 oldgen = f(mem, :_LIB_GEN)[]
                 @test old.alive === oldgen.alive
                 source = joinpath(dir, "src", "lib.rs")
-                write(source, read(source, String) * "\n// generation 2\n")
+                # Same allocation size, different layout: the unfixed code
+                # reads pad=100 as n, making the regression safe to reproduce.
+                write(source, replace(read(source, String),
+                    "pub struct Value { n: i32, pad: i32 }" =>
+                    "pub struct Value { pad: i32, n: i32 }"))
                 @test RustCall.trigger_reload(name)
                 newgen = f(mem, :_LIB_GEN)[]
                 @test newgen.alive !== oldgen.alive
+                # Written bindings own a separately named image. Publish the
+                # same replacement under that name to exercise their reload
+                # path too, without generating a new Julia handle type.
+                @test RustCall.alias_artifact!(RustCall.crate_direct_policy(),
+                                               name, f(wr, :_LIB_NAME))
                 fresh, fresh2 = call(V, Int32(5)), call(V, Int32(6))
                 @test fresh.alive === newgen.alive
                 @test call(f(mem, :sum), fresh, fresh2) == 11
@@ -263,7 +293,36 @@ end
                 @test copy.alive === newgen.alive
                 @test copy.free_ptr == RustCall.Libdl.dlsym(newgen.handle,
                                                             RustCall.ffi_struct_free_symbol("Value"))
-                foreach(finalize, (old, fresh, fresh2, copy))
+                for (mod, stale) in ((mem, old), (wr, written_old))
+                    current = call(f(mod, :Value), Int32(9))
+                    @test current.alive === newgen.alive
+                    # A single old handle and several handles of the SAME
+                    # old image must fail too, not only mixed generations.
+                    for _ in 1:2  # cold replacement target, then cache hit
+                        @test_throws ArgumentError call(f(mod, :read_one), stale)
+                        @test_throws ArgumentError call(f(mod, :total), stale, stale)
+                        @test_throws ArgumentError call(f(mod, :total), current.ptr, stale)
+                        @test_throws ArgumentError call(f(mod, :describe), stale)
+                        @test_throws ArgumentError call(f(mod, :checked), stale)
+                        @test_throws ArgumentError call(f(mod, :optional), stale)
+                        @test_throws ArgumentError call(f(mod, :get), stale)
+                        @test_throws ArgumentError call(f(mod, :sum), stale, stale)
+                        @test_throws ArgumentError call(f(mod, :duplicate), stale)
+                        frames_before = length(RustCall._callback_frames())
+                        @test_throws ArgumentError call(f(mod, :apply), stale, identity)
+                        @test length(RustCall._callback_frames()) == frames_before
+                        @test call(f(mod, :read_one), current) == 9
+                        @test call(f(mod, :total), current, current) == 18
+                        @test call(f(mod, :describe), current) == "9"
+                        @test RustCall.unwrap(call(f(mod, :checked), current)) == 9
+                        @test RustCall.unwrap(call(f(mod, :optional), current)) == 9
+                        @test call(f(mod, :apply), current, x -> x + Int32(1)) == 10
+                    end
+                    # Explicit raw pointers remain the caller's responsibility.
+                    @test call(f(mod, :read_one), current.ptr) == 9
+                    finalize(current)
+                end
+                foreach(finalize, (old, written_old, fresh, fresh2, copy))
             finally
                 RustCall.disable_hot_reload(name)
             end

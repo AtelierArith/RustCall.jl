@@ -240,14 +240,26 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
 
         # What each arm below yields, named once so the cached answer and the
         # freshly resolved one cannot disagree about its shape.
-        const _CALL_TARGET = Tuple{Ptr{Cvoid}, Ptr{Cvoid}}
-        const _STRING_TARGET = Tuple{Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}}
+        const _CALL_TARGET = Tuple{Ptr{Cvoid}, Ptr{Cvoid}, Base.RefValue{Bool}}
+        const _STRING_TARGET = Tuple{Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}, Base.RefValue{Bool}}
         const _VEC_TARGET = Tuple{Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}, Base.RefValue{Bool}}
         const _CTOR_TARGET = Tuple{Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid},
                                    Base.RefValue{Bool}, Ptr{Cvoid}}
         const _CTOR_RESULT_TARGET = Tuple{Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid},
                                           Base.RefValue{Bool}, Ptr{Cvoid}, Ptr{Cvoid}}
         const _FREE_TARGET = Tuple{Ptr{Cvoid}, Base.RefValue{Bool}, Ptr{Cvoid}}
+
+        # A handle's image must be the image executing this call, not merely
+        # the image of the other arguments. Check the captured flag on cache
+        # hits too; never read _LIB_GEN again after selecting a target.
+        function _check_call_borrows(target, alive_index, borrows)
+            for obj in borrows
+                obj isa Ptr{Cvoid} && continue
+                getfield(obj, :alive) === target[alive_index] ||
+                    throw(ArgumentError("borrowed handle and call target belong to different library images; recreate the object after hot reload"))
+            end
+            return target
+        end
 
         # One snapshot per call: the wrapper and its panic channel, resolved
         # against **one** deref of `_LIB_GEN`. Reading the generation twice
@@ -260,18 +272,20 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
         # answer. Nothing is ever reassembled from pieces — a hit returns the
         # very tuple one `_LIB_GEN` deref produced — so the rule above is
         # unchanged; only the number of times an unchanged answer is recomputed.
-        function _call_target(cache::RustCall.CrateTargetCache, symbol::String)
+        function _call_target(cache::RustCall.CrateTargetCache, symbol::String; borrows = ())
             hit = RustCall.crate_target_hit(cache, _CALL_TARGET)
-            hit === nothing || return hit
+            hit === nothing || return _check_call_borrows(hit, 3, borrows)
             # Sampled **before** the snapshot. A state write landing in between
             # leaves this entry stamped with the older epoch, so the next call
             # resolves again; sampling afterwards could stamp a pre-write
             # snapshot as current and keep it forever.
             epoch = RustCall.artifact_epoch()
-            handle = _live_handle(_LIB_GEN[])
-            return RustCall.publish_crate_target!(cache, epoch,
+            gen = _LIB_GEN[]
+            handle = _live_handle(gen)
+            target = RustCall.publish_crate_target!(cache, epoch,
                 (_required_symbol(handle, symbol),
-                 _symbol(handle, RustCall.ffi_panic_symbol(symbol))))
+                 _symbol(handle, RustCall.ffi_panic_symbol(symbol)), gen.alive))
+            return _check_call_borrows(target, 3, borrows)
         end
 
         # The owned-`String` arm, with the function that releases the buffer the
@@ -279,15 +293,17 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
         # reload land in between, and the buffer was then freed through the
         # replacement's allocator (#277).
         function _call_target(cache::RustCall.CrateTargetCache, symbol::String,
-                              free_symbol::String)
+                              free_symbol::String; borrows = ())
             hit = RustCall.crate_target_hit(cache, _STRING_TARGET)
-            hit === nothing || return hit
+            hit === nothing || return _check_call_borrows(hit, 4, borrows)
             epoch = RustCall.artifact_epoch()
-            handle = _live_handle(_LIB_GEN[])
-            return RustCall.publish_crate_target!(cache, epoch,
+            gen = _LIB_GEN[]
+            handle = _live_handle(gen)
+            target = RustCall.publish_crate_target!(cache, epoch,
                 (_required_symbol(handle, symbol),
                  _symbol(handle, RustCall.ffi_panic_symbol(symbol)),
-                 _required_symbol(handle, free_symbol)))
+                 _required_symbol(handle, free_symbol), gen.alive))
+            return _check_call_borrows(target, 4, borrows)
         end
 
         # An owned Vec outlives the getter call. Capture its release export and
@@ -313,24 +329,25 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
         # would bind a pointer allocated by the retired image to the
         # replacement's destructor (#277).
         function _ctor_target(cache::RustCall.CrateTargetCache, symbol::String,
-                              free_symbol::String)
+                              free_symbol::String; borrows = ())
             hit = RustCall.crate_target_hit(cache, _CTOR_TARGET)
-            hit === nothing || return hit
+            hit === nothing || return _check_call_borrows(hit, 4, borrows)
             epoch = RustCall.artifact_epoch()
             gen = _LIB_GEN[]
             handle = _live_handle(gen)
-            return RustCall.publish_crate_target!(cache, epoch,
+            target = RustCall.publish_crate_target!(cache, epoch,
                 (_required_symbol(handle, symbol),
                  _symbol(handle, RustCall.ffi_panic_symbol(symbol)),
                  _symbol(handle, free_symbol),
                  gen.alive,
                  _symbol(handle, RustCall.ffi_panic_symbol(free_symbol))))
+            return _check_call_borrows(target, 4, borrows)
         end
 
         function _ctor_result_target(cache::RustCall.CrateTargetCache, symbol::String,
-                                     object_free::String, payload_free::String)
+                                     object_free::String, payload_free::String; borrows = ())
             hit = RustCall.crate_target_hit(cache, _CTOR_RESULT_TARGET)
-            hit === nothing || return hit
+            hit === nothing || return _check_call_borrows(hit, 4, borrows)
             epoch = RustCall.artifact_epoch()
             gen = _LIB_GEN[]
             handle = _live_handle(gen)
@@ -340,12 +357,13 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
             # 0.6.0, #564).
             _symbol(handle, symbol * "_boxed_result_v1") == C_NULL &&
                 error("incompatible boxed Result<Self, E> ABI for $symbol; rebuild the crate with rustcall_julia_macros >= 0.6.0")
-            return RustCall.publish_crate_target!(cache, epoch,
+            target = RustCall.publish_crate_target!(cache, epoch,
                 (_required_symbol(handle, symbol),
                  _symbol(handle, RustCall.ffi_panic_symbol(symbol)),
                  _required_symbol(handle, object_free), gen.alive,
                  _symbol(handle, RustCall.ffi_panic_symbol(object_free)),
                  isempty(payload_free) ? C_NULL : _required_symbol(handle, payload_free)))
+            return _check_call_borrows(target, 4, borrows)
         end
 
         # The per-object half: a struct's destructor and the liveness flag of
