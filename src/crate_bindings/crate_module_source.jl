@@ -162,40 +162,54 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     push!(lines, "")
     push!(lines, "# What each arm below yields, named once so the cached answer and the")
     push!(lines, "# freshly resolved one cannot disagree about its shape.")
-    push!(lines, "const _CALL_TARGET = rustcall′Base.Tuple{rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.Ptr{rustcall′Base.Cvoid}}")
-    push!(lines, "const _STRING_TARGET = rustcall′Base.Tuple{rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.Ptr{rustcall′Base.Cvoid}}")
+    push!(lines, "const _CALL_TARGET = rustcall′Base.Tuple{rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.RefValue{rustcall′Base.Bool}}")
+    push!(lines, "const _STRING_TARGET = rustcall′Base.Tuple{rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.RefValue{rustcall′Base.Bool}}")
     push!(lines, "const _VEC_TARGET = rustcall′Base.Tuple{rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.RefValue{rustcall′Base.Bool}}")
     push!(lines, "const _CTOR_TARGET = rustcall′Base.Tuple{rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.RefValue{rustcall′Base.Bool}, rustcall′Base.Ptr{rustcall′Base.Cvoid}}")
     push!(lines, "const _CTOR_RESULT_TARGET = rustcall′Base.Tuple{rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.RefValue{rustcall′Base.Bool}, rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.Ptr{rustcall′Base.Cvoid}}")
     push!(lines, "const _FREE_TARGET = rustcall′Base.Tuple{rustcall′Base.Ptr{rustcall′Base.Cvoid}, rustcall′Base.RefValue{rustcall′Base.Bool}, rustcall′Base.Ptr{rustcall′Base.Cvoid}}")
+    push!(lines, "")
+    push!(lines, "# Compare borrowed handles with the captured image, including cache hits.")
+    push!(lines, "function _check_call_borrows(target, alive_index, borrows)")
+    push!(lines, "    for obj in borrows")
+    push!(lines, "        rustcall′Base.isa(obj, rustcall′Base.Ptr{rustcall′Base.Cvoid}) && continue")
+    push!(lines, "        rustcall′Base.getfield(obj, :alive) === target[alive_index] ||")
+    push!(lines, "            rustcall′Base.throw(rustcall′Base.ArgumentError(\"borrowed handle and call target belong to different library images; recreate the object after hot reload\"))")
+    push!(lines, "    end")
+    push!(lines, "    return target")
+    push!(lines, "end")
     push!(lines, "")
     push!(lines, "# One snapshot per call, from ONE deref of `_LIB_GEN` (#277). `cache` is")
     push!(lines, "# the call site's own cache: the snapshot is kept in it and handed back")
     push!(lines, "# whole while the artifact epoch and the session token say it is still")
     push!(lines, "# this process's current answer (#253). A hit returns the very tuple one")
     push!(lines, "# deref produced, so nothing is ever reassembled from pieces.")
-    push!(lines, "function _call_target(cache::rustcall′RustCall.CrateTargetCache, symbol::rustcall′Base.String)")
+    push!(lines, "function _call_target(cache::rustcall′RustCall.CrateTargetCache, symbol::rustcall′Base.String; borrows = ())")
     push!(lines, "    hit = rustcall′RustCall.crate_target_hit(cache, _CALL_TARGET)")
-    push!(lines, "    hit === rustcall′Base.nothing || return hit")
+    push!(lines, "    hit === rustcall′Base.nothing || return _check_call_borrows(hit, 3, borrows)")
     push!(lines, "    # Sampled BEFORE the snapshot: a state write landing in between leaves")
     push!(lines, "    # this entry stamped with the older epoch and it is resolved again.")
     push!(lines, "    epoch = rustcall′RustCall.artifact_epoch()")
-    push!(lines, "    handle = _live_handle(_LIB_GEN[])")
-    push!(lines, "    return rustcall′RustCall.publish_crate_target!(cache, epoch,")
+    push!(lines, "    gen = _LIB_GEN[]")
+    push!(lines, "    handle = _live_handle(gen)")
+    push!(lines, "    target = rustcall′RustCall.publish_crate_target!(cache, epoch,")
     push!(lines, "        (_required_symbol(handle, symbol),")
-    push!(lines, "         _symbol(handle, rustcall′RustCall.ffi_panic_symbol(symbol))))")
+    push!(lines, "         _symbol(handle, rustcall′RustCall.ffi_panic_symbol(symbol)), gen.alive))")
+    push!(lines, "    return _check_call_borrows(target, 3, borrows)")
     push!(lines, "end")
     push!(lines, "")
     push!(lines, "# ...and the owned-`String` arm, release function included.")
-    push!(lines, "function _call_target(cache::rustcall′RustCall.CrateTargetCache, symbol::rustcall′Base.String, free_symbol::rustcall′Base.String)")
+    push!(lines, "function _call_target(cache::rustcall′RustCall.CrateTargetCache, symbol::rustcall′Base.String, free_symbol::rustcall′Base.String; borrows = ())")
     push!(lines, "    hit = rustcall′RustCall.crate_target_hit(cache, _STRING_TARGET)")
-    push!(lines, "    hit === rustcall′Base.nothing || return hit")
+    push!(lines, "    hit === rustcall′Base.nothing || return _check_call_borrows(hit, 4, borrows)")
     push!(lines, "    epoch = rustcall′RustCall.artifact_epoch()")
-    push!(lines, "    handle = _live_handle(_LIB_GEN[])")
-    push!(lines, "    return rustcall′RustCall.publish_crate_target!(cache, epoch,")
+    push!(lines, "    gen = _LIB_GEN[]")
+    push!(lines, "    handle = _live_handle(gen)")
+    push!(lines, "    target = rustcall′RustCall.publish_crate_target!(cache, epoch,")
     push!(lines, "        (_required_symbol(handle, symbol),")
     push!(lines, "         _symbol(handle, rustcall′RustCall.ffi_panic_symbol(symbol)),")
-    push!(lines, "         _required_symbol(handle, free_symbol)))")
+    push!(lines, "         _required_symbol(handle, free_symbol), gen.alive))")
+    push!(lines, "    return _check_call_borrows(target, 4, borrows)")
     push!(lines, "end")
     push!(lines, "")
     push!(lines, "# Owned Vec getter and release export from one generation (#303).")
@@ -214,33 +228,35 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     push!(lines, "")
     push!(lines, "# The constructor arm: the allocating wrapper, its channel, and the")
     push!(lines, "# destructor and flag the resulting object carries -- one deref (#277).")
-    push!(lines, "function _ctor_target(cache::rustcall′RustCall.CrateTargetCache, symbol::rustcall′Base.String, free_symbol::rustcall′Base.String)")
+    push!(lines, "function _ctor_target(cache::rustcall′RustCall.CrateTargetCache, symbol::rustcall′Base.String, free_symbol::rustcall′Base.String; borrows = ())")
     push!(lines, "    hit = rustcall′RustCall.crate_target_hit(cache, _CTOR_TARGET)")
-    push!(lines, "    hit === rustcall′Base.nothing || return hit")
+    push!(lines, "    hit === rustcall′Base.nothing || return _check_call_borrows(hit, 4, borrows)")
     push!(lines, "    epoch = rustcall′RustCall.artifact_epoch()")
     push!(lines, "    gen = _LIB_GEN[]")
     push!(lines, "    handle = _live_handle(gen)")
-    push!(lines, "    return rustcall′RustCall.publish_crate_target!(cache, epoch,")
+    push!(lines, "    target = rustcall′RustCall.publish_crate_target!(cache, epoch,")
     push!(lines, "        (_required_symbol(handle, symbol),")
     push!(lines, "         _symbol(handle, rustcall′RustCall.ffi_panic_symbol(symbol)),")
     push!(lines, "         _symbol(handle, free_symbol),")
     push!(lines, "         gen.alive,")
     push!(lines, "         _symbol(handle, rustcall′RustCall.ffi_panic_symbol(free_symbol))))")
+    push!(lines, "    return _check_call_borrows(target, 4, borrows)")
     push!(lines, "end")
     push!(lines, "")
-    push!(lines, "function _ctor_result_target(cache::rustcall′RustCall.CrateTargetCache, symbol::rustcall′Base.String, object_free::rustcall′Base.String, payload_free::rustcall′Base.String)")
+    push!(lines, "function _ctor_result_target(cache::rustcall′RustCall.CrateTargetCache, symbol::rustcall′Base.String, object_free::rustcall′Base.String, payload_free::rustcall′Base.String; borrows = ())")
     push!(lines, "    hit = rustcall′RustCall.crate_target_hit(cache, _CTOR_RESULT_TARGET)")
-    push!(lines, "    hit === rustcall′Base.nothing || return hit")
+    push!(lines, "    hit === rustcall′Base.nothing || return _check_call_borrows(hit, 4, borrows)")
     push!(lines, "    epoch = rustcall′RustCall.artifact_epoch()")
     push!(lines, "    gen = _LIB_GEN[]")
     push!(lines, "    handle = _live_handle(gen)")
     push!(lines, "    _symbol(handle, symbol * \"_boxed_result_v1\") == rustcall′Base.C_NULL &&")
     push!(lines, "        rustcall′Base.error(\"incompatible boxed Result<Self, E> ABI for \" * symbol * \"; rebuild the crate with rustcall_julia_macros >= 0.6.0\")")
-    push!(lines, "    return rustcall′RustCall.publish_crate_target!(cache, epoch,")
+    push!(lines, "    target = rustcall′RustCall.publish_crate_target!(cache, epoch,")
     push!(lines, "        (_required_symbol(handle, symbol), _symbol(handle, rustcall′RustCall.ffi_panic_symbol(symbol)),")
     push!(lines, "         _required_symbol(handle, object_free), gen.alive,")
     push!(lines, "         _symbol(handle, rustcall′RustCall.ffi_panic_symbol(object_free)),")
     push!(lines, "         rustcall′Base.isempty(payload_free) ? rustcall′Base.C_NULL : _required_symbol(handle, payload_free)))")
+    push!(lines, "    return _check_call_borrows(target, 4, borrows)")
     push!(lines, "end")
     push!(lines, "")
     push!(lines, "# A struct's destructor and the liveness flag of the image that exports it,")
@@ -341,6 +357,21 @@ end
 
 Generate Julia code for a function wrapper as a string.
 """
+# Insert a target before the argument plan's final callback-frame push.
+# The frame uses a reserved generated local, so this exact assignment occurs
+# only once in the serialized plan. Without a frame, append normally.
+function _emit_target_prologue(prologue, frame_str, target)
+    isempty(frame_str) && return prologue * "    " * target
+    marker = "    " * frame_str * " ="
+    before, after = split(prologue, marker; limit = 2)
+    return before * "    " * target * "\n" * marker * chomp(after)
+end
+
+function _crate_borrows_source(func; receiver = nothing)
+    borrows = _crate_call_borrows(func; receiver)
+    return isempty(borrows.args) ? "" : "; borrows = " * _emitted_source(borrows)
+end
+
 function _emit_function_code(func::RustFunctionSignature; strict::Symbol = _ffi_strict())
     # The item every position below is filed under (#454), named before the
     # argument plan, which records first.
@@ -362,6 +393,7 @@ function _emit_function_code(func::RustFunctionSignature; strict::Symbol = _ffi_
     free_var = _generated_local("free_ptr", arg_names)
     # This call site's snapshot cache (#253), declared beside the wrapper.
     cache_var = _target_cache_ref(:fn, sym)
+    borrows = _crate_borrows_source(func)
 
     # Build argument conversions (string arguments become (ptr, len) pairs)
     arg_syms = join(arg_names, ", ")
@@ -380,7 +412,7 @@ function _emit_function_code(func::RustFunctionSignature; strict::Symbol = _ffi_
         return """
 $(_target_cache_source(:fn, sym))
 function $func_name($arg_syms)
-$(prologue)    $ptr_var, $channel_var, $free_var = _call_target($cache_var, "$sym", "$(_ffi_function_return(func).free_symbol)")
+$( _emit_target_prologue(prologue, frame_str, "$ptr_var, $channel_var, $free_var = _call_target($cache_var, \"$sym\", \"$(_ffi_function_return(func).free_symbol)\"$borrows)") )
     _guard_panic($(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "rustcall′RustCall._call_rust_owned_string_ptr($ptr_var, $free_var, $converted_args_str)"))), $channel_var, "$func_name")
 end
 export $func_name"""
@@ -388,7 +420,7 @@ export $func_name"""
         return """
 $(_target_cache_source(:fn, sym))
 function $func_name($arg_syms)
-$(prologue)    $ptr_var, $channel_var = _call_target($cache_var, "$sym")
+$( _emit_target_prologue(prologue, frame_str, "$ptr_var, $channel_var = _call_target($cache_var, \"$sym\"$borrows)") )
     _guard_panic($(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "rustcall′RustCall._call_rust_borrowed_string_ptr($ptr_var, $converted_args_str)"))), $channel_var, "$func_name")
 end
 export $func_name"""
@@ -399,7 +431,7 @@ export $func_name"""
         return """
 $(_target_cache_source(:fn, sym))
 function $func_name($arg_syms)
-$(prologue)    $ptr_var, $channel_var = _call_target($cache_var, "$sym")
+$( _emit_target_prologue(prologue, frame_str, "$ptr_var, $channel_var = _call_target($cache_var, \"$sym\"$borrows)") )
     _guard_panic($(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "rustcall′RustCall.call_rust_function($ptr_var, $ret_type_str, $converted_args_str)"))), $channel_var, "$func_name")
 end
 export $func_name"""
@@ -428,9 +460,10 @@ function _emit_result_function_code(func::RustFunctionSignature, arg_syms::Strin
     free_var = _generated_local("free_ptr", func.arg_names)
     free_str = _payload_free_symbol(func.ffi_name, (func.ok_abi, func.err_abi))
     cache_var = _target_cache_ref(:fn, sym)
+    borrows = _crate_borrows_source(func)
     target = isempty(free_str) ?
-        "$ptr_var, $channel_var = _call_target($cache_var, \"$sym\")" :
-        "$ptr_var, $channel_var, $free_var = _call_target($cache_var, \"$sym\", \"$free_str\")"
+        "$ptr_var, $channel_var = _call_target($cache_var, \"$sym\"$borrows)" :
+        "$ptr_var, $channel_var, $free_var = _call_target($cache_var, \"$sym\", \"$free_str\"$borrows)"
     free_expr = isempty(free_str) ? "rustcall′Base.C_NULL" : string(free_var)
 
     return """
@@ -442,7 +475,7 @@ struct $c_result_struct_name <: rustcall′RustCall.FFIByValue
 end
 
 function $func_name($arg_syms)
-$(prologue)    $target
+$( _emit_target_prologue(prologue, frame_str, target) )
     $c_var = $(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "rustcall′RustCall.call_rust_function($ptr_var, $c_result_struct_name, $converted_args_str)")))
     _guard_panic($c_var, $channel_var, "$func_name", $free_expr)
     if $c_var.is_ok == 1
@@ -476,9 +509,10 @@ function _emit_py_result_function_code(func::RustFunctionSignature, arg_syms::St
     free_var = _generated_local("free_ptr", func.arg_names)
     free_str = _payload_free_symbol(func.ffi_name, (func.ok_abi,))
     cache_var = _target_cache_ref(:fn, sym)
+    borrows = _crate_borrows_source(func)
     target = isempty(free_str) ?
-        "$ptr_var, $channel_var = _call_target($cache_var, \"$sym\")" :
-        "$ptr_var, $channel_var, $free_var = _call_target($cache_var, \"$sym\", \"$free_str\")"
+        "$ptr_var, $channel_var = _call_target($cache_var, \"$sym\"$borrows)" :
+        "$ptr_var, $channel_var, $free_var = _call_target($cache_var, \"$sym\", \"$free_str\"$borrows)"
     free_expr = isempty(free_str) ? "rustcall′Base.C_NULL" : string(free_var)
     ok_value = is_unit ? "rustcall′Base.nothing" :
         "rustcall′RustCall._result_payload($ok_type_str, $c_var.ok_value, $free_expr)"
@@ -493,7 +527,7 @@ struct $c_result_struct_name <: rustcall′RustCall.FFIByValue
 end
 
 function $func_name($arg_syms)
-$(prologue)    $target
+$( _emit_target_prologue(prologue, frame_str, target) )
     $c_var = $(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "rustcall′RustCall.call_rust_function($ptr_var, $c_result_struct_name, $converted_args_str)")))
     _guard_panic($c_var, $channel_var, "$func_name", $free_expr)
     if $c_var.is_ok == 1
@@ -522,9 +556,10 @@ function _emit_option_function_code(func::RustFunctionSignature, arg_syms::Strin
     free_var = _generated_local("free_ptr", func.arg_names)
     free_str = _payload_free_symbol(func.ffi_name, (func.inner_abi,))
     cache_var = _target_cache_ref(:fn, sym)
+    borrows = _crate_borrows_source(func)
     target = isempty(free_str) ?
-        "$ptr_var, $channel_var = _call_target($cache_var, \"$sym\")" :
-        "$ptr_var, $channel_var, $free_var = _call_target($cache_var, \"$sym\", \"$free_str\")"
+        "$ptr_var, $channel_var = _call_target($cache_var, \"$sym\"$borrows)" :
+        "$ptr_var, $channel_var, $free_var = _call_target($cache_var, \"$sym\", \"$free_str\"$borrows)"
     free_expr = isempty(free_str) ? "rustcall′Base.C_NULL" : string(free_var)
 
     return """
@@ -535,7 +570,7 @@ struct $c_option_struct_name <: rustcall′RustCall.FFIByValue
 end
 
 function $func_name($arg_syms)
-$(prologue)    $target
+$( _emit_target_prologue(prologue, frame_str, target) )
     $c_var = $(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "rustcall′RustCall.call_rust_function($ptr_var, $c_option_struct_name, $converted_args_str)")))
     _guard_panic($c_var, $channel_var, "$func_name", $free_expr)
     if $c_var.is_some == 1
@@ -752,7 +787,9 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
     channel_var = _generated_local("panic_channel", method.arg_names)
     free_channel_var = _generated_local("free_panic_channel", method.arg_names)
     cache_var = _target_cache_ref(:m, wrapper_name)
-    target = "$ptr_var, $channel_var = _call_target($cache_var, \"$wrapper_name\")"
+    borrows = _crate_borrows_source(method; receiver =
+        _python_owned_handle(struct_info) ? nothing : _emitter_local("self"))
+    target = "$ptr_var, $channel_var = _call_target($cache_var, \"$wrapper_name\"$borrows)"
     alive_var = _generated_local("alive", method.arg_names)
     release_alive = _python_owned_handle(struct_info) ? "rustcall′Base.Ref(true)" : string(alive_var)
     if method.return_kind === :py_result
@@ -770,11 +807,11 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
         object_free_var = _generated_local("object_free", method.arg_names)
         payload_target = if boxed_ctor
             "$ptr_var, $channel_var, $object_free_var, $alive_var, $free_channel_var, $free_var = " *
-            "_ctor_result_target($cache_var, \"$wrapper_name\", \"$(ffi_struct_free_symbol(struct_info.ffi_name))\", \"$(plan.free_symbol)\")"
+            "_ctor_result_target($cache_var, \"$wrapper_name\", \"$(ffi_struct_free_symbol(struct_info.ffi_name))\", \"$(plan.free_symbol)\"$borrows)"
         elseif isempty(plan.free_symbol)
-            "$ptr_var, $channel_var = _call_target($cache_var, \"$wrapper_name\")"
+            "$ptr_var, $channel_var = _call_target($cache_var, \"$wrapper_name\"$borrows)"
         else
-            "$ptr_var, $channel_var, $free_var = _call_target($cache_var, \"$wrapper_name\", \"$(plan.free_symbol)\")"
+            "$ptr_var, $channel_var, $free_var = _call_target($cache_var, \"$wrapper_name\", \"$(plan.free_symbol)\"$borrows)"
         end
         free_expr = boxed_ctor || !isempty(plan.free_symbol) ? string(free_var) : "rustcall′Base.C_NULL"
         err_t = _emitted_source(last(plan.surface))
@@ -809,7 +846,7 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
         rustcall′Base.rethrow()
     end""" : "_guard_panic($c_var, $channel_var, \"$method_label\", $free_expr)"
         payload_body = """
-$(prologue)    $payload_target
+$( _emit_target_prologue(prologue, frame_str, payload_target) )
     $c_var = $(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "rustcall′RustCall.call_rust_function($ptr_var, $(plan.struct_name), $args_str)")))
     $guard
 $decode"""
@@ -819,10 +856,10 @@ $decode"""
     end
     call = if method.returns_boxed_struct
         target = "$ptr_var, $channel_var, $free_var, $alive_var, $free_channel_var = " *
-                 "_ctor_target($cache_var, \"$wrapper_name\", \"$(ffi_struct_free_symbol(struct_info.ffi_name))\")"
+                 "_ctor_target($cache_var, \"$wrapper_name\", \"$(ffi_struct_free_symbol(struct_info.ffi_name))\"$borrows)"
         "$struct_name(rustcall′RustCall.call_rust_function($ptr_var, rustcall′Base.Ptr{rustcall′Base.Cvoid}, $args_str), $free_var, $release_alive, $free_channel_var)"
     elseif ffi_owned_string_return(c)
-        target = "$ptr_var, $channel_var, $free_var = _call_target($cache_var, \"$wrapper_name\", \"$(c.free_symbol)\")"
+        target = "$ptr_var, $channel_var, $free_var = _call_target($cache_var, \"$wrapper_name\", \"$(c.free_symbol)\"$borrows)"
         "rustcall′RustCall._call_rust_owned_string_ptr($ptr_var, $free_var, $args_str)"
     elseif ffi_borrowed_string_return(c)
         "rustcall′RustCall._call_rust_borrowed_string_ptr($ptr_var, $args_str)"
@@ -833,7 +870,7 @@ $decode"""
         "rustcall′RustCall.call_rust_function($ptr_var, $ret_type_str, $args_str)"
     end
     body = """
-$(prologue)    $target
+$( _emit_target_prologue(prologue, frame_str, target) )
     _guard_panic($(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, call))), $channel_var, "$method_label")"""
 
     # The call site's snapshot cache, declared at module scope beside the
@@ -939,14 +976,16 @@ function _emit_py_result_method_code(info::RustStructInfo, method::RustMethod,
     method_label = "$(struct_name)::$(method_name)"
     payload_free = _payload_free_symbol(helper_owner, (method.ok_abi,))
     cache_var = _target_cache_ref(:m, wrapper_name)
+    borrows = _crate_borrows_source(method; receiver =
+        _python_owned_handle(info) ? nothing : _emitter_local("self"))
     target = if boxed
         "$ptr_var, $channel_var, $free_var, $alive_var, $free_channel_var = " *
-        "_ctor_target($cache_var, \"$wrapper_name\", \"$(ffi_struct_free_symbol(info.ffi_name))\")"
+        "_ctor_target($cache_var, \"$wrapper_name\", \"$(ffi_struct_free_symbol(info.ffi_name))\"$borrows)"
     elseif !isempty(payload_free)
         "$ptr_var, $channel_var, $free_var = " *
-        "_call_target($cache_var, \"$wrapper_name\", \"$payload_free\")"
+        "_call_target($cache_var, \"$wrapper_name\", \"$payload_free\"$borrows)"
     else
-        "$ptr_var, $channel_var = _call_target($cache_var, \"$wrapper_name\")"
+        "$ptr_var, $channel_var = _call_target($cache_var, \"$wrapper_name\"$borrows)"
     end
     free_expr = isempty(payload_free) ? "rustcall′Base.C_NULL" : string(free_var)
     ok_value = if is_unit
@@ -958,7 +997,7 @@ function _emit_py_result_method_code(info::RustStructInfo, method::RustMethod,
     end
 
     body = """
-$(prologue)    $target
+$( _emit_target_prologue(prologue, frame_str, target) )
     $c_var = $(_emit_in_callback_frame(frame_str, _emit_preserved(preserve_str, "rustcall′RustCall.call_rust_function($ptr_var, $c_result_struct_name, $args_str)")))
     _guard_panic($c_var, $channel_var, "$method_label", $free_expr)
     if $c_var.is_ok == 1

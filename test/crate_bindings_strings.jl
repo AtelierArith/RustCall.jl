@@ -115,7 +115,7 @@ end
     # Each owned-`String` method snapshots its release function together with
     # the wrapper it calls, so the buffer cannot outlive the generation that
     # allocated it (#277).
-    @test occursin("rustcall′func_ptr, rustcall′panic_channel, rustcall′free_ptr = _call_target(var\"#TC#m#rustcall_Labeler_label\", \"rustcall_Labeler_label\", \"Labeler_label_free_rust_string\")", code)
+    @test occursin("rustcall′func_ptr, rustcall′panic_channel, rustcall′free_ptr = _call_target(var\"#TC#m#rustcall_Labeler_label\", \"rustcall_Labeler_label\", \"Labeler_label_free_rust_string\"; borrows = (rustcall′self,))", code)
     @test occursin("rustcall′func_ptr, rustcall′panic_channel, rustcall′free_ptr = _call_target(var\"#TC#m#rustcall_Labeler_shout\", \"rustcall_Labeler_shout\", \"Labeler_shout_free_rust_string\")", code)
     @test occursin("rustcall′Base.GC.@preserve(rustcall′str′s, rustcall′RustCall._call_rust_owned_string_ptr(rustcall′func_ptr, rustcall′free_ptr, rustcall′Base.pointer(rustcall′str′s), rustcall′Base.sizeof(rustcall′str′s) % rustcall′Base.Csize_t)", code)
     @test occursin("rustcall′Base.GC.@preserve(rustcall′self, rustcall′str′s, rustcall′RustCall.call_rust_function(rustcall′func_ptr, rustcall′Base.Csize_t, rustcall′Base.getfield(rustcall′self, :ptr), rustcall′Base.pointer(rustcall′str′s), rustcall′Base.sizeof(rustcall′str′s) % rustcall′Base.Csize_t)", code)

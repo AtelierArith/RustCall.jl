@@ -1,3 +1,25 @@
+# Target resolution can reject a stale borrow. Do it after conversions but
+# before installing the callback frame: every installed frame must reach its
+# call's finally block even when a hot reload invalidates an argument.
+function _crate_target_bindings(bindings, frame, target)
+    result = copy(bindings)
+    insert!(result, frame === nothing ? length(result) + 1 : length(result), target)
+    return result
+end
+
+# Borrowed handles are checked against the snapshot that supplies the call,
+# not only against each other. The argument plan has already validated these
+# locals; raw pointers retain their explicit unchecked escape hatch.
+function _crate_call_borrows(func; receiver = nothing)
+    objects = Any[Symbol(_EMITTER_LOCAL_PREFIX, "handle′", i)
+                  for (i, (abi, handle)) in enumerate(zip(func.arg_abis, func.arg_handles))
+                  if _is_handle_abi(abi) && handle !== nothing]
+    if func isa RustMethod && !func.is_static && receiver !== nothing
+        pushfirst!(objects, receiver)
+    end
+    return Expr(:tuple, objects...)
+end
+
 function _generate_crate_function_wrapper(func::RustFunctionSignature)
     # The item every position below is filed under (#454), named before the
     # argument plan, which records first.
@@ -36,10 +58,11 @@ function _generate_crate_function_wrapper(func::RustFunctionSignature)
         ptr_sym = _generated_local("func_ptr", func.arg_names)
         channel_sym = _generated_local("panic_channel", func.arg_names)
         cache_sym = _target_cache_name(:fn, symbol_str)
+        borrows = _crate_call_borrows(func)
         @_emitted quote
             $(_target_cache_const(:fn, symbol_str))
             function $func_name($(arg_syms...))
-                $ptr_sym, $channel_sym = _call_target($cache_sym, $symbol_str)
+                $ptr_sym, $channel_sym = _call_target($cache_sym, $symbol_str; borrows = $borrows)
                 _guard_panic(
                     call_rust_function($ptr_sym, $julia_ret_type, $(converted_args...)),
                     $channel_sym, $func_name_str)
@@ -73,11 +96,12 @@ function _generate_string_function_wrapper(func::RustFunctionSignature, arg_syms
     ptr_sym = _generated_local("func_ptr", func.arg_names)
     free_sym = _generated_local("free_ptr", func.arg_names)
     cache_sym = _target_cache_name(:fn, symbol_str)
+    borrows = _crate_call_borrows(func)
     # The owned-string branch snapshots the release function with the call; see
     # `_call_target`'s three-argument arm.
-    target = @_emitted(:(($ptr_sym, $channel_sym) = _call_target($cache_sym, $symbol_str)))
+    target = @_emitted(:(($ptr_sym, $channel_sym) = _call_target($cache_sym, $symbol_str; borrows = $borrows)))
     call = if ffi_owned_string_return(c)
-        target = @_emitted(:(($ptr_sym, $channel_sym, $free_sym) = _call_target($cache_sym, $symbol_str, $(c.free_symbol))))
+        target = @_emitted(:(($ptr_sym, $channel_sym, $free_sym) = _call_target($cache_sym, $symbol_str, $(c.free_symbol); borrows = $borrows)))
         @_emitted(:(_call_rust_owned_string_ptr($ptr_sym, $free_sym, $(call_args...))))
     elseif ffi_borrowed_string_return(c)
         @_emitted(:(_call_rust_borrowed_string_ptr($ptr_sym, $(call_args...))))
@@ -94,8 +118,7 @@ function _generate_string_function_wrapper(func::RustFunctionSignature, arg_syms
     @_emitted quote
         $(_target_cache_const(:fn, symbol_str))
         function $func_name($(arg_syms...))
-            $target
-            $(bindings...)
+            $(_crate_target_bindings(bindings, frame, target)...)
             $(_in_callback_frame(frame, @_emitted(:(GC.@preserve $(preserved...) begin
                 $call
             end))))
@@ -139,9 +162,10 @@ function _generate_result_function_wrapper(func::RustFunctionSignature, arg_syms
     channel_sym = _generated_local("panic_channel", func.arg_names)
     free_sym = _generated_local("free_ptr", func.arg_names)
     cache_sym = _target_cache_name(:fn, symbol_str)
+    borrows = _crate_call_borrows(func)
     target = isempty(free_str) ?
-        @_emitted(:(($ptr_sym, $channel_sym) = _call_target($cache_sym, $symbol_str))) :
-        @_emitted(:(($ptr_sym, $channel_sym, $free_sym) = _call_target($cache_sym, $symbol_str, $free_str)))
+        @_emitted(:(($ptr_sym, $channel_sym) = _call_target($cache_sym, $symbol_str; borrows = $borrows))) :
+        @_emitted(:(($ptr_sym, $channel_sym, $free_sym) = _call_target($cache_sym, $symbol_str, $free_str; borrows = $borrows)))
     free_expr = isempty(free_str) ? @_emitted(:(C_NULL)) : free_sym
 
     @_emitted quote
@@ -160,8 +184,7 @@ function _generate_result_function_wrapper(func::RustFunctionSignature, arg_syms
         function $func_name($(arg_syms...))
             # String arguments are converted first: an argument may be called
             # `func_ptr`, so the pointer local is resolved only afterwards.
-            $(bindings...)
-            $target
+            $(_crate_target_bindings(bindings, frame, target)...)
             $c_sym = $(_in_callback_frame(frame, @_emitted(:(GC.@preserve $(preserved...) call_rust_function($ptr_sym, $c_result_struct_name, $(converted_args...))))))
             # A panic returns `CResult::panicked()` — the Err discriminant with
             # an uninitialized payload — so the channel is read before the
@@ -230,9 +253,10 @@ function _generate_py_result_function_wrapper(func::RustFunctionSignature, arg_s
     free_sym = _generated_local("free_ptr", func.arg_names)
     free_str = _payload_free_symbol(func.ffi_name, (func.ok_abi,))
     cache_sym = _target_cache_name(:fn, symbol_str)
+    borrows = _crate_call_borrows(func)
     target = isempty(free_str) ?
-        @_emitted(:(($ptr_sym, $channel_sym) = _call_target($cache_sym, $symbol_str))) :
-        @_emitted(:(($ptr_sym, $channel_sym, $free_sym) = _call_target($cache_sym, $symbol_str, $free_str)))
+        @_emitted(:(($ptr_sym, $channel_sym) = _call_target($cache_sym, $symbol_str; borrows = $borrows))) :
+        @_emitted(:(($ptr_sym, $channel_sym, $free_sym) = _call_target($cache_sym, $symbol_str, $free_str; borrows = $borrows)))
     free_expr = isempty(free_str) ? @_emitted(:(C_NULL)) : free_sym
     ok_value = is_unit ? :nothing :
         @_emitted(:(_result_payload($ok_julia_type, $c_sym.ok_value, $free_expr)))
@@ -251,8 +275,7 @@ function _generate_py_result_function_wrapper(func::RustFunctionSignature, arg_s
         end
 
         function $func_name($(arg_syms...))
-            $(bindings...)
-            $target
+            $(_crate_target_bindings(bindings, frame, target)...)
             $c_sym = $(_in_callback_frame(frame, @_emitted(:(GC.@preserve $(preserved...) call_rust_function($ptr_sym, $c_result_struct_name, $(converted_args...))))))
             # A panic returns the Err discriminant with an uninitialized
             # payload, so the channel is read before anything is decoded (#244).
@@ -296,9 +319,10 @@ function _generate_option_function_wrapper(func::RustFunctionSignature, arg_syms
     channel_sym = _generated_local("panic_channel", func.arg_names)
     free_sym = _generated_local("free_ptr", func.arg_names)
     cache_sym = _target_cache_name(:fn, symbol_str)
+    borrows = _crate_call_borrows(func)
     target = isempty(free_str) ?
-        @_emitted(:(($ptr_sym, $channel_sym) = _call_target($cache_sym, $symbol_str))) :
-        @_emitted(:(($ptr_sym, $channel_sym, $free_sym) = _call_target($cache_sym, $symbol_str, $free_str)))
+        @_emitted(:(($ptr_sym, $channel_sym) = _call_target($cache_sym, $symbol_str; borrows = $borrows))) :
+        @_emitted(:(($ptr_sym, $channel_sym, $free_sym) = _call_target($cache_sym, $symbol_str, $free_str; borrows = $borrows)))
     free_expr = isempty(free_str) ? @_emitted(:(C_NULL)) : free_sym
 
     @_emitted quote
@@ -313,8 +337,7 @@ function _generate_option_function_wrapper(func::RustFunctionSignature, arg_syms
         function $func_name($(arg_syms...))
             # String arguments are converted first: an argument may be called
             # `func_ptr`, so the pointer local is resolved only afterwards.
-            $(bindings...)
-            $target
+            $(_crate_target_bindings(bindings, frame, target)...)
             $c_sym = $(_in_callback_frame(frame, @_emitted(:(GC.@preserve $(preserved...) call_rust_function($ptr_sym, $c_option_struct_name, $(converted_args...))))))
             _guard_panic($c_sym, $channel_sym, $func_name_str, $free_expr)
             # Convert to RustOption
@@ -765,7 +788,9 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     free_sym = _generated_local("free_ptr", method.arg_names)
     free_channel_sym = _generated_local("free_panic_channel", method.arg_names)
     cache_sym = _target_cache_name(:m, wrapper_name)
-    target = @_emitted(:(($ptr_sym, $channel_sym) = _call_target($cache_sym, $wrapper_name)))
+    borrows = _crate_call_borrows(method; receiver =
+        _python_owned_handle(info) ? nothing : _emitter_local("self"))
+    target = @_emitted(:(($ptr_sym, $channel_sym) = _call_target($cache_sym, $wrapper_name; borrows = $borrows)))
     alive_sym = _generated_local("alive", method.arg_names)
     release_alive = _python_owned_handle(info) ? @_emitted(:(Ref(true))) : alive_sym
     # A `PyResult` method needs a C struct declared next to the wrapper, so it
@@ -785,18 +810,17 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
         object_free_sym = _generated_local("object_free", method.arg_names)
         payload_target = if boxed_ctor
             @_emitted(:(($ptr_sym, $channel_sym, $object_free_sym, $alive_sym, $free_channel_sym, $free_sym) =
-                _ctor_result_target($cache_sym, $wrapper_name, $(ffi_struct_free_symbol(info.ffi_name)), $(plan.free_symbol))))
+                _ctor_result_target($cache_sym, $wrapper_name, $(ffi_struct_free_symbol(info.ffi_name)), $(plan.free_symbol); borrows = $borrows)))
         elseif isempty(plan.free_symbol)
-            @_emitted(:(($ptr_sym, $channel_sym) = _call_target($cache_sym, $wrapper_name)))
+            @_emitted(:(($ptr_sym, $channel_sym) = _call_target($cache_sym, $wrapper_name; borrows = $borrows)))
         else
-            @_emitted(:(($ptr_sym, $channel_sym, $free_sym) = _call_target($cache_sym, $wrapper_name, $(plan.free_symbol))))
+            @_emitted(:(($ptr_sym, $channel_sym, $free_sym) = _call_target($cache_sym, $wrapper_name, $(plan.free_symbol); borrows = $borrows)))
         end
         free_expr = boxed_ctor || !isempty(plan.free_symbol) ? free_sym : @_emitted(:(C_NULL))
         c_sym = _generated_local("c_payload", method.arg_names)
         method.is_static || pushfirst!(preserved, _emitter_local("self"))
         payload_body = @_emitted quote
-            $(bindings...)
-            $payload_target
+            $(_crate_target_bindings(bindings, frame, payload_target)...)
             $c_sym = $(_in_callback_frame(frame, _quote_preserved(preserved,
                                         @_emitted(:(call_rust_function($ptr_sym, $(plan.struct_name),
                                                              $(all_args...)))))))
@@ -819,11 +843,11 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
         # Constructors and `Self`-returning methods allocate, so the object is
         # bound to the generation that ran the call (#277).
         target = @_emitted(:(($ptr_sym, $channel_sym, $free_sym, $alive_sym, $free_channel_sym) =
-                       _ctor_target($cache_sym, $wrapper_name, $(ffi_struct_free_symbol(info.ffi_name)))))
+                       _ctor_target($cache_sym, $wrapper_name, $(ffi_struct_free_symbol(info.ffi_name)); borrows = $borrows)))
         @_emitted(:($struct_name(call_rust_function($ptr_sym, Ptr{Cvoid}, $(all_args...)),
                        $free_sym, $release_alive, $free_channel_sym)))
     elseif ffi_owned_string_return(c)
-        target = @_emitted(:(($ptr_sym, $channel_sym, $free_sym) = _call_target($cache_sym, $wrapper_name, $(c.free_symbol))))
+        target = @_emitted(:(($ptr_sym, $channel_sym, $free_sym) = _call_target($cache_sym, $wrapper_name, $(c.free_symbol); borrows = $borrows)))
         @_emitted(:(_call_rust_owned_string_ptr($ptr_sym, $free_sym, $(all_args...))))
     elseif ffi_borrowed_string_return(c)
         @_emitted(:(_call_rust_borrowed_string_ptr($ptr_sym, $(all_args...))))
@@ -838,8 +862,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     payload_body === nothing && !method.is_static && pushfirst!(preserved, _emitter_local("self"))
     method_label = "$(struct_name_str)::$(method_name)"
     body = payload_body !== nothing ? payload_body : @_emitted quote
-        $(bindings...)
-        $target
+        $(_crate_target_bindings(bindings, frame, target)...)
         _guard_panic($(_in_callback_frame(frame, _quote_preserved(preserved, call))), $channel_sym, $method_label)
     end
 
@@ -1027,14 +1050,16 @@ function _generate_py_result_method_wrapper(info::RustStructInfo, method::RustMe
     method_label = "$(struct_name_str)::$(method_name)"
     payload_free = _payload_free_symbol(helper_owner, (method.ok_abi,))
     cache_sym = _target_cache_name(:m, wrapper_name)
+    borrows = _crate_call_borrows(method; receiver =
+        _python_owned_handle(info) ? nothing : _emitter_local("self"))
     target = if boxed
         @_emitted(:(($ptr_sym, $channel_sym, $free_sym, $alive_sym, $free_channel_sym) =
-              _ctor_target($cache_sym, $wrapper_name, $(ffi_struct_free_symbol(info.ffi_name)))))
+              _ctor_target($cache_sym, $wrapper_name, $(ffi_struct_free_symbol(info.ffi_name)); borrows = $borrows)))
     elseif !isempty(payload_free)
         @_emitted(:(($ptr_sym, $channel_sym, $free_sym) =
-              _call_target($cache_sym, $wrapper_name, $payload_free)))
+              _call_target($cache_sym, $wrapper_name, $payload_free; borrows = $borrows)))
     else
-        @_emitted(:(($ptr_sym, $channel_sym) = _call_target($cache_sym, $wrapper_name)))
+        @_emitted(:(($ptr_sym, $channel_sym) = _call_target($cache_sym, $wrapper_name; borrows = $borrows)))
     end
     free_expr = isempty(payload_free) ? @_emitted(:(C_NULL)) : free_sym
     ok_value = if is_unit
@@ -1046,8 +1071,7 @@ function _generate_py_result_method_wrapper(info::RustStructInfo, method::RustMe
     end
 
     body = @_emitted quote
-        $(bindings...)
-        $target
+        $(_crate_target_bindings(bindings, frame, target)...)
         $c_sym = $(_in_callback_frame(frame, _quote_preserved(preserved,
                                     @_emitted(:(call_rust_function($ptr_sym, $c_result_struct_name,
                                                          $(all_args...)))))))
