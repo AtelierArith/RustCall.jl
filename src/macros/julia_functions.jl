@@ -37,6 +37,9 @@ source text.
 - `ok_abi`/`err_abi`/`inner_abi`: how each `Result`/`Option` payload travels —
   `"string"` for an owned `<fn>_RustCallOwnedString` buffer, `""` as written
   (manifest schema 6, #268)
+- `arg_slice_elements` / `arg_slice_lengths`: per argument, the manifest
+  representation and length slot for `slice` / `slice_mut` borrows (#570);
+  empty for every other argument
 - `callback_args` / `callback_returns`: per argument, for an `arg_abis` entry
   of `"callback"`, the parameter and return spellings of the C-ABI function
   pointer (`Arg.callback_args` / `Arg.callback_return`, #296); empty otherwise
@@ -109,6 +112,8 @@ struct RustFunctionSignature
     # The `#[julia]` struct each argument borrows (#565), aligned with
     # `arg_names`; `nothing` for an argument that borrows none.
     arg_handles::Vector{Union{Nothing, RustHandleArg}}
+    arg_slice_elements::Vector{String}
+    arg_slice_lengths::Vector{String}
 end
 
 function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_types::Vector{String},
@@ -141,7 +146,11 @@ function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_type
                                    Union{Nothing, PyO3Shape}[nothing for _ in arg_names],
                                py_return_shape::Union{Nothing, PyO3Shape} = nothing,
                                arg_handles::Vector{Union{Nothing, RustHandleArg}} =
-                                   Union{Nothing, RustHandleArg}[nothing for _ in arg_names])
+                                   Union{Nothing, RustHandleArg}[nothing for _ in arg_names],
+                               arg_slice_elements::Vector{String} = fill("", length(arg_names)),
+                               arg_slice_lengths::Vector{String} = fill("", length(arg_names)))
+    length(arg_slice_elements) == length(arg_names) && length(arg_slice_lengths) == length(arg_names) ||
+        throw(ArgumentError("slice metadata must have one entry per argument"))
     length(arg_handles) == length(arg_names) ||
         throw(ArgumentError("arg_handles must have one entry per argument"))
     length(arg_abis) == length(arg_types) ||
@@ -161,7 +170,7 @@ function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_type
                           ok_abi, err_abi, inner_abi, python_defaults, python_kinds,
                           isempty(ffi_name) ? name : ffi_name, callback_args,
                           callback_returns, python_path, py_arg_shapes, py_return_shape,
-                          arg_handles)
+                          arg_handles, arg_slice_elements, arg_slice_lengths)
 end
 
 """
@@ -215,7 +224,9 @@ function _string_arg_plan(sig::RustFunctionSignature, escape::Function;
     return _string_arg_plan(sig.arg_names, sig.arg_types, sig.arg_abis, escape;
                             context = sig.name,
                             callbacks = collect(zip(sig.callback_args, sig.callback_returns)),
-                            handles = sig.arg_handles, handle_scope)
+                            handles = sig.arg_handles, handle_scope,
+                            slice_elements = sig.arg_slice_elements,
+                            slice_lengths = sig.arg_slice_lengths)
 end
 
 # Same plan for a struct method (`RustMethod`), whose arguments follow `self`.
@@ -229,6 +240,8 @@ function _string_arg_plan(method::RustMethod, escape::Function;
                             context = method.name,
                             callbacks = collect(zip(method.callback_args, method.callback_returns)),
                             handles = method.arg_handles, handle_scope,
+                            slice_elements = method.arg_slice_elements,
+                            slice_lengths = method.arg_slice_lengths,
                             receiver = (method.is_static || receiver === nothing) ? nothing :
                                        (receiver, method.is_mutable))
 end
@@ -267,18 +280,22 @@ function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
                           callbacks = Tuple{Vector{String}, String}[(String[], "") for _ in arg_names],
                           handles = Union{Nothing, RustHandleArg}[nothing for _ in arg_names],
                           handle_scope::Union{Nothing, Vector{String}} = nothing,
-                          receiver = nothing)
+                          receiver = nothing,
+                          slice_elements = fill("", length(arg_names)),
+                          slice_lengths = fill("", length(arg_names)))
     bindings = Expr[]
     preserved = Symbol[]
     call_args = Any[]
     prefix = _string_temp_prefix(arg_names)
     trampolines = Any[]
     callbacks_seen = 0
+    has_mutable_slice = any(==("slice_mut"), arg_abis)
     # Every Julia handle the call borrows from — `self` first — with the
     # pointer it lends and whether the borrow is `&mut`, for the checks after
     # the loop (#565).
     # A label is a tuple of string literals with the parameter's name a literal
     # of its own, so renaming a parameter (#526) changes nothing else.
+    buffer_borrows = Tuple{Any, Any, Bool, String}[]
     borrows = Tuple{Any, Any, Bool, Tuple}[]
     receiver === nothing ||
         push!(borrows, (first(receiver), @_emitted(:(getfield($(first(receiver)), :ptr))),
@@ -325,14 +342,27 @@ function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
         end
         # The contract, not the spelling, decides how many C slots this
         # position occupies and what goes in them (#276).
-        c = ffi_argument_contract(rust_type; abi = abi)
+        c = ffi_argument_contract(rust_type; abi = abi,
+                                  slice_element = slice_elements[index],
+                                  slice_length = slice_lengths[index])
         # Every argument is a position of the boundary report (#454, #441). A
         # spelling the contract does not cover is *accepted* here — the value
         # is handed to `call_rust_function` below and fails only when called —
         # so the report, not a refusal, is what names it.
         _boundary_examined!(position, rust_type, abi,
                             c.known ? nothing : ffi_describe(rust_type; direction = :argument, abi = abi))
-        if c.abi === :callback
+        if abi in ("slice", "slice_mut")
+            obj = Symbol(_EMITTER_LOCAL_PREFIX, "slice_owner′", index)
+            span = Symbol(_EMITTER_LOCAL_PREFIX, "slice_span′", index)
+            T = _emitted_type(ffi_type_expr(ffi_slice_element_type(slice_elements[index])))
+            helper = GlobalRef(@__MODULE__, :ffi_slice_argument)
+            push!(bindings, :($obj = $arg_sym))
+            push!(bindings, :($span = $helper($obj, $T, $name, $context)))
+            push!(preserved, obj)
+            push!(call_args, @_emitted(:(getfield($span, :ptr))))
+            push!(call_args, @_emitted(:(getfield($span, :len))))
+            push!(buffer_borrows, (span, obj, abi == "slice_mut", name))
+        elseif c.abi === :callback
             # A Julia function handed to Rust as `extern "C" fn` (#296). The
             # pointer's own signature comes from the manifest, and the
             # contract decides whether it can be built — at wrapper
@@ -398,6 +428,12 @@ function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
             push!(call_args, @_emitted(:(pointer($bytes))))
             push!(call_args, @_emitted(:(sizeof($bytes) % Csize_t)))
             c.abi === :ptr_len_cap && push!(call_args, @_emitted(:(sizeof($bytes) % Csize_t)))
+            if has_mutable_slice && abi in ("str", "string")
+                span = Symbol(_EMITTER_LOCAL_PREFIX, "string_span′", index)
+                helper = GlobalRef(@__MODULE__, :_ffi_string_span)
+                push!(bindings, :($span = $helper($bytes)))
+                push!(buffer_borrows, (span, bytes, false, name))
+            end
         elseif c.known && c.abi === :by_value
             push!(call_args, :($(_emitted_type(_ffi_slot_expr(rust_type, c)))($arg_sym)))
         else
@@ -429,6 +465,19 @@ function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
         push!(bindings, @_emitted(:($p == $q && throw(ArgumentError(string(
             "`", $context, "` cannot borrow one Rust object as ", $(plabel...), " and ",
             $(qlabel...), ": a `&mut` borrow may not alias another borrow"))))))
+    end
+    for i in eachindex(buffer_borrows), j in (i + 1):length(buffer_borrows)
+        (p, _, pmut, pname), (q, _, qmut, qname) = buffer_borrows[i], buffer_borrows[j]
+        pmut || qmut || continue
+        helper = GlobalRef(@__MODULE__, :_ffi_check_slice_overlap)
+        push!(bindings, :($helper($p, $q, $pname, $qname, $context)))
+    end
+    for (span, _, mutable, name) in buffer_borrows
+        for (_, ptr, handle_mutable, label) in borrows
+            mutable || handle_mutable || continue
+            helper = GlobalRef(@__MODULE__, :_ffi_check_slice_handle_overlap)
+            push!(bindings, :($helper($span, $ptr, $name, $context)))
+        end
     end
     frame = nothing
     if !isempty(trampolines)
@@ -599,7 +648,7 @@ rooted for the call (#296). The plain wrapper has no `GC.@preserve` region.
 function _uses_string_ffi(sig::RustFunctionSignature)
     _ffi_function_return(sig).aggregate_type === nothing || return true
     # A borrowed `#[julia]` struct keeps its handle rooted for the call (#565).
-    any(_is_handle_abi, sig.arg_abis) && return true
+    any(abi -> _is_handle_abi(abi) || abi in ("slice", "slice_mut"), sig.arg_abis) && return true
     return any(zip(sig.arg_types, sig.arg_abis)) do (rust_type, abi)
         c = ffi_argument_contract(rust_type; abi = abi)
         c.abi === :ptr_len || c.abi === :ptr_len_cap || c.abi === :callback
@@ -796,6 +845,9 @@ end
 # neither enter Rust nor leave a callback frame behind.
 function _inline_handle_target_bindings!(bindings, sig, target, frame, snapshot)
     checks = Expr[snapshot]
+    if _uses_slice_ffi(sig)
+        push!(checks, @_emitted(:(RustCall._require_slice_args_abi($target.handle, $(sig.symbol)))))
+    end
     for (i, (abi, handle)) in enumerate(zip(sig.arg_abis, sig.arg_handles))
         _is_handle_abi(abi) && handle !== nothing || continue
         obj = Symbol(_EMITTER_LOCAL_PREFIX, "handle′", i)
@@ -829,7 +881,7 @@ function _generate_inline_string_wrapper(sig, func_name, symbol_str, arg_syms)
             RustCall.module_symbol_library(@__MODULE__, $symbol_str), $symbol_str;
             free_symbol = $(c.free_symbol)))
     else
-        :($channel_sym = RustCall.cached_call_target($string_cache, @__MODULE__, $symbol_str))
+        :($channel_sym = RustCall.cached_call_target($string_cache, @__MODULE__, $symbol_str; slice_args = $(_uses_slice_ffi(sig))))
     end
     _inline_handle_target_bindings!(bindings, sig, channel_sym, frame, snapshot)
     call = if ffi_owned_string_return(c)

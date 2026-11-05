@@ -1,4 +1,4 @@
-schema_version = "0.9"
+schema_version = "0.10"
 mode = "inline"
 
 [[functions]]

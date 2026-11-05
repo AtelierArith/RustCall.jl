@@ -131,10 +131,14 @@ The fast path is an atomic load, an integer comparison and nothing else — no
 lock, which is what lets `@rust` calls from several threads proceed at once
 instead of queueing on `REGISTRY_LOCK`.
 """
-function cached_call_target(cache::CallTargetCache, mod::Module, func_name::String)
+function cached_call_target(cache::CallTargetCache, mod::Module, func_name::String;
+                            slice_args::Bool = false)
     hit = cached_target_hit(cache)
-    hit === nothing || return hit
-    return _refresh_call_target!(cache, mod, func_name)
+    if hit !== nothing
+        slice_args && _require_slice_args_abi(hit.handle, func_name)
+        return hit
+    end
+    return _refresh_call_target!(cache, mod, func_name, slice_args)
 end
 
 """
@@ -192,7 +196,7 @@ end
 # Out of line: the hot path above should be small enough to inline into the
 # generated wrapper, and this half runs only when the epoch moved.
 @noinline function _refresh_call_target!(cache::CallTargetCache, mod::Module,
-                                         func_name::String)
+                                         func_name::String, slice_args::Bool = false)
     # Sampled **before** resolving. A write landing between here and the
     # snapshot leaves this entry stamped with the older epoch, so the next call
     # re-resolves; sampling afterwards could stamp a pre-write snapshot with the
@@ -210,6 +214,7 @@ end
     # memoizes a lookup on the same handle, so every snapshot already kept
     # stays exactly as valid as it was.
     target = resolve_call_target(module_symbol_library(mod, func_name), func_name)
+    slice_args && _require_slice_args_abi(target.handle, func_name)
     return publish_call_target!(cache, epoch, target)
 end
 

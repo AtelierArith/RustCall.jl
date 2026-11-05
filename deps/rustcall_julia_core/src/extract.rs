@@ -71,6 +71,14 @@ pub fn typed_arg(pt: &syn::PatType) -> Arg {
         rust_type: type_to_string(&pt.ty),
         abi: arg_abi(&pt.ty).to_string(),
         handle: String::new(),
+        slice_element: crate::slices::shape(&pt.ty)
+            .map(|s| s.2.to_string())
+            .unwrap_or_default(),
+        slice_length: if crate::slices::shape(&pt.ty).is_some() {
+            "usize".into()
+        } else {
+            String::new()
+        },
         callback_args,
         callback_return,
         python_default: String::new(),
@@ -170,7 +178,13 @@ pub fn method_return_shape(
 
 /// The manifest `abi` column of an argument type (see [`Arg::abi`]).
 pub fn arg_abi(ty: &syn::Type) -> &'static str {
-    if is_string_type(ty) {
+    if let Some((mutable, _, _)) = crate::slices::shape(ty) {
+        if mutable {
+            "slice_mut"
+        } else {
+            "slice"
+        }
+    } else if is_string_type(ty) {
         "string"
     } else if is_str_ref_type(ty) {
         "str"
@@ -402,7 +416,19 @@ pub fn function_entry(
         cfg_features: crate::cfg::predicate_features(&effective_cfg),
         is_generic,
         type_params: generics_to_type_params(&func.sig.generics),
-        args: fn_args(&func.sig),
+        args: {
+            let mut args = fn_args(&func.sig);
+            if !wrapped {
+                for arg in &mut args {
+                    if matches!(arg.abi.as_str(), "slice" | "slice_mut") {
+                        arg.abi.clear();
+                        arg.slice_element.clear();
+                        arg.slice_length.clear();
+                    }
+                }
+            }
+            args
+        },
         return_type,
         return_kind,
         return_abi: return_abi.to_string(),

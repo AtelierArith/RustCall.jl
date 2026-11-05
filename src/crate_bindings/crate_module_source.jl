@@ -144,6 +144,10 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     push!(lines, "end")
     push!(lines, "")
     push!(lines, "function _required_symbol(handle::rustcall′Base.Ptr{rustcall′Base.Cvoid}, name::rustcall′Base.String)::rustcall′Base.Ptr{rustcall′Base.Cvoid}")
+    slice_symbols = _slice_arg_symbols(info)
+    if !isempty(slice_symbols)
+        push!(lines, "    rustcall′Base.in(name, $(repr(slice_symbols))) && rustcall′RustCall._require_slice_args_abi(handle, name)")
+    end
     push!(lines, "    ptr = _symbol(handle, name)")
     push!(lines, "    ptr == rustcall′Base.C_NULL && rustcall′Base.error(\"The Rust library '\" * _LIB_NAME *")
     push!(lines, "                           \"' does not export '\" * name * \"'.\")")

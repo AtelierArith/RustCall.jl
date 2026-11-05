@@ -444,3 +444,22 @@ function _submodule_code(node::ModuleNode; strict::Symbol = _ffi_strict())
     end
     return lines
 end
+
+# Only symbols with an emitted, concrete wrapper require the slice producer
+# marker. Refused items retain their argument metadata in a manifest but own
+# no wrapper symbol (which an unrelated scalar function may legitimately use).
+function _slice_arg_symbols(info::CrateInfo)
+    symbols = String[]
+    for func in info.julia_functions
+        _binds_julia_wrapper(func) && _uses_slice_ffi(func) || continue
+        push!(symbols, func.symbol)
+    end
+    for owner in info.julia_structs
+        _binds_julia_struct(owner) && isempty(owner.type_params) || continue
+        for method in owner.methods
+            isempty(method.skip_reason) && _uses_slice_ffi(method) || continue
+            push!(symbols, method_wrapper_symbol(owner.ffi_name, method))
+        end
+    end
+    return Tuple(sort!(unique!(symbols)))
+end

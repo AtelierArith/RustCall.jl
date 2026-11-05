@@ -12,7 +12,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The manifest compatibility identifier: the **`MAJOR.MINOR` of the RustCall
-/// release** this crate ships in, so `"0.9"` for every v0.9.x. Julia derives
+/// release** this crate ships in, so `"0.10"` for every v0.10.x. Julia derives
 /// the same string from its `Project.toml` and refuses a manifest whose
 /// `schema_version` differs (#372).
 ///
@@ -160,7 +160,7 @@ use serde::{Deserialize, Serialize};
 ///   payload that cannot cross the C ABI, a `Self` the wrapper cannot spell,
 ///   a lowered string whose lifetime the wrapper cannot honour — decided by
 ///   [`crate::refusal`], the one place the `compile_error!` comes from too.
-pub const SCHEMA_VERSION: &str = "0.9";
+pub const SCHEMA_VERSION: &str = "0.10";
 
 #[cfg(test)]
 mod schema_version_tests {
@@ -278,6 +278,10 @@ pub mod skip_reason {
     /// call cannot end inside the wrapper (#482, #503). The argument follows
     /// the colon.
     pub const LOWERED_STR_LIFETIME: &str = "lowered_str_lifetime";
+    /// A numeric slice with an unsupported representation or a signature
+    /// outside the synchronous call-scoped contract (#570), including generic
+    /// and async wrappers. The argument or signature category follows the colon.
+    pub const SLICE_SIGNATURE: &str = "slice_signature";
     /// A method whose typed receiver the wrapper cannot read — a type alias,
     /// a smart pointer, or the type under another spelling than the impl
     /// header's (`crate::receiver`, #497, #509). Its wrapper calls the method
@@ -296,6 +300,7 @@ pub mod skip_reason {
     /// carrying one of them gets no wrapper and claims no symbol; Julia binds
     /// nothing for it and the boundary report lists it.
     pub const CODEGEN_REFUSALS: &[&str] = &[
+        SLICE_SIGNATURE,
         UNSAFE_FN,
         GENERIC_SIGNATURE,
         IMPL_TRAIT,
@@ -442,6 +447,8 @@ pub struct Arg {
     /// How the wrapper receives the argument: `""` as written (`rust_type`),
     /// `"string"` (`String`: `(ptr, len)` bytes copied into an owned String),
     /// `"str"` (`&str`, any lifetime: `(ptr, len)` bytes borrowed),
+    /// `"slice"` / `"slice_mut"` (`&[T]` / `&mut [T]`: a typed pointer and
+    /// `usize` length, with [`Arg::slice_element`] / [`Arg::slice_length`]; #570),
     /// `"callback"` (a C-ABI function pointer, passed as written; #296),
     /// `"handle"` / `"handle_mut"` (`&T` / `&mut T` of a `#[julia]` struct
     /// of this scan, [`Arg::handle`]; #565).
@@ -458,6 +465,12 @@ pub struct Arg {
     /// object as before and fails at the call, as it did.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub handle: String,
+    /// Canonical initialized primitive representation for `slice` / `slice_mut`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub slice_element: String,
+    /// Length slot representation (`usize`, the C ABI's size_t).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub slice_length: String,
     /// For `abi == "callback"`: the parameter spellings of the function
     /// pointer (`extern "C" fn(i64, f64) -> i64` → `["i64", "f64"]`), so the
     /// consumer builds the callback from the manifest rather than from Rust

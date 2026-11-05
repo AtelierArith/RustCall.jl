@@ -1493,6 +1493,8 @@ function manifest_function_signatures(manifest::Dict; only_attributed::Bool = tr
                                                       for a in args],
             py_return_shape = _manifest_py_shape(f, "py_return"),
             arg_handles = _manifest_arg_handles(args, handles),
+            arg_slice_elements = String[_mstr(a, "slice_element") for a in args],
+            arg_slice_lengths = String[_mstr(a, "slice_length") for a in args],
         ))
     end
     return sigs
@@ -1609,6 +1611,8 @@ function _manifest_method(m, handles::Dict{String, RustHandleArg} = Dict{String,
                                                   for a in args],
         py_return_shape = _manifest_py_shape(m, "py_return"),
         arg_handles = _manifest_arg_handles(args, handles),
+        arg_slice_elements = String[_mstr(a, "slice_element") for a in args],
+        arg_slice_lengths = String[_mstr(a, "slice_length") for a in args],
     )
 end
 

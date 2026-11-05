@@ -274,9 +274,10 @@ end
             @test !occursin(r"(?<![.\w])ffi_string_argument\(", code)
         end
 
-        # The message must not advertise a workaround the pipeline does not
-        # have: `&[u8]` slice arguments are not lowered by `#[julia]`.
-        @test !occursin("slice argument", msg) || occursin("is not lowered", msg)
+        # Binary data now has an explicit checked, contiguous slice path
+        # (#570); keep the raw-pointer alternative visible as well.
+        @test occursin("&[u8]", msg)
+        @test occursin("contiguous", msg)
         @test occursin("isvalid", msg)
         @test occursin("*const u8", msg)
 

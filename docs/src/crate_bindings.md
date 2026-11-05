@@ -1004,10 +1004,10 @@ library; see [Panics, Visibility and Lifetime](panics.md) for the full contract.
 ## Regenerating bindings after an upgrade
 
 Files written by `write_bindings_to_file` carry a format marker
-(`# Bindings format: 0.9`). Since #489 the format **is the `MAJOR.MINOR` of the
+(`# Bindings format: 0.10`). Since #489 the format **is the `MAJOR.MINOR` of the
 RustCall release** that wrote the file — `RustCall.BINDINGS_FORMAT_VERSION`,
 read from `Project.toml` — and the file checks it when it is loaded
-(`const _BINDINGS_FORMAT = RustCall.check_bindings_format("0.9")`, and again in
+(`const _BINDINGS_FORMAT = RustCall.check_bindings_format("0.10")`, and again in
 its `__init__`):
 
 - **Same `MAJOR.MINOR`, any patch:** the file loads. A patch release never
@@ -1072,11 +1072,111 @@ file at version `2` or below still loads — it uses only API that still exists 
 but does not get the unload, panic-containment, lifetime, UTF-8 or by-value
 guarantees described above.
 
+## Borrowing numeric slices
+
+A non-generic `#[julia]` signature opts into checked, non-copying lowering of
+primitive `&[T]` and `&mut [T]` arguments. For example:
+
+```rust
+#[julia]
+pub fn transform(input: &[f64], output: &mut [f64]) -> Result<(), String> {
+    if input.len() != output.len() {
+        return Err("length mismatch".into());
+    }
+    for (x, y) in input.iter().zip(output) {
+        *y = x * 2.0;
+    }
+    Ok(())
+}
+```
+
+```julia
+input = [1.0, 2.0, 3.0]
+output = zeros(3)
+bindings.transform(input, output)  # output now contains [2.0, 4.0, 6.0]
+```
+
+Use the generated Julia function (`transform(input, output)`) for this checked
+lowering, including the functions emitted by `@rust_crate` and
+`write_bindings_to_file`. Raw `@rust`/`ccall` access to the exported C symbol is
+the manual ABI interface: it does not synthesize these slice checks or length
+slots, and its caller must uphold the complete pointer/length contract.
+
+The manifest records each argument's `abi` (`slice` or `slice_mut`),
+`slice_element` representation, and `slice_length = "usize"`. Julia validates
+these fields and the actual array element type; it does not infer a Rust
+layout from a raw pointer. The generated C shim receives a primitive pointer
+and a `usize` length (`size_t`), then reconstructs the Rust slice inside its
+panic boundary. Rust's native fat-pointer ABI never crosses the boundary.
+Every slice-bearing wrapper exports a `<symbol>_slice_ptr_len_v1` producer
+marker. Bindings verify its presence on the captured library image before
+entering Rust, including constructors and every return shape. A crate built
+with an older `rustcall_julia_macros` is refused: update that dependency to
+`0.7.0` or later, rebuild, and regenerate bindings. Slice-free functions do
+not require the new marker.
+
+The supported layouts are finite:
+
+| Rust element | Julia element |
+|:--|:--|
+| `f32`, `f64` | `Float32`, `Float64` |
+| `i8`, `i16`, `i32`, `i64` | `Int8`, `Int16`, `Int32`, `Int64` |
+| `u8`, `u16`, `u32`, `u64` | `UInt8`, `UInt16`, `UInt32`, `UInt64` |
+| `isize`, `usize` | `Int`, `UInt` |
+| `num_complex::Complex<f32>`, `num_complex::Complex32` | `ComplexF32` |
+| `num_complex::Complex<f64>`, `num_complex::Complex64` | `ComplexF64` |
+
+Complex values use the `num_complex` C layout, real component followed by
+imaginary component. Use the fully qualified Rust complex spelling shown in
+the table. User aliases, `bool`, `char`, nested slices, arbitrary structs and
+other element layouts are unsupported. There is no dtype conversion.
+
+Built-in `StridedVector{T}` storage with stride one is borrowed directly: a
+dense vector, a contiguous vector view (including a matrix column), or a
+compatible reinterpret vector. Multidimensional arrays, arbitrary custom
+`AbstractVector` implementations, reversed views and non-unit-stride views are
+rejected; this mode never silently stages a copy. Before entering Rust, Julia checks the element representation,
+length multiplication, address span and alignment, and roots the array and its
+owner through the call. All elements must already be initialized, including
+mutable output storage: use `zeros(T, n)` or initialize every element before
+borrowing. `Vector{T}(undef, n)` is not a write-only slice contract. Empty slices use a non-null aligned dangling pointer;
+no element is read. The Rust shim checks its pointer/length arithmetic before
+constructing a reference.
+
+All supplied slice ranges are checked together. Shared/shared overlap is
+allowed. A mutable slice overlapping another live buffer borrow is rejected,
+including identical arrays, partial overlap and overlapping reinterpret
+views. These checks cover the arguments of this call, not arbitrary references
+held elsewhere. Rust also checks the complete inline extent of borrowed
+receiver/handle objects before constructing slice references. An opaque
+object's separately allocated interior buffers are not discoverable from its
+object address; the caller must exclude hidden aliases, including aliases
+created with `unsafe_wrap`. Raw pointers remain an explicit unchecked interface: neither
+allocation provenance nor the validity of manually constructed unsafe array
+owners can be established from their addresses.
+
+The scope ends at the synchronous return from Rust. Static or otherwise
+retaining lifetimes, borrowed returns from a lowered slice, and generic slice
+signatures are refused. Rust must not retain these pointers, launch background
+work that uses them, or use them after returning. GC rooting keeps storage
+alive; it does **not** lock that storage. The caller must prevent another Julia
+task, OS thread or callback (including reentrant RustCall calls) from accessing
+a mutable borrow, and prevent mutation, resizing or freeing of a shared borrow until the call finishes.
+
+Mutable borrows write the caller's storage directly. A returned `Err`, a
+caught Rust panic or a Julia callback exception can leave it partly changed;
+there is no rollback or success-only copy-back. Use
+`RustCall.with_numeric_buffer(...; write=true)` when explicit staging is
+wanted, and throw on an error result before its callback returns normally to
+skip copy-back. Owned `Vec` returns and multidimensional stride descriptors
+are separate interfaces.
+
 ## Scoped numeric buffers
 
 `RustCall.with_numeric_buffer` is a copying helper for existing `#[julia]`
-methods with a primitive pointer and length. It does not lower Rust slices or
-return a Rust-owned `Vec`. For a Rust method `sum(*const f64, usize)`, for
+methods with a primitive pointer and length. The helper itself does not lower
+Rust slices or return a Rust-owned `Vec`; signature-aware slice borrowing is
+described above. For a Rust method `sum(*const f64, usize)`, for
 example:
 
 ```julia

@@ -517,6 +517,9 @@ function ffi_type_expr(T::Type)
     if T <: Ptr && T !== Ptr && isconcretetype(T)
         return Expr(:curly, :Ptr, ffi_type_expr(eltype(T)))
     end
+    if T <: Complex && isconcretetype(T)
+        return Expr(:curly, :Complex, ffi_type_expr(T.parameters[1]))
+    end
     # `nameof`, not `Symbol(T)`: the latter renders a module-qualified string for
     # types outside `Base`, which is not a `Symbol` any generated code can use.
     return T isa DataType ? nameof(T) : Symbol(T)
@@ -688,7 +691,7 @@ ffi_method_symbol(struct_name::AbstractString, method_name::AbstractString) =
     string(FFI_SYMBOL_PREFIX, struct_name, "_", method_name)
 
 """
-    ffi_argument_contract(rust_type; abi = "") -> FFIContract
+    ffi_argument_contract(rust_type; abi = "", slice_element = "", slice_length = "") -> FFIContract
 
 The contract for one argument position. Multi-word values are **expanded into
 separate argument slots** here, because that is how the generated wrapper takes
@@ -698,7 +701,9 @@ them.
 the ABI derived from the Rust spelling, which is what makes the manifest
 normative (#270). It is also the *only* thing that selects the lowered string
 form: `ffi_argument_contract("String")` is unknown, `abi = "string"` makes it
-`:ptr_len`.
+`:ptr_len`. A `slice` / `slice_mut` manifest entry additionally requires its
+`slice_element` representation and `slice_length = "usize"`; its pointer slot
+is typed by that representation, never inferred from the Rust spelling.
 
 When the position cannot be described the returned contract has `known = false`,
 empty `ccall_types` and `:unknown` ownership — callers must raise rather than
@@ -711,8 +716,43 @@ c.aggregate_type  # nothing
 c.ownership       # :owned_by_julia  (Julia's buffer, rooted for the call)
 ```
 """
-function ffi_argument_contract(rust_type::AbstractString; abi::AbstractString = "")
+function ffi_argument_contract(rust_type::AbstractString; abi::AbstractString = "",
+                               slice_element::AbstractString = "",
+                               slice_length::AbstractString = "")
+    if abi in ("slice", "slice_mut")
+        slice_length == "usize" || throw(ArgumentError(
+            "slice manifest must declare slice_length = usize"))
+        T = ffi_slice_element_type(slice_element)
+        slots = Type[Ptr{T}, Csize_t]
+        return FFIContract(String(rust_type), :argument, :ptr_len, slots,
+                           nothing, copy(slots), AbstractVector{T}, :borrowed, nothing, true)
+    end
     return _ffi_contract(rust_type, :argument, abi, nothing, nothing, nothing)
+end
+
+# A manifest describes the wrapper the selected extractor would generate; an
+# external crate can still have been built with an older proc macro. Check the
+# producer on the captured image before calling a pointer/length slice shim.
+function _require_slice_args_abi(handle::Ptr{Cvoid}, symbol::AbstractString)
+    marker = Libdl.dlsym(handle, string(symbol, "_slice_ptr_len_v1"); throw_error = false)
+    marker === nothing || marker == C_NULL || return nothing
+    error("incompatible numeric slice argument ABI for $symbol; rebuild the crate with rustcall_julia_macros >= 0.7.0")
+end
+
+_uses_slice_ffi(signature) = any(abi -> abi in ("slice", "slice_mut"), signature.arg_abis)
+
+# The manifest's finite element vocabulary. Primitive layouts come from the
+# same scalar table as every other FFI position; complex slices use the
+# repr(C) pair of matching re/im fields guaranteed by num_complex.
+function ffi_slice_element_type(element::AbstractString)
+    element == "complex32" && return ComplexF32
+    element == "complex64" && return ComplexF64
+    element in ("i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
+                "isize", "usize", "f32", "f64") ||
+        throw(ArgumentError("unsupported slice manifest element representation: $element"))
+    entry = ffi_lookup(element)
+    entry === nothing && throw(ArgumentError("missing scalar layout for slice element: $element"))
+    return entry.surface_type
 end
 
 """
@@ -1288,6 +1328,7 @@ const RUST_CODEGEN_REFUSALS = Base.ImmutableDict(Base.ImmutableDict{String, Stri
     "unspellable_self" => "unspellable `Self` in",   # #482
     "lowered_str_borrow" => "borrowed `&str` return of", # #484
     "lowered_str_lifetime" => "`&str` lifetime of",  # #482
+    "slice_signature" => "unsupported slice signature of", # #570
     "receiver_type" => "receiver type of",           # #497, #509
     # v0.7.1's name for `receiver_type` (trait impls only): no longer emitted,
     # kept so a manifest of that extractor still reads as refused (schema 0.7
@@ -1691,8 +1732,8 @@ function _ffi_string_argument(value, descriptor::AbstractString, context::Abstra
         "`isvalid(s)` says whether a string is UTF-8, and `String(transcode(" *
         "UInt8, transcode(UInt16, s)))` or an explicit re-encode from the bytes' " *
         "real encoding produces one that is. To send bytes that are not text at " *
-        "all, take them as a `*const u8` plus a length on the Rust side; a " *
-        "`&[u8]` slice argument is not lowered by the `#[julia]` pipeline."))
+        "all, use a `#[julia]` argument of type `&[u8]` and pass a contiguous " *
+        "`Vector{UInt8}`, or use an explicit `*const u8` and length."))
 end
 
 # By-value aggregates are opt-in (issue #245 item 3)

@@ -111,6 +111,9 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
     # `fn getfield`, `struct RustCall` — cannot capture it (#528). `Libdl` is
     # reached through RustCall, never imported by the caller's environment
     # (#339).
+    slice_symbols = _slice_arg_symbols(info)
+    slice_check = isempty(slice_symbols) ? nothing :
+        @_emitted(:(name in $slice_symbols && RustCall._require_slice_args_abi(handle, name)))
     module_body = @_emitted quote
         # The bindings format this module was generated for, checked by the
         # RustCall that loads it (#489). Both emitters declare it, so the
@@ -222,6 +225,7 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
         end
 
         function _required_symbol(handle::Ptr{Cvoid}, name::String)::Ptr{Cvoid}
+            $slice_check
             ptr = _symbol(handle, name)
             ptr == C_NULL && error("The Rust library '" * _LIB_NAME *
                                    "' does not export '" * name * "'.")

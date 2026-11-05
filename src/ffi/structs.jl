@@ -71,6 +71,8 @@ A method of a `#[julia]` struct as recorded in the manifest.
   states none; see `_method_string_owner`
 - `arg_names`: the Julia parameter names of the arguments after `self` —
   `julia_parameter_names` of the Rust names, applied by the constructor (#516)
+- `arg_slice_elements` / `arg_slice_lengths`: per argument, the manifest
+  representation and length slot for `slice` / `slice_mut` borrows (#570)
 - `arg_handles`: per argument, the `#[julia]` struct it borrows
   (`RustHandleArg`, #565), or `nothing`
 """
@@ -151,6 +153,8 @@ struct RustMethod
     # The `#[julia]` struct each argument borrows (#565), aligned with
     # `arg_names`; `nothing` for an argument that borrows none.
     arg_handles::Vector{Union{Nothing, RustHandleArg}}
+    arg_slice_elements::Vector{String}
+    arg_slice_lengths::Vector{String}
 end
 
 function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::Vector{String},
@@ -181,9 +185,13 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
                         Union{Nothing, PyO3Shape}[nothing for _ in arg_names],
                     py_return_shape::Union{Nothing, PyO3Shape} = nothing,
                     arg_handles::Vector{Union{Nothing, RustHandleArg}} =
-                        Union{Nothing, RustHandleArg}[nothing for _ in arg_names])
+                        Union{Nothing, RustHandleArg}[nothing for _ in arg_names],
+                    arg_slice_elements::Vector{String} = fill("", length(arg_names)),
+                    arg_slice_lengths::Vector{String} = fill("", length(arg_names)))
     length(python_defaults) == length(arg_names) ||
         throw(ArgumentError("python_defaults must have one entry per argument"))
+    length(arg_slice_elements) == length(arg_names) && length(arg_slice_lengths) == length(arg_names) ||
+        throw(ArgumentError("slice metadata must have one entry per argument"))
     length(arg_handles) == length(arg_names) ||
         throw(ArgumentError("arg_handles must have one entry per argument"))
     length(python_kinds) == length(arg_names) ||
@@ -197,7 +205,7 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
                return_kind, ok_type, err_type, inner_type, ok_abi, err_abi, inner_abi,
                string_owner, attribute, python_defaults, python_kinds,
                callback_args, callback_returns, is_classmethod, generic_wrapper_name,
-               trait_path, julia_name, py_arg_shapes, py_return_shape, arg_handles)
+               trait_path, julia_name, py_arg_shapes, py_return_shape, arg_handles, arg_slice_elements, arg_slice_lengths)
 end
 
 # `julia_method_name(m)`, the name a method is bound under, is in `julia_names.jl` (#514).
@@ -528,7 +536,8 @@ function _inline_method_borrows(method; receiver = :self)
     return Expr(:tuple, objects...)
 end
 
-function _check_inline_call_borrows(target, borrows)
+function _check_inline_call_borrows(target, borrows; slice_symbol::AbstractString = "")
+    isempty(slice_symbol) || _require_slice_args_abi(target.handle, slice_symbol)
     for obj in borrows
         obj isa Ptr{Cvoid} && continue
         getfield(obj, :alive) === target.alive || throw(ArgumentError(
@@ -572,7 +581,8 @@ function _inline_boxed_result_body(info::RustStructInfo, m::RustMethod,
     snapshot = quote
         $target_sym = RustCall._check_inline_call_borrows(
             RustCall.resolve_call_target($lib, $wrapper_name;
-                free_symbol = RustCall.ffi_struct_free_symbol($struct_stem)), $borrows)
+                free_symbol = RustCall.ffi_struct_free_symbol($struct_stem)), $borrows;
+            slice_symbol = $(_uses_slice_ffi(m) ? wrapper_name : ""))
         RustCall.Libdl.dlsym($target_sym.handle, $wrapper_name * "_boxed_result_v1")
         $payload_sym = isempty($payload_free) ? C_NULL : RustCall.Libdl.dlsym($target_sym.handle, $payload_free)
     end
@@ -902,7 +912,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                         # One snapshot for the whole construction: the wrapper
                         # that allocates, its panic channel, and the destructor
                         # and liveness flag the object will carry (#277).
-                        ptr, tgt = $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) _call_rust_constructor(lib, $wrapper_name, $struct_stem, $(expanded_call_args...); borrows = $borrows))))
+                        ptr, tgt = $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) _call_rust_constructor(lib, $wrapper_name, $struct_stem, $(expanded_call_args...); borrows = $borrows, slice_args = $(_uses_slice_ffi(m))))))
                         return $esc_struct(ptr, tgt.lib_name, tgt.free_ptr, tgt.alive, tgt.free_channel)
                     end
                 end)
@@ -918,7 +928,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                         function $fname(::Type{$esc_struct}, $(esc_args...))
                             $(bindings...)
                             lib = RustCall.module_symbol_library(@__MODULE__, $wrapper_name)
-                            return $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) _call_rust_owned_string(lib, $wrapper_name, $free_fn, $(expanded_call_args...); borrows = $borrows))))
+                            return $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) _call_rust_owned_string(lib, $wrapper_name, $free_fn, $(expanded_call_args...); borrows = $borrows, slice_args = $(_uses_slice_ffi(m))))))
                         end
                     end)
                 elseif ffi_borrowed_string_return(mc)
@@ -926,7 +936,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                         function $fname(::Type{$esc_struct}, $(esc_args...))
                             $(bindings...)
                             lib = RustCall.module_symbol_library(@__MODULE__, $wrapper_name)
-                            return $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) _call_rust_borrowed_string(lib, $wrapper_name, $(expanded_call_args...); borrows = $borrows))))
+                            return $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) _call_rust_borrowed_string(lib, $wrapper_name, $(expanded_call_args...); borrows = $borrows, slice_args = $(_uses_slice_ffi(m))))))
                         end
                     end)
                 else
@@ -939,7 +949,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                         function $fname(::Type{$esc_struct}, $(esc_args...))
                             $(bindings...)
                             lib = RustCall.module_symbol_library(@__MODULE__, $wrapper_name)
-                            return $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) _call_rust_method(lib, $wrapper_name, C_NULL, $jl_ret_type, $(expanded_call_args...); borrows = $borrows))))
+                            return $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) _call_rust_method(lib, $wrapper_name, C_NULL, $jl_ret_type, $(expanded_call_args...); borrows = $borrows, slice_args = $(_uses_slice_ffi(m))))))
                         end
                     end)
                 end
@@ -966,14 +976,14 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                 push!(exprs, quote
                     function $fname(self::$esc_struct, $(esc_args...))
                         $(bindings...)
-                        return $(_in_callback_frame(frame, :(GC.@preserve self $(preserved...) _call_rust_owned_string(self.lib_name, $wrapper_name, $free_fn, self.ptr, $(expanded_call_args...); borrows = $borrows))))
+                        return $(_in_callback_frame(frame, :(GC.@preserve self $(preserved...) _call_rust_owned_string(self.lib_name, $wrapper_name, $free_fn, self.ptr, $(expanded_call_args...); borrows = $borrows, slice_args = $(_uses_slice_ffi(m))))))
                     end
                 end)
             elseif ffi_borrowed_string_return(mc)
                 push!(exprs, quote
                     function $fname(self::$esc_struct, $(esc_args...))
                         $(bindings...)
-                        return $(_in_callback_frame(frame, :(GC.@preserve self $(preserved...) _call_rust_borrowed_string(self.lib_name, $wrapper_name, self.ptr, $(expanded_call_args...); borrows = $borrows))))
+                        return $(_in_callback_frame(frame, :(GC.@preserve self $(preserved...) _call_rust_borrowed_string(self.lib_name, $wrapper_name, self.ptr, $(expanded_call_args...); borrows = $borrows, slice_args = $(_uses_slice_ffi(m))))))
                     end
                 end)
             else
@@ -995,10 +1005,10 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                             # A `Self`-returning method allocates, so its result
                             # is bound to the generation that ran it, exactly
                             # like a constructor (#277).
-                            res, tgt = $(_in_callback_frame(frame, :(GC.@preserve self $(preserved...) _call_rust_constructor(self.lib_name, $wrapper_name, $struct_stem, self.ptr, $(expanded_call_args...); borrows = $borrows))))
+                            res, tgt = $(_in_callback_frame(frame, :(GC.@preserve self $(preserved...) _call_rust_constructor(self.lib_name, $wrapper_name, $struct_stem, self.ptr, $(expanded_call_args...); borrows = $borrows, slice_args = $(_uses_slice_ffi(m))))))
                             return $esc_struct(res, tgt.lib_name, tgt.free_ptr, tgt.alive, tgt.free_channel)
                         else
-                            return $(_in_callback_frame(frame, :(GC.@preserve self $(preserved...) _call_rust_method(self.lib_name, $wrapper_name, self.ptr, $jl_ret_type, $(expanded_call_args...); borrows = $borrows))))
+                            return $(_in_callback_frame(frame, :(GC.@preserve self $(preserved...) _call_rust_method(self.lib_name, $wrapper_name, self.ptr, $jl_ret_type, $(expanded_call_args...); borrows = $borrows, slice_args = $(_uses_slice_ffi(m))))))
                         end
                     end
                 end)
@@ -1220,7 +1230,8 @@ function _inline_method_payload_wrapper(info::RustStructInfo, m::RustMethod, fna
     body(lib, leading_args, preserve) = quote
         $(_inline_method_target_bindings(bindings, frame,
             :($tgt = RustCall._check_inline_call_borrows(
-                RustCall.resolve_call_target($lib, $wrapper_name; free_symbol = $free_sym), $borrows)))...)
+                RustCall.resolve_call_target($lib, $wrapper_name; free_symbol = $free_sym), $borrows;
+                slice_symbol = $(_uses_slice_ffi(m) ? wrapper_name : ""))))...)
         $c = $(_in_callback_frame(frame, :(GC.@preserve $(preserve...) RustCall.call_rust_function(
             $tgt.func_ptr, $aggregate, $(leading_args...), $(call_args...)))))
         # The `panicked()` sentinel carries an uninitialized payload, so the
@@ -1519,9 +1530,10 @@ afterwards — is a second lookup by library name, and a reload in between binds
 pointer from the retired image to the replacement's `free` (#277).
 """
 function _call_rust_constructor(lib_name::String, func_name::String,
-                                struct_name::AbstractString, args...; borrows = ())
+                                struct_name::AbstractString, args...; borrows = (), slice_args::Bool = false)
     target = _check_inline_call_borrows(resolve_call_target(lib_name, func_name;
-                                 free_symbol = ffi_struct_free_symbol(struct_name)), borrows)
+                                 free_symbol = ffi_struct_free_symbol(struct_name)), borrows;
+        slice_symbol = slice_args ? func_name : "")
     ptr = guard_rust_panic_ptr(call_rust_function(target.func_ptr, Ptr{Cvoid}, args...),
                                target.channel, func_name)
     return (ptr, target)
@@ -1547,7 +1559,7 @@ function _crust_str_to_julia(raw::CRustStr)
     return String(bytes)
 end
 
-function _call_rust_owned_string(lib_name::String, func_name::String, free_func_name::String, args...; borrows = ())
+function _call_rust_owned_string(lib_name::String, func_name::String, free_func_name::String, args...; borrows = (), slice_args::Bool = false)
     # One snapshot, taken before the call: the wrapper, its panic channel and
     # the function that releases the buffer it returns. The release function
     # used to be resolved by library name *after* the wrapper had returned, so
@@ -1555,7 +1567,8 @@ function _call_rust_owned_string(lib_name::String, func_name::String, free_func_
     # through the replacement's allocator — undefined behaviour, and exactly
     # what the allocator contract forbids (#277).
     target = _check_inline_call_borrows(
-        resolve_call_target(lib_name, func_name; free_symbol = free_func_name), borrows)
+        resolve_call_target(lib_name, func_name; free_symbol = free_func_name), borrows;
+        slice_symbol = slice_args ? func_name : "")
     func_ptr = target.func_ptr
     channel = target.channel
     raw = call_rust_function(func_ptr, CRustString, args...)
@@ -1570,8 +1583,9 @@ function _call_rust_owned_string(lib_name::String, func_name::String, free_func_
     return _take_owned_string(raw, target.free_ptr)
 end
 
-function _call_rust_borrowed_string(lib_name::String, func_name::String, args...; borrows = ())
-    target = _check_inline_call_borrows(resolve_call_target(lib_name, func_name), borrows)
+function _call_rust_borrowed_string(lib_name::String, func_name::String, args...; borrows = (), slice_args::Bool = false)
+    target = _check_inline_call_borrows(resolve_call_target(lib_name, func_name), borrows;
+        slice_symbol = slice_args ? func_name : "")
     func_ptr = target.func_ptr
     channel = target.channel
     raw = call_rust_function(func_ptr, CRustStr, args...)
@@ -1638,8 +1652,9 @@ end
 # name `@rust` resolves — a generic free function named like the wrapper must
 # not capture the method (#520 review).
 function _call_rust_method(lib_name::String, func_name::String, ptr::Ptr{Cvoid},
-                           ret_type::Type, args...; borrows = ())
-    target = _check_inline_call_borrows(resolve_call_target(lib_name, func_name), borrows)
+                           ret_type::Type, args...; borrows = (), slice_args::Bool = false)
+    target = _check_inline_call_borrows(resolve_call_target(lib_name, func_name), borrows;
+        slice_symbol = slice_args ? func_name : "")
     if ptr == C_NULL
         return _call_resolved_typed(target, func_name, ret_type, args...)
     else

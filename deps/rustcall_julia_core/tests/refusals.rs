@@ -62,6 +62,16 @@ fn cases() -> Vec<Case> {
     use Mode::{Crate, Inline};
     use Position::*;
     vec![
+        Case {
+            label: "inline retained slice", mode: Inline, position: FreeFn,
+            source: "#[julia] pub fn f(x: &'static [f64]) -> usize { x.len() }",
+            item: "f", skip_reason: "slice_signature:x", message: "supported primitive layout", refusals: 1,
+        },
+        Case {
+            label: "crate retained slice", mode: Crate, position: FreeFn,
+            source: "#[julia] pub fn f(x: &'static [f64]) -> usize { x.len() }",
+            item: "f", skip_reason: "slice_signature:x", message: "supported primitive layout", refusals: 1,
+        },
         // ---- unsafe_fn ------------------------------------------------------
         Case {
             label: "inline unsafe fn",

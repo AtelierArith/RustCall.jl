@@ -162,9 +162,10 @@ exception at the call site.
 Fixing the encoding is the Julia-side answer when the value *is* text:
 `isvalid(s)` says whether a string is UTF-8, and `transcode` (or an explicit
 re-encode from whatever the bytes really are) produces one that is. To send
-bytes that are **not** text at all, take them on the Rust side as a
-`*const u8` plus a length — a `&[u8]` slice argument is not lowered by the
-`#[julia]` pipeline, so there is no `Vec{UInt8}` argument to pass.
+bytes that are **not** text at all, use a `#[julia]` argument of type `&[u8]`
+and pass a contiguous `Vector{UInt8}` to the generated Julia wrapper. This is
+a checked, call-scoped borrow; see [Borrowing numeric slices](@ref). An explicit
+`*const u8` plus a length remains available through the manual C ABI.
 
 ## Passing a Julia struct to Rust by value is opt-in
 
