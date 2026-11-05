@@ -371,6 +371,7 @@ fn string_arg_conversion(
     name: &Ident,
     ty: &Type,
     taken: &[String],
+    call_scope: Option<&Ident>,
 ) -> (Vec<TokenStream2>, Option<TokenStream2>) {
     if let Some((mutable, elem, element)) = crate::slices::shape(ty) {
         let core_alias = fresh_ident("__rustcall_slice_core", taken);
@@ -409,6 +410,29 @@ fn string_arg_conversion(
         } else {
             quote! { #core_alias::slice::from_raw_parts }
         };
+        let construct = if let Some(scope) = call_scope {
+            let helper = fresh_ident("__rustcall_scoped_slice", taken);
+            let reference = if mutable {
+                quote! { &'scope mut [T] }
+            } else {
+                quote! { &'scope [T] }
+            };
+            let pointer = if mutable {
+                quote! { *mut T }
+            } else {
+                quote! { *const T }
+            };
+            Some(quote! {
+                unsafe fn #helper<'scope, T: 'scope>(_: &'scope (), pointer @ _: #pointer,
+                    length @ _: #core_alias::primitive::usize) -> #reference {
+                    unsafe { #ctor(pointer, length) }
+                }
+                #helper(&#scope, rustcall_slice_ptr, #l)
+            })
+        } else {
+            None
+        };
+        let construct = construct.unwrap_or_else(|| quote! { #ctor(rustcall_slice_ptr, #l) });
         (
             vec![
                 quote! { #p: #ptr_ty },
@@ -431,7 +455,7 @@ fn string_arg_conversion(
                         assert!((#p as #core_alias::primitive::usize).checked_add(#l * #core_alias::mem::size_of::<#elem>()).is_some(), "slice address overflow");
                         #p as *mut #elem
                     };
-                    #ctor(rustcall_slice_ptr, #l)
+                    #construct
                 };
             }),
         )
@@ -448,6 +472,32 @@ fn string_arg_conversion(
             quote! { &mut *#p }
         } else {
             quote! { &*#p }
+        };
+        let borrow = if let Some(scope) = call_scope {
+            let helper = fresh_ident("__rustcall_scoped_optional", taken);
+            let pointer = if mutable {
+                quote! { *mut T }
+            } else {
+                quote! { *const T }
+            };
+            let reference = if mutable {
+                quote! { &'scope mut T }
+            } else {
+                quote! { &'scope T }
+            };
+            let body = if mutable {
+                quote! { &mut *pointer }
+            } else {
+                quote! { &*pointer }
+            };
+            quote! {{
+                unsafe fn #helper<'scope, T: 'scope>(_: &'scope (), pointer @ _: #pointer) -> #reference {
+                    unsafe { #body }
+                }
+                #helper(&#scope, #p)
+            }}
+        } else {
+            borrow
         };
         (
             vec![quote! { #p: #pointer }],
@@ -560,6 +610,8 @@ pub(crate) enum WrapperReturn {
     /// The value is boxed and returned as `*mut Struct` (constructors and
     /// anything returning `Self`). A path, see [`CallTarget::Free`].
     Boxed(syn::Path),
+    /// Explicit concrete owner, checked on the actual returned value.
+    BoxedExplicit(Type),
     /// `<helper> { ptr, len, cap }`, released through `<free>`.
     OwnedString {
         helper: Ident,
@@ -611,6 +663,7 @@ pub(crate) enum WrapperPayload {
     /// A boxed `Result<Self, E>` payload, which also exports the producer's ABI
     /// marker ([`boxed_result_marker`]).
     BoxedVerified(syn::Path),
+    BoxedExplicit(Type),
     /// `String` / `&str`, stored as `<helper> { ptr, len, cap }`.
     OwnedString {
         helper: Ident,
@@ -627,14 +680,14 @@ impl WrapperReturn {
     /// A string is copied or viewed and is not one of them.
     fn passed_types(&self) -> Vec<TokenStream2> {
         let payload = |p: &WrapperPayload| match p {
-            WrapperPayload::Plain(ty) => Some(quote! { #ty }),
+            WrapperPayload::Plain(ty) | WrapperPayload::BoxedExplicit(ty) => Some(quote! { #ty }),
             WrapperPayload::Boxed(path) | WrapperPayload::BoxedVerified(path) => {
                 Some(quote! { #path })
             }
             WrapperPayload::OwnedString { .. } => None,
         };
         match self {
-            WrapperReturn::Plain(ty) => vec![quote! { #ty }],
+            WrapperReturn::Plain(ty) | WrapperReturn::BoxedExplicit(ty) => vec![quote! { #ty }],
             WrapperReturn::Boxed(path) => vec![quote! { #path }],
             WrapperReturn::CResult { ok, err, .. } => {
                 [ok, err].into_iter().filter_map(payload).collect()
@@ -652,12 +705,12 @@ impl WrapperReturn {
     fn types_mut(&mut self) -> Vec<&mut Type> {
         fn payload(p: &mut WrapperPayload) -> Option<&mut Type> {
             match p {
-                WrapperPayload::Plain(ty) => Some(ty),
+                WrapperPayload::Plain(ty) | WrapperPayload::BoxedExplicit(ty) => Some(ty),
                 _ => None,
             }
         }
         match self {
-            WrapperReturn::Plain(ty) => vec![ty],
+            WrapperReturn::Plain(ty) | WrapperReturn::BoxedExplicit(ty) => vec![ty],
             WrapperReturn::CResult { ok, err, .. } => {
                 [ok, err].into_iter().filter_map(payload).collect()
             }
@@ -677,6 +730,7 @@ impl WrapperPayload {
     fn stored_type(&self) -> Type {
         match self {
             WrapperPayload::Plain(ty) => ty.clone(),
+            WrapperPayload::BoxedExplicit(ty) => syn::parse_quote!(*mut #ty),
             WrapperPayload::Boxed(ty) | WrapperPayload::BoxedVerified(ty) => {
                 syn::parse_quote!(*mut #ty)
             }
@@ -686,9 +740,17 @@ impl WrapperPayload {
 
     /// The expression that turns the value bound to `value` into the stored
     /// form.
-    fn store_expr(&self, value: &Ident) -> TokenStream2 {
+    fn store_expr(&self, value: &Ident, proof: &TokenStream2) -> TokenStream2 {
         match self {
             WrapperPayload::Plain(_) => quote! { #value },
+            WrapperPayload::BoxedExplicit(ty) => {
+                let owner = explicit_owned_binding(ty, &[value.to_string()]);
+                quote! {{
+                    let #owner @ _: #ty = #value;
+                    #proof(&#owner);
+                    ::std::boxed::Box::into_raw(::std::boxed::Box::new(#owner))
+                }}
+            }
             WrapperPayload::Boxed(_) | WrapperPayload::BoxedVerified(_) => {
                 quote! { Box::into_raw(Box::new(#value)) }
             }
@@ -977,6 +1039,12 @@ pub fn panic_hook_items() -> TokenStream2 {
     // wrapper named `hook_once` would be `__RUSTCALL_PANIC_HOOK_ONCE` — so these
     // statics take a namespace of their own (#338).
     quote! {
+        /// Marker emitted for annotated opaque owners; no Send/Sync promise.
+        #[doc(hidden)]
+        pub trait __RustCallOwned: ::std::marker::Sized {}
+        /// Prove the actual produced value cannot retain a call-local borrow.
+        #[doc(hidden)]
+        pub fn __rustcall_require_owned<T: __RustCallOwned + 'static>(_: &T) {}
         thread_local! {
             // `const`-initialised: the runtime crate is real source that CI
             // runs clippy over, and `thread_local_initializer_can_be_made_const`
@@ -1205,6 +1273,18 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
     // message. Derived from the call target rather than from the symbol, so
     // the message reads `Point::area panicked: ...` and not
     // `rustcall_Point_area panicked: ...`.
+    let explicit_owner = matches!(&ret, WrapperReturn::BoxedExplicit(_))
+        || matches!(
+            &ret,
+            WrapperReturn::CResult {
+                ok: WrapperPayload::BoxedExplicit(_),
+                ..
+            }
+        );
+    let owned_proof = match panic_hook {
+        PanicHook::Runtime => quote! { ::rustcall_julia_macros::__rustcall_require_owned },
+        _ => quote! { crate::__rustcall_require_owned },
+    };
     let julia_name = match &target {
         CallTarget::Free(name) => path_tail(name),
         CallTarget::Method { ty, path } => {
@@ -1320,9 +1400,20 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
         return Err(refusal);
     }
 
-    let taken: Vec<String> = args.iter().map(|(n, _)| n.to_string()).collect();
+    let mut taken: Vec<String> = args.iter().map(|(n, _)| n.to_string()).collect();
+    if explicit_owner {
+        for ty in ret.passed_types() {
+            collect_owned_identifiers(ty, &mut taken);
+        }
+    }
     let ptr = fresh_ident("ptr", &taken);
     let self_obj = fresh_ident("self_obj", &taken);
+    // All references reconstructed from raw inputs share one unpromoted local
+    // witness before an explicit owned value is checked for `'static`.
+    let call_scope = explicit_owner.then(|| fresh_ident("__rustcall_owned_scope", &taken));
+    let scope_binding = call_scope
+        .as_ref()
+        .map(|scope| quote! { let #scope @ _ = (); });
 
     let mut wrapper_args: Vec<TokenStream2> = Vec::new();
     let mut conversions: Vec<TokenStream2> = Vec::new();
@@ -1337,7 +1428,7 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
         });
     }
     for (name, ty) in &args {
-        let (a, conversion) = string_arg_conversion(name, ty, &taken);
+        let (a, conversion) = string_arg_conversion(name, ty, &taken, call_scope.as_ref());
         wrapper_args.extend(a);
         conversions.extend(conversion);
         call_args.push(quote! { #name });
@@ -1353,7 +1444,18 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
 
     let self_binding = receiver
         .as_ref()
-        .map(|r| r.shape.binding(&self_obj, &ptr))
+        .map(|r| {
+            if explicit_owner {
+                r.shape.scoped_binding(
+                    &self_obj,
+                    &ptr,
+                    call_scope.as_ref().expect("explicit owned call scope"),
+                    &fresh_ident("__rustcall_scoped_receiver", &taken),
+                )
+            } else {
+                r.shape.binding(&self_obj, &ptr)
+            }
+        })
         .unwrap_or_default();
     let call = match &target {
         CallTarget::Free(name) => quote! { #name(#(#call_args),*) },
@@ -1422,7 +1524,7 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
             }});
         }
     }
-    let prologue = quote! { #(#slice_alias_checks)* #(#conversions)* #self_binding };
+    let prologue = quote! { #(#slice_alias_checks)* #scope_binding #(#conversions)* #self_binding };
 
     let slot = format_ident!("__RUSTCALL_PANIC_{}", symbol.to_string().to_uppercase());
     let reader = format_ident!("{}", panic_symbol(&symbol.to_string()));
@@ -1454,6 +1556,10 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
         });
     }
 
+    if explicit_owner {
+        let marker = format_ident!("{}", owned_return_marker(&symbol.to_string()));
+        out.extend(quote! { #(#cfg_attrs)* #[no_mangle] pub extern "C" fn #marker() -> u8 { 1 } });
+    }
     let wrapper = match ret {
         WrapperReturn::Unit => {
             let guarded = guarded_body(
@@ -1502,6 +1608,26 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
                 pub extern "C" fn #symbol #lifetimes (#(#wrapper_args),*) -> ::std::mem::MaybeUninit<#ty> #lifetime_where {
                     #guarded
                 }
+            }
+        }
+        WrapperReturn::BoxedExplicit(ty) => {
+            let owner = explicit_owned_binding(&ty, &taken);
+            let body = quote! {
+                let #owner @ _: #ty = #call;
+                #owned_proof(&#owner);
+                ::std::boxed::Box::into_raw(::std::boxed::Box::new(#owner))
+            };
+            let guarded = guarded_body(
+                &julia_name,
+                &slot,
+                &prologue,
+                body,
+                quote! { ::std::ptr::null_mut() },
+                false,
+                panic_hook,
+            );
+            quote! { #(#cfg_attrs)* #[no_mangle]
+                pub extern "C" fn #symbol #lifetimes (#(#wrapper_args),*) -> *mut #ty #lifetime_where { #guarded }
             }
         }
         WrapperReturn::Boxed(ty) => {
@@ -1604,7 +1730,10 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
             }
         }
         WrapperReturn::CResult { name, ok, err } => {
-            if matches!(ok, WrapperPayload::BoxedVerified(_)) {
+            if matches!(
+                ok,
+                WrapperPayload::BoxedVerified(_) | WrapperPayload::BoxedExplicit(_)
+            ) {
                 // Fail closed if a newer extractor sees a crate built with an
                 // older macro whose Result<Self, E> ABI returned Self by value.
                 let marker = format_ident!("{}", boxed_result_marker(&symbol.to_string()));
@@ -1629,15 +1758,34 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
             let body = if ok.is_plain() && err.is_plain() {
                 quote! { #name::new(#call) }
             } else {
-                let ok_binding = fresh_ident("rustcall_ok", &taken);
-                let err_binding = fresh_ident("rustcall_err", &taken);
-                let ok_store = ok.store_expr(&ok_binding);
-                let err_store = err.store_expr(&err_binding);
+                let ok_binding = fresh_ident(
+                    if explicit_owner {
+                        "__rustcall_owned_ok"
+                    } else {
+                        "rustcall_ok"
+                    },
+                    &taken,
+                );
+                let err_binding = fresh_ident(
+                    if explicit_owner {
+                        "__rustcall_owned_err"
+                    } else {
+                        "rustcall_err"
+                    },
+                    &taken,
+                );
+                let ok_store = ok.store_expr(&ok_binding, &owned_proof);
+                let err_store = err.store_expr(&err_binding, &owned_proof);
+                let (ok_pattern, err_pattern) = if explicit_owner {
+                    (quote! { #ok_binding @ _ }, quote! { #err_binding @ _ })
+                } else {
+                    (quote! { #ok_binding }, quote! { #err_binding })
+                };
                 quote! {
                     #name::new(match #call {
-                        ::std::result::Result::Ok(#ok_binding) =>
+                        ::std::result::Result::Ok(#ok_pattern) =>
                             ::std::result::Result::Ok(#ok_store),
-                        ::std::result::Result::Err(#err_binding) =>
+                        ::std::result::Result::Err(#err_pattern) =>
                             ::std::result::Result::Err(#err_store),
                     })
                 }
@@ -1671,7 +1819,7 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
                 quote! { #name::new(#call) }
             } else {
                 let binding = fresh_ident("rustcall_some", &taken);
-                let store = inner.store_expr(&binding);
+                let store = inner.store_expr(&binding, &owned_proof);
                 quote! {
                     #name::new(match #call {
                         ::std::option::Option::Some(#binding) =>
@@ -2002,6 +2150,24 @@ pub fn payload_abi(ty: &Type) -> &'static str {
 }
 
 fn free_fn_return(func: &ItemFn, name: &Ident, options: &FreeFnOptions) -> WrapperReturn {
+    if let Some(owner) = crate::owned_returns::annotation(&func.attrs).ok().flatten() {
+        if let ReturnType::Type(_, output) = &func.sig.output {
+            if let Some(result) = extract_result_type(output) {
+                return WrapperReturn::CResult {
+                    name: format_ident!("CResult_{}", name),
+                    ok: WrapperPayload::BoxedExplicit(owner),
+                    err: payload_of(
+                        &result.err_type,
+                        &format_ident!("{}_RustCallOwnedString", name),
+                        &format_ident!("{}_free_rust_string", name),
+                        true,
+                    ),
+                };
+            }
+        }
+        return WrapperReturn::BoxedExplicit(owner);
+    }
+
     let ReturnType::Type(_, ty) = &func.sig.output else {
         return WrapperReturn::Unit;
     };
@@ -2056,12 +2222,13 @@ fn free_fn_return(func: &ItemFn, name: &Ident, options: &FreeFnOptions) -> Wrapp
 /// where the item does not exist. Keeping the item means the one diagnostic is
 /// not followed by a cascade about a missing item.
 pub fn transform_function(
-    func: ItemFn,
+    mut func: ItemFn,
     module_path: &[String],
     panic_hook: PanicHook,
 ) -> TokenStream2 {
     if let Some(refusal) = crate::refusal::function_refusal(&func, module_path, Mode::Crate) {
         let error = refusal.compile_error(&cfg_attrs(&func.attrs));
+        crate::owned_returns::strip(&mut func.attrs);
         return quote! { #error #func };
     }
 
@@ -2073,10 +2240,8 @@ pub fn transform_function(
             ..FreeFnOptions::default()
         },
     );
-    quote! {
-        #func
-        #wrapper
-    }
+    crate::owned_returns::strip(&mut func.attrs);
+    quote! { #func #wrapper }
 }
 
 /// Whether an inline method gets an `extern "C"` wrapper next to its struct —
@@ -2291,7 +2456,7 @@ pub(crate) fn struct_field_setter(
 ) -> TokenStream2 {
     let value = format_ident!("value");
     let (args, conversion) = if is_string_type(ty) {
-        string_arg_conversion(&value, ty, &["ptr".into()])
+        string_arg_conversion(&value, ty, &["ptr".into()], None)
     } else {
         (vec![quote! { value: #ty }], None)
     };
@@ -2374,9 +2539,11 @@ pub fn transform_struct_crate(mut item_struct: ItemStruct, module_path: &[String
         PanicHook::Runtime,
     );
     let accessors = crate_field_accessors(&item_struct, &stem, &cfgs);
+    let owner_marker = owned_marker_impl(&item_struct, PanicHook::Runtime);
 
     quote! {
         #item_struct
+        #owner_marker
         #free
         #accessors
     }
@@ -2407,6 +2574,7 @@ pub fn transform_impl_crate(mut item_impl: ItemImpl, module_path: &[String]) -> 
         for item in &mut item_impl.items {
             if let syn::ImplItem::Fn(method) = item {
                 method.attrs.retain(|attr| !attr.path().is_ident("julia"));
+                crate::owned_returns::strip(&mut method.attrs);
             }
         }
         return quote! { #error #item_impl };
@@ -2436,6 +2604,7 @@ pub fn transform_impl_crate(mut item_impl: ItemImpl, module_path: &[String]) -> 
                 // every item it emits; the block's predicates join that set
                 // for the wrapper only, the method itself is left as written.
                 let mut gated = method.clone();
+                crate::owned_returns::strip(&mut method.attrs);
                 gated.attrs.splice(0..0, block_cfgs.iter().cloned());
                 ffi_wrappers.extend(method_wrapper_in_block(&host, &struct_path, &gated));
             }
@@ -3057,7 +3226,24 @@ fn method_spec(
         ty: self_path.clone(),
         path: crate::environment::method_item_path(m.host.as_ref(), self_path, &method_name),
     };
-    let ret = if let Some(result) = m.boxed_self_result(struct_name) {
+    let ret = if let Some(owner) = crate::owned_returns::annotation(&m.func.attrs)
+        .ok()
+        .flatten()
+    {
+        if let ReturnType::Type(_, output) = &m.func.sig.output {
+            if let Some(result) = extract_result_type(output) {
+                WrapperReturn::CResult {
+                    name: format_ident!("CResult_{}_{}", stem, method_stem),
+                    ok: WrapperPayload::BoxedExplicit(owner),
+                    err: payload_of(&result.err_type, owned_helper, owned_free, declare),
+                }
+            } else {
+                WrapperReturn::BoxedExplicit(owner)
+            }
+        } else {
+            WrapperReturn::Unit
+        }
+    } else if let Some(result) = m.boxed_self_result(struct_name) {
         WrapperReturn::CResult {
             name: format_ident!("CResult_{}_{}", stem, method_stem),
             ok: WrapperPayload::BoxedVerified(self_path.clone()),
@@ -3522,4 +3708,45 @@ pub fn inline_generic_wrappers(model: &StructModel, module_path: &[String]) -> V
     });
 
     wrappers
+}
+
+/// Producer proof of explicit direct/Result Ok owning-pointer return ABI.
+pub(crate) fn owned_return_marker(symbol: &str) -> String {
+    format!("{symbol}_owned_return_v1")
+}
+
+/// Owner proof implementation shared by concrete and lifetime-bearing structs.
+pub(crate) fn owned_marker_impl(item: &ItemStruct, hook: PanicHook) -> TokenStream2 {
+    let name = &item.ident;
+    let mut generics = item.generics.clone();
+    let (_, types, _) = item.generics.split_for_impl();
+    generics
+        .make_where_clause()
+        .predicates
+        .push(syn::parse_quote!(#name #types: ::std::marker::Sized));
+    let (params, types, predicates) = generics.split_for_impl();
+    let marker = match hook {
+        PanicHook::Runtime => quote! { ::rustcall_julia_macros::__RustCallOwned },
+        _ => quote! { crate::__RustCallOwned },
+    };
+    let cfgs = cfg_attrs(&item.attrs);
+    quote! { #(#cfgs)* impl #params #marker for #name #types #predicates {} }
+}
+
+// A lowercase unit-struct name is a value pattern, not a fresh let binding.
+// Reserve generated locals and avoid the selected owner's own identifiers.
+fn collect_owned_identifiers(tokens: TokenStream2, out: &mut Vec<String>) {
+    for token in tokens {
+        match token {
+            proc_macro2::TokenTree::Ident(name) => out.push(name.to_string()),
+            proc_macro2::TokenTree::Group(group) => collect_owned_identifiers(group.stream(), out),
+            _ => {}
+        }
+    }
+}
+
+fn explicit_owned_binding(ty: &Type, taken: &[String]) -> Ident {
+    let mut taken = taken.to_vec();
+    collect_owned_identifiers(quote! { #ty }, &mut taken);
+    fresh_ident("__rustcall_owned_value", &taken)
 }

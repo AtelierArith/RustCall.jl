@@ -383,6 +383,16 @@ pub fn function_claims(f: &Function, policy: Policy) -> Vec<Claim> {
             &f.symbol,
         )));
     }
+    if f.return_abi == "boxed" || (f.return_kind == ReturnKind::Result && f.ok_abi == "boxed") {
+        out.push(Claim::exported(crate::codegen::owned_return_marker(
+            &f.symbol,
+        )));
+        if f.return_kind == ReturnKind::Result {
+            out.push(Claim::exported(crate::codegen::boxed_result_marker(
+                &f.symbol,
+            )));
+        }
+    }
     if !f.ffi_name.is_empty() {
         out.extend(string_claims(
             &f.ffi_name,
@@ -497,6 +507,11 @@ pub fn struct_claims(s: &Struct, policy: Policy) -> Vec<Claim> {
                 )
             }) {
                 claims.push(Claim::exported(crate::codegen::optional_owner_marker(
+                    &m.symbol,
+                )));
+            }
+            if !m.return_handle.is_empty() {
+                claims.push(Claim::exported(crate::codegen::owned_return_marker(
                     &m.symbol,
                 )));
             }

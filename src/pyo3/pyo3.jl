@@ -73,6 +73,7 @@ const PYO3_SKIP_REASONS = Base.ImmutableDict(Base.ImmutableDict{String, String}(
                               "the string is rebuilt for the call only; take `String` (#482)",
     "slice_signature" => "a slice signature outside the finite synchronous numeric slice contract (#570)",
     "optional_owner_signature" => "an optional owner borrow outside the synchronous checked-owner contract (#571)",
+    "owned_return" => "an explicit owned return outside the concrete marked Sized + static owner contract (#572)",
     "receiver_type" => "a method whose receiver type does not show its shape (a type " *
                        "alias, a smart pointer, or the type spelled otherwise than the impl " *
                        "header); its wrapper calls it by path, which passes the receiver " *

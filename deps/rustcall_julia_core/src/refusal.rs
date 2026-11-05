@@ -355,9 +355,18 @@ pub fn function_refusal(func: &ItemFn, module_path: &[String], mode: Mode) -> Op
     {
         return Some(refusal);
     }
+    if let Some(refusal) = crate::owned_returns::refusal(&func.attrs, &func.sig) {
+        return Some(refusal);
+    }
     let type_generic = crate::types::has_type_params(&func.sig.generics);
     if mode == Mode::Crate || !type_generic {
-        if let Some(refusal) = non_ffi_payload_refusal(func) {
+        if let Some(refusal) = (crate::owned_returns::annotation(&func.attrs)
+            .ok()
+            .flatten()
+            .is_none())
+        .then(|| non_ffi_payload_refusal(func))
+        .flatten()
+        {
             return Some(refusal);
         }
     }
@@ -551,6 +560,9 @@ pub fn method_refusal(site: MethodSite<'_>, m: &MethodModel) -> Option<Refusal> 
     {
         return Some(refusal);
     }
+    if let Some(refusal) = crate::owned_returns::refusal(&m.func.attrs, &m.func.sig) {
+        return Some(refusal);
+    }
     match site {
         MethodSite::Crate { self_ty } => {
             if let Some(host) = &m.host {
@@ -594,6 +606,13 @@ pub fn method_refusal(site: MethodSite<'_>, m: &MethodModel) -> Option<Refusal> 
             }) {
                 return Some(Refusal::over(skip_reason::OPTIONAL_OWNER_SIGNATURE, "generic", &pt.ty,
                     "Generic optional borrowed-owner wrappers are unsupported; write a concrete #[julia] adapter (#571)"));
+            }
+            if let Some(owner) = crate::owned_returns::annotation(&m.func.attrs)
+                .ok()
+                .flatten()
+            {
+                return Some(Refusal::over(skip_reason::OWNED_RETURN, "generic_owner", &owner,
+                    "Explicit owned returns require a concrete nongeneric facade owner; generic inline host wrappers are unsupported (#572)"));
             }
             inline_generic_method_refusal(struct_name, true, m)
                 .or_else(|| unsafe_method_refusal(struct_name, m))

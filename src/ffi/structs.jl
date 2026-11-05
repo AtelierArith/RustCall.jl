@@ -155,6 +155,7 @@ struct RustMethod
     arg_handles::Vector{Union{Nothing, RustHandleArg}}
     arg_slice_elements::Vector{String}
     arg_slice_lengths::Vector{String}
+    return_handle::Union{Nothing, RustHandleArg}
 end
 
 function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::Vector{String},
@@ -187,7 +188,8 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
                     arg_handles::Vector{Union{Nothing, RustHandleArg}} =
                         Union{Nothing, RustHandleArg}[nothing for _ in arg_names],
                     arg_slice_elements::Vector{String} = fill("", length(arg_names)),
-                    arg_slice_lengths::Vector{String} = fill("", length(arg_names)))
+                    arg_slice_lengths::Vector{String} = fill("", length(arg_names)),
+                    return_handle::Union{Nothing, RustHandleArg} = nothing)
     length(python_defaults) == length(arg_names) ||
         throw(ArgumentError("python_defaults must have one entry per argument"))
     length(arg_slice_elements) == length(arg_names) && length(arg_slice_lengths) == length(arg_names) ||
@@ -205,7 +207,7 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
                return_kind, ok_type, err_type, inner_type, ok_abi, err_abi, inner_abi,
                string_owner, attribute, python_defaults, python_kinds,
                callback_args, callback_returns, is_classmethod, generic_wrapper_name,
-               trait_path, julia_name, py_arg_shapes, py_return_shape, arg_handles, arg_slice_elements, arg_slice_lengths)
+               trait_path, julia_name, py_arg_shapes, py_return_shape, arg_handles, arg_slice_elements, arg_slice_lengths, return_handle)
 end
 
 # `julia_method_name(m)`, the name a method is bound under, is in `julia_names.jl` (#514).
@@ -879,6 +881,11 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
         _boundary_item!(_boundary_label(info, m))
         # A method the Rust codegen refuses gets no wrapper (#491).
         _rust_refused_item!(m.skip_reason, m.name) && continue
+        if m.return_handle !== nothing
+            push!(exprs, _owned_return_wrapper(m, info; inline = true, escape = esc,
+                bare = !(julia_method_name(m) in colliding)))
+            continue
+        end
 
         is_ctor = m.is_constructor
 

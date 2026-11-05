@@ -34,6 +34,11 @@ const CR_INLINE_CASES = [
         #[julia] pub struct Owner571 { value: i32 }
         #[julia] pub fn retained571(x: Option<&'static Owner571>) -> i32 { x.map_or(0, |v| v.value) }
         """, "retained571", "optional_owner_signature"),
+    ("unresolved explicit owned return", """
+        pub struct Plain572 { value: i32 }
+        #[julia] #[rustcall_owned_return(Plain572)]
+        pub fn make_plain572() -> Plain572 { Plain572 { value: 1 } }
+        """, "make_plain572", "owned_return"),
     ("unsafe fn", "#[julia] pub unsafe fn danger(p: *const i32) -> i32 { *p }",
      "danger", "unsafe_fn"),
     ("generic unsafe fn", "#[julia] pub unsafe fn g503<T: Copy>(x: T) -> T { x }",

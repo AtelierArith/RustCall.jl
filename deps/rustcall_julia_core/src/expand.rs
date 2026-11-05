@@ -45,11 +45,12 @@ fn unparse_items(items: Vec<Item>) -> String {
 }
 
 fn unparse_file(attrs: Vec<syn::Attribute>, items: Vec<Item>) -> String {
-    let file = syn::File {
+    let mut file = syn::File {
         shebang: None,
         attrs,
         items,
     };
+    crate::owned_returns::strip_file(&mut file);
     prettyplease::unparse(&file)
 }
 
@@ -168,6 +169,16 @@ fn expand_items(
                                 tree.borrowed_handle(ty, module_path)
                             });
                         }
+                        crate::owned_returns::mark(
+                            &f.attrs,
+                            &f.sig,
+                            &mut entry.return_handle,
+                            &mut entry.skip_reason,
+                            |ty| tree.borrowed_handle(ty, module_path),
+                        );
+                        if !entry.skip_reason.is_empty() {
+                            entry.exported = false;
+                        }
                         push_fn(manifest, entry);
                         let refusal =
                             crate::refusal::function_refusal(&f, module_path, Mode::Inline);
@@ -218,6 +229,10 @@ fn expand_items(
                 strip_julia_struct_derive(&mut s.attrs);
                 s.vis = Visibility::Public(Default::default());
                 out.push(Item::Struct(s.clone()));
+                out.extend(items_of(crate::codegen::owned_marker_impl(
+                    &s,
+                    PanicHook::FileOwned,
+                ))?);
 
                 if model.is_generic() {
                     let entry = generic_struct_entry(model, &s, module_path, enclosing_cfg);
@@ -318,6 +333,19 @@ fn mark_method_handles(
             .as_ref()
             .map(|site| site.module_path.clone())
             .unwrap_or_else(|| module_path.to_vec());
+        crate::owned_returns::mark(
+            &m.func.attrs,
+            &m.func.sig,
+            &mut method.return_handle,
+            &mut method.skip_reason,
+            |ty| {
+                if crate::extract::is_self_type(ty) {
+                    Some(entry_ffi_name(module_path, model))
+                } else {
+                    tree.borrowed_handle(ty, &site)
+                }
+            },
+        );
         crate::extract::mark_handle_args(&mut method.args, &m.func.sig, |ty| {
             if crate::extract::is_self_type(ty) {
                 Some(entry_ffi_name(module_path, model))
@@ -461,7 +489,17 @@ fn methods_of(
                 returns_boxed_struct: m.returns_boxed_struct(struct_name),
                 args: fn_args(&m.func.sig),
                 return_type: return_type_to_string(&m.func.sig.output),
-                return_abi: crate::codegen::return_abi(&m.func.sig).to_string(),
+                return_abi: if crate::owned_returns::annotation(&m.func.attrs)
+                    .ok()
+                    .flatten()
+                    .is_some()
+                    && !matches!(shape.kind, crate::manifest::ReturnKind::Result)
+                {
+                    "boxed".into()
+                } else {
+                    crate::codegen::return_abi(&m.func.sig).to_string()
+                },
+                return_handle: String::new(),
                 generic_wrapper: String::new(),
                 generic_wrapper_name: String::new(),
                 // The block's and its modules' predicates gate the method as

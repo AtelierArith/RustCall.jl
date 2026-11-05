@@ -497,6 +497,7 @@ fn function_entry(func: &ItemFn, module_path: &[String]) -> Function {
         },
         return_type,
         return_abi: crate::codegen::return_abi(&func.sig).to_string(),
+        return_handle: String::new(),
         ok_type: String::new(),
         err_type: String::new(),
         inner_type: String::new(),

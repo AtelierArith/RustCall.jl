@@ -1219,8 +1219,8 @@ compatible reinterpret vector. Multidimensional arrays, arbitrary custom
 `AbstractVector` implementations, reversed views and non-unit-stride views are
 rejected; this mode never silently stages a copy. Before entering Rust, Julia
 checks the element representation, length multiplication, address span and
-alignment, and roots the array and its owner through the call. All elements must already be initialized, including
-mutable output storage: use `zeros(T, n)` or initialize every element before
+alignment, and roots the array and its owner through the call. All elements
+must already be initialized, including mutable output storage: use `zeros(T, n)` or initialize every element before
 borrowing. `Vector{T}(undef, n)` is not a write-only slice contract. Empty slices
 use a non-null aligned dangling pointer; no element is read. The Rust shim
 checks its pointer/length arithmetic before constructing a reference.
@@ -1331,15 +1331,85 @@ write("facade/src/lib.rs", RustCall.generate_crate_instances(instances))
 # rustcall_julia_macros, then load that facade with @rust_crate.
 ```
 
+Argument pairs can also explicitly borrow another declared wrapper:
+
+```julia
+(name = "combine", args = ["other" => (wrapper = :FloatCell, mutable = false)],
+ return_wrapper = :FloatCell, mutable = false)
+```
+
+The generated argument is `other: &FloatCell`, and default forwarding passes
+`&other.inner` to the native method. Set the mapping's `mutable = true` for
+`&mut FloatCell` and `&mut other.inner`. Mapping mutability defaults to `false`;
+method `mutable` still controls `self`. Constructors accept the same mapped
+arguments and forward their `.inner` references to the native constructor.
+Such constructors emit the explicit owned-return proof and producer marker
+for their own wrapper. A one-argument mapped constructor requires its declared
+owner argument; raw `Ptr`/`C_NULL` shorthand cannot bypass those checks.
+Legacy constructors retain their existing source and ABI.
+
+Checked handles retain their normal type, liveness, library-image, GC-rooting
+and alias checks. Repeated shared
+borrows are allowed; a mutable receiver or argument may not alias another
+borrow of the same owner.
+
+`return_wrapper` names the owner of the native result, including the current
+wrapper or a different wrapper declared later in the specification. Add
+`error_type = "String"` for a `Result<Wrapper, String>` result. For example,
+these methods can live on a matrix-like owner whose native methods produce a
+factor:
+
+```julia
+(name = "factor", args = Pair{String,String}[],
+ return_wrapper = :Factor, mutable = false)
+(name = "checked_factor", args = ["other" => (wrapper = :FloatCell,)],
+ return_wrapper = :Factor, error_type = "String", mutable = false,
+ expression = "self.inner.checked_factor(&other.inner)")
+```
+
+A trusted method `expression` is emitted **verbatim** in wrapper-variable
+scope: `self` is the current wrapper and mapped arguments are wrapper
+references. Explicit expressions access `.inner` themselves and produce the
+native inner value, or its `Result`; default forwarding accesses `.inner`
+automatically. Julia neither parses nor substitutes Rust expressions.
+
+The generator first inventories every wrapper name, so forward mappings work.
+Duplicate names/parameters/methods, unknown wrappers or fields, non-Boolean
+mutability, and conflicting `return_type`/`return_wrapper`/`error_type`
+combinations fail before source is returned. Legacy constructor and simple
+method declarations keep their source form. Cargo/rustc validates concrete
+native signatures, bounds and trusted expressions.
+
+Explicit owned mappings emit `#[rustcall_owned_return(Wrapper)]` immediately
+after `#[julia]`. The shared Rust generator proves the actual returned value
+is a sized, `'static` annotated owner. For this proof, references reconstructed
+from raw receiver, slice or present optional-owner pointers are tied to a
+call-local witness: they cannot be inferred as `'static` merely because they
+arrived through a C pointer. `nothing` reconstructs no borrowed owner. The
+owner marker trait itself imposes no blanket `'static` bound; the explicit
+return check applies to the actual produced value, preserving existing
+lifetime-bearing owner behavior elsewhere.
+
+The manifest records the selected owner, and bindings require the producer's
+`<symbol>_owned_return_v1` ABI marker. Slice and optional-owner producer markers
+used by the same signature remain required independently. Legacy boxed
+`Result<Self, E>` marker checks remain in place.
+Successful values capture the selected owner's destructor, panic channel and
+liveness from the library image that produced them, independently of the
+receiver's owner. The selected owner is freed if Julia adoption fails. Rust
+normally drops temporaries on `Err` or a caught panic; returning a different
+owner does not transfer it to a replacement image after hot reload.
+
 The generated structs own the concrete Rust values and RustCall's normal
-struct finalizers drop them. Generated methods do not add synchronization;
-callers must prevent concurrent access that violates Rust aliasing rules or
-the concrete type's thread-safety requirements. The source is deterministic for a given ordered
-specification; because it is written to the facade crate before loading,
-normal Cargo and RustCall build invalidation applies. Type expressions and
+struct finalizers drop them. Generated methods supply no application locks,
+synchronization or numerical policies; callers must prevent concurrent access
+that violates Rust aliasing rules or the concrete type's thread-safety
+requirements. The source is deterministic for a given ordered specification;
+because it is written to the facade crate before loading, normal Cargo and RustCall build invalidation applies. Type expressions and
 method signatures are trusted Rust source: the caller chooses them, and
 `cargo` checks them. The generator does not inspect dependencies or infer
-methods, bounds, return conversions or lifetimes. A fallible constructor can
+methods, bounds, return conversions or lifetimes. Result and argument mappings
+are explicit; no private upstream layout is inspected. A fallible constructor can
 specify `error_type = "String"` (or another supported error type); the
 resulting constructor returns a `RustResult` whose success value owns the
 wrapper. An optional trusted Rust `expression` supplies the underlying

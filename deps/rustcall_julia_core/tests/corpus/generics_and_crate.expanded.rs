@@ -5,6 +5,11 @@ where
     pub left: T,
     pub right: T,
 }
+impl<T> crate::__RustCallOwned for Pair<T>
+where
+    T: Clone,
+    Pair<T>: ::std::marker::Sized,
+{}
 pub fn Pair_new<T>(left: T, right: T) -> *mut Pair<T>
 where
     T: Clone,
@@ -90,6 +95,12 @@ where
 pub extern "C" fn raw_increment(value: u32) -> u32 {
     value + 1
 }
+/// Marker emitted for annotated opaque owners; no Send/Sync promise.
+#[doc(hidden)]
+pub trait __RustCallOwned: ::std::marker::Sized {}
+/// Prove the actual produced value cannot retain a call-local borrow.
+#[doc(hidden)]
+pub fn __rustcall_require_owned<T: __RustCallOwned + 'static>(_: &T) {}
 thread_local! {
     static __RUSTCALL_QUIET_DEPTH : ::std::cell::Cell < usize > = const {
     ::std::cell::Cell::new(0) };

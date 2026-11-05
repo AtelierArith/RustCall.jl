@@ -1627,6 +1627,7 @@ fn module_entry(
         return_type: String::new(),
         return_kind: ReturnKind::Unit,
         return_abi: String::new(),
+        return_handle: String::new(),
         ok_type: String::new(),
         err_type: String::new(),
         inner_type: String::new(),
@@ -1689,6 +1690,7 @@ fn function_entry(
         // as usual; the *return* lowering depends on how Phase 2 chooses to
         // wrap a `PyResult`, so it stays empty until a wrapper exists.
         return_abi: String::new(),
+        return_handle: String::new(),
         ok_type,
         err_type,
         inner_type,
@@ -1944,6 +1946,7 @@ fn method_entry(
         args: pyo3_args(&func.sig, &func.attrs),
         return_type: return_type_to_string(&func.sig.output),
         return_abi: String::new(),
+        return_handle: String::new(),
         generic_wrapper: String::new(),
         generic_wrapper_name: String::new(),
         cfg: predicate_string(&effective_cfg),

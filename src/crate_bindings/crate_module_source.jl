@@ -151,6 +151,9 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     if !isempty(_optional_owner_symbols(info))
         push!(lines, "    rustcall′Base.in(name, $(repr(_optional_owner_symbols(info)))) && rustcall′RustCall._require_optional_owner_abi(handle, name)")
     end
+    if !isempty(_owned_return_symbols(info))
+        push!(lines, "    rustcall′Base.in(name, $(repr(_owned_return_symbols(info)))) && rustcall′RustCall._require_owned_return_abi(handle, name)")
+    end
     push!(lines, "    ptr = _symbol(handle, name)")
     push!(lines, "    ptr == rustcall′Base.C_NULL && rustcall′Base.error(\"The Rust library '\" * _LIB_NAME *")
     push!(lines, "                           \"' does not export '\" * name * \"'.\")")
@@ -244,7 +247,11 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     push!(lines, "    target = rustcall′RustCall.publish_crate_target!(cache, epoch,")
     push!(lines, "        (_required_symbol(handle, symbol),")
     push!(lines, "         _symbol(handle, rustcall′RustCall.ffi_panic_symbol(symbol)),")
-    push!(lines, "         _symbol(handle, free_symbol),")
+    if isempty(_owned_return_symbols(info))
+        push!(lines, "         _symbol(handle, free_symbol),")
+    else
+        push!(lines, "         rustcall′Base.in(symbol, $(repr(_owned_return_symbols(info)))) ? _required_symbol(handle, free_symbol) : _symbol(handle, free_symbol),")
+    end
     push!(lines, "         gen.alive,")
     push!(lines, "         _symbol(handle, rustcall′RustCall.ffi_panic_symbol(free_symbol))))")
     push!(lines, "    return _check_call_borrows(target, 4, borrows)")
@@ -385,6 +392,7 @@ function _emit_function_code(func::RustFunctionSignature; strict::Symbol = _ffi_
     _boundary_item!(_boundary_label(func))
     # An item the Rust codegen refuses gets no wrapper (#491).
     _rust_refused_item!(func.skip_reason, func.name) && return ""
+    func.return_handle === nothing || return _emitted_source(_owned_return_wrapper(func; inline = false))
     func_name = julia_function_name(func)
     # The generated Julia function keeps the Rust name; the symbol it looks up
     # is the additive wrapper `rustcall_<name>` (#279).
@@ -627,7 +635,7 @@ function _emit_struct_code(info::RustStructInfo; strict::Symbol = _ffi_strict(),
     push!(lines, "        return rustcall′obj")
     push!(lines, "    end")
     push!(lines, "")
-    if !_has_optional_owner_constructor(info)
+    if !(_has_optional_owner_constructor(info) || _has_explicit_owned_constructor(info))
         push!(lines, "    function $struct_name(rustcall′ptr::rustcall′Base.Ptr{rustcall′Base.Cvoid})")
         push!(lines, "        rustcall′free_ptr, rustcall′alive, rustcall′free_channel = _struct_generation($free_cache, $(repr(free_symbol)))")
         push!(lines, "        return $struct_name(rustcall′ptr, rustcall′free_ptr, $release_alive, rustcall′free_channel)")
@@ -762,6 +770,7 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
     _boundary_item!(_boundary_label(struct_info, method))
     # A method the Rust codegen refuses gets no wrapper (#491).
     _rust_refused_item!(method.skip_reason, method.name) && return ""
+    method.return_handle === nothing || return _emitted_source(_owned_return_wrapper(method, struct_info; inline = false, bare))
     struct_name = julia_struct_name(struct_info)
     method_name = julia_method_name(method)
     # Exported symbol (`rustcall_<Struct>_<method>`, #279) and the owner of the

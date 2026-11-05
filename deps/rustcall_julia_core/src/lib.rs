@@ -22,6 +22,7 @@ pub mod extract;
 pub mod include_paths;
 pub mod manifest;
 pub mod model;
+mod owned_returns;
 pub mod paths;
 pub mod public_routes;
 pub mod pyo3;

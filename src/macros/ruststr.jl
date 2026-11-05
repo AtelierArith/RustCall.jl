@@ -1209,6 +1209,7 @@ may omit `::ReturnType`, or `nothing` when the return type has no single-slot
 Julia counterpart and the call must be explicit.
 """
 function _manifest_return_type(sig)
+    sig.return_handle === nothing || return nothing
     if sig.attribute === :none && sig.return_kind == :plain
         # A raw pointer returned by a hand-written export has no release
         # function RustCall knows of (#490). Noted before the registry checks

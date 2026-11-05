@@ -135,6 +135,45 @@ impl Receiver {
         }
     }
 
+    /// Bind a reconstructed receiver to the caller's named call-local witness.
+    /// The raw pointer must never let an explicit owned result infer a static borrow.
+    pub(crate) fn scoped_binding(
+        &self,
+        self_obj: &Ident,
+        ptr: &Ident,
+        witness: &Ident,
+        helper: &Ident,
+    ) -> TokenStream2 {
+        let Receiver::Layers(layers) = self else {
+            return TokenStream2::new();
+        };
+        // `@ _` forces an identifier binding or a compiler error, never a
+        // same-named const or unit-struct value pattern.
+        let rebinds_mutably = layers.len() >= 2 && layers[layers.len() - 2] == Layer::Mut;
+        let binding = if rebinds_mutably {
+            quote! { mut #self_obj @ _ }
+        } else {
+            quote! { #self_obj @ _ }
+        };
+        let (pointer, reference, body) = if self.is_mutable() {
+            (
+                quote! { *mut T },
+                quote! { &'scope mut T },
+                quote! { unsafe { &mut *__rustcall_receiver_pointer } },
+            )
+        } else {
+            (
+                quote! { *const T },
+                quote! { &'scope T },
+                quote! { unsafe { &*__rustcall_receiver_pointer } },
+            )
+        };
+        quote! {
+            fn #helper<'scope, T>(_: &'scope (), __rustcall_receiver_pointer @ _: #pointer) -> #reference { #body }
+            let #binding = #helper(&#witness, #ptr);
+        }
+    }
+
     /// The first argument of the path call, `None` for an associated
     /// function: `self_obj` is the innermost reference, each further layer is
     /// taken again (`self: &&Self` passes `&self_obj`), and a receiver taken

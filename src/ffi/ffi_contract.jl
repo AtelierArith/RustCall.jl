@@ -1330,6 +1330,7 @@ const RUST_CODEGEN_REFUSALS = Base.ImmutableDict(Base.ImmutableDict{String, Stri
     "lowered_str_lifetime" => "`&str` lifetime of",  # #482
     "slice_signature" => "unsupported slice signature of", # #570
     "optional_owner_signature" => "unsupported optional owner signature of", # #571
+    "owned_return" => "explicit owned return of", # #572
     "receiver_type" => "receiver type of",           # #497, #509
     # v0.7.1's name for `receiver_type` (trait impls only): no longer emitted,
     # kept so a manifest of that extractor still reads as refused (schema 0.7
@@ -2291,5 +2292,85 @@ function _require_optional_owner_abi(handle::Ptr{Cvoid}, symbol::AbstractString)
     return nothing
 end
 
+function _require_owned_return_abi(handle::Ptr{Cvoid}, symbol::AbstractString)
+    marker = Libdl.dlsym(handle, string(symbol, "_owned_return_v1"); throw_error = false)
+    if marker === nothing || marker == C_NULL
+        error(
+            "incompatible explicit owned-return ABI for $symbol; rebuild the crate with rustcall_julia_macros >= 0.7.0",
+        )
+    end
+    return nothing
+end
+
 _uses_optional_owner_ffi(signature) = any(_is_optional_handle_abi, signature.arg_abis)
 _present_call_borrows(objects::Tuple) = filter(obj -> obj !== nothing, objects)
+# Dispose a newly produced owner that Julia could not adopt. Cleanup failures
+# never replace the original Julia exception; consume the captured drop channel
+# immediately, exactly as ownership finalizers do.
+function _dispose_unadopted_owner(
+    ptr::Ptr{Cvoid},
+    free::Ptr{Cvoid},
+    alive::Base.RefValue{Bool},
+    channel::Ptr{Cvoid},
+)
+    ptr == C_NULL && return nothing
+    if free != C_NULL && alive[]
+        try
+            ccall(free, Cvoid, (Ptr{Cvoid},), ptr)
+            if channel != C_NULL
+                failed =
+                    ccall(channel, Csize_t, (Ptr{UInt8}, Csize_t), C_NULL, typemax(Csize_t))
+                failed > 0 && Threads.atomic_add!(FINALIZER_FREE_FAILURES, 1)
+            end
+        catch
+            Threads.atomic_add!(FINALIZER_FREE_FAILURES, 1)
+        end
+    end
+    return nothing
+end
+
+function _adopt_owned_return(
+    T,
+    ptr::Ptr{Cvoid},
+    lib::String,
+    free::Ptr{Cvoid},
+    alive::Base.RefValue{Bool},
+    channel::Ptr{Cvoid},
+    inline::Bool,
+)
+    ptr != C_NULL || throw(RustError("owned-return producer returned a null owner pointer"))
+    try
+        hook = get(task_local_storage(), :RustCall_before_owned_adoption, nothing)
+        hook === nothing || hook(T, ptr)
+        value = inline ? T(ptr, lib, free, alive, channel) : T(ptr, free, alive, channel)
+        value isa T || throw(
+            RustError("owned-return constructor did not produce its declared owner type"),
+        )
+        return value
+    catch
+        _dispose_unadopted_owner(ptr, free, alive, channel)
+        rethrow()
+    end
+end
+
+function _guard_owned_return_ptr(
+    ptr::Ptr{Cvoid},
+    channel::Ptr{Cvoid},
+    name::AbstractString,
+    free::Ptr{Cvoid},
+    alive::Base.RefValue{Bool},
+    free_channel::Ptr{Cvoid},
+)
+    # The existing boxed-result guard already distinguishes a panic sentinel
+    # from a completed owner produced before a Julia callback exception.
+    guard_boxed_result_panic_ptr(
+        (is_ok = UInt8(1), ok_value = ptr, err_value = nothing),
+        channel,
+        name,
+        C_NULL,
+        free,
+        alive,
+        free_channel,
+    )
+    return ptr
+end

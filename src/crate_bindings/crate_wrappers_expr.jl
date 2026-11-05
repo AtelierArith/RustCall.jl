@@ -27,6 +27,7 @@ function _generate_crate_function_wrapper(func::RustFunctionSignature)
     _boundary_item!(_boundary_label(func))
     # An item the Rust codegen refuses gets no wrapper (#491).
     _rust_refused_item!(func.skip_reason, func.name) && return Expr(:block)
+    func.return_handle === nothing || return _owned_return_wrapper(func; inline = false)
     func_name = Symbol(julia_function_name(func))
     func_name_str = String(func_name)
     # The Julia wrapper keeps the Rust name; the exported symbol it calls is
@@ -425,7 +426,7 @@ function _generate_crate_struct_wrapper(info::RustStructInfo;
                 return rustcall′obj
             end
 
-            $(_has_optional_owner_constructor(info) ? nothing : @_emitted quote
+            $((_has_optional_owner_constructor(info) || _has_explicit_owned_constructor(info)) ? nothing : @_emitted quote
             function $struct_name(rustcall′ptr::Ptr{Cvoid})
                 rustcall′free_ptr, rustcall′alive, rustcall′free_channel =
                     _struct_generation($free_cache, $free_symbol)
@@ -754,6 +755,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     _boundary_item!(_boundary_label(info, method))
     # A method the Rust codegen refuses gets no wrapper (#491).
     _rust_refused_item!(method.skip_reason, method.name) && return Expr(:block)
+    method.return_handle === nothing || return _owned_return_wrapper(method, info; inline = false, bare)
     struct_name_str = julia_struct_name(info)
     struct_name = Symbol(struct_name_str)
     # The Julia name: the Rust name, or `<Trait>_<name>` for a trait method

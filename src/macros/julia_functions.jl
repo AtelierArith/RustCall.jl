@@ -114,6 +114,7 @@ struct RustFunctionSignature
     arg_handles::Vector{Union{Nothing, RustHandleArg}}
     arg_slice_elements::Vector{String}
     arg_slice_lengths::Vector{String}
+    return_handle::Union{Nothing, RustHandleArg}
 end
 
 function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_types::Vector{String},
@@ -148,7 +149,8 @@ function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_type
                                arg_handles::Vector{Union{Nothing, RustHandleArg}} =
                                    Union{Nothing, RustHandleArg}[nothing for _ in arg_names],
                                arg_slice_elements::Vector{String} = fill("", length(arg_names)),
-                               arg_slice_lengths::Vector{String} = fill("", length(arg_names)))
+                               arg_slice_lengths::Vector{String} = fill("", length(arg_names)),
+                               return_handle::Union{Nothing, RustHandleArg} = nothing)
     length(arg_slice_elements) == length(arg_names) && length(arg_slice_lengths) == length(arg_names) ||
         throw(ArgumentError("slice metadata must have one entry per argument"))
     length(arg_handles) == length(arg_names) ||
@@ -170,7 +172,7 @@ function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_type
                           ok_abi, err_abi, inner_abi, python_defaults, python_kinds,
                           isempty(ffi_name) ? name : ffi_name, callback_args,
                           callback_returns, python_path, py_arg_shapes, py_return_shape,
-                          arg_handles, arg_slice_elements, arg_slice_lengths)
+                          arg_handles, arg_slice_elements, arg_slice_lengths, return_handle)
 end
 
 """
@@ -807,6 +809,7 @@ function _generate_single_wrapper(sig::RustFunctionSignature)
     _boundary_item!(_boundary_label(sig))
     # An item the Rust codegen refuses gets no wrapper (#491).
     _rust_refused_item!(sig.skip_reason, sig.name) && return nothing
+    sig.return_handle === nothing || return _owned_return_wrapper(sig; inline = true, escape = esc)
     # The Julia wrapper keeps the Rust *name* (`add(1, 2)`); the call goes to
     # the exported *symbol*, which since #279 is `rustcall_add`.
     func_name = esc(Symbol(julia_function_name(sig)))
@@ -1115,4 +1118,254 @@ function convert_c_option_to_rust_option(c_option, ::Type{T},
     else
         RustOption{T}(false, nothing)
     end
+end
+
+# One explicit owned-return plan, shared by all three Julia emitters. The
+# front doors supply only the function declaration and the existing image
+# snapshot flavour; the selected owner, payload and adoption rules live here.
+function _owned_return_wrapper(
+    item,
+    info = nothing;
+    inline::Bool,
+    escape::Function = identity,
+    bare::Bool = true,
+)
+    owner = item.return_handle
+    owner === nothing &&
+        throw(ArgumentError("an explicit owned return needs return_handle metadata"))
+    item.return_kind in (:plain, :result) || throw(
+        RustError("explicit owned return supports only direct owners or Result<Owner, E>"),
+    )
+    item.return_kind === :result &&
+        item.ok_abi != "boxed" &&
+        throw(RustError("explicit owned Result must declare a boxed Ok payload"))
+    item.return_kind === :plain &&
+        item.return_abi != "boxed" &&
+        throw(RustError("explicit owned return must declare a boxed return ABI"))
+    method = info !== nothing
+    scope = method ? info.module_path : item.module_path
+    type_ref = _handle_type_ref(owner, inline ? nothing : scope, escape)
+    T = _emitter_local("owned_type")
+    symbol = method ? method_wrapper_symbol(info.ffi_name, item) : item.symbol
+    free_symbol = ffi_struct_free_symbol(owner.ffi_name)
+    receiver =
+        method && !item.is_static ? (inline ? :self : _emitter_local("self")) : nothing
+    bindings, preserved, args, frame =
+        method ?
+        _string_arg_plan(item, escape; handle_scope = inline ? nothing : scope, receiver) :
+        _string_arg_plan(item, escape; handle_scope = inline ? nothing : scope)
+    if method && item.is_static && item.is_constructor && length(item.arg_names) == 1
+        argument = escape(Symbol(only(item.arg_names)))
+        pushfirst!(
+            bindings,
+            @_emitted(
+                :(
+                    $argument isa Ptr && throw(
+                        ArgumentError(
+                            "an explicit owned factory requires its declared value/owner argument; raw pointer adoption uses the full pointer/free/alive constructor",
+                        ),
+                    )
+                )
+            )
+        )
+    end
+    # Resolve the selected class before entering Rust: a missing Julia binding
+    # must never strand an already-produced pointer outside the adopter.
+    pushfirst!(bindings, :($T = $type_ref))
+    if receiver !== nothing
+        pushfirst!(
+            bindings,
+            @_emitted(:(RustCall.check_not_freed($receiver, $(info.name))))
+        )
+        pushfirst!(preserved, receiver)
+        pushfirst!(args, @_emitted(:(getfield($receiver, :ptr))))
+    end
+    borrows =
+        method ?
+        (
+            inline ? _inline_method_borrows(item; receiver = receiver) :
+            _crate_call_borrows(item; receiver = receiver)
+        ) : _crate_call_borrows(item)
+    target = _emitter_local("owned_target")
+    fp, channel, free, alive, free_channel, payload = (
+        _emitter_local(n) for n in (
+            "owned_fn",
+            "owned_panic",
+            "owned_free",
+            "owned_alive",
+            "owned_drop_panic",
+            "owned_payload_free",
+        )
+    )
+    raw, value = _emitter_local("owned_raw"), _emitter_local("owned_value")
+    fallible = item.return_kind === :result
+    _boundary_examined!(
+        fallible ? "Ok payload" : "return",
+        fallible ? item.ok_type : item.return_type,
+        "boxed",
+        nothing,
+    )
+    err_surface, err_slot =
+        fallible ?
+        ffi_payload_symbols(
+            item.err_type,
+            item.err_abi,
+            method ? _ffi_context(item, info.name) : _ffi_context(item);
+            position = "Err payload",
+        ) : (nothing, nothing)
+    err_surface = fallible ? _emitted_type(err_surface) : nothing
+    err_slot = fallible ? _emitted_type(err_slot) : nothing
+    string_owner = method ? _method_string_owner(item, info.ffi_name) : item.ffi_name
+    payload_symbol = fallible ? _payload_free_symbol(string_owner, (item.err_abi,)) : ""
+    lib =
+        inline ?
+        (
+            receiver === nothing ?
+            @_emitted(:(RustCall.module_symbol_library(@__MODULE__, $symbol))) :
+            @_emitted(:(getfield($receiver, :lib_name)))
+        ) : ""
+    snapshot = if inline
+        @_emitted quote
+            $target = RustCall._check_inline_call_borrows(
+                RustCall.resolve_call_target($lib, $symbol; free_symbol = $free_symbol),
+                $borrows;
+                slice_symbol = $(_uses_slice_ffi(item) ? symbol : ""),
+                optional_symbol = $(_uses_optional_owner_ffi(item) ? symbol : ""),
+            )
+            RustCall._require_owned_return_abi($target.handle, $symbol)
+            $(
+                fallible ?
+                @_emitted(
+                    :(RustCall.Libdl.dlsym($target.handle, $symbol * "_boxed_result_v1"))
+                ) : nothing
+            )
+            $fp, $channel, $free, $alive, $free_channel = $target.func_ptr,
+            $target.channel,
+            $target.free_ptr,
+            $target.alive,
+            $target.free_channel
+            $payload = $(
+                isempty(payload_symbol) ? @_emitted(:(Ptr{Cvoid}(C_NULL))) :
+                @_emitted(:(RustCall.Libdl.dlsym($target.handle, $payload_symbol)))
+            )
+        end
+    else
+        cache = _target_cache_name(method ? :m : :fn, symbol)
+        fallible ?
+        @_emitted(
+            :(
+                ($fp, $channel, $free, $alive, $free_channel, $payload) =
+                    _ctor_result_target(
+                        $cache,
+                        $symbol,
+                        $free_symbol,
+                        $payload_symbol;
+                        borrows = $borrows,
+                    )
+            )
+        ) :
+        @_emitted quote
+            $fp, $channel, $free, $alive, $free_channel =
+                _ctor_target($cache, $symbol, $free_symbol; borrows = $borrows)
+            $payload = Ptr{Cvoid}(C_NULL)
+        end
+    end
+    snapshot = @_emitted quote
+        $snapshot
+        $free != C_NULL || error("explicit owned return from " * $symbol * " has no selected owner destructor")
+    end
+    insert!(bindings, frame === nothing ? length(bindings) + 1 : length(bindings), snapshot)
+    lib_value = inline ? :($target.lib_name) : ""
+    adopt(pointer) = @_emitted(
+        :(RustCall._adopt_owned_return(
+            $T,
+            $pointer,
+            $lib_value,
+            $free,
+            $alive,
+            $free_channel,
+            $inline,
+        ))
+    )
+    ctype =
+        fallible ? @_emitted(:(RustCall.CResultType{Ptr{Cvoid},$err_slot})) :
+        @_emitted(:(Ptr{Cvoid}))
+    call = @_emitted(:(RustCall.call_rust_function($fp, $ctype, $(args...))))
+    guarded_call = _in_callback_frame(frame, _quote_preserved(preserved, call))
+    body = if fallible
+        @_emitted quote
+            $(bindings...)
+            $raw = $guarded_call
+            RustCall.guard_boxed_result_panic_ptr(
+                $raw,
+                $channel,
+                $symbol,
+                $payload,
+                $free,
+                $alive,
+                $free_channel,
+            )
+            if $raw.is_ok == 1
+                $value = $(adopt(:($raw.ok_value)))
+                RustCall.RustResult{$T,$err_surface}(true, $value)
+            else
+                RustCall.RustResult{$T,$err_surface}(
+                    false,
+                    RustCall._result_payload($err_surface, $raw.err_value, $payload),
+                )
+            end
+        end
+    else
+        @_emitted quote
+            $(bindings...)
+            $raw = $guarded_call
+            RustCall._guard_owned_return_ptr(
+                $raw,
+                $channel,
+                $symbol,
+                $free,
+                $alive,
+                $free_channel,
+            )
+            $(adopt(raw))
+        end
+    end
+    arg_names = [escape(Symbol(n)) for n in item.arg_names]
+    fname =
+        method ? escape(Symbol(julia_method_name(item))) :
+        escape(Symbol(julia_function_name(item)))
+    owner_type = method ? escape(Symbol(julia_struct_name(info))) : nothing
+    decl = if !method
+        Expr(:call, fname, arg_names...)
+    elseif item.is_static && item.is_constructor
+        Expr(:call, Expr(:(::), Expr(:curly, GlobalRef(Core, :Type), owner_type)), arg_names...)
+    elseif item.is_static
+        Expr(
+            :call,
+            fname,
+            Expr(:(::), Expr(:curly, GlobalRef(Core, :Type), owner_type)),
+            arg_names...,
+        )
+    else
+        Expr(:call, fname, Expr(:(::), receiver, owner_type), arg_names...)
+    end
+    definition = Expr(:function, decl, body)
+    result = Expr(:block)
+    inline || push!(result.args, _target_cache_const(method ? :m : :fn, symbol))
+    push!(result.args, definition)
+    if !inline && (!method || !item.is_static || !item.is_constructor)
+        push!(result.args, Expr(:export, fname))
+    end
+    if method && item.is_static && !item.is_constructor && bare
+        delegate_args = [_emitter_local("owned_arg$i") for i in eachindex(arg_names)]
+        push!(
+            result.args,
+            Expr(
+                :(=),
+                Expr(:call, fname, delegate_args...),
+                Expr(:call, fname, owner_type, delegate_args...),
+            ),
+        )
+    end
+    return result
 end

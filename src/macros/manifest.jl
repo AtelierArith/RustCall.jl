@@ -1495,6 +1495,7 @@ function manifest_function_signatures(manifest::Dict; only_attributed::Bool = tr
             arg_handles = _manifest_arg_handles(args, handles),
             arg_slice_elements = String[_mstr(a, "slice_element") for a in args],
             arg_slice_lengths = String[_mstr(a, "slice_length") for a in args],
+            return_handle = _manifest_return_handle(f, handles),
         ))
     end
     return sigs
@@ -1614,6 +1615,7 @@ function _manifest_method(m, handles::Dict{String, RustHandleArg} = Dict{String,
         arg_handles = _manifest_arg_handles(args, handles),
         arg_slice_elements = String[_mstr(a, "slice_element") for a in args],
         arg_slice_lengths = String[_mstr(a, "slice_length") for a in args],
+        return_handle = _manifest_return_handle(m, handles),
     )
 end
 
@@ -1724,4 +1726,13 @@ function manifest_struct_infos(manifest::Dict; origins = nothing)
         ))
     end
     return infos
+end
+
+function _manifest_return_handle(item, handles::Dict{String, RustHandleArg})
+    name = _mstr(item, "return_handle")
+    isempty(name) && return nothing
+    owner = get(handles, name, nothing)
+    owner === nothing && throw(ExtractorError(
+        "unresolved owned return_handle `$name` for `$(_mstr(item, "name"))`: expected a concrete #[julia] owner in the manifest"))
+    return owner
 end
