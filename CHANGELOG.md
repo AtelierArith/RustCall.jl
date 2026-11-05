@@ -76,6 +76,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with explicit-import/qualified-path guidance instead of a by-value layout
   suggestion; the explicit unchecked pointer escape remains available
   ([#569](https://github.com/AtelierArith/RustCall.jl/issues/569)).
+- Finalized inline instance receivers raise `RustError` before argument
+  preparation, target resolution or native entry for ordinary scalar/unit,
+  string, owned-object and fallible return paths. A null finalized receiver is
+  no longer interpreted as a static-method sentinel, which could omit the
+  receiver argument from the FFI call. Live receivers, valid static methods
+  and existing explicit raw-pointer interfaces retain their behavior
+  ([#574](https://github.com/AtelierArith/RustCall.jl/issues/574)).
 - Borrowed `#[julia]` handles are checked against the actual call snapshot,
   not only against each other. Inline, crate and written free-function
   wrappers reject handles from a retired image after hot reload, including

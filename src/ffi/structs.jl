@@ -962,7 +962,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                         function $fname(::Type{$esc_struct}, $(esc_args...))
                             $(bindings...)
                             lib = RustCall.module_symbol_library(@__MODULE__, $wrapper_name)
-                            return $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) _call_rust_method(lib, $wrapper_name, C_NULL, $jl_ret_type, $(expanded_call_args...); borrows = $borrows, slice_args = $(_uses_slice_ffi(m)), optional_owner_args = $(_uses_optional_owner_ffi(m))))))
+                            return $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) _call_rust_method(lib, $wrapper_name, C_NULL, $jl_ret_type, $(expanded_call_args...); is_static = true, borrows = $borrows, slice_args = $(_uses_slice_ffi(m)), optional_owner_args = $(_uses_optional_owner_ffi(m))))))
                         end
                     end)
                 end
@@ -988,6 +988,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                 free_fn = mc.free_symbol
                 push!(exprs, quote
                     function $fname(self::$esc_struct, $(esc_args...))
+                        RustCall.check_not_freed(self, $struct_name_str)
                         $(bindings...)
                         return $(_in_callback_frame(frame, :(GC.@preserve self $(preserved...) _call_rust_owned_string(self.lib_name, $wrapper_name, $free_fn, self.ptr, $(expanded_call_args...); borrows = $borrows, slice_args = $(_uses_slice_ffi(m)), optional_owner_args = $(_uses_optional_owner_ffi(m))))))
                     end
@@ -995,6 +996,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
             elseif ffi_borrowed_string_return(mc)
                 push!(exprs, quote
                     function $fname(self::$esc_struct, $(esc_args...))
+                        RustCall.check_not_freed(self, $struct_name_str)
                         $(bindings...)
                         return $(_in_callback_frame(frame, :(GC.@preserve self $(preserved...) _call_rust_borrowed_string(self.lib_name, $wrapper_name, self.ptr, $(expanded_call_args...); borrows = $borrows, slice_args = $(_uses_slice_ffi(m)), optional_owner_args = $(_uses_optional_owner_ffi(m))))))
                     end
@@ -1013,6 +1015,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                                              _ffi_context(m, struct_name_str))
                 push!(exprs, quote
                     function $fname(self::$esc_struct, $(esc_args...))
+                        RustCall.check_not_freed(self, $struct_name_str)
                         $(bindings...)
                         if $is_ctor_ret
                             # A `Self`-returning method allocates, so its result
@@ -1021,7 +1024,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                             res, tgt = $(_in_callback_frame(frame, :(GC.@preserve self $(preserved...) _call_rust_constructor(self.lib_name, $wrapper_name, $struct_stem, self.ptr, $(expanded_call_args...); borrows = $borrows, slice_args = $(_uses_slice_ffi(m)), optional_owner_args = $(_uses_optional_owner_ffi(m))))))
                             return $esc_struct(res, tgt.lib_name, tgt.free_ptr, tgt.alive, tgt.free_channel)
                         else
-                            return $(_in_callback_frame(frame, :(GC.@preserve self $(preserved...) _call_rust_method(self.lib_name, $wrapper_name, self.ptr, $jl_ret_type, $(expanded_call_args...); borrows = $borrows, slice_args = $(_uses_slice_ffi(m)), optional_owner_args = $(_uses_optional_owner_ffi(m))))))
+                            return $(_in_callback_frame(frame, :(GC.@preserve self $(preserved...) _call_rust_method(self.lib_name, $wrapper_name, self.ptr, $jl_ret_type, $(expanded_call_args...); is_static = false, borrows = $borrows, slice_args = $(_uses_slice_ffi(m)), optional_owner_args = $(_uses_optional_owner_ffi(m))))))
                         end
                     end
                 end)
@@ -1665,10 +1668,17 @@ end
 # name `@rust` resolves — a generic free function named like the wrapper must
 # not capture the method (#520 review).
 function _call_rust_method(lib_name::String, func_name::String, ptr::Ptr{Cvoid},
-                           ret_type::Type, args...; borrows = (), slice_args::Bool = false, optional_owner_args::Bool = false)
+                           ret_type::Type, args...; borrows = (), slice_args::Bool = false, optional_owner_args::Bool = false,
+                           is_static::Union{Nothing, Bool} = nothing)
+    # Old direct callers use a null pointer to request a static call. Generated
+    # wrappers state their intent, so a finalized receiver cannot change arity.
+    static_call = is_static === nothing ? ptr == C_NULL : is_static
+    if !static_call && ptr == C_NULL
+        throw(RustError("cannot call instance method `$func_name`: receiver is a freed Rust object (NULL pointer)"))
+    end
     target = _check_inline_call_borrows(resolve_call_target(lib_name, func_name), borrows;
         slice_symbol = slice_args ? func_name : "", optional_symbol = optional_owner_args ? func_name : "")
-    if ptr == C_NULL
+    if static_call
         return _call_resolved_typed(target, func_name, ret_type, args...)
     else
         return _call_resolved_typed(target, func_name, ret_type, ptr, args...)
