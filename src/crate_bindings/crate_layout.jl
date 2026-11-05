@@ -463,3 +463,30 @@ function _slice_arg_symbols(info::CrateInfo)
     end
     return Tuple(sort!(unique!(symbols)))
 end
+
+# Only symbols with an emitted, concrete wrapper require the optional-owner producer
+# marker. Refused items retain their argument metadata in a manifest but own
+# no wrapper symbol (which an unrelated scalar function may legitimately use).
+function _optional_owner_symbols(info::CrateInfo)
+    symbols = String[]
+    for func in info.julia_functions
+        _binds_julia_wrapper(func) && _uses_optional_owner_ffi(func) || continue
+        push!(symbols, func.symbol)
+    end
+    for owner in info.julia_structs
+        _binds_julia_struct(owner) && isempty(owner.type_params) || continue
+        for method in owner.methods
+            isempty(method.skip_reason) && _uses_optional_owner_ffi(method) || continue
+            push!(symbols, method_wrapper_symbol(owner.ffi_name, method))
+        end
+    end
+    return Tuple(sort!(unique!(symbols)))
+end
+
+# A one-argument optional-owner constructor owns the ordinary Julia call
+# surface, including Ptr arguments that it must reject. Keep explicit
+# ptr/free/alive adoption for internal results, but omit the ambiguous shorthand.
+_has_optional_owner_constructor(owner::RustStructInfo) = any(owner.methods) do method
+    isempty(method.skip_reason) && method.is_constructor && length(method.arg_names) == 1 &&
+        _uses_optional_owner_ffi(method)
+end

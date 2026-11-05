@@ -1329,6 +1329,7 @@ const RUST_CODEGEN_REFUSALS = Base.ImmutableDict(Base.ImmutableDict{String, Stri
     "lowered_str_borrow" => "borrowed `&str` return of", # #484
     "lowered_str_lifetime" => "`&str` lifetime of",  # #482
     "slice_signature" => "unsupported slice signature of", # #570
+    "optional_owner_signature" => "unsupported optional owner signature of", # #571
     "receiver_type" => "receiver type of",           # #497, #509
     # v0.7.1's name for `receiver_type` (trait impls only): no longer emitted,
     # kept so a manifest of that extractor still reads as refused (schema 0.7
@@ -2279,3 +2280,16 @@ guards.
     # read on every call.
     return :(ffi_check_by_value($R, $(A.parameters)))
 end
+
+# An optional owner is passed as an explicit nullable C pointer, never through
+# Rust's native Option/niche ABI. Validate the producer on the captured image.
+function _require_optional_owner_abi(handle::Ptr{Cvoid}, symbol::AbstractString)
+    marker = Libdl.dlsym(handle, string(symbol, "_optional_owner_ptr_v1"); throw_error = false)
+    if marker === nothing || marker == C_NULL
+        error("incompatible optional borrowed-owner ABI for $symbol; rebuild the crate with rustcall_julia_macros >= 0.7.0")
+    end
+    return nothing
+end
+
+_uses_optional_owner_ffi(signature) = any(_is_optional_handle_abi, signature.arg_abis)
+_present_call_borrows(objects::Tuple) = filter(obj -> obj !== nothing, objects)

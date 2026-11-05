@@ -230,6 +230,88 @@ as a missing `mod` target elsewhere in the tree.
     but has no Julia wrapper until the alias is spelled as a type RustCall
     knows.
 
+### Optional borrowed owners
+
+A non-generic `#[julia]` function or method can accept an optional borrow of a
+concrete `#[julia]` owner. Julia passes that owner's generated handle or
+`nothing`:
+
+```rust
+#[julia]
+pub fn compute(
+    source: &Matrix,
+    scratch: &mut Scratch,
+    team: Option<&Team>,
+) -> Result<(), String> {
+    // Application-specific work; None can select the sequential path.
+    Ok(())
+}
+```
+
+```julia
+bindings.compute(source, scratch, nothing)
+bindings.compute(source, scratch, team)
+```
+
+`Option<&mut Owner>` is supported with the same checks and exclusive-borrow
+rules. This applies to free functions, static methods and receiver methods,
+including `Option<&Self>` when the pointee is the enclosing annotated owner.
+The application decides what an absent argument means; RustCall supplies no
+scheduling or numerical policy.
+
+The manifest identifies the concrete owner through `Arg.handle` and records
+`Arg.abi = "handle_optional"` or `"handle_optional_mut"`. Those values state
+optionality and shared/mutable access explicitly. The C representation is one
+nullable thin pointer (`*const Owner` or `*mut Owner`): the generated shim
+reconstructs `None` from null and a call-scoped `Some(&Owner)` or
+`Some(&mut Owner)` from a non-null pointer. Rust's native `Option`/niche layout
+never crosses the ABI. A producer exports
+`<symbol>_optional_owner_ptr_v1`; bindings require that marker before calling
+an optional-owner shim, so an older producer cannot be called using the new
+argument shape. Rebuild the crate and regenerate bindings when the marker is
+missing.
+
+`nothing` is the only ordinary Julia spelling of absence. A freed handle,
+closed-image handle, wrong owner type or malformed value is an error, never
+`None`. Optional positions reject every `Ptr` value, including `C_NULL`; they
+also reject `Some(handle)` and `missing`. Pass the correctly typed handle
+directly. Required `&Owner`/`&mut Owner` arguments retain their existing ABI
+and explicit raw-pointer escape hatch.
+
+Every present owner is checked against the library image of the resolved call,
+including a receiver and required arguments. An owner from a retired image is
+rejected when the call targets a replacement image; merely having all the old
+owners agree with one another is insufficient. `nothing` has no image and is
+excluded from those comparisons. Present owners remain rooted for the entire
+call. A mutable borrow may not alias any other present borrow of the same
+owner, including a receiver, a required argument or another optional argument.
+Shared/shared aliasing is allowed, and absent arguments borrow nothing.
+Optional owners can be combined with required owners and numeric slices in
+one signature. Present optional owners participate in the same image and
+borrow-overlap checks; `nothing` contributes no owner image or memory span.
+A wrapper using both optional owners and slices requires both contracts'
+producer markers on the captured library image.
+
+Only borrows whose lifetimes end with this synchronous call are supported.
+Static or escaping references, nested optional forms, unannotated pointee
+types, type- or const-generic signatures and asynchronous functions are refused
+with a diagnostic. An optional-owner wrapper also cannot return a nonstatic
+borrowed `&str` view, whether its lifetime is named or elided; return an owned
+`String` or an explicit `&'static str` instead. Use a concrete annotated adapter
+for unsupported forms. Owner resolution must be provable from the scanned Rust
+syntax; qualify the pointee or import it explicitly if a wildcard import does
+not establish its identity.
+This feature does not add wildcard-import resolution or general facade
+composition.
+
+Rooting keeps an owner alive; it does not serialize access to its Rust data or
+make that data `Send` or `Sync`. The caller must uphold the Rust type's thread
+requirements and prevent conflicting access by other Julia tasks, threads,
+callbacks or nested calls until the borrow ends. Rust must not retain the
+reference or use it asynchronously after returning. A mutable borrow changes
+the actual owner: an error, caught panic or callback exception can leave it
+partly changed; no rollback is promised.
+
 ### Trait impls
 
 `#[julia]` methods of a trait impl are bound too (#506). The wrapper calls the
@@ -1135,25 +1217,28 @@ Built-in `StridedVector{T}` storage with stride one is borrowed directly: a
 dense vector, a contiguous vector view (including a matrix column), or a
 compatible reinterpret vector. Multidimensional arrays, arbitrary custom
 `AbstractVector` implementations, reversed views and non-unit-stride views are
-rejected; this mode never silently stages a copy. Before entering Rust, Julia checks the element representation,
-length multiplication, address span and alignment, and roots the array and its
-owner through the call. All elements must already be initialized, including
+rejected; this mode never silently stages a copy. Before entering Rust, Julia
+checks the element representation, length multiplication, address span and
+alignment, and roots the array and its owner through the call. All elements must already be initialized, including
 mutable output storage: use `zeros(T, n)` or initialize every element before
-borrowing. `Vector{T}(undef, n)` is not a write-only slice contract. Empty slices use a non-null aligned dangling pointer;
-no element is read. The Rust shim checks its pointer/length arithmetic before
-constructing a reference.
+borrowing. `Vector{T}(undef, n)` is not a write-only slice contract. Empty slices
+use a non-null aligned dangling pointer; no element is read. The Rust shim
+checks its pointer/length arithmetic before constructing a reference.
 
 All supplied slice ranges are checked together. Shared/shared overlap is
 allowed. A mutable slice overlapping another live buffer borrow is rejected,
 including identical arrays, partial overlap and overlapping reinterpret
 views. These checks cover the arguments of this call, not arbitrary references
 held elsewhere. Rust also checks the complete inline extent of borrowed
-receiver/handle objects before constructing slice references. An opaque
-object's separately allocated interior buffers are not discoverable from its
-object address; the caller must exclude hidden aliases, including aliases
-created with `unsafe_wrap`. Raw pointers remain an explicit unchecked interface: neither
-allocation provenance nor the validity of manually constructed unsafe array
-owners can be established from their addresses.
+receiver/handle objects before constructing slice references, including every
+present optional owner. An absent optional owner contributes no object span.
+An opaque object's separately allocated interior buffers are not discoverable
+from its object address; the caller must exclude hidden aliases, including
+aliases created with `unsafe_wrap`. Raw pointers remain an explicit unchecked
+interface for required owner/raw-pointer positions. Generated optional-owner
+argument positions reject them, including `C_NULL`. Neither allocation
+provenance nor the validity of manually constructed unsafe array owners can be
+established from their addresses.
 
 The scope ends at the synchronous return from Rust. Static or otherwise
 retaining lifetimes, borrowed returns from a lowered slice, and generic slice
@@ -1161,7 +1246,8 @@ signatures are refused. Rust must not retain these pointers, launch background
 work that uses them, or use them after returning. GC rooting keeps storage
 alive; it does **not** lock that storage. The caller must prevent another Julia
 task, OS thread or callback (including reentrant RustCall calls) from accessing
-a mutable borrow, and prevent mutation, resizing or freeing of a shared borrow until the call finishes.
+a mutable borrow, and prevent mutation, resizing or freeing of a shared borrow
+until the call finishes.
 
 Mutable borrows write the caller's storage directly. A returned `Err`, a
 caught Rust panic or a Julia callback exception can leave it partly changed;

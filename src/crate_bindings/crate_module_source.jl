@@ -148,6 +148,9 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     if !isempty(slice_symbols)
         push!(lines, "    rustcall′Base.in(name, $(repr(slice_symbols))) && rustcall′RustCall._require_slice_args_abi(handle, name)")
     end
+    if !isempty(_optional_owner_symbols(info))
+        push!(lines, "    rustcall′Base.in(name, $(repr(_optional_owner_symbols(info)))) && rustcall′RustCall._require_optional_owner_abi(handle, name)")
+    end
     push!(lines, "    ptr = _symbol(handle, name)")
     push!(lines, "    ptr == rustcall′Base.C_NULL && rustcall′Base.error(\"The Rust library '\" * _LIB_NAME *")
     push!(lines, "                           \"' does not export '\" * name * \"'.\")")
@@ -624,10 +627,12 @@ function _emit_struct_code(info::RustStructInfo; strict::Symbol = _ffi_strict(),
     push!(lines, "        return rustcall′obj")
     push!(lines, "    end")
     push!(lines, "")
-    push!(lines, "    function $struct_name(rustcall′ptr::rustcall′Base.Ptr{rustcall′Base.Cvoid})")
-    push!(lines, "        rustcall′free_ptr, rustcall′alive, rustcall′free_channel = _struct_generation($free_cache, $(repr(free_symbol)))")
-    push!(lines, "        return $struct_name(rustcall′ptr, rustcall′free_ptr, $release_alive, rustcall′free_channel)")
-    push!(lines, "    end")
+    if !_has_optional_owner_constructor(info)
+        push!(lines, "    function $struct_name(rustcall′ptr::rustcall′Base.Ptr{rustcall′Base.Cvoid})")
+        push!(lines, "        rustcall′free_ptr, rustcall′alive, rustcall′free_channel = _struct_generation($free_cache, $(repr(free_symbol)))")
+        push!(lines, "        return $struct_name(rustcall′ptr, rustcall′free_ptr, $release_alive, rustcall′free_channel)")
+        push!(lines, "    end")
+    end
     push!(lines, "end")
     push!(lines, "export $struct_name")
     push!(lines, "function rustcall′Base.show(rustcall′io::rustcall′Base.IO, rustcall′self::$struct_name)")

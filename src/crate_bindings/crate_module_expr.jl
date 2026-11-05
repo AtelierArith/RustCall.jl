@@ -226,6 +226,8 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
 
         function _required_symbol(handle::Ptr{Cvoid}, name::String)::Ptr{Cvoid}
             $slice_check
+            $(isempty(_optional_owner_symbols(info)) ? nothing :
+                @_emitted(:(name in $(_optional_owner_symbols(info)) && RustCall._require_optional_owner_abi(handle, name))))
             ptr = _symbol(handle, name)
             ptr == C_NULL && error("The Rust library '" * _LIB_NAME *
                                    "' does not export '" * name * "'.")

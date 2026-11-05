@@ -30,6 +30,10 @@ end
 const CR_INLINE_CASES = [
     ("unsupported bool slice", "#[julia] pub fn bits(xs: &[bool]) -> usize { xs.len() }",
      "bits", "slice_signature"),
+    ("retained optional owner", """
+        #[julia] pub struct Owner571 { value: i32 }
+        #[julia] pub fn retained571(x: Option<&'static Owner571>) -> i32 { x.map_or(0, |v| v.value) }
+        """, "retained571", "optional_owner_signature"),
     ("unsafe fn", "#[julia] pub unsafe fn danger(p: *const i32) -> i32 { *p }",
      "danger", "unsafe_fn"),
     ("generic unsafe fn", "#[julia] pub unsafe fn g503<T: Copy>(x: T) -> T { x }",

@@ -513,4 +513,5 @@ mod tests {
     }
 }
 
+mod optional_borrows;
 mod slices;
