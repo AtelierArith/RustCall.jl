@@ -250,6 +250,8 @@ pub mod skip_reason {
     /// the reason lets the Julia generators name that refusal before anything
     /// is built.
     pub const UNSAFE_FN: &str = "unsafe_fn";
+    /// An optional owner outside the finite synchronous nullable-pointer contract.
+    pub const OPTIONAL_OWNER_SIGNATURE: &str = "optional_owner_signature";
     /// A `#[julia]` item generic over type or const parameters the flavour
     /// cannot bind (#503): any generic item of a crate (the proc macro sees
     /// one item and cannot know the instantiations), a const-generic
@@ -301,6 +303,7 @@ pub mod skip_reason {
     /// nothing for it and the boundary report lists it.
     pub const CODEGEN_REFUSALS: &[&str] = &[
         SLICE_SIGNATURE,
+        OPTIONAL_OWNER_SIGNATURE,
         UNSAFE_FN,
         GENERIC_SIGNATURE,
         IMPL_TRAIT,
@@ -451,18 +454,22 @@ pub struct Arg {
     /// `usize` length, with [`Arg::slice_element`] / [`Arg::slice_length`]; #570),
     /// `"callback"` (a C-ABI function pointer, passed as written; #296),
     /// `"handle"` / `"handle_mut"` (`&T` / `&mut T` of a `#[julia]` struct
-    /// of this scan, [`Arg::handle`]; #565).
+    /// of this scan, [`Arg::handle`]; #565), `"handle_optional"` /
+    /// `"handle_optional_mut"` (a nullable thin pointer for `Option<&T>` /
+    /// `Option<&mut T>`, explicitly reconstructed by the producer; #571).
+    /// `"optional_borrow"` is an unresolved optional reference: consumers
+    /// must refuse it rather than assume a concrete owner or native Option ABI.
     #[serde(default)]
     pub abi: String,
-    /// For `abi == "handle"` / `"handle_mut"`: the [`Struct::ffi_name`] of
+    /// For required or optional handle ABIs: the [`Struct::ffi_name`] of
     /// the `#[julia]` struct the argument borrows (`&Self`, `&Value`,
     /// `&mut crate::a::Value`). The wrapper takes the reference as written —
     /// a thin pointer in the C ABI — so the consumer passes the pointer its
     /// own handle object owns, never a value. Recorded only when the path
     /// names that struct with certainty (`paths::locate_borrowed_type`);
-    /// anything else keeps `abi = ""`. Empty otherwise. Additive within
-    /// schema 0.9: a consumer that does not know the column passes the
-    /// object as before and fails at the call, as it did.
+    /// unresolved optional references keep `abi = "optional_borrow"` and
+    /// an empty handle. Required unknown paths keep `abi = ""`. Optional
+    /// producers must export the per-symbol `_optional_owner_ptr_v1` marker.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub handle: String,
     /// Canonical initialized primitive representation for `slice` / `slice_mut`.

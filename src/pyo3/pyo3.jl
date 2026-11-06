@@ -72,6 +72,7 @@ const PYO3_SKIP_REASONS = Base.ImmutableDict(Base.ImmutableDict{String, String}(
     "lowered_str_lifetime" => "a `&str` argument whose lifetime must outlive the call, while " *
                               "the string is rebuilt for the call only; take `String` (#482)",
     "slice_signature" => "a slice signature outside the finite synchronous numeric slice contract (#570)",
+    "optional_owner_signature" => "an optional owner borrow outside the synchronous checked-owner contract (#571)",
     "receiver_type" => "a method whose receiver type does not show its shape (a type " *
                        "alias, a smart pointer, or the type spelled otherwise than the impl " *
                        "header); its wrapper calls it by path, which passes the receiver " *

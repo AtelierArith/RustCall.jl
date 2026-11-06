@@ -350,7 +350,9 @@ pub fn function_refusal(func: &ItemFn, module_path: &[String], mode: Mode) -> Op
     if let Some(refusal) = unsafe_function_refusal(func) {
         return Some(refusal);
     }
-    if let Some(refusal) = async_slice_refusal(&func.sig) {
+    if let Some(refusal) =
+        async_slice_refusal(&func.sig).or_else(|| async_optional_owner_refusal(&func.sig))
+    {
         return Some(refusal);
     }
     let type_generic = crate::types::has_type_params(&func.sig.generics);
@@ -373,6 +375,12 @@ pub fn function_refusal(func: &ItemFn, module_path: &[String], mode: Mode) -> Op
         }) {
             return Some(Refusal::over(skip_reason::SLICE_SIGNATURE, "generic", &pt.ty,
                 "Generic numeric slice wrappers are unsupported; write a concrete #[julia] adapter (#570)"));
+        }
+        if let Some(syn::FnArg::Typed(pt)) = func.sig.inputs.iter().find(
+            |a| matches!(a, syn::FnArg::Typed(pt) if crate::optional_borrows::is_option(&pt.ty)),
+        ) {
+            return Some(Refusal::over(skip_reason::OPTIONAL_OWNER_SIGNATURE, "generic", &pt.ty,
+                "Generic optional borrowed-owner wrappers are unsupported; write a concrete #[julia] adapter (#571)"));
         }
         return None;
     }
@@ -538,7 +546,9 @@ fn async_slice_refusal(sig: &syn::Signature) -> Option<Refusal> {
 }
 
 pub fn method_refusal(site: MethodSite<'_>, m: &MethodModel) -> Option<Refusal> {
-    if let Some(refusal) = async_slice_refusal(&m.func.sig) {
+    if let Some(refusal) =
+        async_slice_refusal(&m.func.sig).or_else(|| async_optional_owner_refusal(&m.func.sig))
+    {
         return Some(refusal);
     }
     match site {
@@ -578,6 +588,12 @@ pub fn method_refusal(site: MethodSite<'_>, m: &MethodModel) -> Option<Refusal> 
             }) {
                 return Some(Refusal::over(skip_reason::SLICE_SIGNATURE, "generic", &pt.ty,
                     "Generic numeric slice wrappers are unsupported; write a concrete #[julia] adapter (#570)"));
+            }
+            if let Some(syn::FnArg::Typed(pt)) = m.func.sig.inputs.iter().find(|a| {
+                matches!(a, syn::FnArg::Typed(pt) if crate::optional_borrows::is_option(&pt.ty))
+            }) {
+                return Some(Refusal::over(skip_reason::OPTIONAL_OWNER_SIGNATURE, "generic", &pt.ty,
+                    "Generic optional borrowed-owner wrappers are unsupported; write a concrete #[julia] adapter (#571)"));
             }
             inline_generic_method_refusal(struct_name, true, m)
                 .or_else(|| unsafe_method_refusal(struct_name, m))
@@ -778,4 +794,14 @@ pub fn attribute_target_refusal(tokens: &TokenStream2) -> Refusal {
         .ok()
         .and_then(|item| item_kind_refusal(&item))
         .unwrap_or_else(|| Refusal::over(UNSUPPORTED_ITEM, "", tokens, UNSUPPORTED_ITEM_MESSAGE))
+}
+
+fn async_optional_owner_refusal(sig: &syn::Signature) -> Option<Refusal> {
+    sig.asyncness.as_ref()?;
+    let ty = sig.inputs.iter().find_map(|a| match a {
+        syn::FnArg::Typed(pt) if crate::optional_borrows::is_option(&pt.ty) => Some(&pt.ty),
+        _ => None,
+    })?;
+    Some(Refusal::over(skip_reason::OPTIONAL_OWNER_SIGNATURE, "async", ty,
+        "Async optional borrowed-owner wrappers are unsupported; the borrow must end at the synchronous call (#571)"))
 }

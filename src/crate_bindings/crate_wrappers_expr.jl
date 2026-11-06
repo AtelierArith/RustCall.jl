@@ -17,7 +17,8 @@ function _crate_call_borrows(func; receiver = nothing)
     if func isa RustMethod && !func.is_static && receiver !== nothing
         pushfirst!(objects, receiver)
     end
-    return Expr(:tuple, objects...)
+    tuple = Expr(:tuple, objects...)
+    return _uses_optional_owner_ffi(func) ? @_emitted(:(RustCall._present_call_borrows($tuple))) : tuple
 end
 
 function _generate_crate_function_wrapper(func::RustFunctionSignature)
@@ -424,13 +425,14 @@ function _generate_crate_struct_wrapper(info::RustStructInfo;
                 return rustcall′obj
             end
 
-            # For a pointer that did not come from a call of this module.
+            $(_has_optional_owner_constructor(info) ? nothing : @_emitted quote
             function $struct_name(rustcall′ptr::Ptr{Cvoid})
                 rustcall′free_ptr, rustcall′alive, rustcall′free_channel =
                     _struct_generation($free_cache, $free_symbol)
                 return $struct_name(rustcall′ptr, rustcall′free_ptr, $release_alive,
                                     rustcall′free_channel)
             end
+            end)
         end
         export $struct_name
 

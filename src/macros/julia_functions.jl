@@ -236,7 +236,7 @@ end
 function _string_arg_plan(method::RustMethod, escape::Function;
                           handle_scope::Union{Nothing, Vector{String}} = nothing,
                           receiver = nothing)
-    return _string_arg_plan(method.arg_names, method.arg_types, method.arg_abis, escape;
+    plan = _string_arg_plan(method.arg_names, method.arg_types, method.arg_abis, escape;
                             context = method.name,
                             callbacks = collect(zip(method.callback_args, method.callback_returns)),
                             handles = method.arg_handles, handle_scope,
@@ -244,6 +244,10 @@ function _string_arg_plan(method::RustMethod, escape::Function;
                             slice_lengths = method.arg_slice_lengths,
                             receiver = (method.is_static || receiver === nothing) ? nothing :
                                        (receiver, method.is_mutable))
+    if !method.is_static && receiver !== nothing && _uses_optional_owner_ffi(method)
+        pushfirst!(plan[1], @_emitted(:(RustCall.check_not_freed($receiver, "receiver of " * $(method.name)))))
+    end
+    return plan
 end
 
 """
@@ -304,6 +308,11 @@ function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
             enumerate(zip(arg_names, arg_types, arg_abis, callbacks, handles))
         arg_sym = escape(Symbol(name))
         position = "argument `$(name)`"
+        if abi == "optional_borrow" || (_is_optional_handle_abi(abi) && handle === nothing)
+            _boundary_refuse(position, rust_type, abi,
+                "argument `$name` of `$context` is an optional borrowed owner whose concrete #[julia] owner is unresolved; annotate the owner with #[julia] and use an explicit import or qualified path (glob-import resolution is unsupported)")
+            continue
+        end
         if _is_handle_abi(abi) && handle !== nothing
             # A borrowed `#[julia]` struct (#565): the wrapper takes the
             # reference as written, one thin pointer, so the call passes the
@@ -326,7 +335,10 @@ function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
             # A raw pointer is passed through unchecked, as it was before
             # handles were recognised: the caller vouches for it. Anything
             # else must be the struct's own live handle.
-            push!(bindings, @_emitted(:($ptr = if $obj isa Ptr{Cvoid}
+            optional = _is_optional_handle_abi(abi)
+            push!(bindings, @_emitted(:($ptr = if $optional && $obj === nothing
+                Ptr{Cvoid}(C_NULL)
+            elseif !$optional && $obj isa Ptr{Cvoid}
                 $obj
             else
                 $obj isa $T || throw(ArgumentError(string(
@@ -335,7 +347,13 @@ function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
                 $checker($obj, $(handle.name))
                 getfield($obj, :ptr)
             end)))
-            push!(preserved, obj)
+            if optional
+                roots = Symbol(_EMITTER_LOCAL_PREFIX, "optional_roots′", index)
+                push!(bindings, @_emitted(:($roots = $obj === nothing ? () : ($obj,))))
+                push!(preserved, roots)
+            else
+                push!(preserved, obj)
+            end
             push!(call_args, ptr)
             push!(borrows, (obj, ptr, _is_mut_handle_abi(abi), label))
             continue
@@ -447,9 +465,10 @@ function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
     # liveness flag is the image's identity (one image, one flag), so two
     # objects of a retired and a replacement generation, which may disagree
     # on the struct's layout, are never handed to one call together.
-    for j in 2:length(borrows)
-        (first_obj, _, _, first_label), (obj, _, _, label) = borrows[1], borrows[j]
-        push!(bindings, @_emitted(:($obj isa Ptr{Cvoid} || $first_obj isa Ptr{Cvoid} ||
+    for i in eachindex(borrows), j in (i + 1):length(borrows)
+        (first_obj, _, _, first_label), (obj, _, _, label) = borrows[i], borrows[j]
+        push!(bindings, @_emitted(:($obj === nothing || $first_obj === nothing ||
+            $obj isa Ptr{Cvoid} || $first_obj isa Ptr{Cvoid} ||
             getfield($obj, :alive) === getfield($first_obj, :alive) ||
             throw(ArgumentError(string("`", $context, "` borrows ", $(first_label...), " and ",
                 $(label...), " from different library images (a hot reload replaced the ",
@@ -460,9 +479,9 @@ function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
     # `self`) is refused before Rust ever sees the two references (#565).
     # Shared borrows may alias (`sum(a, a)`).
     for i in eachindex(borrows), j in (i + 1):length(borrows)
-        (_, p, pmut, plabel), (_, q, qmut, qlabel) = borrows[i], borrows[j]
+        (pobj, p, pmut, plabel), (qobj, q, qmut, qlabel) = borrows[i], borrows[j]
         pmut || qmut || continue
-        push!(bindings, @_emitted(:($p == $q && throw(ArgumentError(string(
+        push!(bindings, @_emitted(:($pobj !== nothing && $qobj !== nothing && $p == $q && throw(ArgumentError(string(
             "`", $context, "` cannot borrow one Rust object as ", $(plabel...), " and ",
             $(qlabel...), ": a `&mut` borrow may not alias another borrow"))))))
     end
@@ -473,10 +492,10 @@ function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
         push!(bindings, :($helper($p, $q, $pname, $qname, $context)))
     end
     for (span, _, mutable, name) in buffer_borrows
-        for (_, ptr, handle_mutable, label) in borrows
+        for (obj, ptr, handle_mutable, label) in borrows
             mutable || handle_mutable || continue
             helper = GlobalRef(@__MODULE__, :_ffi_check_slice_handle_overlap)
-            push!(bindings, :($helper($span, $ptr, $name, $context)))
+            push!(bindings, @_emitted(:($obj === nothing || $helper($span, $ptr, $name, $context))))
         end
     end
     frame = nothing
@@ -648,7 +667,7 @@ rooted for the call (#296). The plain wrapper has no `GC.@preserve` region.
 function _uses_string_ffi(sig::RustFunctionSignature)
     _ffi_function_return(sig).aggregate_type === nothing || return true
     # A borrowed `#[julia]` struct keeps its handle rooted for the call (#565).
-    any(abi -> _is_handle_abi(abi) || abi in ("slice", "slice_mut"), sig.arg_abis) && return true
+    any(abi -> _is_handle_abi(abi) || abi in ("slice", "slice_mut", "optional_borrow"), sig.arg_abis) && return true
     return any(zip(sig.arg_types, sig.arg_abis)) do (rust_type, abi)
         c = ffi_argument_contract(rust_type; abi = abi)
         c.abi === :ptr_len || c.abi === :ptr_len_cap || c.abi === :callback
@@ -848,10 +867,13 @@ function _inline_handle_target_bindings!(bindings, sig, target, frame, snapshot)
     if _uses_slice_ffi(sig)
         push!(checks, @_emitted(:(RustCall._require_slice_args_abi($target.handle, $(sig.symbol)))))
     end
+    if _uses_optional_owner_ffi(sig)
+        push!(checks, @_emitted(:(RustCall._require_optional_owner_abi($target.handle, $(sig.symbol)))))
+    end
     for (i, (abi, handle)) in enumerate(zip(sig.arg_abis, sig.arg_handles))
         _is_handle_abi(abi) && handle !== nothing || continue
         obj = Symbol(_EMITTER_LOCAL_PREFIX, "handle′", i)
-        push!(checks, @_emitted(:($obj isa Ptr{Cvoid} ||
+        push!(checks, @_emitted(:($obj === nothing || $obj isa Ptr{Cvoid} ||
             getfield($obj, :alive) === $target.alive ||
             throw(ArgumentError("borrowed handle and call target belong to different library images; recreate the object after hot reload")))))
     end
@@ -881,7 +903,7 @@ function _generate_inline_string_wrapper(sig, func_name, symbol_str, arg_syms)
             RustCall.module_symbol_library(@__MODULE__, $symbol_str), $symbol_str;
             free_symbol = $(c.free_symbol)))
     else
-        :($channel_sym = RustCall.cached_call_target($string_cache, @__MODULE__, $symbol_str; slice_args = $(_uses_slice_ffi(sig))))
+        :($channel_sym = RustCall.cached_call_target($string_cache, @__MODULE__, $symbol_str; slice_args = $(_uses_slice_ffi(sig)), optional_owner_args = $(_uses_optional_owner_ffi(sig))))
     end
     _inline_handle_target_bindings!(bindings, sig, channel_sym, frame, snapshot)
     call = if ffi_owned_string_return(c)

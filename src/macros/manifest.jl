@@ -1506,8 +1506,9 @@ end
 Whether an argument borrows a `#[julia]` struct (`Arg.abi` `"handle"` /
 `"handle_mut"`, #565); `_is_mut_handle_abi` for the mutable borrow.
 """
-_is_handle_abi(abi::AbstractString) = abi == "handle" || abi == "handle_mut"
-_is_mut_handle_abi(abi::AbstractString) = abi == "handle_mut"
+_is_handle_abi(abi::AbstractString) = abi in ("handle", "handle_mut", "handle_optional", "handle_optional_mut")
+_is_optional_handle_abi(abi::AbstractString) = abi in ("handle_optional", "handle_optional_mut")
+_is_mut_handle_abi(abi::AbstractString) = abi in ("handle_mut", "handle_optional_mut")
 
 """
     _manifest_handle_table(manifest) -> Dict{String, RustHandleArg}

@@ -272,6 +272,12 @@ pub fn has_string_args(sig: &syn::Signature) -> bool {
     })
 }
 
+fn returns_static_str(sig: &syn::Signature) -> bool {
+    matches!(&sig.output, ReturnType::Type(_, ty)
+        if matches!(crate::types::unparen(ty), Type::Reference(r)
+            if r.lifetime.as_ref().is_some_and(|l| l.ident == "static")))
+}
+
 /// A `&str` return may only be handed to Julia as a borrowed view when it
 /// cannot point into a temporary the wrapper itself created: the `(ptr, len)`
 /// argument conversions build owned values (`String::from_utf8_lossy`) that
@@ -429,6 +435,39 @@ fn string_arg_conversion(
                 };
             }),
         )
+    } else if let Some((mutable, pointee)) = crate::optional_borrows::pointee(ty) {
+        let p = fresh_ident(&format!("{name}_ptr"), taken);
+        let core = fresh_ident("__rustcall_optional_core", taken);
+        let annotation = crate::optional_borrows::local_annotation(ty);
+        let pointer = if mutable {
+            quote! { *mut #pointee }
+        } else {
+            quote! { *const #pointee }
+        };
+        let borrow = if mutable {
+            quote! { &mut *#p }
+        } else {
+            quote! { &*#p }
+        };
+        (
+            vec![quote! { #p: #pointer }],
+            Some(quote! {
+                let #name: #annotation = {
+                extern crate core as #core;
+                // A sized concrete pointee guarantees a thin C pointer, never a
+                // Rust DST or native Option niche. The annotation also rejects a
+                // user enum/module shadowing core::option::Option.
+                let _ = #core::mem::size_of::<#pointee>();
+                if #p.is_null() {
+                    #core::option::Option::None
+                } else {
+                    assert!((#p as #core::primitive::usize) % #core::mem::align_of::<#pointee>() == 0,
+                        "misaligned optional owner pointer");
+                    #core::option::Option::Some(unsafe { #borrow })
+                }
+                };
+            }),
+        )
     } else if is_string_type(ty) {
         let p = fresh_ident(&format!("{name}_ptr"), taken);
         let l = fresh_ident(&format!("{name}_len"), taken);
@@ -530,7 +569,11 @@ pub(crate) enum WrapperReturn {
         declare: bool,
     },
     /// `<helper> { ptr, len }` borrowed from the callee.
-    BorrowedStr { helper: Ident, declare: bool },
+    BorrowedStr {
+        helper: Ident,
+        declare: bool,
+        static_lifetime: bool,
+    },
     /// `CResult_<owner> { is_ok, ok_value, err_value }`.
     CResult {
         name: Ident,
@@ -1192,6 +1235,30 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
                 format!("`{julia_name}`: slice argument `{name}` requires a supported primitive layout and an unbounded call-scoped lifetime; retained/static borrows and borrowed returns are unsupported (#570)")));
         }
     }
+    for (name, ty) in &args {
+        if !crate::optional_borrows::is_option(ty) {
+            continue;
+        }
+        if matches!(
+            ret,
+            WrapperReturn::BorrowedStr {
+                static_lifetime: false,
+                ..
+            }
+        ) {
+            return Err(Refusal::over(crate::manifest::skip_reason::OPTIONAL_OWNER_SIGNATURE,
+                name.to_string(), ty,
+                "Optional borrowed-owner wrappers cannot return borrowed string views; return an owned String so the owner borrow ends at the synchronous call boundary (#571)"));
+        }
+        let mut scope: syn::Signature = syn::parse_quote!(fn rustcall_optional_scope());
+        scope.generics = generics.clone();
+        if crate::optional_borrows::pointee(ty).is_none()
+            || !crate::extract::borrow_is_call_scoped(ty, &scope)
+        {
+            return Err(Refusal::over(crate::manifest::skip_reason::OPTIONAL_OWNER_SIGNATURE,
+                name.to_string(), ty, format!("`{julia_name}`: optional borrowed argument `{name}` must be Option<&Owner> or Option<&mut Owner> with a sized concrete #[julia] owner and an unbounded call-scoped lifetime; nested, owned, slice, static and retaining forms are unsupported (#571)")));
+        }
+    }
 
     // The wrapper's environment is the item's, verbatim, with `Self` spelled
     // as the impl header's type (#482, `crate::environment`).
@@ -1310,11 +1377,21 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
         let l = fresh_ident(&format!("{slice_name}_len"), &taken);
         let mut objects = Vec::new();
         for (name, ty) in &args {
-            if let Some((mutable, pointee)) = crate::extract::borrowed_struct_arg(ty) {
+            if let Some((mutable, pointee)) = crate::optional_borrows::pointee(ty) {
+                if slice_mut || mutable {
+                    let pointer = fresh_ident(&format!("{name}_ptr"), &taken);
+                    objects.push((
+                        quote! { #pointer as __rustcall_alias_core::primitive::usize },
+                        quote! { __rustcall_alias_core::mem::size_of::<#pointee>() },
+                        quote! { !#pointer.is_null() },
+                    ));
+                }
+            } else if let Some((mutable, pointee)) = crate::extract::borrowed_struct_arg(ty) {
                 if slice_mut || mutable {
                     objects.push((
                         quote! { #name as *const #pointee as __rustcall_alias_core::primitive::usize },
                         quote! { __rustcall_alias_core::mem::size_of::<#pointee>() },
+                        quote! { true },
                     ));
                 }
             }
@@ -1325,13 +1402,14 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
                 objects.push((
                     quote! { #ptr as __rustcall_alias_core::primitive::usize },
                     quote! { __rustcall_alias_core::mem::size_of::<#ty>() },
+                    quote! { true },
                 ));
             }
         }
-        for (base, size) in objects {
+        for (base, size, present) in objects {
             slice_alias_checks.push(quote! {{
                 extern crate core as __rustcall_alias_core;
-                if #l != 0 {
+                if #l != 0 && #present {
                     let rustcall_slice_start = #p as __rustcall_alias_core::primitive::usize;
                     let rustcall_slice_stop = #l.checked_mul(__rustcall_alias_core::mem::size_of::<#elem>())
                         .and_then(|n| rustcall_slice_start.checked_add(n)).expect("slice address span overflow");
@@ -1358,6 +1436,17 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
         // A newer consumer must never connect this pointer/length contract
         // to an older proc macro's native fat-pointer or unchecked layout.
         let marker = format_ident!("{}", slice_args_marker(&symbol.to_string()));
+        out.extend(quote! {
+            #(#cfg_attrs)*
+            #[no_mangle]
+            pub extern "C" fn #marker() -> u8 { 1 }
+        });
+    }
+    if args
+        .iter()
+        .any(|(_, ty)| crate::optional_borrows::reference(ty).is_some())
+    {
+        let marker = format_ident!("{}", optional_owner_marker(&symbol.to_string()));
         out.extend(quote! {
             #(#cfg_attrs)*
             #[no_mangle]
@@ -1481,7 +1570,9 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
                 }
             }
         }
-        WrapperReturn::BorrowedStr { helper, declare } => {
+        WrapperReturn::BorrowedStr {
+            helper, declare, ..
+        } => {
             if declare {
                 out.extend(borrowed_string_helper(&cfg_attrs, &helper));
             }
@@ -1945,6 +2036,7 @@ fn free_fn_return(func: &ItemFn, name: &Ident, options: &FreeFnOptions) -> Wrapp
         return WrapperReturn::BorrowedStr {
             helper: format_ident!("{}_RustCallBorrowedString", name),
             declare: true,
+            static_lifetime: returns_static_str(&func.sig),
         };
     }
     WrapperReturn::Plain((**ty).clone())
@@ -2475,6 +2567,12 @@ pub(crate) fn slice_args_marker(symbol: &str) -> String {
     format!("{symbol}_slice_ptr_len_v1")
 }
 
+/// Proof that optional borrowed owners use an explicit nullable thin pointer
+/// with checked call-local reconstruction rather than Rust's Option ABI.
+pub(crate) fn optional_owner_marker(symbol: &str) -> String {
+    format!("{symbol}_optional_owner_ptr_v1")
+}
+
 /// Whether the wrapper of a method returns a boxed `*mut Struct`: `new`, or any
 /// method (static or instance) returning `Self` / the struct type. This is what
 /// Julia needs to know; both codegen flavours box these cases.
@@ -2993,6 +3091,7 @@ fn method_spec(
         WrapperReturn::BorrowedStr {
             helper: borrowed_helper.clone(),
             declare,
+            static_lifetime: returns_static_str(&m.func.sig),
         }
     } else {
         match &m.func.sig.output {

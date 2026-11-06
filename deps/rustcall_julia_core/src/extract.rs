@@ -184,6 +184,8 @@ pub fn arg_abi(ty: &syn::Type) -> &'static str {
         } else {
             "slice"
         }
+    } else if crate::optional_borrows::reference(ty).is_some() {
+        "optional_borrow"
     } else if is_string_type(ty) {
         "string"
     } else if is_str_ref_type(ty) {
@@ -234,6 +236,8 @@ pub fn mark_handle_arg(arg: &mut Arg, mutable: bool, ffi_name: &str) {
 /// `'a: 'static` would let Rust keep the reference after Julia frees the
 /// object, so such an argument is left as written.
 pub fn borrow_is_call_scoped(ty: &syn::Type, sig: &syn::Signature) -> bool {
+    let reference = crate::optional_borrows::reference(ty).map(|r| syn::Type::Reference(r.clone()));
+    let ty = reference.as_ref().unwrap_or(ty);
     let syn::Type::Reference(r) = crate::types::unparen(ty) else {
         return false;
     };
@@ -295,7 +299,17 @@ pub fn mark_handle_args(
         if !borrow_is_call_scoped(ty, sig) {
             continue;
         }
-        if let Some((mutable, pointee)) = borrowed_struct_arg(ty) {
+        if let Some((mutable, pointee)) = crate::optional_borrows::pointee(ty) {
+            if let Some(ffi_name) = resolve(pointee) {
+                arg.abi = if mutable {
+                    "handle_optional_mut"
+                } else {
+                    "handle_optional"
+                }
+                .into();
+                arg.handle = ffi_name;
+            }
+        } else if let Some((mutable, pointee)) = borrowed_struct_arg(ty) {
             if let Some(ffi_name) = resolve(pointee) {
                 mark_handle_arg(arg, mutable, &ffi_name);
             }
@@ -1038,7 +1052,7 @@ impl CrateScan {
                         }
                         manifest.functions.push(entry);
                         if f.sig.inputs.iter().any(|a| {
-                            matches!(a, FnArg::Typed(pt) if borrowed_struct_arg(&pt.ty).is_some())
+                            matches!(a, FnArg::Typed(pt) if borrowed_struct_arg(&pt.ty).is_some() || crate::optional_borrows::reference(&pt.ty).is_some())
                         }) {
                             self.handle_fns.push(PendingHandleFn {
                                 index: manifest.functions.len() - 1,

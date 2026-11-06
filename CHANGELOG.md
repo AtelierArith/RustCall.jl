@@ -18,16 +18,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Unsupported storage and retaining signatures are refused. Mutable writes
   remain visible on error or panic; `with_numeric_buffer` remains the explicit
   staging option ([#570](https://github.com/AtelierArith/RustCall.jl/issues/570)).
+- Checked optional borrowed-owner arguments for non-generic `#[julia]`
+  functions and methods: Julia passes an appropriately typed handle or
+  `nothing` for `Option<&Owner>` and `Option<&mut Owner>`. The manifest names
+  the concrete owner and shared/mutable optional ABI; generated shims use a
+  nullable thin pointer and explicitly reconstruct `Some`/`None`, guarded by
+  a producer ABI marker. Present arguments receive the existing type,
+  liveness, target-image, rooting and mutable-alias checks alongside required
+  arguments and receivers, including mixed slice/owner signatures. Optional
+  positions reject raw pointers; `nothing` alone means absence. Retaining and
+  unsupported optional forms are rejected. Optional-owner wrappers returning
+  a nonstatic borrowed `&str` view are refused; return an owned `String` or an
+  explicit `&'static str` instead
+  ([#571](https://github.com/AtelierArith/RustCall.jl/issues/571)).
 
 ### Changed
-- Package, extractor, manifest schema and written-bindings format move to
-  `0.10.0` / `0.10`. Regenerate written bindings from earlier minor releases.
+- Package and extractor move to `0.10.0`, with manifest schema and written
+  bindings format `0.10`. Rebuild producers and regenerate bindings from
+  earlier minor releases. Example packages accept RustCall `0.9` and `0.10`.
 
 ### Rust crates
 - `rustcall_julia_core`, `rustcall_julia_macros_impl` and
   `rustcall_julia_macros` move from `0.6.0` to `0.7.0`. The minor bump covers
-  the public `Arg` fields for slice metadata and the changed slice lowering
-  and signature refusals of `#[julia]`.
+  the public `Arg` fields for slice metadata and the changed slice and
+  optional-owner lowering and signature refusals of `#[julia]`, independently
+  of the Julia package's version.
 
 ### Fixed
 - Borrowed `#[julia]` handles are checked against the actual call snapshot,

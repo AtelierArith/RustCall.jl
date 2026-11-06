@@ -581,6 +581,12 @@ pub(crate) fn lowered_lifetime_error(
             }
             continue;
         }
+        if let Some(r) = crate::optional_borrows::reference(ty) {
+            if let Some(l) = &r.lifetime {
+                lowered.push((name, l));
+            }
+            continue;
+        }
         if is_string_type(ty) {
             continue;
         }
@@ -630,6 +636,13 @@ pub(crate) fn lowered_lifetime_error(
                 {
                     return Some(Refusal::new(skip_reason::SLICE_SIGNATURE, arg.to_string(),
                         lifetime.ident.span(), format!("`{julia_name}`: slice argument `{arg}` must end at the synchronous call boundary; {why}. Retained borrows are unsupported (#570).")));
+                }
+                if args
+                    .iter()
+                    .any(|(name, ty)| name == arg && crate::optional_borrows::is_option(ty))
+                {
+                    return Some(Refusal::new(skip_reason::OPTIONAL_OWNER_SIGNATURE, arg.to_string(), lifetime.ident.span(),
+                        format!("`{julia_name}`: optional owner `{arg}` must end at the synchronous call boundary; {why} (#571)")));
                 }
                 let msg = if start == "static" {
                     format!(
@@ -858,6 +871,10 @@ pub(crate) fn name_elided_return(
                     if crate::slices::is_slice(ty) {
                         return ElidedReturn::Refused(Refusal::new(skip_reason::SLICE_SIGNATURE,
                             arg.to_string(), *span, format!("`{julia_name}`: a returned reference cannot borrow slice argument `{arg}`, whose scope ends at the synchronous call boundary (#570).")));
+                    }
+                    if crate::optional_borrows::reference(ty).is_some() {
+                        return ElidedReturn::Refused(Refusal::new(skip_reason::OPTIONAL_OWNER_SIGNATURE,
+                            arg.to_string(), *span, format!("`{julia_name}`: a returned reference cannot borrow optional owner `{arg}` beyond the synchronous call (#571)")));
                     }
                     if is_str_ref_type(ty) {
                         let msg = format!(

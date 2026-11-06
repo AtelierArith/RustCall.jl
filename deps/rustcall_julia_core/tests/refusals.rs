@@ -72,6 +72,18 @@ fn cases() -> Vec<Case> {
             source: "#[julia] pub fn f(x: &'static [f64]) -> usize { x.len() }",
             item: "f", skip_reason: "slice_signature:x", message: "supported primitive layout", refusals: 1,
         },
+        Case {
+            label: "inline static optional owner", mode: Inline, position: FreeFn,
+            source: "#[julia] pub struct S { pub n: i32 } #[julia] pub fn f(v: Option<&'static S>) -> i32 { v.map_or(0, |s| s.n) }",
+            item: "f", skip_reason: "optional_owner_signature:v",
+            message: "must be Option<&Owner> or Option<&mut Owner>", refusals: 1,
+        },
+        Case {
+            label: "crate static optional owner", mode: Crate, position: FreeFn,
+            source: "#[julia] pub struct S { pub n: i32 } #[julia] pub fn f(v: Option<&'static S>) -> i32 { v.map_or(0, |s| s.n) }",
+            item: "f", skip_reason: "optional_owner_signature:v",
+            message: "must be Option<&Owner> or Option<&mut Owner>", refusals: 1,
+        },
         // ---- unsafe_fn ------------------------------------------------------
         Case {
             label: "inline unsafe fn",

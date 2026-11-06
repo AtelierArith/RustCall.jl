@@ -1921,6 +1921,7 @@ fn return_plan(
                 }
                 return Ok(ReturnPlan {
                     ret: WrapperReturn::BorrowedStr {
+                        static_lifetime: false,
                         helper: format_ident!("{}_RustCallBorrowedString", owner),
                         declare: true,
                     },

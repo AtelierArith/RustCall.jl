@@ -373,6 +373,16 @@ pub fn function_claims(f: &Function, policy: Policy) -> Vec<Claim> {
             &f.symbol,
         )));
     }
+    if f.args.iter().any(|a| {
+        matches!(
+            a.abi.as_str(),
+            "handle_optional" | "handle_optional_mut" | "optional_borrow"
+        )
+    }) {
+        out.push(Claim::exported(crate::codegen::optional_owner_marker(
+            &f.symbol,
+        )));
+    }
     if !f.ffi_name.is_empty() {
         out.extend(string_claims(
             &f.ffi_name,
@@ -477,6 +487,16 @@ pub fn struct_claims(s: &Struct, policy: Policy) -> Vec<Claim> {
                 .any(|a| matches!(a.abi.as_str(), "slice" | "slice_mut"))
             {
                 claims.push(Claim::exported(crate::codegen::slice_args_marker(
+                    &m.symbol,
+                )));
+            }
+            if m.args.iter().any(|a| {
+                matches!(
+                    a.abi.as_str(),
+                    "handle_optional" | "handle_optional_mut" | "optional_borrow"
+                )
+            }) {
+                claims.push(Claim::exported(crate::codegen::optional_owner_marker(
                     &m.symbol,
                 )));
             }

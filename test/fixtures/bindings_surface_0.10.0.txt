@@ -352,12 +352,12 @@ _call_generic_field	6|block,caller
 _call_generic_method	6|block,caller
 _call_monomorphized	1+|
 _call_resolved_typed	3+|
-_call_rust_borrowed_string	2+|borrows,slice_args
+_call_rust_borrowed_string	2+|borrows,optional_owner_args,slice_args
 _call_rust_borrowed_string_ptr	1+|
-_call_rust_constructor	3+|borrows,slice_args
+_call_rust_constructor	3+|borrows,optional_owner_args,slice_args
 _call_rust_function	3+|
-_call_rust_method	4+|borrows,slice_args
-_call_rust_owned_string	3+|borrows,slice_args
+_call_rust_method	4+|borrows,optional_owner_args,slice_args
+_call_rust_owned_string	3+|borrows,optional_owner_args,slice_args
 _call_rust_owned_string_ptr	2+|
 _callback_frames	0|
 _callback_slot_1	0+|
@@ -410,7 +410,7 @@ _cfg_snapshot	1|
 _check_build_env_origin	1|
 _check_cargo_profile	2|
 _check_extractor	0|
-_check_inline_call_borrows	2|slice_symbol
+_check_inline_call_borrows	2|optional_symbol,slice_symbol
 _check_julia_definitions	2|
 _check_julia_name_clashes	3|accessors,modules,registry
 _check_module_bindings_format	1|
@@ -620,6 +620,7 @@ _graph_stamp	1|
 _graph_stamps	1|
 _handle_type_ref	3|
 _harvest_patch_paths!	3|
+_has_optional_owner_constructor	1|
 _hashed_relative_path	1|
 _identity_file_bytes	1|release_names
 _identity_file_digest	1|release_names
@@ -641,6 +642,7 @@ _is_cargo_env_key	1|
 _is_function_definition	1|
 _is_handle_abi	1|
 _is_mut_handle_abi	1|
+_is_optional_handle_abi	1|
 _is_plain_julia_identifier	1|
 _is_rustcall_release_crate	2|
 _is_string_abi	1|
@@ -701,6 +703,7 @@ _new_shaped_project_dir	1|
 _next_artifact_generation!	1|
 _observe_state_mutation!	4|
 _opened_from_current_copy	4|
+_optional_owner_symbols	1|
 _own_definition_snapshot	2|
 _own_images_unchanged	2|
 _owner_binding	2|
@@ -731,6 +734,7 @@ _precompile_snapshot_views	1|
 _precompile_state_container_ops	0|
 _prepare_generic_function	3|arg_types,blocked,cargo,compiler,group,owner,path,return_type	4|arg_types,blocked,cargo,compiler,group,owner,path,return_type	5|arg_types,blocked,cargo,compiler,group,owner,path,return_type
 _prepare_generic_struct_wrappers	2|cargo,compiler,lib_name
+_present_call_borrows	1|
 _print_boundary_report	5|
 _print_omitted_source_lines	3|
 _print_toolchain_check	7|
@@ -829,7 +833,7 @@ _record_retired!	3|
 _record_string	2|	3|
 _record_strings	2|
 _recorded_build_env	0|python	1|link_source,python
-_refresh_call_target!	3|	4|
+_refresh_call_target!	3|	4|	5|
 _refresh_release_versions!	1|release_names
 _refresh_stored_lockfile!	2|wait
 _register_manifest	2|cargo_backed,cargo_context,compiler,handle,load_path,policy,require_loaded,set_current,snapshot_env
@@ -851,6 +855,7 @@ _rename_tree_parameters	2|
 _requalified_reference	2|
 _require_dispatcher_pyo3_version	2|
 _require_linkable_lib_target	2|
+_require_optional_owner_abi	2|
 _require_slice_args_abi	2|
 _reset_cache_dir_memo!	0|
 _reset_extractor_state!	0|
@@ -959,6 +964,7 @@ _unique_source_name	2|
 _unqualified_reference	2|
 _unwrap_crate_binding_value	1|
 _update_handle_mirrors!	4|
+_uses_optional_owner_ffi	1|
 _uses_slice_ffi	1|
 _uses_string_ffi	1|
 _validate_ffi_by_value	1|form,repr_c
@@ -1014,7 +1020,7 @@ build_cargo_project_cached	2|env,locked,release
 build_crate_directly	2|default_features,env,features
 build_pyo3_extension	1|cache_enabled,default_features,features,python,release
 build_pyo3_wrapper	1|cache_enabled,default_features,features,plan,release,snapshot
-cached_call_target	3|slice_args
+cached_call_target	3|optional_owner_args,slice_args
 cached_target_hit	1|	2|
 call_generic_function	1+|
 call_rust_function	2+|	3+|
