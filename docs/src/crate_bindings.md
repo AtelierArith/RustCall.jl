@@ -1162,14 +1162,20 @@ and a flag saying whether the library is still loaded — so it takes no lock an
 resolves no symbol when it runs. Two consequences worth knowing:
 
 * A method call or field access on an object whose finalizer has already run
-  raises, rather than dereferencing a null pointer inside Rust.
+  raises `RustCall.RustError`. Inline instance methods validate the receiver
+  before preparing other arguments, resolving a Rust call target or entering
+  native code, regardless of return shape. A finalized receiver is never
+  interpreted as a static call; valid static methods and constructors remain
+  callable without an instance.
 * Unloading a library retires the objects it produced: their finalizers become
   no-ops instead of calling into an image that is no longer mapped. That leaks
   those objects deliberately — a leak is preferable to a jump into freed text.
 
 If you need a Rust object to outlive its Julia wrapper, keep a reference to the
 wrapper, or hold it inside `GC.@preserve` for the region where the raw pointer
-is used. An allocation made by one library must be released by that same
+is used. Explicit raw-pointer arguments remain unchecked: callers must ensure
+pointer validity, lifetime and compatible aliasing; receiver validation does
+not validate those pointers. An allocation made by one library must be released by that same
 library; see [Panics, Visibility and Lifetime](panics.md) for the full contract.
 
 ## Regenerating bindings after an upgrade

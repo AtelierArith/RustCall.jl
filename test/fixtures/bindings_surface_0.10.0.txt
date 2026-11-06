@@ -357,7 +357,7 @@ _call_rust_borrowed_string	2+|borrows,optional_owner_args,slice_args
 _call_rust_borrowed_string_ptr	1+|
 _call_rust_constructor	3+|borrows,optional_owner_args,slice_args
 _call_rust_function	3+|
-_call_rust_method	4+|borrows,optional_owner_args,slice_args
+_call_rust_method	4+|borrows,is_static,optional_owner_args,slice_args
 _call_rust_owned_string	3+|borrows,optional_owner_args,slice_args
 _call_rust_owned_string_ptr	2+|
 _callback_frames	0|
