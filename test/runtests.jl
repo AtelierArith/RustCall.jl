@@ -1,3 +1,10 @@
+# Isolate Scratch caches before importing RustCall, including direct file runs.
+# The support directory is an implicit test-only environment, not a dependency.
+pushfirst!(LOAD_PATH, joinpath(@__DIR__, "support"))
+using RustCallTestDepot
+popfirst!(LOAD_PATH)
+RustCallTestDepot.isolate!()
+
 using RustCall
 using ParallelTestRunner
 
