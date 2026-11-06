@@ -8,6 +8,19 @@ on:
       - '*'
   pull_request:
 
+# A hosted runner's network to crates.io occasionally stalls or loses DNS for
+# a minute (run 42189186825: `transfer too slow`, then `Could not resolve host:
+# index.crates.io`, which failed a Cargo build inside `Pkg.test()` after
+# Cargo's default three retries). Give every Cargo invocation in this workflow
+# -- `Pkg.build`, the test suite's own crate builds, the Rust jobs -- more
+# retries so one stalled transfer does not fail the run. `CARGO_NET_*` only
+# says how Cargo talks to the network: it is not part of any artifact key
+# (`ARTIFACT_BUILD_ENV_PREFIXES`) and keeps the extractor's build plain
+# (`src/artifacts/extractor_identity.jl`), as `CARGO_NET_OFFLINE` does in
+# OfflineTests.yml.
+env:
+  CARGO_NET_RETRY: '10'
+
 jobs:
   lint:
     name: Code Lint
