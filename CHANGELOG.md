@@ -62,6 +62,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `#[julia]`, independently of the Julia package's version.
 
 ### Fixed
+- The test runner and direct `test_cache.jl` entry establish a private first
+  depot before importing RustCall. Existing depots remain available for
+  dependency lookup; workers and subprocesses inherit the isolated depot.
+  Caller `RUSTCALL_CACHE_DIR` overrides are ignored for fixture safety, so
+  destructive cache tests cannot clear the caller's cache. Production cache
+  APIs are unchanged ([#580](https://github.com/AtelierArith/RustCall.jl/issues/580)).
 - Generated Rust shims keep native function lookup intact when arguments share
   the function's name or lowered pointer/length names collide with it. Fresh
   wrapper bindings also prevent the panic-boundary guard from hiding an

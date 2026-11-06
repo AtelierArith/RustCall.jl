@@ -1,7 +1,15 @@
+# Isolate Scratch caches before importing RustCall, including direct file runs.
+# The support directory is an implicit test-only environment, not a dependency.
+pushfirst!(LOAD_PATH, joinpath(@__DIR__, "support"))
+using RustCallTestDepot
+popfirst!(LOAD_PATH)
+RustCallTestDepot.isolate!()
+
 # Tests for compilation caching
 
 using RustCall
 using Test
+using TOML
 
 """
     with_isolated_depot(f)
@@ -33,6 +41,48 @@ function with_isolated_depot(f)
         rm(depot; recursive = true, force = true)
     end
 end
+
+@testset "Cache entry inherits a private depot (#580)" begin
+    root = first(DEPOT_PATH)
+    @test root == RustCallTestDepot.isolate!()
+    @test !haskey(ENV, "RUSTCALL_CACHE_DIR")
+    @test ENV["JULIA_DEPOT_PATH"] == join(DEPOT_PATH, Sys.iswindows() ? ';' : ':')
+    child_code = "using RustCall, TOML; TOML.print(Dict(\"first_depot\" => first(DEPOT_PATH), \"package_dir\" => pkgdir(RustCall)))"
+    project = dirname(Base.active_project())
+    child = TOML.parse(
+        read(
+            `$(Base.julia_cmd()) --startup-file=no --project=$project -e $child_code`,
+            String,
+        ),
+    )
+    child_root = child["first_depot"]
+    @test normpath(child_root) == normpath(root)
+    @test realpath(child["package_dir"]) == realpath(pkgdir(RustCall))
+    cache = RustCall.get_cache_dir()
+    @test startswith(relpath(cache, root), "scratchspaces")
+    # Used by the safe simulated-user-depot integration test. No real caller
+    # depot is ever selected for cache writes, including this report's child.
+    report = get(ENV, "RUSTCALL_TEST_DEPOT_REPORT", "")
+    if !isempty(report)
+        open(report, "w") do io
+            TOML.print(
+                io,
+                Dict(
+                    "first_depot" => root,
+                    "cache_dir" => cache,
+                    "depots" => copy(DEPOT_PATH),
+                    "depot_env" => ENV["JULIA_DEPOT_PATH"],
+                    "child_first_depot" => child_root,
+                    "package_dir" => pkgdir(RustCall),
+                    "child_package_dir" => child["package_dir"],
+                    "override_present" => haskey(ENV, "RUSTCALL_CACHE_DIR"),
+                ),
+            )
+        end
+    end
+end
+
+
 
 @testset "Compilation Caching" begin
     # Clear cache before testing

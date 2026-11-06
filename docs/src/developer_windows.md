@@ -39,6 +39,16 @@ changed since the manifest was resolved. That warning is separate from the
 extractor error; when the project files intentionally changed, resolve the
 environment and review the resulting `Manifest.toml` diff before committing it.
 
+The test runner and a direct `test/test_cache.jl` invocation establish a private
+first Julia depot before loading RustCall. Existing depots stay behind it for
+dependency lookup, and test workers and subprocesses inherit that private
+first depot. The harness ignores a caller's `RUSTCALL_CACHE_DIR` override so
+cache-clearing fixtures cannot reach an application cache. This test-only
+isolation does not change RustCall's production cache resolution or APIs.
+On Windows, loaded DLLs can keep the temporary depot mapped; the harness does
+not delete that depot while its process is running. Exit the test Julia process
+and its workers before manually removing any retained temporary depot.
+
 ## MSVC linker and Windows SDK
 
 RustToolChain.jl can provide Rust, but it does not provide the Windows linker.
