@@ -319,14 +319,18 @@ pub fn field_abi(ty: &Type) -> &'static str {
     }
 }
 
-/// An identifier the generated wrapper introduces (`s_ptr`, `s_len`, `s_bytes`,
-/// `s_cow`, the receiver `ptr`, `self_obj`), chosen so that it never coincides
-/// with one of the function's own argument names (`taken`): a trailing
-/// underscore is appended until the name is free. `fn f(s: String, s_ptr:
-/// usize)` therefore gets `s_ptr_` / `s_len` and keeps the user's `s_ptr`.
+// Preserve established post-call payload names. Those bindings cannot capture
+// the earlier native call, and changing them can collide with unit constructors.
 fn fresh_ident(base: &str, taken: &[String]) -> Ident {
+    fresh_ident_by(base, taken, |left, right| left == right)
+}
+/// Allocate pre-call locals against semantic argument and bare-callee names.
+fn fresh_call_ident(base: &str, taken: &[String]) -> Ident {
+    fresh_ident_by(base, taken, crate::borrow_scope::same_name)
+}
+fn fresh_ident_by(base: &str, taken: &[String], same: impl Fn(&str, &str) -> bool) -> Ident {
     let mut name = base.to_string();
-    while taken.iter().any(|t| t == &name) {
+    while taken.iter().any(|t| same(t, &name)) {
         name.push('_');
     }
     format_ident!("{}", name)
@@ -374,8 +378,8 @@ fn string_arg_conversion(
     call_scope: Option<&Ident>,
 ) -> (Vec<TokenStream2>, Option<TokenStream2>) {
     if let Some((mutable, elem, element)) = crate::slices::shape(ty) {
-        let core_alias = fresh_ident("__rustcall_slice_core", taken);
-        let complex_alias = fresh_ident("__rustcall_slice_complex", taken);
+        let core_alias = fresh_call_ident("__rustcall_slice_core", taken);
+        let complex_alias = fresh_call_ident("__rustcall_slice_complex", taken);
         let (imports, canonical) = match element {
             "complex32" | "complex64" => {
                 let scalar =
@@ -393,13 +397,13 @@ fn string_arg_conversion(
                 )
             }
         };
-        let p = fresh_ident(&format!("{name}_ptr"), taken);
+        let p = fresh_call_ident(&format!("{name}_ptr"), taken);
         let identity = if mutable {
             quote! { let _: *mut #canonical = #p; }
         } else {
             quote! { let _: *const #canonical = #p; }
         };
-        let l = fresh_ident(&format!("{name}_len"), taken);
+        let l = fresh_call_ident(&format!("{name}_len"), taken);
         let ptr_ty = if mutable {
             quote! { *mut #elem }
         } else {
@@ -411,7 +415,7 @@ fn string_arg_conversion(
             quote! { #core_alias::slice::from_raw_parts }
         };
         let construct = if let Some(scope) = call_scope {
-            let helper = fresh_ident("__rustcall_scoped_slice", taken);
+            let helper = fresh_call_ident("__rustcall_scoped_slice", taken);
             let reference = if mutable {
                 quote! { &'scope mut [T] }
             } else {
@@ -460,8 +464,8 @@ fn string_arg_conversion(
             }),
         )
     } else if let Some((mutable, pointee)) = crate::optional_borrows::pointee(ty) {
-        let p = fresh_ident(&format!("{name}_ptr"), taken);
-        let core = fresh_ident("__rustcall_optional_core", taken);
+        let p = fresh_call_ident(&format!("{name}_ptr"), taken);
+        let core = fresh_call_ident("__rustcall_optional_core", taken);
         let annotation = crate::optional_borrows::local_annotation(ty);
         let pointer = if mutable {
             quote! { *mut #pointee }
@@ -474,7 +478,7 @@ fn string_arg_conversion(
             quote! { &*#p }
         };
         let borrow = if let Some(scope) = call_scope {
-            let helper = fresh_ident("__rustcall_scoped_optional", taken);
+            let helper = fresh_call_ident("__rustcall_scoped_optional", taken);
             let pointer = if mutable {
                 quote! { *mut T }
             } else {
@@ -519,8 +523,8 @@ fn string_arg_conversion(
             }),
         )
     } else if is_string_type(ty) {
-        let p = fresh_ident(&format!("{name}_ptr"), taken);
-        let l = fresh_ident(&format!("{name}_len"), taken);
+        let p = fresh_call_ident(&format!("{name}_ptr"), taken);
+        let l = fresh_call_ident(&format!("{name}_len"), taken);
         (
             vec![quote! { #p: *const u8 }, quote! { #l: usize }],
             Some(quote! {
@@ -531,10 +535,10 @@ fn string_arg_conversion(
             }),
         )
     } else if is_str_ref_type(ty) {
-        let p = fresh_ident(&format!("{name}_ptr"), taken);
-        let l = fresh_ident(&format!("{name}_len"), taken);
-        let b = fresh_ident(&format!("{name}_bytes"), taken);
-        let c = fresh_ident(&format!("{name}_cow"), taken);
+        let p = fresh_call_ident(&format!("{name}_ptr"), taken);
+        let l = fresh_call_ident(&format!("{name}_len"), taken);
+        let b = fresh_call_ident(&format!("{name}_bytes"), taken);
+        let c = fresh_call_ident(&format!("{name}_cow"), taken);
         (
             vec![quote! { #p: *const u8 }, quote! { #l: usize }],
             Some(quote! {
@@ -1144,6 +1148,12 @@ pub fn runtime_module_source() -> String {
     )
 }
 
+#[derive(Clone, Copy)]
+struct BoundaryContext<'a> {
+    hook: PanicHook,
+    reserved: &'a [String],
+}
+
 /// The body of a generated wrapper, with the user's code inside
 /// `catch_unwind`.
 ///
@@ -1170,8 +1180,9 @@ fn guarded_body(
     body: TokenStream2,
     sentinel: TokenStream2,
     returns_unit: bool,
-    hook: PanicHook,
+    boundary: BoundaryContext<'_>,
 ) -> TokenStream2 {
+    let BoundaryContext { hook, reserved } = boundary;
     // A unit-returning wrapper must not *evaluate* to `()`: clippy's
     // `unused_unit` fires on the generated `Ok(v) => v` arm, and the match is a
     // statement there anyway.
@@ -1183,14 +1194,15 @@ fn guarded_body(
     // The guard is taken *outside* `catch_unwind`, so the prologue — string
     // conversions, receiver binding — is inside the boundary too, and it is
     // dropped after the message has been recorded.
+    let boundary_name = fresh_call_ident("_rustcall_boundary", reserved);
     let boundary = match hook {
         PanicHook::FileOwned => quote! {
-            let _rustcall_boundary = crate::__RustCallBoundary::enter();
+            let #boundary_name = crate::__RustCallBoundary::enter();
         },
         PanicHook::Runtime => {
             let krate = format_ident!("{}", RUNTIME_CRATE);
             quote! {
-                let _rustcall_boundary = ::#krate::__RustCallBoundary::enter();
+                let #boundary_name = ::#krate::__RustCallBoundary::enter();
             }
         }
         PanicHook::External => TokenStream2::new(),
@@ -1401,16 +1413,43 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
     }
 
     let mut taken: Vec<String> = args.iter().map(|(n, _)| n.to_string()).collect();
+    // A bare native item shares the wrapper's value namespace with its
+    // parameters and conversions. Keep lexical lookup (including function-
+    // local items), but give colliding wrapper bindings private names. The
+    // source function and the separately built manifest stay unchanged.
+    let bare_callee = match &target {
+        CallTarget::Free(path) if path.leading_colon.is_none() && path.segments.len() == 1 => {
+            Some(path.segments[0].ident.to_string())
+        }
+        _ => None,
+    };
+    if let Some(callee) = &bare_callee {
+        for (name, _) in &mut args {
+            if crate::borrow_scope::same_name(&name.to_string(), callee) {
+                let renamed =
+                    fresh_call_ident(&format!("__rustcall_arg_{}", unraw(callee)), &taken);
+                taken.push(renamed.to_string());
+                *name = renamed;
+            }
+        }
+    }
     if explicit_owner {
         for ty in ret.passed_types() {
             collect_owned_identifiers(ty, &mut taken);
         }
     }
-    let ptr = fresh_ident("ptr", &taken);
-    let self_obj = fresh_ident("self_obj", &taken);
+    // Reserve the callee only for bindings established before its call.
+    // Legacy post-call payload names cannot shadow that call.
+    let mut call_taken = taken.clone();
+    if let Some(callee) = bare_callee {
+        call_taken.push(callee);
+    }
+    let ptr = fresh_call_ident("ptr", &call_taken);
+    let self_obj = fresh_call_ident("self_obj", &call_taken);
     // All references reconstructed from raw inputs share one unpromoted local
     // witness before an explicit owned value is checked for `'static`.
-    let call_scope = explicit_owner.then(|| fresh_ident("__rustcall_owned_scope", &taken));
+    let call_scope =
+        explicit_owner.then(|| fresh_call_ident("__rustcall_owned_scope", &call_taken));
     let scope_binding = call_scope
         .as_ref()
         .map(|scope| quote! { let #scope @ _ = (); });
@@ -1428,7 +1467,7 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
         });
     }
     for (name, ty) in &args {
-        let (a, conversion) = string_arg_conversion(name, ty, &taken, call_scope.as_ref());
+        let (a, conversion) = string_arg_conversion(name, ty, &call_taken, call_scope.as_ref());
         wrapper_args.extend(a);
         conversions.extend(conversion);
         call_args.push(quote! { #name });
@@ -1450,7 +1489,7 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
                     &self_obj,
                     &ptr,
                     call_scope.as_ref().expect("explicit owned call scope"),
-                    &fresh_ident("__rustcall_scoped_receiver", &taken),
+                    &fresh_call_ident("__rustcall_scoped_receiver", &call_taken),
                 )
             } else {
                 r.shape.binding(&self_obj, &ptr)
@@ -1475,13 +1514,13 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
         let Some((slice_mut, elem, _)) = crate::slices::shape(slice_ty) else {
             continue;
         };
-        let p = fresh_ident(&format!("{slice_name}_ptr"), &taken);
-        let l = fresh_ident(&format!("{slice_name}_len"), &taken);
+        let p = fresh_call_ident(&format!("{slice_name}_ptr"), &call_taken);
+        let l = fresh_call_ident(&format!("{slice_name}_len"), &call_taken);
         let mut objects = Vec::new();
         for (name, ty) in &args {
             if let Some((mutable, pointee)) = crate::optional_borrows::pointee(ty) {
                 if slice_mut || mutable {
-                    let pointer = fresh_ident(&format!("{name}_ptr"), &taken);
+                    let pointer = fresh_call_ident(&format!("{name}_ptr"), &call_taken);
                     objects.push((
                         quote! { #pointer as __rustcall_alias_core::primitive::usize },
                         quote! { __rustcall_alias_core::mem::size_of::<#pointee>() },
@@ -1560,6 +1599,10 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
         let marker = format_ident!("{}", owned_return_marker(&symbol.to_string()));
         out.extend(quote! { #(#cfg_attrs)* #[no_mangle] pub extern "C" fn #marker() -> u8 { 1 } });
     }
+    let boundary = BoundaryContext {
+        hook: panic_hook,
+        reserved: &call_taken,
+    };
     let wrapper = match ret {
         WrapperReturn::Unit => {
             let guarded = guarded_body(
@@ -1569,7 +1612,7 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
                 quote! { #call },
                 quote! {},
                 true,
-                panic_hook,
+                boundary,
             );
             quote! {
                 #(#cfg_attrs)*
@@ -1600,7 +1643,7 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
                 quote! { ::std::mem::MaybeUninit::new(#call) },
                 sentinel,
                 false,
-                panic_hook,
+                boundary,
             );
             quote! {
                 #(#cfg_attrs)*
@@ -1624,7 +1667,7 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
                 body,
                 quote! { ::std::ptr::null_mut() },
                 false,
-                panic_hook,
+                boundary,
             );
             quote! { #(#cfg_attrs)* #[no_mangle]
                 pub extern "C" fn #symbol #lifetimes (#(#wrapper_args),*) -> *mut #ty #lifetime_where { #guarded }
@@ -1642,7 +1685,7 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
                 body,
                 quote! { ::std::ptr::null_mut() },
                 false,
-                panic_hook,
+                boundary,
             );
             quote! {
                 #(#cfg_attrs)*
@@ -1686,7 +1729,7 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
                 body,
                 sentinel,
                 false,
-                panic_hook,
+                boundary,
             );
             quote! {
                 #(#cfg_attrs)*
@@ -1719,7 +1762,7 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
                 body,
                 sentinel,
                 false,
-                panic_hook,
+                boundary,
             );
             quote! {
                 #(#cfg_attrs)*
@@ -1797,7 +1840,7 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
                 body,
                 sentinel,
                 false,
-                panic_hook,
+                boundary,
             );
             quote! {
                 #(#cfg_attrs)*
@@ -1835,7 +1878,7 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
                 body,
                 sentinel,
                 false,
-                panic_hook,
+                boundary,
             );
             quote! {
                 #(#cfg_attrs)*
@@ -2355,6 +2398,11 @@ pub(crate) fn guard_struct_helper(tokens: TokenStream2, hook: PanicHook) -> Toke
             )
         }
     };
+    let mut reserved: Vec<String> = typed_arg_names(&function.sig)
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    reserved.push(symbol.to_string());
     let body = guarded_body(
         &symbol.to_string(),
         &slot,
@@ -2362,7 +2410,10 @@ pub(crate) fn guard_struct_helper(tokens: TokenStream2, hook: PanicHook) -> Toke
         body,
         sentinel,
         unit,
-        hook,
+        BoundaryContext {
+            hook,
+            reserved: &reserved,
+        },
     );
     function.block = syn::parse_quote!({ #body });
     quote! { #channel #function }
@@ -2501,7 +2552,10 @@ pub(crate) fn struct_free_wrapper(
         },
         quote! {},
         true,
-        hook,
+        BoundaryContext {
+            hook,
+            reserved: &["ptr".to_string()],
+        },
     );
     quote! {
         #channel
