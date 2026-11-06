@@ -28,6 +28,8 @@ end
 # corpus: a free function, a method beside its struct, a method of a generic
 # struct, and a method in a block in another module.
 const CR_INLINE_CASES = [
+    ("unsupported bool slice", "#[julia] pub fn bits(xs: &[bool]) -> usize { xs.len() }",
+     "bits", "slice_signature"),
     ("unsafe fn", "#[julia] pub unsafe fn danger(p: *const i32) -> i32 { *p }",
      "danger", "unsafe_fn"),
     ("generic unsafe fn", "#[julia] pub unsafe fn g503<T: Copy>(x: T) -> T { x }",

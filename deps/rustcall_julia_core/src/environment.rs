@@ -573,7 +573,7 @@ pub(crate) fn lowered_lifetime_error(
     }
     let mut lowered: Vec<(&Ident, &syn::Lifetime)> = Vec::new();
     for (name, ty) in args {
-        if is_str_ref_type(ty) {
+        if is_str_ref_type(ty) || crate::slices::is_slice(ty) {
             if let Type::Reference(r) = crate::types::unparen(ty) {
                 if let Some(l) = &r.lifetime {
                     lowered.push((name, l));
@@ -624,6 +624,13 @@ pub(crate) fn lowered_lifetime_error(
                         steps.join(": ")
                     )
                 };
+                if args
+                    .iter()
+                    .any(|(name, ty)| name == arg && crate::slices::is_slice(ty))
+                {
+                    return Some(Refusal::new(skip_reason::SLICE_SIGNATURE, arg.to_string(),
+                        lifetime.ident.span(), format!("`{julia_name}`: slice argument `{arg}` must end at the synchronous call boundary; {why}. Retained borrows are unsupported (#570).")));
+                }
                 let msg = if start == "static" {
                     format!(
                         "`{julia_name}`: argument `{arg}` arrives from Julia as a pointer and a \
@@ -848,6 +855,10 @@ pub(crate) fn name_elided_return(
                 }
                 ([(i, span)], 0) => {
                     let (arg, ty) = &mut args[*i];
+                    if crate::slices::is_slice(ty) {
+                        return ElidedReturn::Refused(Refusal::new(skip_reason::SLICE_SIGNATURE,
+                            arg.to_string(), *span, format!("`{julia_name}`: a returned reference cannot borrow slice argument `{arg}`, whose scope ends at the synchronous call boundary (#570).")));
+                    }
                     if is_str_ref_type(ty) {
                         let msg = format!(
                             "`{julia_name}`: the returned reference borrows from argument `{arg}` \

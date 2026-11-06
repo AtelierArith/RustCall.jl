@@ -365,6 +365,14 @@ pub fn function_claims(f: &Function, policy: Policy) -> Vec<Claim> {
         return vec![Claim::exported(f.symbol.clone())];
     }
     let mut out = wrapper_claims(&f.symbol);
+    if f.args
+        .iter()
+        .any(|a| matches!(a.abi.as_str(), "slice" | "slice_mut"))
+    {
+        out.push(Claim::exported(crate::codegen::slice_args_marker(
+            &f.symbol,
+        )));
+    }
     if !f.ffi_name.is_empty() {
         out.extend(string_claims(
             &f.ffi_name,
@@ -464,6 +472,14 @@ pub fn struct_claims(s: &Struct, policy: Policy) -> Vec<Claim> {
             // `COption_<Struct>_<m>` next to its wrapper, whichever buffers it
             // uses (`codegen::method_spec`, `crate::wrap`).
             let mut claims = wrapper_claims(&m.symbol);
+            if m.args
+                .iter()
+                .any(|a| matches!(a.abi.as_str(), "slice" | "slice_mut"))
+            {
+                claims.push(Claim::exported(crate::codegen::slice_args_marker(
+                    &m.symbol,
+                )));
+            }
             if m.return_kind == ReturnKind::Result && m.ok_abi == "boxed" {
                 claims.push(Claim::exported(crate::codegen::boxed_result_marker(
                     &m.symbol,

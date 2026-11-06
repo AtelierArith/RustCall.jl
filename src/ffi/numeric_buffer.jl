@@ -78,3 +78,100 @@ function copy_owned_numeric_buffer(release, ptr::Ptr{T}, n::Integer) where {T}
         release(ptr, n)
     end
 end
+
+# One call's validated slice descriptor. The owner remains a separate local in
+# every generated wrapper's GC.@preserve region; the descriptor never owns or
+# releases foreign storage.
+struct _FFISliceSpan{T}
+    ptr::Ptr{T}
+    len::Csize_t
+    first::UInt
+    stop::UInt
+end
+
+function ffi_slice_argument(
+    array,
+    ::Type{T},
+    name::AbstractString,
+    context::AbstractString,
+) where {T}
+    array isa StridedVector{T} || throw(
+        ArgumentError(
+            "argument `$name` of `$context` requires contiguous vector storage with exact element type $T; " *
+            "use with_numeric_buffer explicitly when a copy is desired",
+        ),
+    )
+    stride(array, 1) == 1 || throw(
+        ArgumentError(
+            "argument `$name` of `$context` must have stride 1; noncontiguous and reversed views cannot be borrowed",
+        ),
+    )
+    n = length(array)
+    bytes = _ffi_slice_byte_count(n, sizeof(T))
+    alignment = UInt(Base.datatype_alignment(T))
+    # Rust references require a non-null aligned address even when empty.
+    # The aligned sentinel is never dereferenced and borrows no allocation.
+    p = n == 0 ? Ptr{T}(alignment) : GC.@preserve array pointer(array)
+    return _ffi_slice_span(p, n, bytes)
+end
+
+function _ffi_slice_span(
+    p::Ptr{T},
+    n::Integer,
+    bytes::UInt = _ffi_slice_byte_count(n, sizeof(T)),
+) where {T}
+    first = UInt(p)
+    first != 0 && first % UInt(Base.datatype_alignment(T)) == 0 ||
+        throw(ArgumentError("null or misaligned slice pointer for $T"))
+    bytes <= typemax(UInt) - first || throw(ArgumentError("slice address span overflows"))
+    return _FFISliceSpan(p, Csize_t(n), first, first + bytes)
+end
+
+function _ffi_slice_byte_count(n::Integer, element_size::Integer)
+    0 <= n <= typemax(Csize_t) || throw(ArgumentError("invalid slice length"))
+    0 < element_size <= typemax(Int) || throw(ArgumentError("invalid slice element size"))
+    n <= div(typemax(Int), element_size) ||
+        throw(ArgumentError("slice byte length exceeds isize::MAX"))
+    return UInt(n) * UInt(element_size)
+end
+
+function _ffi_string_span(value::String)
+    first = GC.@preserve value UInt(pointer(value))
+    bytes = UInt(sizeof(value))
+    bytes <= typemax(UInt) - first || throw(ArgumentError("string address span overflows"))
+    return _FFISliceSpan(Ptr{UInt8}(first), Csize_t(bytes), first, first + bytes)
+end
+
+function _ffi_check_slice_overlap(
+    p::_FFISliceSpan,
+    q::_FFISliceSpan,
+    pname::AbstractString,
+    qname::AbstractString,
+    context::AbstractString,
+)
+    # Empty ranges borrow no bytes, including two identical empty arrays.
+    if p.len != 0 && q.len != 0 && p.first < q.stop && q.first < p.stop
+        throw(
+            ArgumentError(
+                "arguments `$pname` and `$qname` of `$context` overlap: a mutable slice may not alias another live borrow",
+            ),
+        )
+    end
+    return nothing
+end
+
+function _ffi_check_slice_handle_overlap(
+    span::_FFISliceSpan,
+    ptr::Ptr,
+    name::AbstractString,
+    context::AbstractString,
+)
+    if span.len != 0 && span.first <= UInt(ptr) < span.stop
+        throw(
+            ArgumentError(
+                "slice argument `$name` of `$context` overlaps a borrowed Rust object",
+            ),
+        )
+    end
+    return nothing
+end

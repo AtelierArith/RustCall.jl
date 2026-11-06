@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Non-generic `#[julia]` functions and methods accept checked primitive
+  `&[T]` / `&mut [T]` arguments without copying contiguous Julia storage.
+  The manifest declares the finite real/integer/complex representation,
+  shared/mutable access and pointer/`usize` ABI. Call-scoped roots, span and
+  alignment checks, and overlap checks protect the synchronous borrow.
+  Per-wrapper producer markers refuse older macro-built slice shims before
+  entering Rust, including constructors and all return shapes.
+  Unsupported storage and retaining signatures are refused. Mutable writes
+  remain visible on error or panic; `with_numeric_buffer` remains the explicit
+  staging option ([#570](https://github.com/AtelierArith/RustCall.jl/issues/570)).
+
+### Changed
+- Package, extractor, manifest schema and written-bindings format move to
+  `0.10.0` / `0.10`. Regenerate written bindings from earlier minor releases.
+
+### Rust crates
+- `rustcall_julia_core`, `rustcall_julia_macros_impl` and
+  `rustcall_julia_macros` move from `0.6.0` to `0.7.0`. The minor bump covers
+  the public `Arg` fields for slice metadata and the changed slice lowering
+  and signature refusals of `#[julia]`.
+
 ### Fixed
 - Borrowed `#[julia]` handles are checked against the actual call snapshot,
   not only against each other. Inline, crate and written free-function

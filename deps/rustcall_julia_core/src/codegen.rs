@@ -366,7 +366,70 @@ fn string_arg_conversion(
     ty: &Type,
     taken: &[String],
 ) -> (Vec<TokenStream2>, Option<TokenStream2>) {
-    if is_string_type(ty) {
+    if let Some((mutable, elem, element)) = crate::slices::shape(ty) {
+        let core_alias = fresh_ident("__rustcall_slice_core", taken);
+        let complex_alias = fresh_ident("__rustcall_slice_complex", taken);
+        let (imports, canonical) = match element {
+            "complex32" | "complex64" => {
+                let scalar =
+                    format_ident!("{}", if element == "complex32" { "f32" } else { "f64" });
+                (
+                    quote! { extern crate core as #core_alias; extern crate num_complex as #complex_alias; },
+                    quote! { #complex_alias::Complex<#core_alias::primitive::#scalar> },
+                )
+            }
+            scalar => {
+                let scalar = format_ident!("{}", scalar);
+                (
+                    quote! { extern crate core as #core_alias; },
+                    quote! { #core_alias::primitive::#scalar },
+                )
+            }
+        };
+        let p = fresh_ident(&format!("{name}_ptr"), taken);
+        let identity = if mutable {
+            quote! { let _: *mut #canonical = #p; }
+        } else {
+            quote! { let _: *const #canonical = #p; }
+        };
+        let l = fresh_ident(&format!("{name}_len"), taken);
+        let ptr_ty = if mutable {
+            quote! { *mut #elem }
+        } else {
+            quote! { *const #elem }
+        };
+        let ctor = if mutable {
+            quote! { #core_alias::slice::from_raw_parts_mut }
+        } else {
+            quote! { #core_alias::slice::from_raw_parts }
+        };
+        (
+            vec![
+                quote! { #p: #ptr_ty },
+                quote! { #l: ::std::primitive::usize },
+            ],
+            Some(quote! {
+                let #name = unsafe {
+                    // Compiler-checked identity, including validity, not just size/alignment.
+                    // Local aliases resolve actual crates even if a module/type shadows a name.
+                    #imports
+                    #identity
+                    let _: #core_alias::primitive::usize = #l;
+                    // Validate before forming any reference, including empty slices.
+                    assert!(#l <= (#core_alias::primitive::isize::MAX as #core_alias::primitive::usize) / #core_alias::mem::size_of::<#elem>(), "slice byte span exceeds isize::MAX");
+                    let rustcall_slice_ptr = if #l == 0 {
+                        #core_alias::ptr::NonNull::<#elem>::dangling().as_ptr()
+                    } else {
+                        assert!(!#p.is_null(), "nonempty slice pointer is null");
+                        assert!((#p as #core_alias::primitive::usize) % #core_alias::mem::align_of::<#elem>() == 0, "misaligned slice pointer");
+                        assert!((#p as #core_alias::primitive::usize).checked_add(#l * #core_alias::mem::size_of::<#elem>()).is_some(), "slice address overflow");
+                        #p as *mut #elem
+                    };
+                    #ctor(rustcall_slice_ptr, #l)
+                };
+            }),
+        )
+    } else if is_string_type(ty) {
         let p = fresh_ident(&format!("{name}_ptr"), taken);
         let l = fresh_ident(&format!("{name}_len"), taken);
         (
@@ -1106,6 +1169,30 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
         }
     };
 
+    // Slice borrows can only be instantiated for this synchronous call.
+    // Refuse references escaping through any return, static/impl lifetimes,
+    // bounds or other argument types before pointer/length lowering.
+    for (name, ty) in &args {
+        if !crate::slices::is_slice(ty) {
+            continue;
+        }
+        let mut sig: syn::Signature = syn::parse_quote!(fn rustcall_slice_scope());
+        sig.generics = generics.clone();
+        let scoped = crate::extract::borrow_is_call_scoped(ty, &sig);
+        let lifetime = match crate::types::unparen(ty) {
+            Type::Reference(r) => r.lifetime.as_ref(),
+            _ => None,
+        };
+        let returned = ret.passed_types();
+        let mut returned_names = std::collections::BTreeSet::new();
+        crate::environment::lifetime_names(quote! { #(#returned)* }, &mut returned_names);
+        let escaping = lifetime.is_some_and(|l| returned_names.contains(&l.ident.to_string()));
+        if crate::slices::shape(ty).is_none() || !scoped || escaping {
+            return Err(Refusal::over(crate::manifest::skip_reason::SLICE_SIGNATURE, name.to_string(), ty,
+                format!("`{julia_name}`: slice argument `{name}` requires a supported primitive layout and an unbounded call-scoped lifetime; retained/static borrows and borrowed returns are unsupported (#570)")));
+        }
+    }
+
     // The wrapper's environment is the item's, verbatim, with `Self` spelled
     // as the impl header's type (#482, `crate::environment`).
     let mut environment = crate::environment::wrapper_environment(host.as_ref(), &generics);
@@ -1210,13 +1297,73 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
         }
     };
     let call = quote! { #call #call_suffix };
-    let prologue = quote! { #(#conversions)* #self_binding };
+    // Check complete object extents on the Rust side, where their layouts are
+    // known. In particular an unsafe_wrap-ed Julia view can begin inside a
+    // borrowed handle; comparing only the handle's first address misses it.
+    // No slice reference (or receiver dereference) exists before these checks.
+    let mut slice_alias_checks = Vec::new();
+    for (slice_name, slice_ty) in &args {
+        let Some((slice_mut, elem, _)) = crate::slices::shape(slice_ty) else {
+            continue;
+        };
+        let p = fresh_ident(&format!("{slice_name}_ptr"), &taken);
+        let l = fresh_ident(&format!("{slice_name}_len"), &taken);
+        let mut objects = Vec::new();
+        for (name, ty) in &args {
+            if let Some((mutable, pointee)) = crate::extract::borrowed_struct_arg(ty) {
+                if slice_mut || mutable {
+                    objects.push((
+                        quote! { #name as *const #pointee as __rustcall_alias_core::primitive::usize },
+                        quote! { __rustcall_alias_core::mem::size_of::<#pointee>() },
+                    ));
+                }
+            }
+        }
+        if let Some(r) = &receiver {
+            if slice_mut || r.shape.is_mutable() {
+                let ty = &r.ty;
+                objects.push((
+                    quote! { #ptr as __rustcall_alias_core::primitive::usize },
+                    quote! { __rustcall_alias_core::mem::size_of::<#ty>() },
+                ));
+            }
+        }
+        for (base, size) in objects {
+            slice_alias_checks.push(quote! {{
+                extern crate core as __rustcall_alias_core;
+                if #l != 0 {
+                    let rustcall_slice_start = #p as __rustcall_alias_core::primitive::usize;
+                    let rustcall_slice_stop = #l.checked_mul(__rustcall_alias_core::mem::size_of::<#elem>())
+                        .and_then(|n| rustcall_slice_start.checked_add(n)).expect("slice address span overflow");
+                    let rustcall_object_start = #base;
+                    let rustcall_object_size = #size;
+                    let rustcall_object_stop = rustcall_object_start.checked_add(rustcall_object_size).expect("object address span overflow");
+                    assert!(rustcall_object_size == 0 || rustcall_slice_start >= rustcall_object_stop || rustcall_object_start >= rustcall_slice_stop,
+                        "slice overlaps a borrowed Rust object");
+                }
+            }});
+        }
+    }
+    let prologue = quote! { #(#slice_alias_checks)* #(#conversions)* #self_binding };
 
     let slot = format_ident!("__RUSTCALL_PANIC_{}", symbol.to_string().to_uppercase());
     let reader = format_ident!("{}", panic_symbol(&symbol.to_string()));
 
     let mut out = TokenStream2::new();
     out.extend(panic_channel(&cfg_attrs, &slot, &reader));
+    if args
+        .iter()
+        .any(|(_, ty)| crate::slices::shape(ty).is_some())
+    {
+        // A newer consumer must never connect this pointer/length contract
+        // to an older proc macro's native fat-pointer or unchecked layout.
+        let marker = format_ident!("{}", slice_args_marker(&symbol.to_string()));
+        out.extend(quote! {
+            #(#cfg_attrs)*
+            #[no_mangle]
+            pub extern "C" fn #marker() -> u8 { 1 }
+        });
+    }
 
     let wrapper = match ret {
         WrapperReturn::Unit => {
@@ -2319,6 +2466,13 @@ pub fn is_marked_module(item_mod: &ItemMod) -> bool {
 /// the image lacks it: an older macro returned such a `Self` by value.
 pub(crate) fn boxed_result_marker(symbol: &str) -> String {
     format!("{symbol}_boxed_result_v1")
+}
+
+/// Producer proof that every numeric slice argument uses the checked,
+/// call-scoped typed-pointer/primitive-usize ABI (#570). Older macros passed
+/// Rust-native fat pointers and did not prove canonical element identity.
+pub(crate) fn slice_args_marker(symbol: &str) -> String {
+    format!("{symbol}_slice_ptr_len_v1")
 }
 
 /// Whether the wrapper of a method returns a boxed `*mut Struct`: `new`, or any

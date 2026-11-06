@@ -512,3 +512,5 @@ mod tests {
         assert_eq!(back, e.manifest);
     }
 }
+
+mod slices;

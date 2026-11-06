@@ -350,6 +350,9 @@ pub fn function_refusal(func: &ItemFn, module_path: &[String], mode: Mode) -> Op
     if let Some(refusal) = unsafe_function_refusal(func) {
         return Some(refusal);
     }
+    if let Some(refusal) = async_slice_refusal(&func.sig) {
+        return Some(refusal);
+    }
     let type_generic = crate::types::has_type_params(&func.sig.generics);
     if mode == Mode::Crate || !type_generic {
         if let Some(refusal) = non_ffi_payload_refusal(func) {
@@ -364,6 +367,13 @@ pub fn function_refusal(func: &ItemFn, module_path: &[String], mode: Mode) -> Op
         return generic;
     }
     if function_is_generic(func) {
+        if let Some(syn::FnArg::Typed(pt)) = func.sig.inputs.iter().find(|a| {
+            matches!(a,
+            syn::FnArg::Typed(pt) if crate::slices::is_slice(&pt.ty))
+        }) {
+            return Some(Refusal::over(skip_reason::SLICE_SIGNATURE, "generic", &pt.ty,
+                "Generic numeric slice wrappers are unsupported; write a concrete #[julia] adapter (#570)"));
+        }
         return None;
     }
     crate::codegen::free_function_wrapper_refusal(func, module_path)
@@ -517,7 +527,20 @@ fn receiver_refusal(struct_name: &Ident, m: &MethodModel) -> Option<Refusal> {
 /// generator refuses for the method's signature (`crate::environment`) — for a
 /// concrete struct's method, whose wrapper is generated now. A generic inline
 /// struct's wrappers are instantiated later, by `specialize`.
+fn async_slice_refusal(sig: &syn::Signature) -> Option<Refusal> {
+    sig.asyncness.as_ref()?;
+    let ty = sig.inputs.iter().find_map(|a| match a {
+        syn::FnArg::Typed(pt) if crate::slices::is_slice(&pt.ty) => Some(&pt.ty),
+        _ => None,
+    })?;
+    Some(Refusal::over(skip_reason::SLICE_SIGNATURE, "async", ty,
+        "Async numeric slice wrappers are unsupported: the borrow must end at the synchronous call boundary (#570)"))
+}
+
 pub fn method_refusal(site: MethodSite<'_>, m: &MethodModel) -> Option<Refusal> {
+    if let Some(refusal) = async_slice_refusal(&m.func.sig) {
+        return Some(refusal);
+    }
     match site {
         MethodSite::Crate { self_ty } => {
             if let Some(host) = &m.host {
@@ -549,6 +572,13 @@ pub fn method_refusal(site: MethodSite<'_>, m: &MethodModel) -> Option<Refusal> 
             crate::codegen::method_wrapper_refusal(self_ty, struct_name, m)
         }
         MethodSite::InlineGeneric { struct_name } => {
+            if let Some(syn::FnArg::Typed(pt)) = m.func.sig.inputs.iter().find(|a| {
+                matches!(a,
+                syn::FnArg::Typed(pt) if crate::slices::is_slice(&pt.ty))
+            }) {
+                return Some(Refusal::over(skip_reason::SLICE_SIGNATURE, "generic", &pt.ty,
+                    "Generic numeric slice wrappers are unsupported; write a concrete #[julia] adapter (#570)"));
+            }
             inline_generic_method_refusal(struct_name, true, m)
                 .or_else(|| unsafe_method_refusal(struct_name, m))
                 .or_else(|| receiver_refusal(struct_name, m))
