@@ -78,7 +78,7 @@ pub(crate) fn same_item(
 
 type LookupKey = (Vec<String>, String, Vec<String>);
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct Found {
     ids: HashSet<usize>,
     // Module identity is its canonical lexical path, including the virtual root.
@@ -596,29 +596,48 @@ impl Scope {
                 && found.pending.is_empty()
             {
                 found.unknown = self.opaque.contains(scope);
+                // Resolve the defining module's complete type namespace
+                // before exporting its visible bindings. A private glob can
+                // compete with a public glob internally; hiding that edge
+                // first would falsely turn an ambiguous name into one owner.
+                let mut namespace = Found::default();
                 for edge in self
                     .imports
                     .iter()
                     .filter(|i| i.import.module_path == scope && i.import.glob)
                 {
-                    if !visible_from(&edge.vis, scope, from) {
-                        continue;
-                    }
+                    let exported = visible_from(&edge.vis, scope, from);
                     if edge.uncertain {
-                        found.unknown = true;
+                        namespace.unknown = true;
+                        if exported {
+                            found.unknown = true;
+                        }
                         continue;
                     }
                     let target = self.glob_module(edge, edition_2015, visiting);
-                    found.unknown |= target.unknown;
-                    found.pending.extend(target.pending);
+                    namespace.unknown |= target.unknown;
+                    namespace.pending.extend(target.pending.clone());
+                    if exported {
+                        found.unknown |= target.unknown;
+                        found.pending.extend(target.pending);
+                    }
                     for module in target.modules {
                         let mut member = self.name(&module, name, scope, edition_2015, visiting);
                         // A glob imports accessible type bindings only; a
                         // private local still blocks its own module's globs.
                         member.inaccessible = false;
-                        found.merge(member);
+                        namespace.merge(member.clone());
+                        if exported {
+                            found.merge(member);
+                        }
                     }
                 }
+                // Rust may expose only a value when its hidden competing
+                // type globs are ambiguous. We do not guess that fallback:
+                // preserve uncertainty across later named/glob imports.
+                found.unknown |=
+                    namespace.unknown || namespace.ids.len() + namespace.modules.len() > 1;
+                found.pending.extend(namespace.pending);
             }
         }
         visiting.remove(&key);
@@ -1022,5 +1041,72 @@ mod tests {
             graph.resolve(&syn::parse_str("Plain").unwrap(), &[], false),
             Borrow::Plain
         );
+    }
+    #[test]
+    fn hidden_glob_competitors_cannot_become_a_unique_exported_owner() {
+        let prefix = "pub mod a { #[julia] pub struct Owner { value: i64 } } pub mod b { #[julia] pub struct Owner { value: i8 } }";
+        for facade in [
+            "use crate::a::*; pub use crate::b::*; pub fn Owner() {}",
+            "pub use crate::a::*; pub use crate::b::*; pub fn Owner() {}",
+        ] {
+            let source = format!("{prefix} mod facade {{ {facade} }} mod consumer {{ use crate::a::*; use crate::facade::Owner; }}");
+            // A competing private type glob is part of the facade namespace,
+            // even when the consumer cannot import that private route.
+            assert!(matches!(
+                resolve(&source, &["consumer"], "Owner"),
+                Borrow::Unresolved(_)
+            ));
+        }
+        let modules = "mod a { pub mod m { #[julia] pub struct Owner; } } mod b { pub mod m { #[julia] pub struct Owner; } } mod facade { use crate::a::*; pub use crate::b::*; } mod consumer { use crate::facade::m; }";
+        assert!(matches!(
+            resolve(modules, &["consumer"], "m::Owner"),
+            Borrow::Unresolved(_)
+        ));
+    }
+    #[test]
+    fn complete_glob_namespace_preserves_unambiguous_visibility_and_precedence() {
+        let prefix = "pub mod a { #[julia] pub struct Owner; } pub mod b { #[julia] pub struct Owner; } mod values { pub fn Owner() {} }";
+        for (facade, owner) in [
+            ("pub use crate::b::*; pub fn Owner() {}", "b"),
+            (
+                "use crate::b::*; pub use crate::b::*; pub fn Owner() {}",
+                "b",
+            ),
+            (
+                "use crate::values::*; pub use crate::b::*; pub fn Owner() {}",
+                "b",
+            ),
+            ("use crate::a::*; pub use crate::b::Owner;", "b"),
+            (
+                "use crate::a::Owner; pub use crate::b::*; pub fn Owner() {}",
+                "a",
+            ),
+            ("use crate::a::*; pub fn Owner() {}", "a"),
+        ] {
+            let source = format!("{prefix} mod facade {{ {facade} }} mod consumer {{ use crate::a::*; use crate::facade::Owner; }}");
+            assert_eq!(
+                resolve(&source, &["consumer"], "Owner"),
+                Borrow::Owner(vec![owner.into()], "Owner".into()),
+                "{facade}"
+            );
+        }
+    }
+    #[test]
+    fn hidden_glob_competition_survives_cycles_and_uncertain_edges() {
+        let prefix = "pub mod a { #[julia] pub struct Owner; } pub mod b { #[julia] pub struct Owner; } mod left { pub use crate::right::*; pub use crate::a::*; } mod right { pub use crate::left::*; }";
+        for exported in ["a", "b"] {
+            let source = format!("{prefix} mod facade {{ use crate::right::*; pub use crate::{exported}::*; pub fn Owner() {{}} }} mod consumer {{ use crate::a::*; use crate::facade::Owner; }}");
+            let found = resolve(&source, &["consumer"], "Owner");
+            if exported == "a" {
+                assert_eq!(found, Borrow::Owner(vec!["a".into()], "Owner".into()));
+            } else {
+                assert!(matches!(found, Borrow::Unresolved(_)));
+            }
+        }
+        let conditional = format!("{prefix} mod facade {{ #[cfg(feature=\"hidden\")] use crate::a::*; pub use crate::b::*; pub fn Owner() {{}} }} mod consumer {{ use crate::a::*; use crate::facade::Owner; }}");
+        assert!(matches!(
+            resolve(&conditional, &["consumer"], "Owner"),
+            Borrow::Unresolved(_)
+        ));
     }
 }

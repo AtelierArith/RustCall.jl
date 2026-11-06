@@ -1269,3 +1269,235 @@ end
         )
     end
 end
+
+# Distinct exported Julia names keep this namespace regression runnable through
+# inline bindings, which flatten Rust module type names. The Rust `Owner`
+# reexports preserve the actual private/public type-and-value ambiguity.
+const GLOB569_VISIBILITY_AMBIGUITY = raw"""
+use std::sync::atomic::{AtomicU32, Ordering};
+static AMBIGUOUS_ENTRIES569: AtomicU32 = AtomicU32::new(0);
+#[julia] pub fn ambiguity_entries569() -> u32 { AMBIGUOUS_ENTRIES569.load(Ordering::SeqCst) }
+#[julia] pub mod a569 {
+    #[julia] pub struct AOwner569 { pub value: i64 }
+    #[julia] impl AOwner569 { #[julia] pub fn new(value: i64) -> Self { Self { value } } }
+    pub use self::AOwner569 as Owner;
+}
+#[julia] pub mod b569 {
+    #[julia] pub struct BOwner569 { pub value: i8 }
+    #[julia] impl BOwner569 { #[julia] pub fn new(value: i8) -> Self { Self { value } } }
+    pub use self::BOwner569 as Owner;
+}
+#[julia] pub mod facade569 {
+    use crate::a569::*;
+    pub use crate::b569::*;
+    pub fn Owner() -> i32 { 0 }
+}
+#[julia] pub mod ambiguity_consumer569 {
+    use crate::a569::*;
+    use crate::facade569::Owner;
+    #[julia] pub fn ambiguity_read569(value: &Owner) -> i64 { super::AMBIGUOUS_ENTRIES569.fetch_add(1, super::Ordering::SeqCst); value.value }
+    #[julia] pub fn qualified_a569(value: &crate::a569::Owner) -> i64 { value.value }
+}
+#[julia] pub mod same_facade569 {
+    use crate::a569::*;
+    pub use crate::a569::*;
+    pub fn Owner() -> i32 { 0 }
+}
+#[julia] pub mod same_consumer569 {
+    use crate::a569::*;
+    use crate::same_facade569::Owner;
+    #[julia] pub fn same_owner_read569(value: &Owner) -> i64 { value.value }
+}
+#[julia] pub mod public_facade569 {
+    pub use crate::b569::*;
+    pub fn Owner() -> i32 { 0 }
+}
+#[julia] pub mod public_consumer569 {
+    use crate::a569::*;
+    use crate::public_facade569::Owner;
+    #[julia] pub fn public_owner_read569(value: &Owner) -> i8 { value.value }
+}
+#[test] fn ordinary_rust_visibility_control569() {
+    let a = a569::Owner { value: 42 };
+    let b = b569::Owner { value: 7 };
+    assert_eq!(ambiguity_consumer569::ambiguity_read569(&a), 42);
+    assert_eq!(same_consumer569::same_owner_read569(&a), 42);
+    assert_eq!(public_consumer569::public_owner_read569(&b), 7);
+    assert_eq!(std::mem::size_of::<a569::Owner>(), 8);
+    assert_eq!(std::mem::size_of::<b569::Owner>(), 1);
+}
+"""
+
+const GLOB569_AMBIGUITY_NEGATIVES = raw"""
+#[julia] pub mod optional_ambiguity569 {
+    use crate::a569::*;
+    use crate::facade569::Owner;
+    #[julia] pub fn optional_ambiguous569(value: Option<&Owner>) -> i64 { value.map_or(0, |v| v.value) }
+    #[julia] #[rustcall_owned_return(Owner)]
+    pub fn owned_ambiguous569(value: &crate::a569::Owner) -> Owner { crate::a569::Owner { value: value.value } }
+}
+"""
+
+function _glob569_ambiguity_metadata(signatures)
+    by_name = Dict(signature.name => signature for signature in signatures)
+    ambiguous = by_name["ambiguity_read569"]
+    @test ambiguous.arg_abis == ["borrow_unresolved"]
+    @test only(ambiguous.arg_handles) === nothing
+    @test !isempty(only(ambiguous.arg_borrow_reasons))
+    # Fail closed before runtime checks if the metadata itself regresses:
+    # passing b's smaller allocation to an a-typed shim would be invalid.
+    safe_to_call =
+        ambiguous.arg_abis == ["borrow_unresolved"] &&
+        only(ambiguous.arg_handles) === nothing
+    for (name, owner) in (
+        ("qualified_a569", "AOwner569"),
+        ("same_owner_read569", "AOwner569"),
+        ("public_owner_read569", "BOwner569"),
+    )
+        @test by_name[name].arg_abis == ["handle"]
+        @test only(by_name[name].arg_handles).name == owner
+        safe_to_call &=
+            by_name[name].arg_abis == ["handle"] &&
+            only(by_name[name].arg_handles).name == owner
+    end
+    safe_to_call ||
+        error("unsafe owner metadata: stopped the regression before any native call")
+end
+
+function _glob569_ambiguity_calls(call)
+    a, b = call(:make_a569, Int64(42)), call(:make_b569, Int8(7))
+    try
+        @test call(:qualified_a569, a) == 42
+        @test call(:same_owner_read569, a) == 42
+        @test call(:public_owner_read569, b) == 7
+        @test_throws ArgumentError call(:qualified_a569, b)
+        @test_throws ArgumentError call(:public_owner_read569, a)
+        @test call(:ambiguity_entries569) == 0
+        for owner in (a, b)
+            error = try
+                call(:ambiguity_read569, owner)
+                nothing
+            catch exception
+                exception
+            end
+            @test error isa RustCall.RustError
+            @test occursin("borrowed-owner", sprint(showerror, error))
+            @test occursin("explicit import or qualified", sprint(showerror, error))
+        end
+        @test call(:ambiguity_entries569) == 0
+    finally
+        foreach(finalize, (a, b))
+    end
+end
+
+@testset "private/public glob ambiguity never selects an unrelated owner (#569)" begin
+    source = GLOB569_VISIBILITY_AMBIGUITY
+    _glob569_ambiguity_metadata(
+        RustCall.manifest_function_signatures(
+            RustCall.extract_manifest(source; mode = "inline"),
+        ),
+    )
+    inline = Module(gensym(:VisibilityInline569))
+    Core.eval(inline, :(using RustCall))
+    inline_lib =
+        Core.eval(inline, Expr(:macrocall, Symbol("@rust_str"), LineNumberNode(1), source))
+    inline_call(name, args...) = Base.invokelatest(
+        Base.invokelatest(
+            getfield,
+            inline,
+            name === :make_a569 ? :AOwner569 : name === :make_b569 ? :BOwner569 : name,
+        ),
+        args...,
+    )
+    try
+        _glob569_ambiguity_calls(inline_call)
+    finally
+        RustCall.unload_library(inline_lib; close = true)
+    end
+    mktempdir() do root
+        crate = joinpath(root, "crate")
+        mkpath(joinpath(crate, "src"))
+        runtime = RustCall.escape_toml_string(RustCall.rustcall_runtime_crate_path())
+        write(
+            joinpath(crate, "Cargo.toml"),
+            """
+[package]
+name = "visibility_ambiguity569"
+version = "0.1.0"
+edition = "2021"
+[lib]
+crate-type = ["cdylib", "rlib"]
+[dependencies]
+rustcall_julia_macros = { path = "$runtime" }
+""",
+        )
+        lib_source = "use rustcall_julia_macros::julia;\n" * source
+        write(joinpath(crate, "src", "lib.rs"), lib_source)
+        run(
+            Cmd(
+                `$(RustCall.cargo()) test --manifest-path $(joinpath(crate, "Cargo.toml"))`;
+                dir = crate,
+            ),
+        )
+        _glob569_ambiguity_metadata(RustCall.scan_crate(crate).julia_functions)
+        proxy = @rust_crate crate
+        direct = getfield(proxy, :module_ref)
+        output = joinpath(root, "WrittenVisibility569.jl")
+        RustCall.write_bindings_to_file(
+            crate,
+            output;
+            output_module_name = "WrittenVisibility569",
+        )
+        sandbox = Module(gensym(:VisibilitySandbox569))
+        Base.include(sandbox, output)
+        persisted = Base.invokelatest(getfield, sandbox, :WrittenVisibility569)
+        try
+            for mod in (direct, persisted)
+                function crate_call(name, args...)
+                    module_name, function_name =
+                        name === :make_a569 ? (:a569, :AOwner569) :
+                        name === :make_b569 ? (:b569, :BOwner569) :
+                        name in (:ambiguity_read569, :qualified_a569) ?
+                        (:ambiguity_consumer569, name) :
+                        name === :same_owner_read569 ? (:same_consumer569, name) :
+                        name === :public_owner_read569 ? (:public_consumer569, name) :
+                        (nothing, name)
+                    scope =
+                        module_name === nothing ? mod :
+                        Base.invokelatest(getfield, mod, module_name)
+                    Base.invokelatest(
+                        Base.invokelatest(getfield, scope, function_name),
+                        args...,
+                    )
+                end
+                _glob569_ambiguity_calls(crate_call)
+            end
+        finally
+            for mod in (direct, persisted)
+                lib = Base.invokelatest(getfield, mod, :_LIB_NAME)
+                haskey(RustCall.RUST_LIBRARIES, lib) &&
+                    RustCall.unload_library(lib; close = true)
+            end
+        end
+        # Negative forms are scanned/reported only. No optional argument may
+        # acquire the required-pointer escape, and a selected return cannot
+        # reuse the facade's ambiguous type choice.
+        write(joinpath(crate, "src", "lib.rs"), lib_source * GLOB569_AMBIGUITY_NEGATIVES)
+        negatives = RustCall.scan_crate(crate).julia_functions
+        optional = only(f for f in negatives if f.name == "optional_ambiguous569")
+        @test optional.arg_abis == ["optional_borrow"]
+        @test !isempty(only(optional.arg_borrow_reasons))
+        @test_throws RustCall.RustError RustCall._string_arg_plan(optional, identity)
+        owned = only(f for f in negatives if f.name == "owned_ambiguous569")
+        @test startswith(owned.skip_reason, "owned_return:")
+    end
+    negative_manifest =
+        RustCall.extract_manifest(source * GLOB569_AMBIGUITY_NEGATIVES; mode = "inline")
+    negatives = RustCall.manifest_function_signatures(negative_manifest)
+    optional = only(f for f in negatives if f.name == "optional_ambiguous569")
+    @test optional.arg_abis == ["optional_borrow"]
+    @test !isempty(only(optional.arg_borrow_reasons))
+    @test_throws RustCall.RustError RustCall._string_arg_plan(optional, identity)
+    owned = only(f for f in negatives if f.name == "owned_ambiguous569")
+    @test startswith(owned.skip_reason, "owned_return:")
+end

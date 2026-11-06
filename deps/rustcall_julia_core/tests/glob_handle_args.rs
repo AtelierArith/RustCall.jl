@@ -839,3 +839,93 @@ fn rewritten_defining_file_blocks_selected_owned_and_self_return_shortcuts() {
     assert_eq!(method.args[0].abi, "optional_borrow");
     assert!(!method.args[0].borrow_reason.is_empty());
 }
+
+#[test]
+fn private_glob_competition_is_refused_before_proving_an_incompatible_owner() {
+    let source = r#"
+        #[julia] pub mod a { #[julia] pub struct Owner { pub value: i64 } }
+        #[julia] pub mod b { #[julia] pub struct Owner { pub value: i8 } }
+        pub mod facade {
+            use crate::a::*;
+            pub use crate::b::*;
+            pub fn Owner() {}
+        }
+        #[julia] pub mod consumer {
+            use crate::a::*;
+            use crate::facade::Owner;
+            #[julia] pub fn read(value: &Owner) -> i64 { value.value }
+            #[julia] pub fn optional(value: Option<&Owner>) -> i64 { value.map_or(0, |v| v.value) }
+            #[julia] #[rustcall_owned_return(Owner)]
+            pub fn selected() -> Owner { crate::a::Owner { value: 42 } }
+            #[julia] pub fn qualified(value: &crate::a::Owner) -> i64 { value.value }
+        }
+    "#;
+    for manifest in [
+        extract::extract_crate(source).unwrap(),
+        expand::expand(source).unwrap().manifest,
+    ] {
+        let read = manifest
+            .functions
+            .iter()
+            .find(|f| f.name == "read")
+            .unwrap();
+        assert_eq!(read.args[0].abi, "borrow_unresolved");
+        assert!(read.args[0].handle.is_empty());
+        assert!(!read.args[0].borrow_reason.is_empty());
+        let optional = manifest
+            .functions
+            .iter()
+            .find(|f| f.name == "optional")
+            .unwrap();
+        assert_eq!(optional.args[0].abi, "optional_borrow");
+        assert!(optional.args[0].handle.is_empty());
+        assert!(!optional.args[0].borrow_reason.is_empty());
+        let selected = manifest
+            .functions
+            .iter()
+            .find(|f| f.name == "selected")
+            .unwrap();
+        assert!(selected.return_handle.is_empty());
+        assert!(!selected.skip_reason.is_empty());
+        assert!(!selected.exported);
+        assert_eq!(
+            abi(&manifest, "qualified"),
+            ("handle".into(), "a__Owner".into())
+        );
+    }
+    // Execute only ordinary, correctly typed Rust functions. The one-byte
+    // owner is never sent through a generated shim expecting the larger one.
+    use std::{
+        fs,
+        process::Command,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+    let dir = std::env::temp_dir().join(format!(
+        "rustcall569-hidden-glob-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    let control = source
+        .replace("#[julia]", "")
+        .replace("#[rustcall_owned_return(Owner)]", "");
+    fs::write(dir.join("control.rs"), format!("{control}\nfn main() {{ assert_eq!(std::mem::size_of::<a::Owner>(),8); assert_eq!(std::mem::size_of::<b::Owner>(),1); let owner=a::Owner{{value:42}}; assert_eq!(consumer::read(&owner),42); assert_eq!(consumer::optional(Some(&owner)),42); assert_eq!(consumer::selected().value,42); }}")).unwrap();
+    let binary = dir.join(format!("control{}", std::env::consts::EXE_SUFFIX));
+    let result = Command::new("rustc")
+        .args(["--edition=2021", "-Awarnings"])
+        .arg(dir.join("control.rs"))
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(Command::new(binary).status().unwrap().success());
+    fs::remove_dir_all(dir).unwrap();
+}

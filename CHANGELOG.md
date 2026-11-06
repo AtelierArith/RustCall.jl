@@ -67,7 +67,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shared/mutable handle lowering. Resolution follows actual module scopes and
   reexports, respects local and named-import precedence within the type
   namespace, and includes plain declarations and aliases in ambiguity/shadow
-  checks. Raw/NFC identifier identity and opaque rewriting module/file contexts
+  checks. Private/public glob competition is resolved before outward visibility;
+  hidden ambiguity is conservatively refused even when Rust exposes only a
+  value, with an unambiguous qualified concrete-owner path as the remedy.
+  Raw/NFC identifier identity and opaque rewriting module/file contexts
   cannot bypass those checks. It never uses a global unique-name guess. Unproved borrowed arguments carry manifest
   `borrow_reason` metadata and report an unsupported borrowed-owner boundary
   with explicit-import/qualified-path guidance instead of a by-value layout

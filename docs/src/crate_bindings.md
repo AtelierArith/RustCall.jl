@@ -262,8 +262,12 @@ imports take precedence within Rust's type namespace. Imports that supply only
 a function, constant or static value do not hide a type supplied by a glob.
 RustCall follows each applicable glob's actual module scope and reexports for
 the requested identifier, including aliases of `crate`, `self` and `super` and subsequent glob imports, accounting
-for plain types and aliases as well as annotated owners. It accepts a unique
-proven owner; it never selects a type merely because it is the only
+for plain types and aliases as well as annotated owners. Private and public
+glob candidates compete in their defining scope before outward visibility is
+applied. Hidden ambiguity is conservatively refused, even when Rust can expose
+only a value under that imported name and obtain its type from another glob.
+Use an unambiguous qualified path to the concrete annotated owner in that case.
+RustCall accepts a unique proven owner; it never selects a type merely because it is the only
 same-named annotated struct anywhere in the crate. Conflicting candidates,
 unknown scopes or cycles without a unique proof remain unsupported. A plain
 local type or alias cannot be bypassed to reach a same-named owner elsewhere.
