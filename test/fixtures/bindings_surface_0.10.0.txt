@@ -192,9 +192,9 @@ RustCall
 RustCallState	1|
 RustCompiler	0|debug_dir,debug_mode,emit_debug_info,optimization_level,target_triple	5|
 RustError	1|	2|	3|
-RustFunctionSignature	40|	6|arg_abis,arg_handles,arg_slice_elements,arg_slice_lengths,attribute,body_has_cfg,callback_args,callback_returns,cfg_features,constraints,err_abi,err_type,exported,ffi_name,has_borrowed_string_helper,has_owned_string_helper,inner_abi,inner_type,module_path,ok_abi,ok_type,py_arg_shapes,py_return_shape,python_defaults,python_kinds,python_name,python_path,return_abi,return_handle,return_kind,skip_reason,source,symbol,vis
+RustFunctionSignature	41|	6|arg_abis,arg_borrow_reasons,arg_handles,arg_slice_elements,arg_slice_lengths,attribute,body_has_cfg,callback_args,callback_returns,cfg_features,constraints,err_abi,err_type,exported,ffi_name,has_borrowed_string_helper,has_owned_string_helper,inner_abi,inner_type,module_path,ok_abi,ok_type,py_arg_shapes,py_return_shape,python_defaults,python_kinds,python_name,python_path,return_abi,return_handle,return_kind,skip_reason,source,symbol,vis
 RustHandleArg	3|
-RustMethod	39|	6|accessor,arg_abis,arg_handles,arg_slice_elements,arg_slice_lengths,attribute,callback_args,callback_returns,err_abi,err_type,generic_wrapper,generic_wrapper_name,inner_abi,inner_type,is_classmethod,is_constructor,julia_name,ok_abi,ok_type,py_arg_shapes,py_return_shape,python_defaults,python_kinds,python_name,return_abi,return_handle,return_kind,returns_boxed_struct,skip_reason,string_owner,symbol,trait_path,vis
+RustMethod	40|	6|accessor,arg_abis,arg_borrow_reasons,arg_handles,arg_slice_elements,arg_slice_lengths,attribute,callback_args,callback_returns,err_abi,err_type,generic_wrapper,generic_wrapper_name,inner_abi,inner_type,is_classmethod,is_constructor,julia_name,ok_abi,ok_type,py_arg_shapes,py_return_shape,python_defaults,python_kinds,python_name,return_abi,return_handle,return_kind,returns_boxed_struct,skip_reason,string_owner,symbol,trait_path,vis
 RustOption
 RustPanicError	2|
 RustPtr
@@ -946,7 +946,7 @@ _state_value	1|
 _state_view	2|
 _static_method_collisions	1|	2|
 _store_callback_error!	2|
-_string_arg_plan	2|handle_scope	2|handle_scope,receiver	4|callbacks,context,handle_scope,handles,receiver,slice_elements,slice_lengths
+_string_arg_plan	2|handle_scope	2|handle_scope,receiver	4|borrow_reasons,callbacks,context,handle_scope,handles,receiver,slice_elements,slice_lengths
 _string_temp_prefix	1|
 _strings	1|
 _struct_wrappers_expr	2|
@@ -1168,6 +1168,8 @@ ffi_string_argument	3|
 ffi_struct_free_symbol	1|
 ffi_surface_type	1|
 ffi_type_expr	1|
+ffi_unresolved_borrow_argument	2|
+ffi_unresolved_borrow_message	3|
 ffi_vec_element_type	1|
 field_is_accessible	2|
 field_is_writable	2|

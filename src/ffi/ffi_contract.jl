@@ -2374,3 +2374,19 @@ function _guard_owned_return_ptr(
     )
     return ptr
 end
+
+# The Rust scope graph supplies this status and reason. Julia never tries to
+# infer the pointee from a Rust spelling or from an opaque Julia value.
+function ffi_unresolved_borrow_message(name::AbstractString, context::AbstractString,
+                                       reason::AbstractString)
+    detail = isempty(reason) ? "the defining Rust scope is unresolved" : String(reason)
+    return "argument `$name` of `$context` is an unsupported borrowed-owner boundary: " * detail *
+        "; an explicit import or qualified Rust type path can disambiguate a known concrete #[julia] owner, " *
+        "but cannot prove an opaque rewriting context. " *
+        "An explicit Ptr{Cvoid} remains an unsafe caller-validated pointer escape."
+end
+
+function ffi_unresolved_borrow_argument(value, message::AbstractString)
+    value isa Ptr{Cvoid} && return value
+    throw(RustError(String(message)))
+end

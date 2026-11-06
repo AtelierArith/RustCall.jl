@@ -447,6 +447,9 @@ pub enum ReturnKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Arg {
+    /// Why a reference-shaped argument could not be proved to name a checked owner.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub borrow_reason: String,
     pub name: String,
     pub rust_type: String,
     /// How the wrapper receives the argument: `""` as written (`rust_type`),
@@ -461,6 +464,8 @@ pub struct Arg {
     /// `Option<&mut T>`, explicitly reconstructed by the producer; #571).
     /// `"optional_borrow"` is an unresolved optional reference: consumers
     /// must refuse it rather than assume a concrete owner or native Option ABI.
+    /// `"borrow_unresolved"` marks a required reference whose lexical scope cannot
+    /// prove a borrowed owner ([`Arg::borrow_reason`]; #569).
     #[serde(default)]
     pub abi: String,
     /// For required or optional handle ABIs: the [`Struct::ffi_name`] of
@@ -468,10 +473,11 @@ pub struct Arg {
     /// `&mut crate::a::Value`). The wrapper takes the reference as written —
     /// a thin pointer in the C ABI — so the consumer passes the pointer its
     /// own handle object owns, never a value. Recorded only when the path
-    /// names that struct with certainty (`paths::locate_borrowed_type`);
+    /// names that struct with certainty (`borrow_scope`);
     /// unresolved optional references keep `abi = "optional_borrow"` and
-    /// an empty handle. Required unknown paths keep `abi = ""`. Optional
-    /// producers must export the per-symbol `_optional_owner_ptr_v1` marker.
+    /// an empty handle; they may carry [`Arg::borrow_reason`]. Required
+    /// unsupported scope carries `borrow_unresolved`; ordinary unknown paths
+    /// stay unclassified. Optional producers export `_optional_owner_ptr_v1`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub handle: String,
     /// Canonical initialized primitive representation for `slice` / `slice_mut`.

@@ -17,3 +17,4 @@ proc-macro2 = { version = "1.0", features = ["span-locations"] }
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
 prettyplease = "0.2"
+unicode-normalization = "0.1"

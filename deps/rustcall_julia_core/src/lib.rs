@@ -13,6 +13,7 @@
 //! produced here.
 
 pub mod attrs;
+mod borrow_scope;
 pub mod cfg;
 pub mod claims;
 pub mod codegen;

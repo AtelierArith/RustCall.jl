@@ -316,8 +316,19 @@ end
         use hidden::*;
         #[julia] pub fn inspect_unknown(x: Option<&Foreign>) -> i32 { x.map_or(0, |v| v.value) }
         """
+    # The local glob is now proved by the shared scoped resolver (#569).
+    report = RustCall.inline_boundary_report(source; io = devnull)
+    @test isempty(filter(f -> f.item == "inspect_unknown", report.unsupported))
+    manifest = RustCall.extract_manifest(source; mode = "inline")
+    signature = only(filter(f -> f.name == "inspect_unknown", RustCall.manifest_function_signatures(manifest)))
+    @test signature.arg_abis == ["handle_optional"]
+    @test only(signature.arg_handles).name == "Foreign"
+
+    # A valid Rust type alias remains deliberately unproved as an owner.
+    source = replace(source, "use hidden::*;" => "type Foreign = hidden::Foreign;")
     report = RustCall.inline_boundary_report(source; io = devnull)
     finding = only(filter(f -> f.item == "inspect_unknown", report.unsupported))
+    @test occursin("alias", finding.reason)
     @test finding.position == "argument `x`"
     @test occursin("explicit import or qualified path", finding.reason)
     @test !occursin("register_ffi_struct", finding.reason)

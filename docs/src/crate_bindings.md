@@ -230,6 +230,95 @@ as a missing `mod` target elsewhere in the tree.
     but has no Julia wrapper until the alias is spelled as a type RustCall
     knows.
 
+### Borrowed owners imported through module globs
+
+Required `&Owner` and `&mut Owner` arguments use checked opaque handles when
+RustCall can prove that the type names a concrete `#[julia]` owner. Inline
+owners selected with `#[derive(JuliaStruct)]` retain the same checked shared
+and mutable borrow contract. That proof also follows scoped module glob
+imports, including an unambiguous `use super::*` in a separate impl module:
+
+```rust
+// src/operations.rs; Counter and Destination are annotated in the parent.
+use super::*;
+#[julia]
+impl Destination {
+    #[julia]
+    pub fn read(&mut self, source: &Counter) -> i32 {
+        self.value = source.value;
+        self.value
+    }
+}
+```
+
+Julia passes its `Counter` handle directly. The manifest carries the proven
+owner identity in `Arg.handle`, with `Arg.abi = "handle"` or `"handle_mut"`;
+expression and written bindings consume that same metadata. Existing type,
+liveness, library-image, call-scoped rooting and mutable-alias checks remain
+in force. A glob import does not weaken any of those checks.
+
+Resolution is conservative and scoped. Local declarations and explicit named
+imports take precedence within Rust's type namespace. Imports that supply only
+a function, constant or static value do not hide a type supplied by a glob.
+RustCall follows each applicable glob's actual module scope and reexports for
+the requested identifier, including aliases of `crate`, `self` and `super` and subsequent glob imports, accounting
+for plain types and aliases as well as annotated owners. Private and public
+glob candidates compete in their defining scope before outward visibility is
+applied. Hidden ambiguity is conservatively refused, even when Rust can expose
+only a value under that imported name and obtain its type from another glob.
+Use an unambiguous qualified path to the concrete annotated owner in that case.
+RustCall accepts a unique proven owner; it never selects a type merely because it is the only
+same-named annotated struct anywhere in the crate. Conflicting candidates,
+unknown scopes or cycles without a unique proof remain unsupported. A plain
+local type or alias cannot be bypassed to reach a same-named owner elsewhere.
+Generated public string-buffer and Result/Option aggregate types retain their
+actual visibility in this lookup; importing one never selects an unrelated
+annotated owner of the same name. These helper types are not opaque owners.
+Semantic lookup also applies Rust's
+[raw-identifier and Unicode NFC identity rules](https://doc.rust-lang.org/reference/identifiers.html#normalization),
+so an equivalent spelling cannot bypass a local shadow.
+A type alias is deliberately not expanded into an owner proof: use the
+concrete annotated type path instead; its diagnostic names the alias-specific
+limitation. This includes an alias whose Rust target is an annotated owner.
+
+Unexpanded macro invocations, includes, and attributes or derives that could
+introduce a sibling shadow make glob inference conservative. A named import or
+qualified owner path helps only when the binding itself can be proved. An
+opaque rewriting attribute on a module or file makes its contents and
+all descendants unprovable, including local and qualified owner references,
+imports from outside, and `Self` arguments. Use expanded Rust source whose
+owner boundary can be proved; another import cannot repair this uncertainty.
+Build configuration matters too: `cfg` decisions resolved by the selected build
+can remove inactive bindings and prove the remaining scope, while unknown
+conditional declarations/imports remain a reason to refuse the proof.
+Unprefixed import roots follow the Rust edition (crate-root imports in 2015,
+lexical imports from 2018 onward); ordinary type paths retain lexical lookup.
+
+For a borrowed argument whose owner cannot be proved, the manifest records
+`Arg.abi = "borrow_unresolved"` and a `borrow_reason`. Passing a generated
+handle then reports an unsupported borrowed-owner boundary with that reason,
+rather than suggesting a by-value layout registration. Use an explicit import
+or a qualified path to identify the intended annotated owner:
+
+```rust
+use super::{Counter, Destination};
+use rustcall_julia_macros::julia;
+// Alternatively spell the argument as `source: &crate::Counter`.
+```
+
+Do not register an opaque owner's layout by value to repair a borrow.
+Required borrowed positions retain the explicit `Ptr{Cvoid}` escape, including
+when their owner is unresolved. It remains unchecked: the caller must validate
+pointee layout, lifetime, library generation and aliasing and keep the storage alive. Normal
+generated owner handles need no raw pointers for an unambiguous scoped glob.
+
+The same scoped identity proof selects optional borrowed owners and explicit
+`rustcall_owned_return` owners. Their separate argument/return ABI, lifetime
+proofs and producer-marker checks still apply. Proven optional Julia argument
+positions accept a correctly typed owner or `nothing`, never a raw pointer.
+Unsupported owner resolution does not provide a raw-pointer escape for an
+optional position.
+
 ### Optional borrowed owners
 
 A non-generic `#[julia]` function or method can accept an optional borrow of a
@@ -301,8 +390,8 @@ borrowed `&str` view, whether its lifetime is named or elided; return an owned
 for unsupported forms. Owner resolution must be provable from the scanned Rust
 syntax; qualify the pointee or import it explicitly if a wildcard import does
 not establish its identity.
-This feature does not add wildcard-import resolution or general facade
-composition.
+Optional owners use the same scoped type-namespace proof described above;
+a wildcard import is accepted only when that proof is unique and complete.
 
 Rooting keeps an owner alive; it does not serialize access to its Rust data or
 make that data `Send` or `Sync`. The caller must uphold the Rust type's thread

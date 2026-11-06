@@ -72,7 +72,8 @@ pub fn expand_with_cfg(source: &str, cfg: Option<&CfgSet>) -> Result<Expanded, s
     // Structs and their impl blocks are matched across the whole block first
     // (#315), so an `impl super::Gauge` inside `mod ops` wraps `Gauge`'s
     // methods next to the struct.
-    let tree = ModelTree::collect(&file.items, Mode::Inline);
+    let mut tree = ModelTree::collect(&file.items, Mode::Inline);
+    tree.record_file_attrs(&file.attrs);
     let mut out = expand_items(&file.items, &mut manifest, &[], &[], &tree)?;
 
     // Two generated `#[no_mangle]` items of one block wanting the same symbol
@@ -165,16 +166,18 @@ fn expand_items(
                         // pointer (#565); a generic function is specialized
                         // later and keeps its arguments as written.
                         if !has_type_params(&f.sig.generics) {
-                            crate::extract::mark_handle_args(&mut entry.args, &f.sig, |ty| {
-                                tree.borrowed_handle(ty, module_path)
-                            });
+                            crate::extract::mark_checked_handle_args(
+                                &mut entry.args,
+                                &f.sig,
+                                |ty| tree.checked_borrowed_handle(ty, module_path),
+                            );
                         }
                         crate::owned_returns::mark(
                             &f.attrs,
                             &f.sig,
                             &mut entry.return_handle,
                             &mut entry.skip_reason,
-                            |ty| tree.borrowed_handle(ty, module_path),
+                            |ty| tree.checked_borrowed_handle(ty, module_path).ok().flatten(),
                         );
                         if !entry.skip_reason.is_empty() {
                             entry.exported = false;
@@ -333,26 +336,31 @@ fn mark_method_handles(
             .as_ref()
             .map(|site| site.module_path.clone())
             .unwrap_or_else(|| module_path.to_vec());
+        let checked = |ty: &syn::Type| {
+            if m.host
+                .as_ref()
+                .is_some_and(|h| crate::extract::type_parameter_path(ty, &h.generics))
+            {
+                Ok(None)
+            } else if let Some(reason) = tree.borrow_context_error(&site) {
+                Err(reason)
+            } else if crate::extract::is_self_type(ty) {
+                match tree.borrow_context_error(module_path) {
+                    Some(reason) => Err(reason),
+                    None => Ok(Some(entry_ffi_name(module_path, model))),
+                }
+            } else {
+                tree.checked_borrowed_handle(ty, &site)
+            }
+        };
         crate::owned_returns::mark(
             &m.func.attrs,
             &m.func.sig,
             &mut method.return_handle,
             &mut method.skip_reason,
-            |ty| {
-                if crate::extract::is_self_type(ty) {
-                    Some(entry_ffi_name(module_path, model))
-                } else {
-                    tree.borrowed_handle(ty, &site)
-                }
-            },
+            |ty| checked(ty).ok().flatten(),
         );
-        crate::extract::mark_handle_args(&mut method.args, &m.func.sig, |ty| {
-            if crate::extract::is_self_type(ty) {
-                Some(entry_ffi_name(module_path, model))
-            } else {
-                tree.borrowed_handle(ty, &site)
-            }
-        });
+        crate::extract::mark_checked_handle_args(&mut method.args, &m.func.sig, checked);
     }
 }
 

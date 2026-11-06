@@ -411,6 +411,7 @@ pub fn wrapped_methods(
 /// alone — an inherent impl of an ordinary struct is ordinary code.
 #[derive(Debug, Default)]
 pub struct ModelTree {
+    borrow_scope: crate::borrow_scope::Scope,
     entries: Vec<LocatedModel>,
     /// Every `use` of the block, for resolving borrowed arguments (#565).
     imports: Vec<crate::paths::ScannedImport>,
@@ -463,6 +464,28 @@ impl crate::paths::Located for LocatedModel {
 impl ModelTree {
     pub fn collect(items: &[Item], mode: Mode) -> ModelTree {
         let mut tree = ModelTree::default();
+        // The inline runtime is appended by the expander and its type bindings
+        // participate in the same namespace as source items. Index the shared
+        // runtime AST rather than copying its generated names here.
+        let runtime: syn::File =
+            syn::parse2(crate::codegen::panic_hook_items()).expect("valid runtime AST");
+        let runtime_types: Vec<Item> = runtime
+            .items
+            .into_iter()
+            .filter(|item| {
+                matches!(
+                    item,
+                    Item::Struct(_)
+                        | Item::Enum(_)
+                        | Item::Union(_)
+                        | Item::Type(_)
+                        | Item::Trait(_)
+                        | Item::TraitAlias(_)
+                )
+            })
+            .collect();
+        tree.borrow_scope
+            .record(&runtime_types, &[], false, &[], mode);
         let mut impls: Vec<ScannedBlock> = Vec::new();
         let mut imports = Vec::new();
         let mut path = Vec::new();
@@ -506,6 +529,11 @@ impl ModelTree {
                 );
             }
         }
+        for entry in &tree.entries {
+            let meta = crate::extract::crate_struct_entry(&entry.model, &entry.module_path, &[]);
+            tree.borrow_scope
+                .generated_struct(&meta, &entry.model, &entry.module_path);
+        }
         tree.imports = imports;
         tree
     }
@@ -515,17 +543,32 @@ impl ModelTree {
     /// certainty ([`crate::paths::locate_borrowed_type`], #565). A generic
     /// struct is never a handle: Julia binds its instantiations instead.
     pub fn borrowed_handle(&self, ty: &Type, module_path: &[String]) -> Option<String> {
-        // Edition 2015, like every `rust"""` block (see `collect`).
-        let index = crate::paths::locate_borrowed_type(
-            &self.entries,
-            ty,
-            module_path,
-            &self.imports,
-            true,
-        )?;
-        let entry = &self.entries[index];
-        (!entry.model.is_generic())
-            .then(|| crate::codegen::symbol_stem(&entry.module_path, &entry.name))
+        self.checked_borrowed_handle(ty, module_path).ok().flatten()
+    }
+
+    pub(crate) fn record_file_attrs(&mut self, attrs: &[syn::Attribute]) {
+        self.borrow_scope.record_context_attrs(attrs, &[]);
+    }
+
+    pub(crate) fn borrow_context_error(&self, scope: &[String]) -> Option<&'static str> {
+        self.borrow_scope.context_error(scope)
+    }
+
+    pub(crate) fn checked_borrowed_handle(
+        &self,
+        ty: &Type,
+        module_path: &[String],
+    ) -> Result<Option<String>, &'static str> {
+        match self.borrow_scope.resolve(ty, module_path, true) {
+            crate::borrow_scope::Borrow::Owner(scope, name) => Ok(self
+                .entries
+                .iter()
+                .find(|e| crate::borrow_scope::same_item(&e.module_path, &e.name, &scope, &name))
+                .filter(|e| !e.model.is_generic())
+                .map(|e| crate::codegen::symbol_stem(&e.module_path, &e.name))),
+            crate::borrow_scope::Borrow::Plain => Ok(None),
+            crate::borrow_scope::Borrow::Unresolved(reason) => Err(reason),
+        }
     }
 
     fn walk(
@@ -537,6 +580,8 @@ impl ModelTree {
         impls: &mut Vec<ScannedBlock>,
         imports: &mut Vec<crate::paths::ScannedImport>,
     ) {
+        self.borrow_scope
+            .record(items, path, !enclosing_cfg.is_empty(), path, mode);
         for item in items {
             match item {
                 Item::Struct(s) => {

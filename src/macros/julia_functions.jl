@@ -115,6 +115,7 @@ struct RustFunctionSignature
     arg_slice_elements::Vector{String}
     arg_slice_lengths::Vector{String}
     return_handle::Union{Nothing, RustHandleArg}
+    arg_borrow_reasons::Vector{String}
 end
 
 function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_types::Vector{String},
@@ -150,9 +151,12 @@ function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_type
                                    Union{Nothing, RustHandleArg}[nothing for _ in arg_names],
                                arg_slice_elements::Vector{String} = fill("", length(arg_names)),
                                arg_slice_lengths::Vector{String} = fill("", length(arg_names)),
-                               return_handle::Union{Nothing, RustHandleArg} = nothing)
+                               return_handle::Union{Nothing, RustHandleArg} = nothing,
+                               arg_borrow_reasons::Vector{String} = fill("", length(arg_names)))
     length(arg_slice_elements) == length(arg_names) && length(arg_slice_lengths) == length(arg_names) ||
         throw(ArgumentError("slice metadata must have one entry per argument"))
+    length(arg_borrow_reasons) == length(arg_names) ||
+        throw(ArgumentError("arg_borrow_reasons must have one entry per argument"))
     length(arg_handles) == length(arg_names) ||
         throw(ArgumentError("arg_handles must have one entry per argument"))
     length(arg_abis) == length(arg_types) ||
@@ -172,7 +176,7 @@ function RustFunctionSignature(name::String, arg_names::Vector{String}, arg_type
                           ok_abi, err_abi, inner_abi, python_defaults, python_kinds,
                           isempty(ffi_name) ? name : ffi_name, callback_args,
                           callback_returns, python_path, py_arg_shapes, py_return_shape,
-                          arg_handles, arg_slice_elements, arg_slice_lengths, return_handle)
+                          arg_handles, arg_slice_elements, arg_slice_lengths, return_handle, arg_borrow_reasons)
 end
 
 """
@@ -228,7 +232,8 @@ function _string_arg_plan(sig::RustFunctionSignature, escape::Function;
                             callbacks = collect(zip(sig.callback_args, sig.callback_returns)),
                             handles = sig.arg_handles, handle_scope,
                             slice_elements = sig.arg_slice_elements,
-                            slice_lengths = sig.arg_slice_lengths)
+                            slice_lengths = sig.arg_slice_lengths,
+                            borrow_reasons = sig.arg_borrow_reasons)
 end
 
 # Same plan for a struct method (`RustMethod`), whose arguments follow `self`.
@@ -244,6 +249,7 @@ function _string_arg_plan(method::RustMethod, escape::Function;
                             handles = method.arg_handles, handle_scope,
                             slice_elements = method.arg_slice_elements,
                             slice_lengths = method.arg_slice_lengths,
+                            borrow_reasons = method.arg_borrow_reasons,
                             receiver = (method.is_static || receiver === nothing) ? nothing :
                                        (receiver, method.is_mutable))
     if !method.is_static && receiver !== nothing && _uses_optional_owner_ffi(method)
@@ -288,7 +294,8 @@ function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
                           handle_scope::Union{Nothing, Vector{String}} = nothing,
                           receiver = nothing,
                           slice_elements = fill("", length(arg_names)),
-                          slice_lengths = fill("", length(arg_names)))
+                          slice_lengths = fill("", length(arg_names)),
+                          borrow_reasons = fill("", length(arg_names)))
     bindings = Expr[]
     preserved = Symbol[]
     call_args = Any[]
@@ -312,7 +319,18 @@ function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
         position = "argument `$(name)`"
         if abi == "optional_borrow" || (_is_optional_handle_abi(abi) && handle === nothing)
             _boundary_refuse(position, rust_type, abi,
-                "argument `$name` of `$context` is an optional borrowed owner whose concrete #[julia] owner is unresolved; annotate the owner with #[julia] and use an explicit import or qualified path (glob-import resolution is unsupported)")
+                "argument `$name` of `$context` is an optional borrowed owner whose concrete #[julia] owner is unresolved: " *
+                (isempty(borrow_reasons[index]) ? "the defining Rust scope cannot prove a concrete owner" : borrow_reasons[index]) *
+                "; annotate the owner with #[julia] and use an explicit import or qualified path where the scope is known; a rewriting context cannot prove an owner, and optional owners do not accept raw pointers")
+            continue
+        end
+        if abi == "borrow_unresolved"
+            reason = ffi_unresolved_borrow_message(name, context, borrow_reasons[index])
+            _boundary_examined!(position, rust_type, abi, reason)
+            ptr = Symbol(_EMITTER_LOCAL_PREFIX, "unresolved_borrow_ptr′", index)
+            helper = GlobalRef(@__MODULE__, :ffi_unresolved_borrow_argument)
+            push!(bindings, :($ptr = $helper($arg_sym, $reason)))
+            push!(call_args, ptr)
             continue
         end
         if _is_handle_abi(abi) && handle !== nothing
@@ -669,7 +687,7 @@ rooted for the call (#296). The plain wrapper has no `GC.@preserve` region.
 function _uses_string_ffi(sig::RustFunctionSignature)
     _ffi_function_return(sig).aggregate_type === nothing || return true
     # A borrowed `#[julia]` struct keeps its handle rooted for the call (#565).
-    any(abi -> _is_handle_abi(abi) || abi in ("slice", "slice_mut", "optional_borrow"), sig.arg_abis) && return true
+    any(abi -> _is_handle_abi(abi) || abi in ("slice", "slice_mut", "optional_borrow", "borrow_unresolved"), sig.arg_abis) && return true
     return any(zip(sig.arg_types, sig.arg_abis)) do (rust_type, abi)
         c = ffi_argument_contract(rust_type; abi = abi)
         c.abi === :ptr_len || c.abi === :ptr_len_cap || c.abi === :callback
