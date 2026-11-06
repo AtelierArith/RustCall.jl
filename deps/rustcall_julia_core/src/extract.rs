@@ -79,6 +79,7 @@ pub fn typed_arg(pt: &syn::PatType) -> Arg {
         } else {
             String::new()
         },
+        borrow_reason: String::new(),
         callback_args,
         callback_return,
         python_default: String::new(),
@@ -307,6 +308,9 @@ pub fn mark_handle_args(
     sig: &syn::Signature,
     mut resolve: impl FnMut(&syn::Type) -> Option<String>,
 ) {
+    if crate::types::has_type_params(&sig.generics) {
+        return;
+    }
     let typed = sig.inputs.iter().filter_map(|a| match a {
         FnArg::Typed(pt) => Some(&*pt.ty),
         FnArg::Receiver(_) => None,
@@ -328,6 +332,69 @@ pub fn mark_handle_args(
         } else if let Some((mutable, pointee)) = borrowed_struct_arg(ty) {
             if let Some(ffi_name) = resolve(pointee) {
                 mark_handle_arg(arg, mutable, &ffi_name);
+            }
+        }
+    }
+}
+
+/// Whether a lexical generic parameter shadows an item path's first segment.
+pub(crate) fn type_parameter_path(ty: &syn::Type, generics: &syn::Generics) -> bool {
+    let syn::Type::Path(p) = crate::types::unparen(ty) else {
+        return false;
+    };
+    if p.qself.is_some() || p.path.leading_colon.is_some() {
+        return false;
+    }
+    let Some(first) = p.path.segments.first() else {
+        return false;
+    };
+    generics
+        .type_params()
+        .any(|t| crate::borrow_scope::same_name(&t.ident.to_string(), &first.ident.to_string()))
+}
+
+/// Checked scope lookup retains an actionable diagnostic instead of guessing
+/// an owner or sending an opaque Julia wrapper through the by-value ABI.
+pub(crate) fn mark_checked_handle_args(
+    args: &mut [Arg],
+    sig: &syn::Signature,
+    mut resolve: impl FnMut(&syn::Type) -> Result<Option<String>, &'static str>,
+) {
+    if crate::types::has_type_params(&sig.generics) {
+        return;
+    }
+    let typed = sig.inputs.iter().filter_map(|a| match a {
+        FnArg::Typed(pt) => Some(&*pt.ty),
+        _ => None,
+    });
+    for (arg, ty) in args.iter_mut().zip(typed) {
+        if !borrow_is_call_scoped(ty, sig) {
+            continue;
+        }
+        if let Some((mutable, pointee)) = crate::optional_borrows::pointee(ty) {
+            match resolve(pointee) {
+                Ok(Some(name)) => {
+                    arg.abi = if mutable {
+                        "handle_optional_mut"
+                    } else {
+                        "handle_optional"
+                    }
+                    .into();
+                    arg.handle = name;
+                }
+                Ok(None) => {}
+                Err(reason) => {
+                    arg.borrow_reason = reason.into();
+                }
+            }
+        } else if let Some((mutable, pointee)) = borrowed_struct_arg(ty) {
+            match resolve(pointee) {
+                Ok(Some(name)) => mark_handle_arg(arg, mutable, &name),
+                Ok(None) => {}
+                Err(reason) => {
+                    arg.abi = "borrow_unresolved".into();
+                    arg.borrow_reason = reason.into();
+                }
             }
         }
     }
@@ -565,6 +632,7 @@ pub fn extract_crate_with_cfg_scan(
     }
     let mut manifest = Manifest::new(Mode::Crate);
     let mut scan = CrateScan::new();
+    scan.borrow_scope.record_context_attrs(&file.attrs, &[]);
     // A single source with no file behind it: an `include!` in it names a path
     // this layer cannot resolve, so the fragments it reports are dropped.
     scan.file(
@@ -740,6 +808,9 @@ impl TreeScan {
         if let Some(set) = cfg {
             crate::cfg::prune_file_or_error(set, &mut parsed)?;
         }
+        self.julia
+            .borrow_scope
+            .record_context_attrs(&parsed.attrs, &position.module_path);
         let includes = self.julia.file(&parsed.items, position, manifest, file)?;
         let modules = self.pyo3.file(
             &parsed.items,
@@ -884,6 +955,7 @@ fn location(line: usize, file: &str) -> String {
 /// cannot see where the struct is declared, so the header has to spell it.
 #[derive(Debug, Default)]
 pub struct CrateScan {
+    borrow_scope: crate::borrow_scope::Scope,
     include_environment: Option<crate::include_paths::IncludeEnvironment>,
     structs: Vec<ScannedStruct>,
     /// Every struct the crate declares **without** `#[julia]`, by name and
@@ -1062,6 +1134,13 @@ impl CrateScan {
         file: &str,
         includes: &mut Vec<PendingInclude>,
     ) -> Result<(), ExtractError> {
+        self.borrow_scope.record(
+            items,
+            module_path,
+            !enclosing_cfg.is_empty(),
+            symbol_path,
+            Mode::Crate,
+        );
         for item in items {
             // `#[julia]` on an item the attribute cannot expand: the proc
             // macro refuses it, and the manifest has no entry to mark (#503).
@@ -1431,6 +1510,10 @@ impl CrateScan {
             .iter()
             .map(|scanned| crate_struct_entry(&scanned.model, &scanned.symbol_path, &scanned.cfg))
             .collect();
+        for (entry, scanned) in entries.iter().zip(&scanned_structs) {
+            self.borrow_scope
+                .generated_struct(entry, &scanned.model, &scanned.module_path);
+        }
         // Borrowed `#[julia]` arguments (#565), resolved against every type
         // of the crate — a plain one shadows a `#[julia]` one of its name —
         // and pointing only at a struct Julia binds as an opaque handle.
@@ -1441,15 +1524,21 @@ impl CrateScan {
             })
             .collect();
         let edition_2015 = self.edition_2015;
-        let resolve = |ty: &syn::Type, module: &[String]| -> Option<String> {
-            let index = crate::paths::locate_borrowed_type(
-                &candidates,
-                ty,
-                module,
-                &self.imports,
-                edition_2015,
-            )?;
-            handle_names[candidates[index].julia?].clone()
+        let resolve = |ty: &syn::Type, module: &[String]| match self.borrow_scope.resolve(
+            ty,
+            module,
+            edition_2015,
+        ) {
+            crate::borrow_scope::Borrow::Owner(scope, name) => {
+                let index = candidates.iter().position(|c| {
+                    crate::borrow_scope::same_item(&c.module_path, &c.name, &scope, &name)
+                });
+                Ok(index
+                    .and_then(|i| candidates[i].julia)
+                    .and_then(|i| handle_names[i].clone()))
+            }
+            crate::borrow_scope::Borrow::Plain => Ok(None),
+            crate::borrow_scope::Borrow::Unresolved(reason) => Err(reason),
         };
         for (i, (entry, scanned)) in entries.iter_mut().zip(&scanned_structs).enumerate() {
             let own = handle_names[i].clone();
@@ -1467,26 +1556,32 @@ impl CrateScan {
                     .as_ref()
                     .map(|site| site.module_path.clone())
                     .unwrap_or_else(|| scanned.module_path.clone());
+                let checked = |ty: &syn::Type| {
+                    if model
+                        .host
+                        .as_ref()
+                        .is_some_and(|h| type_parameter_path(ty, &h.generics))
+                    {
+                        Ok(None)
+                    } else if let Some(reason) = self.borrow_scope.context_error(&module) {
+                        Err(reason)
+                    } else if is_self_type(ty) {
+                        match self.borrow_scope.context_error(&scanned.module_path) {
+                            Some(reason) => Err(reason),
+                            None => Ok(own.clone()),
+                        }
+                    } else {
+                        resolve(ty, &module)
+                    }
+                };
                 crate::owned_returns::mark(
                     &model.func.attrs,
                     &model.func.sig,
                     &mut method.return_handle,
                     &mut method.skip_reason,
-                    |ty| {
-                        if is_self_type(ty) {
-                            own.clone()
-                        } else {
-                            resolve(ty, &module)
-                        }
-                    },
+                    |ty| checked(ty).ok().flatten(),
                 );
-                mark_handle_args(&mut method.args, &model.func.sig, |ty| {
-                    if is_self_type(ty) {
-                        own.clone()
-                    } else {
-                        resolve(ty, &module)
-                    }
-                });
+                mark_checked_handle_args(&mut method.args, &model.func.sig, checked);
             }
         }
         for pending in std::mem::take(&mut self.handle_fns) {
@@ -1496,12 +1591,12 @@ impl CrateScan {
                 &pending.sig,
                 &mut function.return_handle,
                 &mut function.skip_reason,
-                |ty| resolve(ty, &pending.module_path),
+                |ty| resolve(ty, &pending.module_path).ok().flatten(),
             );
             if !function.skip_reason.is_empty() {
                 function.exported = false;
             }
-            mark_handle_args(&mut function.args, &pending.sig, |ty| {
+            mark_checked_handle_args(&mut function.args, &pending.sig, |ty| {
                 resolve(ty, &pending.module_path)
             });
         }
@@ -1755,7 +1850,7 @@ fn julia_name_clash(entry: &Struct) -> Option<String> {
     None
 }
 
-fn crate_struct_entry(
+pub(crate) fn crate_struct_entry(
     model: &StructModel,
     module_path: &[String],
     enclosing_cfg: &[syn::Attribute],

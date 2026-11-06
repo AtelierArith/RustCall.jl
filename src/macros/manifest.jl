@@ -1496,6 +1496,7 @@ function manifest_function_signatures(manifest::Dict; only_attributed::Bool = tr
             arg_slice_elements = String[_mstr(a, "slice_element") for a in args],
             arg_slice_lengths = String[_mstr(a, "slice_length") for a in args],
             return_handle = _manifest_return_handle(f, handles),
+            arg_borrow_reasons = String[_mstr(a, "borrow_reason") for a in args],
         ))
     end
     return sigs
@@ -1616,6 +1617,7 @@ function _manifest_method(m, handles::Dict{String, RustHandleArg} = Dict{String,
         arg_slice_elements = String[_mstr(a, "slice_element") for a in args],
         arg_slice_lengths = String[_mstr(a, "slice_length") for a in args],
         return_handle = _manifest_return_handle(m, handles),
+        arg_borrow_reasons = String[_mstr(a, "borrow_reason") for a in args],
     )
 end
 

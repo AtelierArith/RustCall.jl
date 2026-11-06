@@ -156,6 +156,7 @@ struct RustMethod
     arg_slice_elements::Vector{String}
     arg_slice_lengths::Vector{String}
     return_handle::Union{Nothing, RustHandleArg}
+    arg_borrow_reasons::Vector{String}
 end
 
 function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::Vector{String},
@@ -189,11 +190,14 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
                         Union{Nothing, RustHandleArg}[nothing for _ in arg_names],
                     arg_slice_elements::Vector{String} = fill("", length(arg_names)),
                     arg_slice_lengths::Vector{String} = fill("", length(arg_names)),
-                    return_handle::Union{Nothing, RustHandleArg} = nothing)
+                    return_handle::Union{Nothing, RustHandleArg} = nothing,
+                    arg_borrow_reasons::Vector{String} = fill("", length(arg_names)))
     length(python_defaults) == length(arg_names) ||
         throw(ArgumentError("python_defaults must have one entry per argument"))
     length(arg_slice_elements) == length(arg_names) && length(arg_slice_lengths) == length(arg_names) ||
         throw(ArgumentError("slice metadata must have one entry per argument"))
+    length(arg_borrow_reasons) == length(arg_names) ||
+        throw(ArgumentError("arg_borrow_reasons must have one entry per argument"))
     length(arg_handles) == length(arg_names) ||
         throw(ArgumentError("arg_handles must have one entry per argument"))
     length(python_kinds) == length(arg_names) ||
@@ -207,7 +211,7 @@ function RustMethod(name::String, is_static::Bool, is_mutable::Bool, arg_names::
                return_kind, ok_type, err_type, inner_type, ok_abi, err_abi, inner_abi,
                string_owner, attribute, python_defaults, python_kinds,
                callback_args, callback_returns, is_classmethod, generic_wrapper_name,
-               trait_path, julia_name, py_arg_shapes, py_return_shape, arg_handles, arg_slice_elements, arg_slice_lengths, return_handle)
+               trait_path, julia_name, py_arg_shapes, py_return_shape, arg_handles, arg_slice_elements, arg_slice_lengths, return_handle, arg_borrow_reasons)
 end
 
 # `julia_method_name(m)`, the name a method is bound under, is in `julia_names.jl` (#514).

@@ -56,12 +56,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Rust crates
 - `rustcall_julia_core`, `rustcall_julia_macros_impl` and
   `rustcall_julia_macros` move from `0.6.0` to `0.7.0`. The minor bump covers
-  public slice and selected-owned-return manifest metadata, slice and optional
-  owner lowering, explicit owned-return annotation/ABI proofs, and changed
-  signature refusals of `#[julia]`, independently of the Julia package's
-  version.
+  public slice/selected-owned-return metadata and `Arg.borrow_reason`, slice
+  and optional-owner lowering, explicit owned-return annotation/ABI proofs,
+  scoped type-namespace resolution, and changed signature refusals of
+  `#[julia]`, independently of the Julia package's version.
 
 ### Fixed
+- Borrowed opaque-owner arguments imported through an unambiguous module
+  glob, including `use super::*` in a separate impl module, retain checked
+  shared/mutable handle lowering. Resolution follows actual module scopes and
+  reexports, respects local and named-import precedence within the type
+  namespace, and includes plain declarations and aliases in ambiguity/shadow
+  checks. Raw/NFC identifier identity and opaque rewriting module/file contexts
+  cannot bypass those checks. It never uses a global unique-name guess. Unproved borrowed arguments carry manifest
+  `borrow_reason` metadata and report an unsupported borrowed-owner boundary
+  with explicit-import/qualified-path guidance instead of a by-value layout
+  suggestion; the explicit unchecked pointer escape remains available
+  ([#569](https://github.com/AtelierArith/RustCall.jl/issues/569)).
 - Borrowed `#[julia]` handles are checked against the actual call snapshot,
   not only against each other. Inline, crate and written free-function
   wrappers reject handles from a retired image after hot reload, including
