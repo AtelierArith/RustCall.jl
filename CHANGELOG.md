@@ -62,6 +62,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `#[julia]`, independently of the Julia package's version.
 
 ### Fixed
+- Generated Rust shims keep native function lookup intact when arguments share
+  the function's name or lowered pointer/length names collide with it. Fresh
+  wrapper bindings also prevent the panic-boundary guard from hiding an
+  argument or native function. Original Rust signatures, manifest argument
+  names and exported symbols remain unchanged, including function-local
+  annotated items ([#579](https://github.com/AtelierArith/RustCall.jl/issues/579)).
 - Borrowed opaque-owner arguments imported through an unambiguous module
   glob, including `use super::*` in a separate impl module, retain checked
   shared/mutable handle lowering. Resolution follows actual module scopes and

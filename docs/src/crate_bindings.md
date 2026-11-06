@@ -182,6 +182,15 @@ The generated Julia bindings keep the Rust names (`Counter(1)`, `get(c)`);
 they resolve the exported symbol through the manifest, so nothing in the Julia
 API changes.
 
+The Rust shim also chooses its argument and temporary bindings so they do not
+hide the native function or its inputs. For example, a parameter named
+`callback` in `fn callback(callback: extern "C" fn() -> i32) -> i32` keeps its
+original name and signature in Rust source and manifest metadata; only the
+shim's private binding changes. Pointer/length lowering and the panic-boundary
+guard obey the same rule. Native item lookup remains lexical, preserving
+function-local annotated items and qualified external targets without forcing
+every call through a `self::` path.
+
 The impl block may live in any module of the crate, not only next to the
 struct: `#[julia] impl crate::Counter { ... }` in `src/ops.rs`, `impl
 super::Counter` from a child module, or `use crate::Counter; #[julia] impl
