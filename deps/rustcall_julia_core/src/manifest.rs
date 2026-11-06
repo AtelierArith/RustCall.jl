@@ -249,6 +249,7 @@ pub mod skip_reason {
     /// upheld, so codegen refuses it with a `compile_error!` at the item;
     /// the reason lets the Julia generators name that refusal before anything
     /// is built.
+    pub const OWNED_RETURN: &str = "owned_return";
     pub const UNSAFE_FN: &str = "unsafe_fn";
     /// An optional owner outside the finite synchronous nullable-pointer contract.
     pub const OPTIONAL_OWNER_SIGNATURE: &str = "optional_owner_signature";
@@ -304,6 +305,7 @@ pub mod skip_reason {
     pub const CODEGEN_REFUSALS: &[&str] = &[
         SLICE_SIGNATURE,
         OPTIONAL_OWNER_SIGNATURE,
+        OWNED_RETURN,
         UNSAFE_FN,
         GENERIC_SIGNATURE,
         IMPL_TRAIT,
@@ -654,6 +656,9 @@ pub struct Function {
     /// the `has_*_string_helper` booleans below are derived from it (#276).
     #[serde(default)]
     pub return_abi: String,
+    /// Explicit owned direct result or Result Ok owner (Struct::ffi_name).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub return_handle: String,
     /// `T` of `Result<T, E>`, empty otherwise.
     #[serde(default)]
     pub ok_type: String,
@@ -980,6 +985,9 @@ pub struct Method {
     /// [`Method::string_owner`].
     #[serde(default)]
     pub return_abi: String,
+    /// Explicit owned direct result or Result Ok owner (Struct::ffi_name).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub return_handle: String,
     /// For generic structs: the generic wrapper source registered for
     /// monomorphization. Empty otherwise.
     #[serde(default)]

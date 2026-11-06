@@ -141,6 +141,22 @@ pub fn method_return_shape(
         ..Default::default()
     };
     if wrapped {
+        if crate::owned_returns::annotation(&m.func.attrs)
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            if let ReturnType::Type(_, output) = &m.func.sig.output {
+                if let Some(result) = extract_result_type(output) {
+                    shape.kind = ReturnKind::Result;
+                    shape.ok_type = type_to_string(&result.ok_type);
+                    shape.err_type = type_to_string(&result.err_type);
+                    shape.ok_abi = "boxed".into();
+                    shape.err_abi = crate::codegen::payload_abi(&result.err_type).into();
+                    return shape;
+                }
+            }
+        }
         if let Some(result) = m.boxed_self_result(struct_name) {
             shape.kind = ReturnKind::Result;
             shape.ok_type = type_to_string(&result.ok_type);
@@ -367,7 +383,15 @@ pub fn function_entry(
             if let (true, Some(r)) = (wrapped, extract_result_type(ty)) {
                 ok_type = type_to_string(&r.ok_type);
                 err_type = type_to_string(&r.err_type);
-                ok_abi = crate::codegen::payload_abi(&r.ok_type).to_string();
+                ok_abi = if crate::owned_returns::annotation(&func.attrs)
+                    .ok()
+                    .flatten()
+                    .is_some()
+                {
+                    "boxed".into()
+                } else {
+                    crate::codegen::payload_abi(&r.ok_type).to_string()
+                };
                 err_abi = crate::codegen::payload_abi(&r.err_type).to_string();
                 ReturnKind::Result
             } else if let (true, Some(o)) = (wrapped, extract_option_type(ty)) {
@@ -409,7 +433,16 @@ pub fn function_entry(
     // The wrapper only lowers strings when it is actually generated; a generic
     // item is wrapped per instantiation (see `specialize`), not here.
     let return_abi = if wrapped && !is_generic {
-        crate::codegen::return_abi(&func.sig)
+        if crate::owned_returns::annotation(&func.attrs)
+            .ok()
+            .flatten()
+            .is_some()
+            && return_kind != ReturnKind::Result
+        {
+            "boxed"
+        } else {
+            crate::codegen::return_abi(&func.sig)
+        }
     } else {
         ""
     };
@@ -446,6 +479,7 @@ pub fn function_entry(
         return_type,
         return_kind,
         return_abi: return_abi.to_string(),
+        return_handle: String::new(),
         ok_type,
         err_type,
         inner_type,
@@ -883,6 +917,7 @@ struct PendingHandleFn {
     index: usize,
     module_path: Vec<String>,
     sig: syn::Signature,
+    attrs: Vec<syn::Attribute>,
 }
 
 #[derive(Debug)]
@@ -1053,11 +1088,12 @@ impl CrateScan {
                         manifest.functions.push(entry);
                         if f.sig.inputs.iter().any(|a| {
                             matches!(a, FnArg::Typed(pt) if borrowed_struct_arg(&pt.ty).is_some() || crate::optional_borrows::reference(&pt.ty).is_some())
-                        }) {
+                        }) || crate::owned_returns::annotation(&f.attrs).ok().flatten().is_some() {
                             self.handle_fns.push(PendingHandleFn {
                                 index: manifest.functions.len() - 1,
                                 module_path: module_path.clone(),
                                 sig: f.sig.clone(),
+                                attrs: f.attrs.clone(),
                             });
                         }
                     }
@@ -1431,6 +1467,19 @@ impl CrateScan {
                     .as_ref()
                     .map(|site| site.module_path.clone())
                     .unwrap_or_else(|| scanned.module_path.clone());
+                crate::owned_returns::mark(
+                    &model.func.attrs,
+                    &model.func.sig,
+                    &mut method.return_handle,
+                    &mut method.skip_reason,
+                    |ty| {
+                        if is_self_type(ty) {
+                            own.clone()
+                        } else {
+                            resolve(ty, &module)
+                        }
+                    },
+                );
                 mark_handle_args(&mut method.args, &model.func.sig, |ty| {
                     if is_self_type(ty) {
                         own.clone()
@@ -1442,6 +1491,16 @@ impl CrateScan {
         }
         for pending in std::mem::take(&mut self.handle_fns) {
             let function = &mut manifest.functions[pending.index];
+            crate::owned_returns::mark(
+                &pending.attrs,
+                &pending.sig,
+                &mut function.return_handle,
+                &mut function.skip_reason,
+                |ty| resolve(ty, &pending.module_path),
+            );
+            if !function.skip_reason.is_empty() {
+                function.exported = false;
+            }
             mark_handle_args(&mut function.args, &pending.sig, |ty| {
                 resolve(ty, &pending.module_path)
             });
@@ -1802,7 +1861,17 @@ fn crate_struct_entry(
             // Crate method wrappers (`generate_method_wrapper_crate`) use the
             // same string ABI as inline ones, with per-method buffer types
             // (`<Struct>_<method>_RustCallOwnedString` / `_free_rust_string`).
-            return_abi: crate::codegen::return_abi(&m.func.sig).to_string(),
+            return_abi: if crate::owned_returns::annotation(&m.func.attrs)
+                .ok()
+                .flatten()
+                .is_some()
+                && shapes[i].kind != ReturnKind::Result
+            {
+                "boxed".into()
+            } else {
+                crate::codegen::return_abi(&m.func.sig).to_string()
+            },
+            return_handle: String::new(),
             generic_wrapper: String::new(),
             generic_wrapper_name: String::new(),
             py_return: None,

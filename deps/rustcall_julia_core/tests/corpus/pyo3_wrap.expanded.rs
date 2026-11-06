@@ -179,6 +179,12 @@ pub mod geometry {
         }
     }
 }
+/// Marker emitted for annotated opaque owners; no Send/Sync promise.
+#[doc(hidden)]
+pub trait __RustCallOwned: ::std::marker::Sized {}
+/// Prove the actual produced value cannot retain a call-local borrow.
+#[doc(hidden)]
+pub fn __rustcall_require_owned<T: __RustCallOwned + 'static>(_: &T) {}
 thread_local! {
     static __RUSTCALL_QUIET_DEPTH : ::std::cell::Cell < usize > = const {
     ::std::cell::Cell::new(0) };

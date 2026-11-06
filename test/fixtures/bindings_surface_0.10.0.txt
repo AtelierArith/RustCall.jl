@@ -192,9 +192,9 @@ RustCall
 RustCallState	1|
 RustCompiler	0|debug_dir,debug_mode,emit_debug_info,optimization_level,target_triple	5|
 RustError	1|	2|	3|
-RustFunctionSignature	39|	6|arg_abis,arg_handles,arg_slice_elements,arg_slice_lengths,attribute,body_has_cfg,callback_args,callback_returns,cfg_features,constraints,err_abi,err_type,exported,ffi_name,has_borrowed_string_helper,has_owned_string_helper,inner_abi,inner_type,module_path,ok_abi,ok_type,py_arg_shapes,py_return_shape,python_defaults,python_kinds,python_name,python_path,return_abi,return_kind,skip_reason,source,symbol,vis
+RustFunctionSignature	40|	6|arg_abis,arg_handles,arg_slice_elements,arg_slice_lengths,attribute,body_has_cfg,callback_args,callback_returns,cfg_features,constraints,err_abi,err_type,exported,ffi_name,has_borrowed_string_helper,has_owned_string_helper,inner_abi,inner_type,module_path,ok_abi,ok_type,py_arg_shapes,py_return_shape,python_defaults,python_kinds,python_name,python_path,return_abi,return_handle,return_kind,skip_reason,source,symbol,vis
 RustHandleArg	3|
-RustMethod	38|	6|accessor,arg_abis,arg_handles,arg_slice_elements,arg_slice_lengths,attribute,callback_args,callback_returns,err_abi,err_type,generic_wrapper,generic_wrapper_name,inner_abi,inner_type,is_classmethod,is_constructor,julia_name,ok_abi,ok_type,py_arg_shapes,py_return_shape,python_defaults,python_kinds,python_name,return_abi,return_kind,returns_boxed_struct,skip_reason,string_owner,symbol,trait_path,vis
+RustMethod	39|	6|accessor,arg_abis,arg_handles,arg_slice_elements,arg_slice_lengths,attribute,callback_args,callback_returns,err_abi,err_type,generic_wrapper,generic_wrapper_name,inner_abi,inner_type,is_classmethod,is_constructor,julia_name,ok_abi,ok_type,py_arg_shapes,py_return_shape,python_defaults,python_kinds,python_name,return_abi,return_handle,return_kind,returns_boxed_struct,skip_reason,string_owner,symbol,trait_path,vis
 RustOption
 RustPanicError	2|
 RustPtr
@@ -313,6 +313,7 @@ _VALID_REGISTRATION_MODES
 _VALID_REGISTRIES
 __init__	0|
 _acquire_generation_lease	1|
+_adopt_owned_return	7|
 _alias_reloaded_library	3|
 _artifact_env_value	2|
 _artifact_reset_digest_caches!	0|
@@ -474,6 +475,7 @@ _define_module_state_views!	1|
 _depot_is_writable	1|
 _directory_size	1|skip
 _dispatch_with_target	3+|
+_dispose_unadopted_owner	4|
 _drain_source_changes	2|
 _drop_obsolete_group_members!	1|
 _ei_canonical	1|
@@ -618,8 +620,10 @@ _get_reload_lock	1|
 _git_dependency_keys	1|
 _graph_stamp	1|
 _graph_stamps	1|
+_guard_owned_return_ptr	6|
 _handle_type_ref	3|
 _harvest_patch_paths!	3|
+_has_explicit_owned_constructor	1|
 _has_optional_owner_constructor	1|
 _hashed_relative_path	1|
 _identity_file_bytes	1|release_names
@@ -633,8 +637,11 @@ _inline_method_payload_wrapper	8|frame,self,static_type
 _inline_method_target_bindings	3|
 _inline_wrapper_exprs	2|block
 _inline_wrapper_exprs_as_emitted	2|block
+_instance_fields	3|
 _instance_ident	1|
-_instance_params	1|
+_instance_params	1|	2|
+_instance_require	3|
+_instance_source	2|
 _instantiate_generic_struct_group	4|
 _instantiate_runtime_bindings	1|target_module,visible
 _invalidate_kept_snapshots!	0|
@@ -670,6 +677,7 @@ _manifest_handle_table	1|
 _manifest_method	1|	2|
 _manifest_py_shape	2|
 _manifest_registry_entries	1|
+_manifest_return_handle	2|
 _manifest_return_type	1|
 _manifest_seam	2|
 _manifest_signature_for	2|
@@ -706,6 +714,8 @@ _opened_from_current_copy	4|
 _optional_owner_symbols	1|
 _own_definition_snapshot	2|
 _own_images_unchanged	2|
+_owned_return_symbols	1|
+_owned_return_wrapper	1|bare,escape,inline	2|bare,escape,inline
 _owner_binding	2|
 _ownership_drop_target	2|	3|
 _ownership_free	2|
@@ -856,6 +866,7 @@ _requalified_reference	2|
 _require_dispatcher_pyo3_version	2|
 _require_linkable_lib_target	2|
 _require_optional_owner_abi	2|
+_require_owned_return_abi	2|
 _require_slice_args_abi	2|
 _reset_cache_dir_memo!	0|
 _reset_extractor_state!	0|

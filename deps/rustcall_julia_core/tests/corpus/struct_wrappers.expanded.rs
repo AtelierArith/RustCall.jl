@@ -3,6 +3,10 @@ pub struct Greeter {
     pub name: String,
     pub visits: u32,
 }
+impl crate::__RustCallOwned for Greeter
+where
+    Greeter: ::std::marker::Sized,
+{}
 thread_local! {
     static __RUSTCALL_DROP_PANIC_477265657465725F66726565 : ::std::cell::RefCell <
     ::std::option::Option < ::std::string::String >> =
@@ -1135,6 +1139,10 @@ pub extern "C" fn rustcall_positive(value: i32) -> COption_positive {
 pub struct Divider {
     pub scale: i32,
 }
+impl crate::__RustCallOwned for Divider
+where
+    Divider: ::std::marker::Sized,
+{}
 thread_local! {
     static __RUSTCALL_DROP_PANIC_446976696465725F66726565 : ::std::cell::RefCell <
     ::std::option::Option < ::std::string::String >> =
@@ -2090,6 +2098,12 @@ impl Divider {
         (self.scale > 0).then_some("positive")
     }
 }
+/// Marker emitted for annotated opaque owners; no Send/Sync promise.
+#[doc(hidden)]
+pub trait __RustCallOwned: ::std::marker::Sized {}
+/// Prove the actual produced value cannot retain a call-local borrow.
+#[doc(hidden)]
+pub fn __rustcall_require_owned<T: __RustCallOwned + 'static>(_: &T) {}
 thread_local! {
     static __RUSTCALL_QUIET_DEPTH : ::std::cell::Cell < usize > = const {
     ::std::cell::Cell::new(0) };

@@ -228,6 +228,8 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
             $slice_check
             $(isempty(_optional_owner_symbols(info)) ? nothing :
                 @_emitted(:(name in $(_optional_owner_symbols(info)) && RustCall._require_optional_owner_abi(handle, name))))
+            $(isempty(_owned_return_symbols(info)) ? nothing :
+                @_emitted(:(name in $(_owned_return_symbols(info)) && RustCall._require_owned_return_abi(handle, name))))
             ptr = _symbol(handle, name)
             ptr == C_NULL && error("The Rust library '" * _LIB_NAME *
                                    "' does not export '" * name * "'.")
@@ -344,7 +346,8 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
             target = RustCall.publish_crate_target!(cache, epoch,
                 (_required_symbol(handle, symbol),
                  _symbol(handle, RustCall.ffi_panic_symbol(symbol)),
-                 _symbol(handle, free_symbol),
+                 $(isempty(_owned_return_symbols(info)) ? @_emitted(:(_symbol(handle, free_symbol))) :
+                     @_emitted(:(symbol in $(_owned_return_symbols(info)) ? _required_symbol(handle, free_symbol) : _symbol(handle, free_symbol)))),
                  gen.alive,
                  _symbol(handle, RustCall.ffi_panic_symbol(free_symbol))))
             return _check_call_borrows(target, 4, borrows)

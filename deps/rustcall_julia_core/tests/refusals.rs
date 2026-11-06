@@ -84,6 +84,18 @@ fn cases() -> Vec<Case> {
             item: "f", skip_reason: "optional_owner_signature:v",
             message: "must be Option<&Owner> or Option<&mut Owner>", refusals: 1,
         },
+        Case {
+            label: "inline unsupported owned Option", mode: Inline, position: FreeFn,
+            source: "#[julia] pub struct S; #[julia] #[rustcall_owned_return(S)] pub fn f() -> Option<S> { None }",
+            item: "f", skip_reason: "owned_return:shape",
+            message: "Option<Owner> explicit owned returns are unsupported", refusals: 1,
+        },
+        Case {
+            label: "crate unsupported owned Option", mode: Crate, position: FreeFn,
+            source: "#[julia] pub struct S; #[julia] #[rustcall_owned_return(S)] pub fn f() -> Option<S> { None }",
+            item: "f", skip_reason: "owned_return:shape",
+            message: "Option<Owner> explicit owned returns are unsupported", refusals: 1,
+        },
         // ---- unsafe_fn ------------------------------------------------------
         Case {
             label: "inline unsafe fn",

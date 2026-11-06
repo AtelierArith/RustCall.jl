@@ -833,8 +833,13 @@ println("v1 magnitude: $(v1.magnitude())")  # => v1 magnitude: 6.403124237432848
 println("v4 magnitude: $(v4.magnitude())")  # => v4 magnitude: 12.806248474865697
 ```
 
-!!! note "Future Feature"
-    Methods returning custom struct types are planned for a future release.
+!!! note "Owned results"
+    Explicit concrete facade mappings support direct owned results and
+    `Result<Owner, E>`, including a result owned by another declared wrapper.
+    Select the owner with `return_wrapper`; the actual returned value must
+    satisfy the annotated-owner, `Sized` and `'static` proofs. Receiver and
+    input borrows remain scoped to the synchronous call. See
+    [composed facade mappings](crate_bindings.md).
 
 ## Troubleshooting
 

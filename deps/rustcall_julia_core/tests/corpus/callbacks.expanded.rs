@@ -308,6 +308,10 @@ pub extern "C" fn rustcall_rust_abi(f: fn(i64) -> i64) -> ::std::mem::MaybeUnini
 pub struct Acc {
     pub total: i64,
 }
+impl crate::__RustCallOwned for Acc
+where
+    Acc: ::std::marker::Sized,
+{}
 thread_local! {
     static __RUSTCALL_DROP_PANIC_4163635F66726565 : ::std::cell::RefCell <
     ::std::option::Option < ::std::string::String >> =
@@ -702,6 +706,12 @@ impl Acc {
         f(self.total)
     }
 }
+/// Marker emitted for annotated opaque owners; no Send/Sync promise.
+#[doc(hidden)]
+pub trait __RustCallOwned: ::std::marker::Sized {}
+/// Prove the actual produced value cannot retain a call-local borrow.
+#[doc(hidden)]
+pub fn __rustcall_require_owned<T: __RustCallOwned + 'static>(_: &T) {}
 thread_local! {
     static __RUSTCALL_QUIET_DEPTH : ::std::cell::Cell < usize > = const {
     ::std::cell::Cell::new(0) };

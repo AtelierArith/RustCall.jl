@@ -84,6 +84,10 @@ pub mod a {
         pub v: i32,
         pub label: String,
     }
+    impl crate::__RustCallOwned for C
+    where
+        C: ::std::marker::Sized,
+    {}
     thread_local! {
         static __RUSTCALL_DROP_PANIC_615F5F435F66726565 : ::std::cell::RefCell <
         ::std::option::Option < ::std::string::String >> =
@@ -1170,6 +1174,10 @@ pub mod b {
     pub struct C {
         pub v: i32,
     }
+    impl crate::__RustCallOwned for C
+    where
+        C: ::std::marker::Sized,
+    {}
     thread_local! {
         static __RUSTCALL_DROP_PANIC_625F5F435F66726565 : ::std::cell::RefCell <
         ::std::option::Option < ::std::string::String >> =
@@ -1793,6 +1801,12 @@ pub mod a {
         }
     }
 }
+/// Marker emitted for annotated opaque owners; no Send/Sync promise.
+#[doc(hidden)]
+pub trait __RustCallOwned: ::std::marker::Sized {}
+/// Prove the actual produced value cannot retain a call-local borrow.
+#[doc(hidden)]
+pub fn __rustcall_require_owned<T: __RustCallOwned + 'static>(_: &T) {}
 thread_local! {
     static __RUSTCALL_QUIET_DEPTH : ::std::cell::Cell < usize > = const {
     ::std::cell::Cell::new(0) };

@@ -70,5 +70,5 @@
 
 mod rt;
 
-pub use rt::__RustCallBoundary;
+pub use rt::{__RustCallBoundary, __RustCallOwned, __rustcall_require_owned};
 pub use rustcall_julia_macros_impl::julia;

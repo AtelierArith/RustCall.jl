@@ -31,6 +31,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a nonstatic borrowed `&str` view are refused; return an owned `String` or an
   explicit `&'static str` instead
   ([#571](https://github.com/AtelierArith/RustCall.jl/issues/571)).
+- `generate_crate_instances` composes declared concrete wrappers: mapped
+  shared/mutable owner arguments forward their native `inner` values, and
+  `return_wrapper` wraps direct or fallible native results in the current or
+  another declared owner. Constructors also accept checked mapped arguments;
+  their explicit owned-return contract prevents one-pointer adoption shorthand
+  from bypassing the declared owner input. Trusted method expressions use
+  wrapper-variable scope without Julia parsing or substitution. Forward
+  declarations are supported; invalid/ambiguous mappings fail before emission, while existing
+  constructor and simple method source remains compatible
+  ([#572](https://github.com/AtelierArith/RustCall.jl/issues/572)).
+- Explicit `rustcall_owned_return` mappings prove `Sized + 'static` on the
+  actual annotated result, with reconstructed receiver, slice and present
+  optional-owner references limited to the call. They record the selected
+  owner in the manifest and require an owned-return producer ABI marker. All
+  binding emitters capture that owner's destructor and panic channel from the producing library image, including
+  fallible results and cleanup when Julia adoption fails.
 
 ### Changed
 - Package and extractor move to `0.10.0`, with manifest schema and written
@@ -40,9 +56,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Rust crates
 - `rustcall_julia_core`, `rustcall_julia_macros_impl` and
   `rustcall_julia_macros` move from `0.6.0` to `0.7.0`. The minor bump covers
-  the public `Arg` fields for slice metadata and the changed slice and
-  optional-owner lowering and signature refusals of `#[julia]`, independently
-  of the Julia package's version.
+  public slice and selected-owned-return manifest metadata, slice and optional
+  owner lowering, explicit owned-return annotation/ABI proofs, and changed
+  signature refusals of `#[julia]`, independently of the Julia package's
+  version.
 
 ### Fixed
 - Borrowed `#[julia]` handles are checked against the actual call snapshot,
