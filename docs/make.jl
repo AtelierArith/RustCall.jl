@@ -31,6 +31,7 @@ makedocs(
         "Home" => "index.md",
         "Getting Started" => [
             "Tutorial" => "tutorial.md",
+            "What's New in v0.9 and v0.10" => "tutorial_new_features.md",
             "Examples" => "examples.md",
         ],
         "User Guide" => [

@@ -479,6 +479,7 @@ RustCall.clear_cache()
 
 ## Next Steps
 
+- Continue with [What's New in v0.9 and v0.10](tutorial_new_features.md) for slices, borrowed and optional objects, fallible constructors and generic crate instances
 - See [Examples](examples.md) for more advanced usage examples
 - Check [Troubleshooting](troubleshooting.md) to solve problems
 - Review [API Reference](api.md) for all features
