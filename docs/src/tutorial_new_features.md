@@ -28,7 +28,8 @@ one, which builds a small Cargo workspace. The same signatures work in a
 - **Update the macro crate of your `#[julia]` crates.** The new argument and
   return shapes need a matching producer: `rustcall_julia_macros = "0.7"` for
   v0.10.0 (slices, optional borrows, composed owned returns), `"0.6"` for
-  v0.9.2. Bindings check a marker the producer exports and refuse an older
+  v0.9.2 (borrowed objects, methods returning `Result<Self, E>`), `"0.5"` for
+  v0.9.1 (fallible constructors). Bindings check a marker the producer exports and refuse an older
   library *before* calling it, with a message to rebuild. Inline `rust"""`
   blocks need nothing: RustCall generates their wrappers itself.
 - **Regenerate written bindings.** A file written by `write_bindings_to_file`
@@ -130,6 +131,12 @@ RustCall checks every handle before Rust sees it:
   alias: `combined(alice, alice)` is fine.
 - The handle stays rooted for the whole call, so a temporary such as
   `combined(Wallet(1), Wallet(2))` is safe.
+
+These checks apply to handles. A required `&T` / `&mut T` position also still
+accepts an explicit `Ptr{Cvoid}` (for example `combined(alice, bob.ptr)`),
+which is passed through **unchecked**: its layout, liveness and aliasing are
+then your responsibility. The optional positions of the next sections refuse
+raw pointers altogether.
 
 ```@example new_features
 try
@@ -342,7 +349,8 @@ the Julia array — the Rust pointer type is your promise.
 
 ## Concrete instances of a generic crate type
 
-A `#[julia]` item cannot be generic. When a dependency exposes a generic type
+A `#[julia]` item in a crate cannot be generic (generic functions and
+structs are a `rust"""` feature, see [Generics](generics.md)). When a dependency exposes a generic type
 such as `Accumulator<T>`, `RustCall.generate_crate_instances` writes a small
 *facade* crate that wraps the concrete instances you list (v0.9.1, #558).
 Since v0.10.0 (#572) the wrappers compose: an argument can borrow another
