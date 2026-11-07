@@ -19,7 +19,7 @@ function _fenced_blocks(path)
                 info = strip(line[4:end])
                 body = IOBuffer()
             end
-        elseif line == "```"
+        elseif rstrip(line) == "```"
             push!(blocks, (String(info), String(take!(body))))
             info = nothing
         else
@@ -59,25 +59,34 @@ const NEW_FEATURE_BLOCKS = _fenced_blocks(NEW_FEATURES_PAGE)
     @test RustCall.is_err(call(:axpy, 1.0, [1.0], value(:y)))
 end
 
-# The usage block of the facade section, with its comments as assertions.
-# Called through `invokelatest`: the facade's types are newer than the testset.
-function _exercise_stats_facade(S, made)
-    a = S.FloatAcc(0.0); push!(made, a)
-    S.push(a, 1.0); S.push(a, 3.0)
-    b = S.FloatAcc(0.0); push!(made, b)
-    S.push(b, 5.0)
-    S.merge(a, b)
-    @test S.mean(a) == 3.0
-    s = S.snapshot(a); push!(made, s)
-    @test (S.mean(s), S.count(s)) == (3.0, UInt64(3))
-    @test S.checked_snapshot(S.FloatAcc(0.0)).value == "no samples yet"
-    @test RustCall.is_ok(S.checked_snapshot(a))
-    i = S.IntAcc(10); push!(made, i)
-    S.push(i, 5)
-    @test S.total(i) == 15
-    @test_throws ArgumentError S.merge(a, a)
-    @test_throws ArgumentError S.merge(a, i)
-    return nothing
+# Runs the facade section's usage block line by line in `mod`. A trailing
+# `# <literal>` comment is the value the line must produce, and `# ArgumentError`
+# marks a line that must throw it; any other comment is prose.
+function _run_usage_block(mod, code)
+    # `Core.eval`, not `include_string`, so a line's exception is not wrapped
+    # in a `LoadError`.
+    run(stmt) = Core.eval(mod, Meta.parse(stmt))
+    checked = 0
+    for line in split(code, '\n')
+        isempty(strip(line)) && continue
+        stmt, comment = occursin("  # ", line) ? split(line, "  # "; limit = 2) : (line, "")
+        comment = strip(comment)
+        if startswith(comment, "ArgumentError")
+            @test_throws ArgumentError run(stmt)
+            checked += 1
+            continue
+        end
+        expected = isempty(comment) ? nothing : Meta.parse(comment; raise = false)
+        literal = expected isa Union{Number,String} ||
+                  (expected isa Expr && expected.head === :tuple &&
+                   all(x -> x isa Union{Number,String}, expected.args))
+        value = run(stmt)
+        if literal
+            @test isequal(value, Core.eval(Main, expected))
+            checked += 1
+        end
+    end
+    return checked
 end
 
 @testset "tutorial_new_features.md: generate_crate_instances facade" begin
@@ -87,9 +96,12 @@ end
                    if info == "julia" && occursin("generate_crate_instances(instances)", code)]
     tomls = [code for (info, code) in NEW_FEATURE_BLOCKS
              if info == "toml" && occursin("name = \"stats_facade\"", code)]
+    usages = [code for (info, code) in NEW_FEATURE_BLOCKS
+              if info == "julia" && occursin("@rust_crate \"stats_facade\"", code)]
     @test length(rust_sources) == 1
     @test length(julia_specs) == 1
     @test length(tomls) == 1
+    @test length(usages) == 1
 
     mktempdir() do root
         native = joinpath(root, "stats")
@@ -117,14 +129,20 @@ end
         @test toml != only(tomls)
         write(joinpath(facade, "Cargo.toml"), toml)
 
-        S = Core.eval(@__MODULE__, :(@rust_crate $facade))
-        made = Any[]
+        mod = Module(:NewFeaturesFacadeUsage)
+        Core.eval(mod, :(using RustCall))
         try
-            Base.invokelatest(_exercise_stats_facade, S, made)
+            # Four lines with a value comment, two with `# ArgumentError`.
+            @test cd(() -> _run_usage_block(mod, only(usages)), root) == 6
         finally
-            foreach(finalize, made)
-            RustCall.unload_library(
-                Base.invokelatest(getfield, getfield(S, :module_ref), :_LIB_NAME); close = true)
+            for name in (:a, :b, :s, :i)
+                isdefined(mod, name) && finalize(getfield(mod, name))
+            end
+            if isdefined(mod, :S)
+                S = getfield(mod, :S)
+                RustCall.unload_library(
+                    Base.invokelatest(getfield, getfield(S, :module_ref), :_LIB_NAME); close = true)
+            end
         end
     end
 end
