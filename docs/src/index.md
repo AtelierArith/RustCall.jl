@@ -478,6 +478,7 @@ For repository layout, bundled examples, benchmark commands, and contributor-ori
 ```@contents
 Pages = [
     "tutorial.md",
+    "tutorial_new_features.md",
     "examples.md",
     "struct_mapping.md",
     "crate_bindings.md",

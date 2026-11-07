@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+- **A tutorial for the features added in v0.9.1 through v0.10.0**:
+  "What's New in v0.9 and v0.10" (`docs/src/tutorial_new_features.md`)
+  walks through fallible constructors, borrowed and optional `#[julia]`
+  object arguments, methods returning `Result<Self, E>`, slice arguments,
+  `with_numeric_buffer` and `generate_crate_instances`, each with a runnable
+  example.
+
+## [0.10.0] - 2026-11-06
+
 ### Added
 - Non-generic `#[julia]` functions and methods accept checked primitive
   `&[T]` / `&mut [T]` arguments without copying contiguous Julia storage.
@@ -3335,7 +3345,8 @@ rebuilt and a file written by `write_bindings_to_file` must be regenerated.
 - Integration tests for Rust helpers library
 - Documentation examples tests
 
-[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/atelierarith/RustCall.jl/compare/v0.9.2...v0.10.0
 [0.9.2]: https://github.com/atelierarith/RustCall.jl/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/atelierarith/RustCall.jl/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/atelierarith/RustCall.jl/compare/v0.8.1...v0.9.0
