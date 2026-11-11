@@ -1,26 +1,177 @@
 # PyO3 Crates
 
-A crate written for [PyO3](https://pyo3.rs) exposes its API to Python with
-`#[pyfunction]`, `#[pyclass]` and `#[pymethods]`, and knows nothing about
-RustCall. From Rust's point of view those are ordinary items: a wrapper crate
-can call them exactly like any other dependency. RustCall uses that to bind
-such a crate **without asking its author to add a single RustCall attribute**
-(issue #275).
+[PyO3](https://pyo3.rs) is the standard Rust library for writing Python
+extension modules. A large part of the Rust ecosystem that is interesting from
+a scientific-computing point of view is published this way: a Rust crate whose
+functions and types are annotated for Python and shipped as a Python package.
 
-This page describes what is available today:
+RustCall can bind such a crate to Julia **without changing it**. The crate's
+author does not have to know about RustCall, and you do not have to fork the
+crate and add `#[julia]` to it.
 
-* **Phase 1 — the scan.** `RustCall.scan_report` reports every PyO3 item the
-  crate declares, which of them a wrapper crate will be able to wrap, and why
-  the others cannot be; `resolve = false` makes it probe-free (no Cargo).
-* **Phase 1.5 — the link plan.** `RustCall.pyo3_link_plan` decides, from the
-  crate's `Cargo.toml` alone, whether a wrapper cdylib can be linked and loaded
-  at all, and under which flags.
-* **Phase 2 — the wrapper crate.** `@rust_crate` and
-  `RustCall.write_bindings_to_file` generate a wrapper crate, build it under the
-  link plan, and bind the result. **This is the part you use**; the two above
-  are what it is built on, and what you reach for when it refuses.
+!!! note "Is this page for you?"
+    Read this page when the Rust crate you want to call was written for
+    Python with PyO3, or when you maintain one Rust crate that should serve
+    both Python and Julia. For a crate you write for Julia alone, use
+    `#[julia]` and [External Crate Bindings](crate_bindings.md); nothing here
+    is needed.
 
-## The Python host path (`pyo3_host=true`, #424)
+    Most of this page is reference material for the cases where a build or a
+    binding is refused. The first three sections are what you need to get
+    started.
+
+## PyO3 in a minute, for Julia users
+
+A PyO3 crate marks what it exposes with attributes, in the same way RustCall's
+`#[julia]` does:
+
+```rust
+use pyo3::prelude::*;
+
+#[pyfunction]
+pub fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+
+#[pyclass]
+pub struct Point {
+    #[pyo3(get, set)]
+    pub x: f64,
+    #[pyo3(get, set)]
+    pub y: f64,
+}
+
+#[pymethods]
+impl Point {
+    #[new]
+    pub fn new(x: f64, y: f64) -> Self {
+        Point { x, y }
+    }
+
+    pub fn norm(&self) -> f64 {
+        (self.x * self.x + self.y * self.y).sqrt()
+    }
+}
+```
+
+| PyO3 | Means | What RustCall binds it as |
+|------|-------|---------------------------|
+| `#[pyfunction]` | a function exposed to Python | a Julia function |
+| `#[pyclass]` | a struct exposed as a Python class | a Julia type holding a handle |
+| `#[pymethods] impl` | the class's methods | Julia functions taking the object first |
+| `#[new]` | the method Python calls as the constructor | the Julia constructor, `Point(3.0, 4.0)` |
+| `#[staticmethod]` | a method without `self` | a static method |
+| `#[pyo3(get, set)]`, `#[getter]`, `#[setter]` | Python attributes | Julia properties, `p.x` and `p.x = …` |
+| `PyResult<T>` | `Result<T, PyErr>`: a value or a Python exception | `RustCall.RustResult{T, String}` |
+| `#[pymodule]` | the function that registers everything into a Python module | used by the Python host path to find the items |
+
+## Two ways to bind a PyO3 crate
+
+There are two, and they suit different crates.
+
+| | Native wrapper (the default) | Python host (`pyo3_host=true`) |
+|-|------------------------------|--------------------------------|
+| How it works | RustCall generates a second crate that calls the PyO3 crate's items as ordinary Rust and exports them through the C ABI | The crate is built as the Python extension it already is, imported with [PythonCall](https://github.com/JuliaPy/PythonCall.jl), and called through Python |
+| Python at run time | no interpreter is started | yes, PythonCall's interpreter |
+| Needs `using PythonCall` | no | yes |
+| Which items are reachable | `pub` items whose signatures do not involve Python objects | everything the crate's `#[pymodule]` registers, including private items and ones taking `Python<'_>`, numpy arrays or Python callables |
+| `PyResult` error text | one fixed sentence (there is no interpreter to render the Python exception) | the Python exception's own message |
+| Object lifetime | Julia's finalizer drops the Rust value | owned by Python |
+| Choose it when | the crate's API is plain Rust underneath: numbers, strings, its own structs | the crate is a "real" Python extension, written in terms of Python objects |
+
+If you are unsure, try the native wrapper first and look at what
+`RustCall.scan_report(crate_path)` says it can and cannot wrap. If the items
+you need are listed as `not_public` or `pyo3_type`, use the Python host.
+
+### The native wrapper
+
+```julia
+using RustCall
+
+Sample = @rust_crate "path/to/pyo3_crate"
+
+Sample.add(2, 3)              # => 5
+p = Sample.Point(3.0, 4.0)
+Sample.norm(p)                # => 5.0
+p.x                           # => 3.0
+```
+
+What the machine needs depends on how the crate depends on pyo3:
+
+- If pyo3 is an *optional* dependency behind a Cargo feature and you build
+  without that feature (`default_features=false`, or simply not listing it),
+  the wrapper is plain Rust and **no Python installation is involved at all**.
+- If pyo3 is a mandatory dependency, the wrapper library has to link against
+  libpython, so the build needs a Python installation that ships a linkable
+  library (on Linux, the `python3-dev` package or a conda Python). Set
+  `PYO3_PYTHON` to choose the interpreter. No interpreter is *started*; the
+  library is only linked.
+- If the selected features include pyo3's `extension-module`, the crate can
+  only be loaded *by* Python. The native wrapper refuses, and the Python host
+  is the way in.
+
+[The link plan](#The-link-plan) explains how RustCall decides between these and
+what to do when it refuses.
+
+### The Python host
+
+```julia
+using RustCall
+using PythonCall
+
+Sample = @rust_crate "path/to/pyo3_crate" pyo3_host=true
+
+Sample.add(2, 3)
+Sample.Point(3.0, 4.0).x
+```
+
+[The Python host path](#The-Python-host-path) below describes it in full.
+
+### One crate for both languages
+
+When you write the crate yourself, put `#[julia]` beside the PyO3 attributes
+on the same definition. `#[julia]` leaves the item as written, so both
+attributes apply:
+
+```rust
+#[julia]
+#[cfg_attr(feature = "python", pyo3::pyfunction)]
+fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+```
+
+`#[cfg_attr(feature = "python", …)]` applies the PyO3 attribute only when the
+crate's `python` feature is enabled. With pyo3 declared as an optional
+dependency behind that feature, the Julia build never mentions Python, and the
+Python build (`maturin build --features python`) sees the same function. Julia
+calls it through RustCall's own wrapper, with everything `#[julia]` supports.
+The repository's `examples/SampleCratePyO3.jl` is a complete package built
+this way.
+
+## Where to find what on this page
+
+- [The Python host path](#The-Python-host-path): the
+  interpreter-backed binding in detail.
+- [Using it](#Using-it): the native wrapper in detail, including feature
+  selection and what is not wrapped.
+- [Scanning a crate](#Scanning-a-crate) and
+  [What the manifest records](#What-the-manifest-records): how RustCall reads
+  a PyO3 crate, for diagnosing a missing binding.
+- [The link plan](#The-link-plan): when and how a wrapper links libpython.
+- [Making pyo3 optional](#Making-pyo3-optional:-the-cfg_attr-limitation): the
+  crate layout that needs no Python on the Julia side.
+
+Internally the native wrapper is built in three steps, which the sections
+below refer to by name. **The scan** (`RustCall.scan_report`) lists every PyO3
+item the crate declares, which of them a wrapper can call, and why the others
+cannot be. **The link plan** (`RustCall.pyo3_link_plan`) decides from the
+crate's `Cargo.toml` whether a wrapper library can be linked and loaded, and
+with which flags. **The wrapper crate** is what `@rust_crate` and
+`RustCall.write_bindings_to_file` then generate, build under that plan, and
+bind. Older text on this page calls these Phase 1, Phase 1.5 and Phase 2.
+
+## The Python host path
 
 Everything from "Using it" down binds a PyO3 crate **from outside**: a generated
 wrapper crate calls the target's `pub`, interpreter-free items through a C ABI
@@ -30,7 +181,7 @@ of `Python<'_>`, `Py<T>`, numpy arrays and Python callables — so the scan repo
 `not_public` (rustc E0603) and `pyo3_type:<T>` for exactly the items the crate
 intends to expose.
 
-`pyo3_host=true` binds such a crate **as-is**. It builds the crate as the Python
+`pyo3_host=true` (#424) binds such a crate **as-is**. It builds the crate as the Python
 extension it already is — the `extension-module` build the link plan calls
 `:unlinkable`, which is the right build when CPython is the one that loads it —
 imports it through [PythonCall](https://github.com/JuliaPy/PythonCall.jl), and

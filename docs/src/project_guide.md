@@ -2,12 +2,14 @@
 
 This page collects repository-oriented information that no longer lives in the top-level README. Use it when you are working from a source checkout, browsing the codebase, or looking for runnable material in the repository.
 
+For how the pieces fit together at run time, from a `rust"""` block to a `ccall`, read [How RustCall Calls Rust](internals.md) first; this page is about the repository around that mechanism.
+
 ## Repository Layout
 
 - `src/`: main implementation. `src/RustCall.jl` is the package entry point.
 - `test/`: package test suite. `test/runtests.jl` is the main entry point.
 - `docs/`: Documenter sources and generated-site configuration.
-- `deps/`: Rust helper/runtime code and the `rustcall_julia_macros` proc-macro crate.
+- `deps/`: the Rust crates: the `syn`-based core (`rustcall_julia_core`), the `rustcall-extract` CLI, the `#[julia]` attribute crates (`rustcall_julia_macros`, `rustcall_julia_macros_impl`) and the ownership helpers (`rustcall_helpers`).
 - `examples/`: runnable examples covering inline Rust, crate bindings, Pluto, and package-style usage.
 - `benchmark/`: benchmark scripts for core calls, arrays, generics, and ownership helpers.
 
@@ -76,6 +78,11 @@ the `src/crate_bindings/` directory.
   (`write_bindings_to_file`, #275 Phase 2; see [PyO3 Crates](pyo3.md)). pyo3 is
   a mandatory dependency of that crate, so the wrapper links libpython and
   building the package needs a Python interpreter (`PYO3_PYTHON` pins one).
+- `examples/SafeLedger.jl`: the worked example of
+  [Safe Rust/Julia Integration](integration_guide.md).
+- `examples/RustCrateMacroPyO3Only.jl`, `examples/Pyo3HostImport.jl`: the
+  `@rust_crate` and Python-host variants of the PyO3 workflows
+  ([PyO3 Crates](pyo3.md)).
 - `examples/pluto/hello.jl`: Pluto-oriented walkthrough. CI runs it headlessly with
   Pluto (`examples/pluto/run_notebook.jl`, the `Pluto - hello.jl` job of the
   `Examples` workflow) and fails when any cell errors.
@@ -330,7 +337,7 @@ julia --project=docs docs/make.jl
 
 The repository also includes a local `CLAUDE.md` file with implementation notes and conventions used by coding agents working in this tree.
 
-This checkout does not currently include a `.devcontainer` configuration, so there is no repository-managed VS Code Dev Container workflow to document here.
+The repository includes a `.devcontainer/` configuration (Julia, a Rust toolchain and the editor extensions for both), so the checkout can also be opened in a VS Code Dev Container or GitHub Codespaces.
 
 ## Contributing
 
@@ -345,7 +352,7 @@ There is no dedicated `CONTRIBUTING.md` file in this checkout today, so this sec
 
 ## License
 
-This checkout does not currently include a top-level `LICENSE` file. If licensing terms need to be published or clarified, they should be added to the repository explicitly rather than inferred from older README text.
+RustCall.jl is released under the MIT License; see the top-level `LICENSE` file.
 
 ## Credits
 

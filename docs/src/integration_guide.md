@@ -35,8 +35,8 @@ This design has three useful properties:
 
 Use `#[julia]` for stable package APIs whenever possible. Use `@rust` when an
 explicit C-ABI call is required. `@irust` was removed in 0.9 (#538); every
-snippet it took has a `#[julia]` equivalent (see "Migrating from `@irust`" on
-the home page).
+snippet it took has a `#[julia]` equivalent (see
+[Migrating from `@irust`](migrating_from_irust.md)).
 
 ## Worked example: `examples/SafeLedger.jl`
 

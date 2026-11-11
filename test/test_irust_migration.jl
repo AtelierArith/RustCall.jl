@@ -1,6 +1,6 @@
 # `@irust` / `irust"..."` were removed in 0.9.0 (#538), after a release of
 # deprecation. What is left of them is the manual's "Migrating from `@irust`"
-# section: each block shows the removed form as a comment and its `rust"""`
+# page: each block shows the removed form as a comment and its `rust"""`
 # replacement. The last testset runs every replacement as written, so one that
 # stops compiling or computing its documented value fails here rather than in
 # a reader's session.
@@ -8,15 +8,15 @@
 using Test
 using RustCall
 
-# The migration section of the manual, one string per code block.
+# The migration page of the manual (`docs/src/migrating_from_irust.md`), one
+# string per code block.
 function _migration_blocks()
     # A Windows checkout may have CRLF line endings.
-    text = replace(read(joinpath(dirname(@__DIR__), "docs", "src", "index.md"), String), "\r\n" => "\n")
-    start = findfirst("### 3. Migrating from `@irust`", text)
-    start === nothing && error("docs/src/index.md has no \"Migrating from `@irust`\" section")
-    stop = findnext("\n### ", text, last(start))
-    section = text[first(start):(stop === nothing ? lastindex(text) : first(stop))]
-    return String[m.captures[1] for m in eachmatch(r"```julia\n(.*?)```"s, section)]
+    page = joinpath(dirname(@__DIR__), "docs", "src", "migrating_from_irust.md")
+    text = replace(read(page, String), "\r\n" => "\n")
+    startswith(text, "# Migrating from `@irust`") ||
+        error("docs/src/migrating_from_irust.md does not start with its \"Migrating from `@irust`\" heading")
+    return String[m.captures[1] for m in eachmatch(r"```julia\n(.*?)```"s, text)]
 end
 
 # The half of a block after its `# after` line.

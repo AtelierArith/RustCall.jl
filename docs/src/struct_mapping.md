@@ -2,6 +2,16 @@
 
 RustCall.jl provides automatic struct mapping through the `#[derive(JuliaStruct)]` attribute, which allows you to seamlessly use Rust structs as first-class Julia objects.
 
+!!! note "`#[julia]` and `#[derive(JuliaStruct)]`"
+    Inside a `rust"""` block the two spellings mark a struct the same way, and
+    this page uses both. `#[derive(...)]` is Rust's syntax for asking the
+    compiler to generate standard behaviour for a type, and listing `Clone`
+    there (`#[derive(JuliaStruct, Clone)]`) is how a struct becomes copyable.
+    In a separate crate bound with `@rust_crate`, write `#[julia]`; see
+    [External Crate Bindings](crate_bindings.md). If Rust's `struct` / `impl`
+    syntax is new to you, read
+    [Structs and methods](rust_primer.md#Structs-and-methods) first.
+
 ```@setup struct_mapping
 using RustCall
 ```

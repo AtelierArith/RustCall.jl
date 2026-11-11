@@ -583,6 +583,89 @@ const _DOCS_SAMPLE_CRATE_AVAILABLE = isdir(DOCS_SAMPLE_CRATE_PATH)
         @test RustCall.monomorphize_function("scale", Dict{Symbol, Type}(:T => Int64)).func_ptr ==
               info.func_ptr
     end
+
+    # The tutorial and the cookbook, executed exactly as written: every
+    # `@setup <name>` / `@example <name>` block of the page, in page order, in
+    # one fresh module — what Documenter does when it builds the page. The
+    # hand-copied "tutorial.md" / "examples.md" testsets above predate these
+    # pages' rewrite and keep covering the `extern "C"` + `@rust` forms.
+    function _docs_page_sandbox(page_name::AbstractString, block_name::AbstractString)
+        page = replace(read(joinpath(@__DIR__, "..", "docs", "src", page_name), String),
+                       "\r\n" => "\n")
+        blocks = String[]
+        open_block = nothing
+        for line in split(page, '\n')
+            if open_block === nothing
+                (line == "```@setup $(block_name)" || line == "```@example $(block_name)") ||
+                    continue
+                open_block = IOBuffer()
+            elseif startswith(line, "```")
+                push!(blocks, String(take!(open_block)))
+                open_block = nothing
+            else
+                println(open_block, line)
+            end
+        end
+        open_block === nothing || error("unterminated block in docs/src/$(page_name)")
+        sandbox = Module(:DocsPageSandbox)
+        redirect_stdout(devnull) do
+            for block in blocks
+                include_string(sandbox, block, "docs/src/$(page_name)")
+            end
+        end
+        return sandbox, length(blocks)
+    end
+
+    @testset "tutorial.md - runnable examples" begin
+        if !RustCall.check_rustc_available()
+            @test_skip "rustc is required to run the tutorial's examples"
+        else
+            sandbox, n = _docs_page_sandbox("tutorial.md", "tutorial")
+            @test n >= 15
+            call(name, args...) = Base.invokelatest(getfield(sandbox, name), args...)
+            value(name) = Base.invokelatest(getfield, sandbox, name)
+            @test call(:add, 10, 20) === Int32(30)
+            @test_throws InexactError call(:add, 2^40, 1)
+            @test call(:sum_of_squares, 10) === UInt64(385)
+            @test call(:greet, "Julia") == "Hello, Julia!"
+            @test call(:count_chars, "世界") === UInt(2)
+            @test value(:v) == [10.0, 20.0, 30.0]
+            @test RustCall.unwrap(value(:ok)) === Int32(5)
+            @test value(:err).value == "division by zero"
+            @test RustCall.is_none(value(:none))
+            @test_throws RustCall.RustPanicError call(:checked_sqrt, -1.0)
+            @test call(:current, value(:c)) === Int32(10)
+            # The edited block, after its predecessor was unloaded.
+            @test call(:answer) === Int32(42)
+        end
+    end
+
+    @testset "examples.md - runnable cookbook" begin
+        if !RustCall.check_rustc_available()
+            @test_skip "rustc is required to run the cookbook's examples"
+        else
+            sandbox, n = _docs_page_sandbox("examples.md", "cookbook")
+            @test n >= 15
+            call(name, args...) = Base.invokelatest(getfield(sandbox, name), args...)
+            value(name) = Base.invokelatest(getfield, sandbox, name)
+            @test call(:power, 2.0, 10) == 1024.0
+            @test call(:fibonacci, 20) === UInt64(6765)
+            @test value(:s).mean == 3.0
+            @test value(:s).variance == 2.0
+            @test RustCall.unwrap(value(:found)) === UInt(6)
+            @test call(:reverse_chars, "こんにちは") == "はちにんこ"
+            @test call(:is_ipv4, "192.168.1.1") && !call(:is_ipv4, "999.1.1.1")
+            @test value(:a) == Int32[1, 2, 5, 8, 9]
+            @test value(:v) ≈ [0.6, 0.8]
+            @test value(:r).value == "cannot normalize a zero vector"
+            @test call(:fnv1a, value(:data)) == call(:fnv1a_julia, value(:data))
+            @test call(:rle, Vector{UInt8}("aaabbbbcd")) ==
+                  UInt8[3, UInt8('a'), 4, UInt8('b'), 1, UInt8('c'), 1, UInt8('d')]
+            @test value(:out) == [1.5, 2.5, 3.5, 4.5]
+            @test RustCall.unwrap(call(:average, value(:rec))) == 3.0
+            @test call(:sum_by_hand, Int32[1, 5, 3, 9, 2]) === Int64(20)
+        end
+    end
 end
 
 println("=" ^ 60)

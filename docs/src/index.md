@@ -1,31 +1,51 @@
 # RustCall.jl
 
-**RustCall.jl** is a Foreign Function Interface (FFI) package for calling Rust code directly from Julia, inspired by [Cxx.jl](https://github.com/JuliaInterop/Cxx.jl).
+**RustCall.jl** lets you write Rust inside Julia and call it like a Julia
+function. It compiles the Rust for you, loads it into the running session, and
+converts arguments and results on both sides. It is inspired by
+[Cxx.jl](https://github.com/JuliaInterop/Cxx.jl).
 
 > It's the last call for headache. 🦀
 
-## Features
+```julia
+using RustCall
 
-### Phase 1: C-Compatible ABI ✅
-- **`@rust` macro**: Call Rust functions directly from Julia
-- **`rust""` string literal**: Compile and load Rust code as shared libraries
-- **Type mapping**: Automatic conversion between Rust and Julia types
-- **Result/Option support**: Handle Rust's `Result<T, E>` and `Option<T>` types
-- **String support**: Pass Julia strings to Rust functions expecting C strings
-- **Compilation caching**: one artifact identity (`RustCall.ArtifactId` / `artifact_key`) keys every cached library, so a changed source, compiler, cfg set, dependency or toolchain rebuilds and nothing else does
+rust"""
+#[julia]
+fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+"""
 
-### Phase 2: Runtime and Ownership ✅
-- **Ownership types**: `RustBox`, `RustRc`, `RustArc`, `RustVec`, `RustSlice`
-- **Array operations**: Indexing, iteration, Julia ↔ Rust conversion
-- **Generics support**: Automatic monomorphization and type parameter inference
-- **Error handling**: `RustError` exception type with `result_to_exception`
-- **Function registration**: Register and cache compiled Rust functions
+add(10, 20)  # => 30
+```
 
-### Phase 6: External Crate Bindings (Maturin-like) ✅
-- **`rustcall_julia_macros` crate**: The `#[julia]` attribute and its runtime
-- **`@rust_crate` macro**: Generate Julia bindings for external Rust crates
-- **Crate scanning**: Detect `#[julia]` marked functions and structs
-- **Automatic building**: Build crates and generate Julia modules
+You do not need to know Rust to start, and you do not need to install it:
+RustCall obtains a Rust toolchain on its own when there is none on your `PATH`.
+
+## Who this manual is for
+
+The manual assumes you are comfortable in Julia. It does not assume Rust.
+
+- **New to Rust?** Read [Rust for Julia Users](rust_primer.md) (ten minutes),
+  then the [Tutorial](tutorial.md).
+- **Know some Rust already?** Start at the [Tutorial](tutorial.md) and skim.
+- **Building a package on RustCall?** Read
+  [Safe Rust/Julia Integration](integration_guide.md) and
+  [External Crate Bindings](crate_bindings.md).
+- **Want to know how it works, or to contribute?** Read
+  [How RustCall Calls Rust](internals.md).
+
+## Why call Rust from Julia
+
+- **Reuse the Rust ecosystem.** Parsers, codecs, cryptography, data
+  structures and numerical kernels published on [crates.io](https://crates.io)
+  become callable from Julia.
+- **Predictable performance without a garbage collector** for a hot inner
+  loop, with memory safety checked by the Rust compiler.
+- **No build system to maintain.** There is no Makefile, no hand-written
+  `ccall` signature and no separate compile step: the Rust source is the
+  single source of truth for the interface.
 
 ## Installation
 
@@ -34,270 +54,51 @@ using Pkg
 Pkg.add("RustCall")
 ```
 
-RustCall.jl is registered in Julia's General registry. `Pkg.add("RustCall")` installs the package and builds the helper library used by ownership-related features.
+Requirements:
 
-For contributor work or local edits from a checkout:
-
-```julia
-using Pkg
-Pkg.develop(path="/path/to/RustCall.jl")
-```
-
-**Requirements:**
-- Julia 1.12 or later
-- A Rust toolchain — **no system installation required**. RustCall depends on
+- Julia 1.12 or later.
+- A Rust toolchain, **which you do not have to install**. RustCall depends on
   [RustToolChain.jl](https://github.com/AtelierArith/RustToolChain.jl), which
-  uses the `rustc`/`cargo` on `PATH` when there is one and otherwise installs
+  uses the `rustc` / `cargo` on `PATH` when there is one and otherwise installs
   an isolated toolchain through Julia's Artifacts system. On Windows the
   artifact toolchain still needs the MSVC build tools and a Windows SDK for
-  linking (see the RustToolChain.jl README).
+  linking; see the [Windows guide](platforms/windows.md).
 
-Installing Rust yourself ([rustup.rs](https://rustup.rs/)) is optional; a
+Installing Rust yourself ([rustup.rs](https://rustup.rs/)) is optional. A
 `rustc` on `PATH` is preferred over the artifact toolchain when both exist.
 
-### Rebuilding Rust Helpers Library
-
-The Rust helpers library is built during package installation. If ownership types such as `RustBox`, `RustRc`, `RustArc`, `RustVec`, or `RustSlice` are unavailable, rebuild it:
-
-```julia
-using Pkg
-Pkg.build("RustCall")
-```
-
-Or from the command line:
-
-```bash
-julia --project -e 'using Pkg; Pkg.build("RustCall")'
-```
-
-This will compile the Rust helpers library that provides FFI functions for ownership types.
-
-## Project Structure
-
-- `src/`: RustCall implementation (`src/RustCall.jl` is the entry point)
-- `test/`: package tests (`test/runtests.jl` includes feature tests)
-- `docs/`: Documenter project and design notes
-- `deps/`: Rust helper/runtime and proc-macro crates used by build/runtime flows
-- `examples/`: runnable integration examples
-
-## Included Examples
-
-- `examples/MyExample.jl`: Julia package using inline `rust"""..."""` blocks
-- `examples/SampleCrate.jl`: Julia package with an embedded Rust crate
-  (`deps/sample_crate`) using `#[julia]`, bound with `write_bindings_to_file`,
-  plus a `rust"""` block in `src/inline.jl` that coexists with those bindings
-- `examples/RustCrateMacro.jl`: Julia package that binds a `#[julia]` crate
-  with `@rust_crate ... submodule="Bindings"` while precompiling, plus a
-  `rust"""` block in the same module — all three front doors coexisting
-- `examples/SampleCratePyO3.jl`: Julia package with an embedded dual
-  Julia/Python crate (`deps/sample_crate_pyo3`)
-- `examples/pluto/hello.jl`: Pluto notebook-style walkthrough
-
-## Quick Start
-
-If you are running these examples from a source checkout of this repository, instantiate the project first:
-
-```julia
-using Pkg
-Pkg.instantiate()
-```
-
-### 1. Define and Call Rust Functions (Simple Way)
+`Pkg.add` also builds two small native programs RustCall needs. To verify the
+installation, or after an upgrade that reports a missing component:
 
 ```julia
 using RustCall
+RustCall.check_toolchain()          # what was found, and any problems
 
-# Use #[julia] attribute - no boilerplate needed!
-rust"""
-#[julia]
-fn add(a: i32, b: i32) -> i32 {
-    a + b
-}
-"""
-
-# Call directly - wrapper is auto-generated
-add(10, 20)  # => 30
+using Pkg; Pkg.build("RustCall")    # rebuild the native components
 ```
 
-### 2. Traditional FFI (Full Control)
+## Three ways to use it
 
-```julia
-using RustCall
+RustCall has three entry points. They can be mixed freely in one module.
 
-# Traditional way with explicit FFI markers
-rust"""
-#[no_mangle]
-pub extern "C" fn multiply(a: i32, b: i32) -> i32 {
-    a * b
-}
-"""
+| | You write | You call | Use it for |
+|-|-----------|----------|------------|
+| **`rust"""` + `#[julia]`** | ordinary Rust functions and structs, inline in a Julia file | generated Julia functions | Almost everything. Start here. |
+| **`rust"""` + `@rust`** | hand-written `#[no_mangle] extern "C"` functions | `@rust f(args...)::T` | Existing C-style Rust, or full control over the binary interface. |
+| **`@rust_crate`** | a separate Rust crate (its own directory and `Cargo.toml`) with `#[julia]` items | a generated Julia module | Larger Rust code bases and packages. |
 
-# Call with @rust macro and explicit types
-@rust multiply(Int32(5), Int32(7))::Int32  # => 35
-```
+### 1. Inline Rust with `#[julia]`
 
-### 3. Migrating from `@irust`
-
-!!! note "Removed in 0.9.0"
-    `@irust` and `irust"..."` were deprecated in 0.8.0 and removed in 0.9.0
-    ([#538](https://github.com/AtelierArith/RustCall.jl/issues/538)). Code
-    that still uses them fails with ``UndefVarError: `@irust` not defined``.
-
-Anything an `@irust` snippet computed can be written as a `#[julia]` function
-in a `rust"""..."""` block:
-
-1. The snippet becomes the function **body**. Its trailing expression is the
-   function's value, and statements, loops and `return` stay as they are.
-2. Each `$name` (or `arg1`, `arg2`, …) becomes a **typed parameter**: the Rust
-   type of the Julia value you passed (`Int64` → `i64`, `Int32` → `i32`,
-   `Float64` → `f64`, `Bool` → `bool`, …).
-3. The type the snippet evaluated to is written as the **return type**.
-4. Define the block once, at top level, and call the generated Julia function
-   wherever the snippet used to be.
-
-`@irust` decided at run time what step 3 says, with several `rustc` runs per
-new snippet. That is why it handled scalars only, why a function containing it
-could not be inferred, and why `$name` was a textual substitution that reached
-inside Rust string literals. A `#[julia]` function has none of these limits.
-It is compiled once, its call is type-stable, and it handles `String`, slices,
-`Result` / `Option` and `#[julia]` structs.
-
-Each block below shows the removed form as a comment, then its replacement.
-`test/test_irust_migration.jl` runs every replacement and checks the values.
-
-**A captured expression.**
-
-```julia
-# before (0.8 and earlier)
-# compute_irust(x, y) = @irust("\$x * \$y + 10")
-# compute_irust(Int32(3), Int32(4))   # 22
-
-# after
-rust"""
-#[julia]
-fn compute(x: i32, y: i32) -> i32 {
-    x * y + 10
-}
-"""
-compute(Int32(3), Int32(4))         # => 22
-```
-
-**No captured variable** (`irust"..."`), and **explicit arguments** (`arg1`, …).
-
-```julia
-# before (0.8 and earlier)
-# irust"40 + 2"                     # 42
-# @irust("arg1 * 2", x)             # 42
-
-# after
-rust"""
-#[julia]
-fn answer() -> i64 {
-    40 + 2
-}
-
-#[julia]
-fn twice(arg1: i64) -> i64 {
-    arg1 * 2
-}
-"""
-x = Int64(21)
-answer()                            # => 42
-twice(x)                            # => 42
-```
-
-**Statements and loops.** The body is unchanged.
-
-```julia
-# before (0.8 and earlier)
-# @irust("let mut s = 0i64; for i in 0..\$k { s += i; } s")   # 45
-
-# after
-rust"""
-#[julia]
-fn sum_below(k: i64) -> i64 {
-    let mut s = 0i64;
-    for i in 0..k {
-        s += i;
-    }
-    s
-}
-"""
-k = Int64(10)
-sum_below(k)                        # => 45
-```
-
-**The return type.** `@irust` asked rustc for it. Now you write it, and it is
-the Julia result type.
-
-```julia
-# before (0.8 and earlier)
-# @irust("\$x as f64")                       # 7.0  :: Float64
-# @irust("if \$x > 0 { 1 } else { -1 }")     # 1    :: Int64
-# @irust("\$f.is_finite()")                  # true :: Bool
-# @irust("(\$f * \$f).sqrt()")               # 3.5  :: Float64
-
-# after
-rust"""
-#[julia]
-fn as_float(x: i64) -> f64 {
-    x as f64
-}
-
-#[julia]
-fn sign_of(x: i64) -> i64 {
-    if x > 0 { 1 } else { -1 }
-}
-
-#[julia]
-fn finite(f: f64) -> bool {
-    f.is_finite()
-}
-
-#[julia]
-fn magnitude(f: f64) -> f64 {
-    (f * f).sqrt()
-}
-"""
-x = Int64(7); f = 3.5
-as_float(x)                         # => 7.0  :: Float64
-sign_of(x)                          # => 1    :: Int64
-finite(f)                           # => true :: Bool
-magnitude(f)                        # => 3.5  :: Float64
-```
-
-A nested helper `fn` inside a snippet becomes a top-level function in the same
-block. A snippet that used `$$` for a `macro_rules!` metavariable writes `$`
-directly, since a `rust"""` block does no substitution. A panic stays a
-catchable `RustCall.RustPanicError` (see "Panics, Visibility and Lifetime").
-If you would rather call through the C ABI, write `#[no_mangle] pub extern "C"`
-instead of `#[julia]` and call the function with `@rust name(args...)::T`.
-
-### 4. Use External Crates
-
-Leverage the Rust ecosystem with automatic Cargo integration:
+Mark a function or a struct with `#[julia]`, and a Julia function or type of
+the same name appears in the current module.
 
 ```julia
 rust"""
-// cargo-deps: rand = "0.8"
-
-use rand::Rng;
-
-#[no_mangle]
-pub extern "C" fn random_number() -> i32 {
-    rand::thread_rng().gen_range(1..=100)
+#[julia]
+fn greet(name: &str) -> String {
+    format!("Hello, {name}!")
 }
-"""
 
-@rust random_number()::Int32  # => random number 1-100
-```
-
-### 5. Rust Structs as Julia Objects
-
-Define Rust structs and use them as first-class Julia types:
-
-```julia
-rust"""
 #[julia]
 pub struct Counter {
     value: i32,
@@ -312,93 +113,49 @@ impl Counter {
         self.value += 1;
     }
 
-    pub fn get(&self) -> i32 {
+    pub fn current(&self) -> i32 {
         self.value
     }
 }
 """
 
+greet("Julia")        # => "Hello, Julia!"
+
 counter = Counter(0)
 increment(counter)
 increment(counter)
-get(counter)  # => 2
+current(counter)      # => 2
 ```
 
-### More Examples
+Strings, numeric arrays (as Rust slices), `Result`, `Option` and structs are
+all converted for you. A Rust panic becomes a Julia exception instead of
+crashing the session. The [Tutorial](tutorial.md) walks through each.
+
+### 2. Hand-written `extern "C"` with `@rust`
+
+When you want the classic C-ABI style, export the function yourself and call
+it with `@rust`:
 
 ```julia
-# Float operations
 rust"""
 #[no_mangle]
-pub extern "C" fn circle_area(radius: f64) -> f64 {
-    std::f64::consts::PI * radius * radius
+pub extern "C" fn multiply(a: i32, b: i32) -> i32 {
+    a * b
 }
 """
-@rust circle_area(2.0)::Float64  # => 12.566370614359172
 
-# Boolean functions
-rust"""
-#[no_mangle]
-pub extern "C" fn is_even(n: i32) -> bool {
-    n % 2 == 0
-}
-"""
-@rust is_even(Int32(42))::Bool  # => true
-
-# Several arguments, through `#[julia]`
-rust"""
-#[julia]
-fn quadratic(a: f64, b: f64, c: f64, x: f64) -> f64 {
-    a * x * x + b * x + c
-}
-"""
-quadratic(1.0, 2.0, 1.0, 3.0)  # => 16.0 (x² + 2x + 1 at x=3)
+@rust multiply(Int32(5), Int32(7))::Int32  # => 35
 ```
 
-### 6. Image Processing with Rust
+No Julia function is generated and nothing is converted: you pass exactly the
+types the Rust signature declares.
 
-Process images using Rust for performance-critical operations:
+### 3. A separate crate with `@rust_crate`
 
-If you want to run this example locally, install `Images` first:
+For more than a screenful of Rust, keep it in a crate of its own:
 
-```julia
-using Pkg
-Pkg.add("Images")
-```
-
-```julia
-using RustCall
-using Images
-
-# Define Rust grayscale conversion
-rust"""
-#[no_mangle]
-pub extern "C" fn grayscale_image(pixels: *mut u8, width: usize, height: usize) {
-    let slice = unsafe { std::slice::from_raw_parts_mut(pixels, width * height * 3) };
-    for i in 0..(width * height) {
-        let r = slice[i * 3] as f32;
-        let g = slice[i * 3 + 1] as f32;
-        let b = slice[i * 3 + 2] as f32;
-        let gray = (0.299 * r + 0.587 * g + 0.114 * b) as u8;
-        slice[i * 3] = gray;
-        slice[i * 3 + 1] = gray;
-        slice[i * 3 + 2] = gray;
-    }
-}
-"""
-
-# Process image data
-pixels = vec(rand(UInt8, 256 * 256 * 3))
-@rust grayscale_image(pointer(pixels), UInt(256), UInt(256))::Cvoid
-```
-
-### 7. External Crate Bindings (Maturin-like)
-
-Generate Julia bindings for external Rust crates using `@rust_crate`:
-
-**Rust side (external crate):**
 ```rust
-// Cargo.toml needs: rustcall_julia_macros = "0.4"
+// my_crate/src/lib.rs      (Cargo.toml depends on rustcall_julia_macros = "0.7")
 use rustcall_julia_macros::julia;
 
 #[julia]
@@ -426,81 +183,111 @@ impl Point {
 }
 ```
 
-**Julia side:**
 ```julia
 using RustCall
 
 const MyCrate = @rust_crate "/path/to/my_crate"
 
-MyCrate.add(Int32(1), Int32(2))  # => 3
+MyCrate.add(1, 2)              # => 3
 p = MyCrate.Point(3.0, 4.0)
-MyCrate.distance(p)  # => 5.0
+MyCrate.distance(p)            # => 5.0
+p.x                            # => 3.0
 ```
 
-Inside a function or other local scope, capture the return value from `@rust_crate`
-and call through that binding:
+`@rust_crate` builds the crate with Cargo and returns a Julia module of
+bindings. See [External Crate Bindings](crate_bindings.md).
+
+### Crates from crates.io in an inline block
+
+An inline block can depend on published crates through a `// cargo-deps:`
+comment. RustCall then builds the block with Cargo:
 
 ```julia
-function load_my_crate(crate_path)
-    bindings = @rust_crate crate_path name="MyCrate"
-    p = bindings.Point(3.0, 4.0)
-    return bindings.add(Int32(1), Int32(2)), bindings.distance(p), p.x
-end
+rust"""
+// cargo-deps: rand = "0.8"
+
+use rand::Rng;
+
+#[julia]
+fn roll_die() -> i32 {
+    rand::thread_rng().gen_range(1..=6)
+}
+"""
+
+roll_die()  # => a number from 1 to 6
 ```
 
-## Type Mapping
+## What crosses the boundary
 
-RustCall.jl automatically maps Rust types to Julia types:
+| Rust | Julia |
+|------|-------|
+| `i8` … `i64`, `u8` … `u64` | `Int8` … `Int64`, `UInt8` … `UInt64` |
+| `isize`, `usize` | `Int`, `UInt` |
+| `f32`, `f64` | `Float32`, `Float64` |
+| `bool`, `char` | `Bool`, `Char` |
+| `()` | `Nothing` |
+| `&str`, `String` | `String` |
+| `&[T]`, `&mut [T]` (numeric `T`) | `Vector{T}`, borrowed without a copy |
+| `Result<T, E>` | `RustCall.RustResult{T, E}` |
+| `Option<T>` | `RustCall.RustOption{T}` |
+| a `#[julia]` struct | a Julia type holding a handle to the Rust value |
+| `extern "C" fn(A...) -> R` (argument) | a Julia function ([Callbacks](callbacks.md)) |
+| `*const T`, `*mut T` | `Ptr{T}` |
 
-| Rust Type | Julia Type |
-|-----------|------------|
-| `i8`      | `Int8`     |
-| `i16`     | `Int16`    |
-| `i32`     | `Int32`    |
-| `i64`     | `Int64`    |
-| `u8`      | `UInt8`    |
-| `u16`     | `UInt16`   |
-| `u32`     | `UInt32`   |
-| `u64`     | `UInt64`   |
-| `f32`     | `Float32`  |
-| `f64`     | `Float64`  |
-| `bool`    | `Bool`     |
-| `usize`   | `UInt`     |
-| `isize`   | `Int`      |
-| `()`      | `Cvoid`    |
-| `*const u8` | `Cstring` / `String` |
-| `*mut u8` | `Ptr{UInt8}` |
+A type that is not on the list is refused with an error that names it, rather
+than passed with a guessed layout. The authoritative, generated table is
+[The FFI Type Contract](type_contract.md).
 
-## Contents
+## Finding your way around
 
-For repository layout, bundled examples, benchmark commands, and contributor-oriented notes, see [Project Guide](project_guide.md).
+**Getting started**
 
-```@contents
-Pages = [
-    "tutorial.md",
-    "tutorial_new_features.md",
-    "examples.md",
-    "struct_mapping.md",
-    "crate_bindings.md",
-    "generics.md",
-    "performance.md",
-    "troubleshooting.md",
-    "project_guide.md",
-    "api.md",
-    "reference/artifacts.md",
-    "reference/ffi_contract.md",
-    "reference/compilation.md",
-    "reference/codegen.md",
-    "reference/manifest.md",
-    "reference/cargo.md",
-    "reference/crates.md",
-    "reference/hot_reload.md",
-    "reference/pyo3.md",
-    "reference/ownership.md",
-    "reference/generics.md",
-    "reference/errors.md",
-    "reference/loading.md",
-    "status.md",
-]
-Depth = 2
-```
+- [Rust for Julia Users](rust_primer.md): the Rust you need, in Julia terms.
+- [Tutorial](tutorial.md): numbers, strings, arrays, errors and objects.
+- [What's New in v0.9 and v0.10](tutorial_new_features.md): borrowing objects,
+  fallible constructors, slices in depth.
+- [Examples](examples.md): longer worked examples.
+
+**User guide**
+
+- [Safe Rust/Julia Integration](integration_guide.md): how to structure a
+  real project.
+- [The FFI Type Contract](type_contract.md), [Struct Mapping](struct_mapping.md),
+  [Generics](generics.md), [Callbacks](callbacks.md).
+- [External Crate Bindings](crate_bindings.md), [Hot Reload](hot_reload.md),
+  [PyO3 Crates](pyo3.md), [Precompilation](precompilation.md).
+- [Panics, Visibility and Lifetime](panics.md),
+  [Performance](performance.md), [Troubleshooting](troubleshooting.md).
+- [Migrating from `@irust`](migrating_from_irust.md), for code written for
+  v0.8 or earlier.
+
+**Reference**
+
+- [API Reference](api.md) and [Project Status](status.md).
+
+**Developer documentation**
+
+- [How RustCall Calls Rust](internals.md): the internal architecture, from
+  a `rust"""` block to a `ccall`.
+- [Project Guide](project_guide.md): repository layout, tests, releases.
+- [Developer Pitfalls](developer_pitfalls.md) and
+  [Windows Development](developer_windows.md).
+
+## Runnable examples in the repository
+
+Each directory under
+[`examples/`](https://github.com/AtelierArith/RustCall.jl/tree/main/examples)
+is a complete Julia package with its own tests:
+
+- `MyExample.jl`: inline `rust"""` blocks in a package.
+- `SampleCrate.jl`: a package with an embedded Rust crate, bound through a
+  generated bindings file.
+- `RustCrateMacro.jl`: a package that binds its crate with `@rust_crate` while
+  it precompiles.
+- `SafeLedger.jl`: the worked example of
+  [Safe Rust/Julia Integration](integration_guide.md).
+- `SampleCratePyO3.jl`, `SampleCratePyO3Only.jl`, `Pyo3HostImport.jl`: crates
+  that are also Python extensions ([PyO3 Crates](pyo3.md)).
+- `pluto/hello.jl`: a Pluto notebook.
+
+The [Project Guide](project_guide.md) explains how to run them.

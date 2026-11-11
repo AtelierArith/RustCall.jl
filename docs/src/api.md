@@ -20,8 +20,7 @@ Pages = [joinpath("src", "RustCall.jl")]
 ([#265](https://github.com/AtelierArith/RustCall.jl/issues/265)); use `@rust`.
 `@irust` and `irust"..."` were removed in 0.9.0
 ([#538](https://github.com/AtelierArith/RustCall.jl/issues/538)); write the
-snippet as a `#[julia]` function in `rust"""..."""` (see "Migrating from
-`@irust`" on the home page).
+snippet as a `#[julia]` function in `rust"""..."""` (see [Migrating from `@irust`](migrating_from_irust.md)).
 
 ## Pages
 
