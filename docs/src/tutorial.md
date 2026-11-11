@@ -1,68 +1,38 @@
-# RustCall.jl Tutorial
+# Tutorial
 
-This tutorial walks you through using RustCall.jl to call Rust code from Julia step by step.
+This tutorial takes you from an empty Julia session to calling Rust functions
+that work with numbers, strings, arrays, errors and objects. It assumes you
+know Julia and does not assume you know Rust. If a piece of Rust syntax is
+unfamiliar, [Rust for Julia Users](rust_primer.md) explains it in Julia terms.
 
-## Table of Contents
+Every example on this page is run when the documentation is built, so the
+output you see is real.
 
-1. [Getting Started](#getting-started)
-2. [Basic Usage](#basic-usage)
-   - [The Easy Way: `#[julia]` Attribute](#the-easy-way-julia-attribute)
-   - [The Traditional Way: Manual FFI](#the-traditional-way-manual-ffi)
-3. [Understanding the Type System](#understanding-the-type-system)
-4. [String Handling](#string-handling)
-5. [Error Handling](#error-handling)
-6. [Using Ownership Types](#using-ownership-types)
-7. [Performance Optimization](#performance-optimization)
-
-## Getting Started
-
-### Installation
+## Before you start
 
 ```julia
 using Pkg
 Pkg.add("RustCall")
 ```
 
-RustCall.jl is registered in Julia's General registry, so `Pkg.add("RustCall")` is the standard installation path.
+You need Julia 1.12 or later. You do **not** need to install Rust: RustCall
+uses the `rustc` and `cargo` on your `PATH` when they exist and otherwise
+downloads a toolchain through
+[RustToolChain.jl](https://github.com/AtelierArith/RustToolChain.jl). On
+Windows, the linker from the MSVC build tools is also required; see the
+[Windows guide](platforms/windows.md).
 
-For contributor work or local edits from a checkout:
+To check that everything is in place:
 
-```julia
-using Pkg
-Pkg.develop(path="/path/to/RustCall.jl")
-```
-
-### Requirements
-
-- Julia 1.12 or later
-- A Rust toolchain — **no system installation required**. RustCall depends on
-  [RustToolChain.jl](https://github.com/AtelierArith/RustToolChain.jl), which
-  uses the `rustc`/`cargo` on `PATH` when there is one and otherwise installs
-  an isolated toolchain through Julia's Artifacts system. On Windows the
-  artifact toolchain still needs the MSVC build tools and a Windows SDK for
-  linking (see the RustToolChain.jl README).
-
-Installing Rust yourself ([rustup.rs](https://rustup.rs/)) is optional; a
-`rustc` on `PATH` is preferred over the artifact toolchain when both exist.
-
-### Rebuilding Rust Helpers Library
-
-The Rust helpers library is built during package installation. If ownership types such as `RustBox`, `RustRc`, `RustArc`, `RustVec`, or `RustSlice` are unavailable, rebuild it:
-
-```julia
-using Pkg
-Pkg.build("RustCall")
-```
-
-## Basic Usage
-
-```@setup tutorial
+```@example tutorial
 using RustCall
+RustCall.check_toolchain().ok
 ```
 
-### The Easy Way: `#[julia]` Attribute
+If this prints `false`, look at `RustCall.check_toolchain().problems` and at
+[Troubleshooting](troubleshooting.md).
 
-The simplest way to define Rust functions is using the `#[julia]` attribute:
+## Your first Rust function
 
 ```@example tutorial
 rust"""
@@ -72,18 +42,339 @@ fn add(a: i32, b: i32) -> i32 {
 }
 """
 
-# Call directly - no @rust macro needed!
-result = add(10, 20)
-println(result)  # => 30
+add(10, 20)
 ```
 
-The `#[julia]` attribute automatically:
-- Converts to `#[no_mangle] pub extern "C"`
-- Generates a Julia wrapper function with proper type conversions
+That is the whole workflow. Three things happened:
 
-### The Traditional Way: Manual FFI
+1. `rust"""..."""` is a Julia string macro. It handed the text to the Rust
+   compiler, which produced a shared library, and loaded that library into the
+   running Julia session.
+2. `#[julia]` marked `add` as a function to expose. For each marked function
+   RustCall defines a Julia function of the same name in the current module.
+3. `add(10, 20)` is an ordinary Julia call. Its arguments were converted to
+   Rust's `i32` and the `i32` result came back as an `Int32`.
 
-For more control, you can use the traditional FFI approach:
+Reading the Rust: `fn` defines a function, `a: i32` is an argument named `a` of
+type 32-bit integer, `-> i32` is the return type, and the last expression of
+the body, written without a semicolon, is the returned value.
+
+The first evaluation of a block takes a second or so because `rustc` runs.
+The result is cached on disk, so the same block loads almost instantly in
+every later session.
+
+### Arguments are converted, strictly
+
+The generated Julia function accepts anything that converts *exactly* to the
+declared Rust type, and refuses the rest in Julia, before Rust is called:
+
+```@example tutorial
+typeof(add(10, 20))
+```
+
+```@example tutorial
+try
+    add(2^40, 1)          # does not fit in an i32
+catch err
+    sprint(showerror, err)
+end
+```
+
+## Numbers
+
+Rust's numeric types have fixed widths and map directly onto Julia's:
+`i32` ↔ `Int32`, `i64` ↔ `Int64`, `u64` ↔ `UInt64`, `f64` ↔ `Float64`,
+`bool` ↔ `Bool`, and `usize` ↔ `UInt` (the type Rust uses for every length and
+index). The full table is in the [primer](rust_primer.md#Types).
+
+A block may define any number of functions:
+
+```@example tutorial
+rust"""
+#[julia]
+fn sum_of_squares(n: u64) -> u64 {
+    let mut total = 0;
+    for i in 1..=n {
+        total += i * i;
+    }
+    total
+}
+
+#[julia]
+fn hypot2(x: f64, y: f64) -> f64 {
+    (x * x + y * y).sqrt()
+}
+
+#[julia]
+fn is_even(n: i64) -> bool {
+    n % 2 == 0
+}
+"""
+
+sum_of_squares(10), hypot2(3.0, 4.0), is_even(42)
+```
+
+New Rust in this block:
+
+- `let mut total = 0;` declares a variable that may be reassigned. Without
+  `mut` a variable is immutable.
+- `1..=n` is the inclusive range, Julia's `1:n`. `1..n` would stop at `n - 1`.
+- `(…).sqrt()` is a method call on an `f64`.
+
+Note that `sum_of_squares` returns a `UInt64`, which Julia prints in
+hexadecimal (`0x0000000000000181` is 385). If you want Julia's usual `Int`,
+declare the Rust return type as `i64`.
+
+## Strings
+
+Take a string as `&str` (a borrowed UTF-8 string) and return one as `String`
+(an owned one). Both are a Julia `String` on the Julia side:
+
+```@example tutorial
+rust"""
+#[julia]
+fn greet(name: &str) -> String {
+    format!("Hello, {name}!")
+}
+
+#[julia]
+fn count_chars(s: &str) -> usize {
+    s.chars().count()
+}
+"""
+
+greet("Julia"), count_chars("世界")
+```
+
+`format!` is Rust's `string(...)` / interpolation; `{name}` inserts the
+variable. Julia strings and Rust strings are both UTF-8, so the argument is
+passed without re-encoding, and the returned `String` is copied into a new
+Julia `String` and then released on the Rust side for you.
+
+## Arrays
+
+A Rust *slice*, written `&[T]`, is a pointer and a length: a view of someone
+else's contiguous memory. A `#[julia]` function that takes one receives a view
+of your Julia `Vector`, with no copy. `&mut [T]` is the writable version, and
+writes land in your array:
+
+```@example tutorial
+rust"""
+#[julia]
+fn mean(xs: &[f64]) -> f64 {
+    xs.iter().sum::<f64>() / xs.len() as f64
+}
+
+#[julia]
+fn scale(xs: &mut [f64], factor: f64) {
+    for x in xs.iter_mut() {
+        *x *= factor;
+    }
+}
+"""
+
+v = [1.0, 2.0, 3.0]
+m = mean(v)
+scale(v, 10.0)
+m, v
+```
+
+New Rust: `xs.iter()` is an iterator over the elements, `xs.len()` is the
+length (a `usize`, so `as f64` converts it), and `*x` writes *through* the
+mutable reference `x`.
+
+Because the memory is shared rather than copied, the element type must match
+exactly. A `Vector{Int}` is not silently converted to `Float64`:
+
+```@example tutorial
+try
+    mean([1, 2, 3])
+catch err
+    sprint(showerror, err)
+end
+```
+
+The rules for views, aliasing and multi-dimensional data are in
+[Julia arrays as Rust slices](tutorial_new_features.md#Julia-arrays-as-Rust-slices).
+
+## Errors
+
+Rust does not throw exceptions for expected failures. A function that can fail
+returns a `Result<T, E>`: either `Ok(value)` or `Err(error)`. A function that
+may have no answer returns an `Option<T>`: either `Some(value)` or `None`.
+
+```@example tutorial
+rust"""
+#[julia]
+fn safe_div(a: i32, b: i32) -> Result<i32, String> {
+    if b == 0 {
+        Err("division by zero".to_string())
+    } else {
+        Ok(a / b)
+    }
+}
+
+#[julia]
+fn first_positive(xs: &[i64]) -> Option<i64> {
+    xs.iter().copied().find(|x| *x > 0)
+}
+"""
+
+ok  = safe_div(10, 2)
+err = safe_div(1, 0)
+ok, err
+```
+
+These arrive in Julia as `RustCall.RustResult` and `RustCall.RustOption`.
+Nothing is exported from RustCall except its macros, so the helper functions
+are written with the `RustCall.` prefix (or imported with
+`using RustCall: unwrap, is_ok`):
+
+```@example tutorial
+RustCall.is_ok(ok), RustCall.unwrap(ok), RustCall.is_err(err), err.value
+```
+
+```@example tutorial
+RustCall.unwrap_or(err, Int32(-1))     # a default instead of the error
+```
+
+If you prefer Julia's style, turn an `Err` into an exception:
+
+```@example tutorial
+try
+    RustCall.result_to_exception(err)
+catch e
+    sprint(showerror, e)
+end
+```
+
+`Option` works the same way:
+
+```@example tutorial
+some = first_positive([-1, 0, 7])
+none = first_positive([-1])
+RustCall.is_some(some), RustCall.unwrap(some), RustCall.is_none(none), RustCall.unwrap_or(none, 0)
+```
+
+(`|x| *x > 0` in the Rust above is a closure, Rust's `x -> x > 0`.)
+
+### Panics
+
+A *panic* is Rust's unrecoverable error: an out-of-bounds index, an integer
+division by zero, an explicit `panic!`. A panic inside a `#[julia]` function
+does not take the Julia session down. It is caught at the boundary and raised
+as a Julia exception:
+
+```@example tutorial
+rust"""
+#[julia]
+fn checked_sqrt(x: f64) -> f64 {
+    if x < 0.0 {
+        panic!("sqrt of a negative number: {}", x);
+    }
+    x.sqrt()
+}
+"""
+
+try
+    checked_sqrt(-1.0)
+catch e
+    sprint(showerror, e)
+end
+```
+
+Use `Result` for failures the caller is expected to handle, and leave panics
+for bugs. [Panics, Visibility and Lifetime](panics.md) has the details.
+
+## Objects
+
+Put `#[julia]` on a `struct` and RustCall creates a Julia type for it. The
+functions in its `impl` block become Julia functions:
+
+```@example tutorial
+rust"""
+#[julia]
+pub struct Counter {
+    value: i32,
+}
+
+impl Counter {
+    pub fn new(initial: i32) -> Self {
+        Self { value: initial }
+    }
+
+    pub fn increment(&mut self) {
+        self.value += 1;
+    }
+
+    pub fn current(&self) -> i32 {
+        self.value
+    }
+}
+"""
+
+c = Counter(0)        # calls Counter::new
+increment(c)
+increment(c)
+current(c)
+```
+
+How the Rust maps to Julia:
+
+| Rust | Julia |
+|------|-------|
+| `Counter::new(0)` (a function returning `Self`) | `Counter(0)` |
+| `c.increment()` (takes `&mut self`) | `increment(c)` |
+| `c.current()` (takes `&self`) | `current(c)` |
+| the field `value` | `c.value`, readable and assignable |
+
+```@example tutorial
+c.value = 10
+current(c)
+```
+
+The data lives on the Rust side. The Julia `Counter` holds a pointer to it, and
+when Julia's garbage collector collects the Julia object, RustCall has Rust
+drop the value. You never free it by hand.
+
+!!! note "Method names are ordinary Julia functions"
+    `increment` and `current` are defined in your module like any other
+    function. A Rust method named `get`, `length` or `show` would therefore
+    define a *new* function of that name in your module rather than extend
+    `Base`'s. Choose method names that do not collide with the names you use
+    from `Base` in the same module.
+
+[Struct Mapping](struct_mapping.md) covers static methods, `Result`-returning
+methods, generic structs and `Clone`.
+
+## Using crates from crates.io
+
+Rust's package registry is [crates.io](https://crates.io). To use a crate in a
+block, name it in a `// cargo-deps:` comment on the first lines:
+
+```julia
+rust"""
+// cargo-deps: rand = "0.8"
+
+use rand::Rng;
+
+#[julia]
+fn roll_die() -> i32 {
+    rand::thread_rng().gen_range(1..=6)
+}
+"""
+
+roll_die()
+```
+
+RustCall then builds the block with `cargo` instead of plain `rustc`, which
+downloads and compiles the dependency. The first build needs network access
+and takes longer; the result is cached like any other block.
+
+## The manual way: `extern "C"` and `@rust`
+
+`#[julia]` is a convenience over the classic way of exposing Rust to other
+languages, which you can also use directly:
 
 ```@example tutorial
 rust"""
@@ -93,117 +384,43 @@ pub extern "C" fn multiply(a: i32, b: i32) -> i32 {
 }
 """
 
-# Use @rust macro with explicit types
-result = @rust multiply(Int32(5), Int32(7))::Int32
-println(result)  # => 35
+@rust multiply(Int32(5), Int32(7))::Int32
 ```
 
-#### Why `@rust` here?
+- `extern "C"` makes the function use the C calling convention, and
+  `#[no_mangle]` keeps its name `multiply` in the compiled library.
+  ([Why both are needed](rust_primer.md#What-makes-a-Rust-function-callable-from-another-language).)
+- No Julia function is generated for it. `@rust name(args...)::T` looks the
+  symbol up in the loaded library and calls it.
+- Nothing is converted for you: pass the exact types (`Int32(5)`, not `5`).
 
-`#[julia]` exposes a Rust function through a C-compatible ABI and also generates a Julia wrapper, so you can call `add(10, 20)` directly from Julia. The attribute is *additive*: your `fn add` is kept exactly as written and the C entry point is emitted next to it as `rustcall_add`, so the function still composes with other proc-macros (`#[pyfunction]`), in-crate callers and `#[test]`s.
-
-By contrast, `#[no_mangle] pub extern "C"` only exports a symbol from the Rust library. Julia does not automatically get a function named `multiply`, so `@rust` is the bridge that finds the exported symbol, converts the arguments, and performs the call.
-
-### Step 1: Define and Compile Rust Code
-
-Use the `rust""` string literal to define and compile Rust code:
+The `::Int32` annotation is checked against what RustCall read from the Rust
+source, so a wrong one is an error instead of a misread value:
 
 ```@example tutorial
-rust"""
-#[no_mangle]
-pub extern "C" fn subtract(a: i32, b: i32) -> i32 {
-    a - b
-}
-"""
+try
+    @rust multiply(Int32(5), Int32(7))::Float64
+catch e
+    first(sprint(showerror, e), 110) * "…"
+end
 ```
 
-This code is automatically compiled and loaded as a shared library.
+The annotation can be omitted, at a cost: the call is then resolved
+dynamically and is much slower. Keep it.
 
-### Step 2: Call Rust Functions
+When to choose which:
 
-Use the `@rust` macro to call functions:
+| | `#[julia]` | `#[no_mangle] extern "C"` + `@rust` |
+|-|------------|-------------------------------------|
+| Julia function generated | yes | no, call with `@rust` |
+| `&str`, `String`, slices, `Result`, `Option`, structs | yes | no, C types and raw pointers only |
+| Argument conversion (`10` → `i32`) | yes | no |
+| A panic becomes a Julia exception | yes | **no**: a panic aborts the process |
+| Use it when | almost always | you are binding existing C-style Rust, or need full control of the ABI |
 
-```@example tutorial
-# With type inference
-result = @rust subtract(Int32(100), Int32(30))::Int32
-println(result)  # => 70
-```
-
-### Step 3: Define Multiple Functions
-
-You can define multiple functions in the same `rust""` block:
-
-```@example tutorial
-rust"""
-#[no_mangle]
-pub extern "C" fn multiply(x: f64, y: f64) -> f64 {
-    x * y
-}
-
-#[no_mangle]
-pub extern "C" fn subtract(a: i64, b: i64) -> i64 {
-    a - b
-}
-"""
-
-# Usage
-product = @rust multiply(3.0, 4.0)::Float64  # => 12.0
-difference = @rust subtract(100, 30)::Int64  # => 70
-```
-
-## Understanding the Type System
-
-### Basic Type Mapping
-
-RustCall.jl automatically maps Rust types to Julia types:
-
-| Rust Type | Julia Type | Example |
-|-----------|------------|---------|
-| `i8`      | `Int8`     | `10i8`  |
-| `i16`     | `Int16`    | `100i16` |
-| `i32`     | `Int32`    | `1000i32` |
-| `i64`     | `Int64`    | `10000i64` |
-| `u8`      | `UInt8`    | `10u8`  |
-| `u32`     | `UInt32`   | `1000u32` |
-| `u64`     | `UInt64`   | `10000u64` |
-| `f32`     | `Float32`  | `3.14f0` |
-| `f64`     | `Float64`  | `3.14159` |
-| `bool`    | `Bool`     | `true`  |
-| `usize`   | `UInt`     | `100u`  |
-| `isize`   | `Int`      | `100`   |
-| `()`      | `Cvoid`    | -       |
-
-### Type Inference
-
-RustCall.jl tries to infer return types from argument types, but explicit specification is recommended:
-
-```julia
-# Not recommended - relies on inference (works but not recommended)
-result = @rust add(Int32(10), Int32(20))
-
-# Recommended - explicit type specification
-result = @rust add(Int32(10), Int32(20))::Int32
-```
-
-### Boolean Values
-
-```@example tutorial
-rust"""
-#[no_mangle]
-pub extern "C" fn is_positive(x: i32) -> bool {
-    x > 0
-}
-"""
-
-@rust is_positive(Int32(5))::Bool   # => true
-@rust is_positive(Int32(-5))::Bool  # => false
-```
-
-## String Handling
-
-### Passing as C Strings
-
-When Rust functions expect `*const u8` (C strings), you can pass Julia `String` directly:
+Only C-compatible types can appear in a hand-written `extern "C"` signature. A
+string, for example, is passed as a pointer to NUL-terminated bytes and must be
+decoded in `unsafe` Rust:
 
 ```@example tutorial
 rust"""
@@ -214,272 +431,106 @@ pub extern "C" fn string_length(s: *const u8) -> u32 {
 }
 """
 
-# Julia String is automatically converted to Cstring
-len = @rust string_length("hello")::UInt32  # => 5
-len = @rust string_length("世界")::UInt32   # => 6 (UTF-8 bytes)
+@rust string_length("世界")::UInt32      # bytes, not characters
 ```
 
-### UTF-8 String Handling
+This is the work `#[julia]` does for you.
+
+## Things worth knowing early
+
+**One block, one library.** Every `rust"""` block is compiled into its own
+shared library. Functions in different blocks cannot call each other from
+Rust, and a function that takes a `#[julia]` struct must be defined in the
+same block as the struct.
+
+**Editing a block.** Re-evaluating an *unchanged* block is free: it is the same
+library. Re-evaluating a block whose Rust code changed compiles a second
+library, and if it exports a function name the first one still exports,
+RustCall refuses it rather than guess which of the two you mean:
 
 ```@example tutorial
-rust"""
-#[no_mangle]
-pub extern "C" fn count_chars(s: *const u8) -> u32 {
-    let c_str = unsafe { std::ffi::CStr::from_ptr(s as *const i8) };
-    let utf8_str = std::str::from_utf8(c_str.to_bytes()).unwrap();
-    utf8_str.chars().count() as u32
-}
+lib = rust"""
+#[julia]
+fn answer() -> i32 { 41 }
 """
 
-# Count UTF-8 characters
-count = @rust count_chars("hello")::UInt32    # => 5
-count = @rust count_chars("世界")::UInt32     # => 2 (characters, not bytes)
-```
-
-## Error Handling
-
-### Using Result Type
-
-Rust's `Result<T, E>` type is represented as `RustResult{T, E}` in Julia:
-
-```@example tutorial
-rust"""
-#[no_mangle]
-pub extern "C" fn divide(a: i32, b: i32) -> i32 {
-    if b == 0 {
-        return -1;  // Return -1 as error code
-    }
-    a / b
-}
-"""
-
-# Error checking
-result = @rust divide(Int32(10), Int32(2))::Int32
-if result == -1
-    println("Division by zero!")
+try
+    @eval rust"""
+    #[julia]
+    fn answer() -> i32 { 42 }
+    """
+catch e
+    first(split(sprint(showerror, e), '\n'))
 end
 ```
 
-### Explicit Use of RustResult
+The full message names the library to drop. A `rust"""` block evaluates to the
+name of the library it loaded, so you can also keep it, as `lib` does above.
+Unload the old library and evaluate the edited block again:
 
-For a more Rust-like approach, you can define functions that return `Result` types:
-
-```julia
-# Create RustResult manually
-ok_result = RustCall.RustResult{Int32, String}(true, Int32(42))
-RustCall.is_ok(ok_result)  # => true
-RustCall.unwrap(ok_result)  # => 42
-
-err_result = RustCall.RustResult{Int32, String}(false, "error message")
-RustCall.is_err(err_result)  # => true
-RustCall.unwrap_or(err_result, Int32(0))  # => 0
-```
-
-### `Result` / `Option` on struct methods
-
-A `#[julia]` struct method that returns `Result<T, E>` or `Option<T>` gives back
-a `RustResult` / `RustOption` just like a free function does, including a
-`String` payload:
-
-```julia
+```@example tutorial
+RustCall.unload_library(lib)
 rust"""
 #[julia]
-pub struct Divider { pub scale: i32 }
-
-impl Divider {
-    pub fn new(scale: i32) -> Self { Divider { scale } }
-    pub fn checked_div(&self, d: i32) -> Result<i32, String> {
-        if d == 0 { Err("division by zero".to_string()) } else { Ok(self.scale / d) }
-    }
-}
+fn answer() -> i32 { 42 }
 """
 
-d = Divider(Int32(10))
-RustCall.unwrap(checked_div(d, Int32(2)))   # => 5
-checked_div(d, Int32(0)).value              # => "division by zero"
+answer()
 ```
 
-See [Struct mapping](struct_mapping.md) for the exact lowering, the string
-payload rules and the cases that are still returned as written.
+For an edit-compile-run loop on a real crate, [Hot Reload](hot_reload.md)
+rebuilds and swaps the library when a source file changes.
 
-### Converting to Exceptions
+**Where a block may appear.** Put blocks at the top level of a module or
+script, not inside a function body. The block defines functions and types, and
+inside a function those definitions would be local to it.
 
-Use `result_to_exception` to convert `Result` to Julia exceptions:
+**The Rust edition.** A block without `// cargo-deps:` is compiled by `rustc`
+directly, under `rustc`'s default edition. A few newer conveniences, such as
+`panic!("{x}")` capturing a variable by name, need the form with explicit
+arguments (`panic!("{}", x)`) there. `format!("{x}")` works everywhere.
+
+**The cache.** Compiled libraries are kept in a Julia scratch space and reused
+across sessions. A changed source, compiler or dependency rebuilds; nothing
+else does.
+
+```@example tutorial
+RustCall.get_cache_size() > 0
+```
+
+`RustCall.clear_cache()` empties it. That is rarely the fix for a problem, but
+it is always safe.
+
+**When compilation fails.** The Rust compiler's message is shown in a
+`RustCall.CompilationError`. Its `help:` lines usually contain the fix. The
+[primer's table of common first errors](rust_primer.md#Common-first-errors)
+translates the frequent ones.
+
+## Using Rust in a package
+
+A `rust"""` block works inside a package module exactly as above, and the
+package precompiles. For a larger amount of Rust, keep it in a real crate with
+its own `Cargo.toml`, mark the items `#[julia]`, and bind the crate from Julia:
 
 ```julia
-err_result = RustCall.RustResult{Int32, String}(false, "division by zero")
-try
-    value = RustCall.result_to_exception(err_result)
-catch e
-    if e isa RustCall.RustError
-        println("Rust error: $(e.message)")
-    end
+module MyPackage
+using RustCall
+@rust_crate joinpath(@__DIR__, "..", "deps", "my_crate") submodule = "Bindings"
 end
 ```
 
-## Using Ownership Types
+[External Crate Bindings](crate_bindings.md) explains this workflow,
+[Precompilation](precompilation.md) explains how it behaves in a package, and
+[Safe Rust/Julia Integration](integration_guide.md) recommends how to lay out
+a project of real size.
 
-### RustBox (Single Ownership)
+## Where to go next
 
-`RustBox<T>` is a heap-allocated value with single ownership:
-
-```julia
-# Rust helpers library required
-if RustCall.is_rust_helpers_available()
-    # Create Box (usually returned from Rust functions)
-    # Here as an example, actual usage is from Rust function return values
-    box = RustCall.RustBox{Int32}(ptr)  # ptr obtained from Rust function
-
-    # Explicitly drop after use
-    RustCall.drop!(box)
-end
-```
-
-### RustRc (Reference Counting, Single-threaded)
-
-```julia
-if RustCall.is_rust_helpers_available()
-    # Create Rc
-    rc1 = RustCall.RustRc{Int32}(ptr)
-
-    # Clone to increment reference count
-    rc2 = RustCall.clone(rc1)
-
-    # Dropping one keeps the other valid
-    RustCall.drop!(rc1)
-    @assert RustCall.is_valid(rc2)  # Still valid
-
-    # Drop last reference
-    RustCall.drop!(rc2)
-end
-```
-
-### RustArc (Atomic Reference Counting, Thread-safe)
-
-```julia
-if RustCall.is_rust_helpers_available()
-    # Create Arc
-    arc1 = RustCall.RustArc{Int32}(ptr)
-
-    # Thread-safe clone
-    arc2 = RustCall.clone(arc1)
-
-    # Can be used from different tasks
-    @sync begin
-        @async begin
-            # Use arc2
-        end
-    end
-
-    RustCall.drop!(arc1)
-    RustCall.drop!(arc2)
-end
-```
-
-## Performance Optimization
-
-### Using Compilation Cache
-
-RustCall.jl automatically caches compilation results. No need to recompile the same code:
-
-```julia
-# First compilation (takes time)
-rust"""
-#[no_mangle]
-pub extern "C" fn compute(x: i32) -> i32 {
-    x * 2
-}
-"""
-
-# Same code again (fast load from cache)
-rust"""
-#[no_mangle]
-pub extern "C" fn compute(x: i32) -> i32 {
-    x * 2
-}
-"""
-```
-
-### Cache Management
-
-```julia
-# Check cache size
-size = RustCall.get_cache_size()
-println("Cache size: $size bytes")
-
-# List cached libraries
-libs = RustCall.list_cached_libraries()
-println("Cached libraries: $libs")
-
-# Cleanup old cache (older than 30 days)
-RustCall.cleanup_old_cache(30)
-
-# Clear all cache
-RustCall.clear_cache()
-```
-
-### Running Benchmarks
-
-To measure performance:
-
-```bash
-julia --project benchmark/benchmarks.jl
-```
-
-This compares performance of Julia native and `@rust`.
-
-## Best Practices
-
-### 1. Always Specify Types Explicitly
-
-```julia
-# Recommended
-result = @rust add(Int32(10), Int32(20))::Int32
-
-# Not recommended (relies on type inference)
-result = @rust add(Int32(10), Int32(20))
-```
-
-### 2. Proper Error Handling
-
-```julia
-# Use Result type
-result = some_rust_function()
-if RustCall.is_err(result)
-    # Handle error
-    return
-end
-value = RustCall.unwrap(result)
-```
-
-### 3. Be Careful with Memory Management
-
-When using ownership types, always call `drop!` appropriately:
-
-```julia
-box = RustCall.RustBox{Int32}(ptr)
-try
-    # Use box
-finally
-    RustCall.drop!(box)  # Always cleanup
-end
-```
-
-### 4. Leverage Caching
-
-When using the same Rust code multiple times, caching is automatically leveraged.
-
-### 5. Clear Cache When Debugging
-
-If issues occur, try clearing the cache and recompiling:
-
-```julia
-RustCall.clear_cache()
-```
-
-## Next Steps
-
-- Continue with [What's New in v0.9 and v0.10](tutorial_new_features.md) for slices, borrowed and optional objects, fallible constructors and generic crate instances
-- See [Examples](examples.md) for more advanced usage examples
-- Check [Troubleshooting](troubleshooting.md) to solve problems
-- Review [API Reference](api.md) for all features
+- [What's New in v0.9 and v0.10](tutorial_new_features.md): fallible
+  constructors, borrowing objects, optional arguments, slices in depth.
+- [Examples](examples.md): longer worked examples.
+- [The FFI Type Contract](type_contract.md): exactly which types may cross the
+  boundary.
+- [Generics](generics.md), [Callbacks](callbacks.md), [Hot Reload](hot_reload.md).
+- [How RustCall Calls Rust](internals.md): what happens underneath, for the
+  curious and for contributors.
