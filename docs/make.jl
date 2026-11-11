@@ -30,6 +30,7 @@ makedocs(
     pages = [
         "Home" => "index.md",
         "Getting Started" => [
+            "Rust for Julia Users" => "rust_primer.md",
             "Tutorial" => "tutorial.md",
             "What's New in v0.9 and v0.10" => "tutorial_new_features.md",
             "Examples" => "examples.md",
@@ -45,7 +46,9 @@ makedocs(
             "PyO3 Crates" => "pyo3.md",
             "Panics, Visibility and Lifetime" => "panics.md",
             "Precompilation" => "precompilation.md",
+            "Performance" => "performance.md",
             "Troubleshooting" => "troubleshooting.md",
+            "Migrating from @irust" => "migrating_from_irust.md",
         ],
         "Reference" => [
             "API Reference" => [
@@ -67,6 +70,7 @@ makedocs(
             "Project Status" => "status.md",
         ],
         "Developer" => [
+            "How RustCall Calls Rust" => "internals.md",
             "Project Guide" => "project_guide.md",
             "Windows Development" => "developer_windows.md",
             "Developer Pitfalls" => "developer_pitfalls.md",
