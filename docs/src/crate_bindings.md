@@ -1,24 +1,61 @@
-# External Crate Bindings (Phase 6)
+# External Crate Bindings
 
-RustCall.jl provides a Maturin-like feature for generating Julia bindings from external Rust crates. This allows you to develop Rust libraries with the `#[julia]` attribute and automatically generate Julia bindings.
+A `rust"""` block is convenient for a screenful of Rust. Beyond that, Rust code
+is more comfortable in a *crate*: a directory with its own manifest, source
+files, tests and editor support. `@rust_crate` binds such a crate to Julia. You
+mark the functions and types to expose with `#[julia]`, and RustCall builds the
+crate and generates a Julia module for it, much as
+[maturin](https://www.maturin.rs) does for Python.
 
-## Overview
+This page starts with a walkthrough that assumes no Rust experience, then
+describes how to ship a crate inside a Julia package, and ends with reference
+material on what `#[julia]` accepts.
 
-The feature consists of two components:
+| If you want to… | Read |
+|-----------------|------|
+| bind your first crate | [Your first crate](#Your-first-crate) |
+| know what a crate item becomes in Julia | [What you get in Julia](#What-you-get-in-Julia) |
+| put a crate in a Julia package | [Precompilation Support](#Precompilation-Support) |
+| edit Rust and see the change without restarting Julia | [Hot Reload](hot_reload.md) |
+| look up a rule or an error message | [The `#[julia]` attribute in detail](#The-#[julia]-attribute-in-detail) and the sections after it |
 
-1. **`rustcall_julia_macros`** - The Rust crate that provides the `#[julia]` attribute (and the runtime state its wrappers need; see [Panics](panics.md))
-2. **`@rust_crate`** - A Julia macro that scans external crates and generates bindings
+## Inline block or crate?
 
-## Quick Start
+| | `rust"""` block | Crate + `@rust_crate` |
+|-|-----------------|------------------------|
+| Where the Rust lives | in a Julia string | in `.rs` files, with `Cargo.toml` |
+| Editor support (rust-analyzer), `cargo test`, `cargo doc` | no | yes |
+| Dependencies | a `// cargo-deps:` comment | `[dependencies]` in `Cargo.toml` |
+| Several source files and modules | no | yes |
+| Generic functions and structs, instantiated on demand | yes | no (concrete items only) |
+| Usable from Python or other Rust code too | no | yes |
 
-### Rust Side
+Both can be used in the same Julia module.
 
-Create a Rust crate with `rustcall_julia_macros`:
+## Your first crate
+
+### 1. Create the crate
+
+A crate is a directory containing a manifest, `Cargo.toml`, and a source tree
+whose root for a library is `src/lib.rs`:
+
+```
+my_math/
+├── Cargo.toml
+└── src/
+    └── lib.rs
+```
+
+If you have Rust installed, `cargo new --lib my_math` creates this layout.
+Otherwise create the two files by hand; there is nothing else to it.
+
+### 2. `Cargo.toml`
+
+`Cargo.toml` plays the role of Julia's `Project.toml`:
 
 ```toml
-# Cargo.toml
 [package]
-name = "my_library"
+name = "my_math"
 version = "0.1.0"
 edition = "2021"
 
@@ -26,18 +63,37 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-rustcall_julia_macros = "0.4"
-# Or, to track a RustCall.jl checkout:
-# rustcall_julia_macros = { path = "/path/to/RustCall.jl/deps/rustcall_julia_macros" }
+rustcall_julia_macros = "0.7"
 ```
 
+- `[package]` names the crate. `edition` selects the language edition; `2021`
+  is a good default.
+- `crate-type = ["cdylib"]` asks for a C-compatible shared library (`.so`,
+  `.dylib` or `.dll`), which is what Julia loads. If you leave this section
+  out, RustCall builds a small wrapper crate around yours instead, so it still
+  works, but [Hot Reload](hot_reload.md) needs the `cdylib` form.
+- `rustcall_julia_macros` is the crate that provides the `#[julia]` attribute.
+  It is published on [crates.io](https://crates.io/crates/rustcall_julia_macros).
+  When you work from a checkout of RustCall.jl, point at its copy instead:
+  `rustcall_julia_macros = { path = "/path/to/RustCall.jl/deps/rustcall_julia_macros" }`.
+
+### 3. `src/lib.rs`
+
 ```rust
-// src/lib.rs
 use rustcall_julia_macros::julia;
 
 #[julia]
-fn add(a: i32, b: i32) -> i32 {
-    a + b
+fn factorial(n: u64) -> u64 {
+    (1..=n).product()
+}
+
+#[julia]
+fn mean(xs: &[f64]) -> Option<f64> {
+    if xs.is_empty() {
+        None
+    } else {
+        Some(xs.iter().sum::<f64>() / xs.len() as f64)
+    }
 }
 
 #[julia]
@@ -50,64 +106,152 @@ pub struct Point {
 impl Point {
     #[julia]
     pub fn new(x: f64, y: f64) -> Self {
-        Self { x, y }
+        Point { x, y }
     }
 
     #[julia]
     pub fn distance(&self) -> f64 {
         (self.x * self.x + self.y * self.y).sqrt()
     }
+
+    #[julia]
+    pub fn describe(&self) -> String {
+        format!("({}, {})", self.x, self.y)
+    }
 }
 ```
 
-### Julia Side
+- `use rustcall_julia_macros::julia;` brings the attribute into scope, like
+  `using Package: name` in Julia.
+- Everything marked `#[julia]` is exposed. Anything else stays private to the
+  crate. For a struct's methods, mark the `impl` block **and** each method you
+  want to expose.
+- The code is ordinary Rust. You can add `#[test]` functions and call
+  `factorial` from other Rust code as usual.
+
+### 4. Load it from Julia
 
 ```julia
 using RustCall
 
-const MyLibrary = @rust_crate "/path/to/my_library"
+const MyMath = @rust_crate "/path/to/my_math"
 
-MyLibrary.add(Int32(1), Int32(2))  # => 3
-p = MyLibrary.Point(3.0, 4.0)
-MyLibrary.distance(p)  # => 5.0
+MyMath.factorial(10)                # => 0x0000000000375f00  (3628800 as a UInt64)
+MyMath.mean([1.0, 2.0, 3.0])        # => RustCall.RustOption{Float64}(true, 2.0)
+
+p = MyMath.Point(3.0, 4.0)          # calls Point::new
+MyMath.distance(p)                  # => 5.0
+MyMath.describe(p)                  # => "(3, 4)"
+p.x                                 # => 3.0
+p.x = 6.0                           # fields are assignable
+propertynames(p)                    # => (:x, :y)
 ```
 
-When loading a crate inside a function or other local scope, capture the return
-value from `@rust_crate` and use that binding directly:
+The first call to `@rust_crate` builds the crate with Cargo, which downloads
+its dependencies once and can take a minute. The compiled library is cached:
+loading the same sources again, in this or a later session, does not rebuild.
+Edit a source file and the next `@rust_crate` rebuilds.
+
+RustCall builds into its own cache directory, not into `my_math/target/`, so
+it does not interfere with your own `cargo build` or `cargo test`.
+
+Inside a function or another local scope, use the value the macro returns:
 
 ```julia
-function load_my_library(crate_path)
-    bindings = @rust_crate crate_path name="MyLibrary"
-    p = bindings.Point(3.0, 4.0)
-    return bindings.add(Int32(1), Int32(2)), bindings.distance(p), p.x
+function load_my_math(crate_path)
+    bindings = @rust_crate crate_path
+    return bindings.factorial(5)
 end
 ```
 
-## The `#[julia]` Attribute
+### 5. Check the interface without building
 
-The `#[julia]` attribute simplifies FFI function definitions.
+Before a long build, or when a binding you expected is missing,
+`boundary_report` lists every position RustCall looked at and anything it
+cannot bind, and builds nothing:
 
-### For Functions
+```julia
+RustCall.boundary_report("/path/to/my_math")
+# RustCall boundary report for crate /path/to/my_math: no unsupported positions (10 checked).
+```
+
+`RustCall.scan_crate(path)` returns the same information as data.
+
+## What you get in Julia
+
+`@rust_crate` returns a bindings object whose properties are the generated
+functions and types. Rust names are kept.
+
+| In the crate | In Julia |
+|--------------|----------|
+| `#[julia] fn f(a: i32) -> i32` | `MyMath.f(a)`; arguments are converted as for an inline `#[julia]` function |
+| `#[julia] pub struct Point` | the type `MyMath.Point`, a handle to a Rust-owned value |
+| `fn new(...) -> Self` in a `#[julia] impl` | the constructor `MyMath.Point(...)` |
+| a method taking `&self` or `&mut self` | `MyMath.method(obj, args...)` |
+| a function in the `impl` without `self` | a static method, called with the type first: `MyMath.name(MyMath.Point, args...)` ([Static methods](#Static-methods)) |
+| a `pub` field of a supported type | `obj.field`, readable and assignable |
+| a function in `#[julia] mod geometry` | `MyMath.geometry.f(...)`: one Julia submodule per Rust module |
+| `Result<T, E>`, `Option<T>` return | `RustCall.RustResult{T, E}`, `RustCall.RustOption{T}` |
+
+The types that may appear in a signature are the same as for inline blocks:
+integers, floats, `bool`, `char`, `&str`, `String`, numeric slices `&[T]` /
+`&mut [T]`, `Result`, `Option`, `extern "C" fn` callbacks, raw pointers, and
+`#[julia]` structs by reference. [The FFI Type Contract](type_contract.md) is
+the authoritative list. A signature that uses anything else is reported by
+`boundary_report` and refused when the bindings are generated; see
+[Unsupported types in a crate](#Unsupported-types-in-a-crate).
+
+A Rust value handed to Julia is owned by its Julia wrapper and dropped when
+that wrapper is garbage collected ([Object lifetime](#Object-lifetime)). A
+panic in a `#[julia]` item is caught and raised as
+`RustCall.RustPanicError`.
+
+### Options of `@rust_crate`
+
+```julia
+const B = @rust_crate "/path/to/crate" release=false features=["simd"]
+```
+
+| Option | Default | Meaning |
+|--------|---------|---------|
+| `release=true/false` | `true` | Build optimized (`--release`) or in Cargo's debug profile. Debug builds compile faster and run slower. |
+| `features=["a", "b"]` | none | Cargo features of the crate to enable. Features are Rust's compile-time switches, declared under `[features]` in `Cargo.toml`. |
+| `default_features=false` | `true` | Turn the crate's default feature set off. |
+| `cache=true/false` | `true` | Reuse a previously built library. |
+| `name="Mod"` | crate name | Name of the generated module. Defines nothing in the calling module. |
+| `submodule="Mod"` | none | Define the generated module under that name in the calling module, so `using .Mod: f` works. The form to use in a package. |
+| `pyo3_host=true` | `false` | Bind a PyO3 crate through a live Python interpreter; see [PyO3 Crates](pyo3.md). |
+
+## The `#[julia]` attribute in detail
+
+The rest of this page is reference material. It is precise rather than
+introductory, and you do not need it to get started.
+
+### What the attribute generates
+
+`#[julia]` is *additive*. Your item is left exactly as you wrote it, so other
+Rust code, tests and other attribute macros still see a normal function or
+`impl` block. Next to it the attribute emits a C-ABI wrapper under a derived
+symbol name, and Julia calls that wrapper:
 
 ```rust
-// Before: verbose FFI declaration
-#[no_mangle]
-pub extern "C" fn add(a: i32, b: i32) -> i32 {
-    a + b
-}
-
-// After: simple #[julia] attribute
 #[julia]
 fn add(a: i32, b: i32) -> i32 {
     a + b
 }
+
+// …is kept as written, and this is added beside it (simplified):
+#[no_mangle]
+pub extern "C" fn rustcall_add(a: i32, b: i32) -> i32 {
+    /* call add(a, b) inside a panic boundary */
+}
 ```
 
-The `#[julia]` attribute automatically:
-- Adds `#[no_mangle]`
-- Makes the function `pub extern "C"`
+[What makes a Rust function callable from another language](rust_primer.md#What-makes-a-Rust-function-callable-from-another-language)
+explains `#[no_mangle]` and `extern "C"`, and
+[How RustCall Calls Rust](internals.md) shows the full generated code.
 
-### For Structs
+For a struct:
 
 ```rust
 #[julia]
@@ -117,20 +261,11 @@ pub struct Point {
 }
 ```
 
-This generates:
-- `#[repr(C)]` for C-compatible layout
-- `Point_free(ptr)` - Free function
-- `Point_get_x(ptr)` / `Point_set_x(ptr, value)` - Field accessors
-- `Point_get_y(ptr)` / `Point_set_y(ptr, value)` - Field accessors
+the attribute makes the struct `pub` and `#[repr(C)]` and generates
 
-On the Julia side, you can access struct fields naturally:
-
-```julia
-p = MyModule.Point(3.0, 4.0)
-p.x      # => 3.0 (uses Point_get_x)
-p.y      # => 4.0 (uses Point_get_y)
-p.x = 5.0  # (uses Point_set_x)
-```
+- `Point_free(ptr)`, the destructor Julia's finalizer calls;
+- `Point_get_x(ptr)` / `Point_set_x(ptr, value)` and the same for `y`, which
+  back `p.x` and `p.x = …` in Julia.
 
 A field's own `#[cfg]` gates its accessors too, on top of the struct's: a
 `#[cfg(target_os = "linux")]` field has no `Point_get_*` elsewhere.
@@ -707,7 +842,7 @@ MyBindings.add(1, 2)
 
 ### `@rust_crate`
 
-Macro form for easy one-line usage.
+Scans, builds, generates and loads in one step, and returns the bindings.
 
 ```julia
 # Basic usage
@@ -716,6 +851,8 @@ const MyCrate = @rust_crate "/path/to/crate"
 # With options
 const MyBindings = @rust_crate "/path/to/crate" name="CustomName" release=true cache=true
 ```
+
+Every option is listed under [Options of `@rust_crate`](#Options-of-@rust_crate).
 
 ## Type Definitions
 
@@ -749,7 +886,7 @@ Options for binding generation.
 
 When you call `@rust_crate`, RustCall.jl:
 
-1. **Scans the crate** - Parses all `.rs` files for `#[julia]` attributes
+1. **Scans the crate** - Follows the module tree from `src/lib.rs` and records every `#[julia]` item (parsed by RustCall's Rust-side extractor, not by Julia)
 2. **Checks cache** - If a cached library exists with matching hash, uses it
 3. **Builds the crate** - If the crate already has `cdylib` crate-type, builds directly; otherwise creates a wrapper crate
 4. **Generates Julia module** - Creates wrapper functions and struct definitions
@@ -769,82 +906,8 @@ RustCall.get_cargo_cache_size()
 
 ## Supported Types
 
-The following Rust types are supported in `#[julia]` functions:
-
-| Rust Type | Julia Type |
-|-----------|------------|
-| `i8`, `i16`, `i32`, `i64` | `Int8`, `Int16`, `Int32`, `Int64` |
-| `u8`, `u16`, `u32`, `u64` | `UInt8`, `UInt16`, `UInt32`, `UInt64` |
-| `f32`, `f64` | `Float32`, `Float64` |
-| `bool` | `Bool` |
-| `usize`, `isize` | `UInt`, `Int` |
-| `()` | `Cvoid` |
-| `*const T`, `*mut T` | `Ptr{T}` |
-
-## Example: Complete Workflow
-
-### 1. Create Rust Crate
-
-```bash
-cargo new --lib my_math
-cd my_math
-```
-
-### 2. Configure Cargo.toml
-
-```toml
-[package]
-name = "my_math"
-version = "0.1.0"
-edition = "2021"
-
-[lib]
-crate-type = ["cdylib"]
-
-[dependencies]
-rustcall_julia_macros = "0.4"
-```
-
-### 3. Write Rust Code
-
-```rust
-// src/lib.rs
-use rustcall_julia_macros::julia;
-
-#[julia]
-fn factorial(n: u64) -> u64 {
-    (1..=n).product()
-}
-
-#[julia]
-fn fibonacci(n: u32) -> u64 {
-    match n {
-        0 => 0,
-        1 => 1,
-        _ => {
-            let mut a = 0u64;
-            let mut b = 1u64;
-            for _ in 2..=n {
-                let c = a + b;
-                a = b;
-                b = c;
-            }
-            b
-        }
-    }
-}
-```
-
-### 4. Use in Julia
-
-```julia
-using RustCall
-
-const MyMath = @rust_crate "/path/to/my_math"
-
-MyMath.factorial(UInt64(10))  # => 3628800
-MyMath.fibonacci(UInt32(20))  # => 6765
-```
+See [What you get in Julia](#What-you-get-in-Julia) for the overview and
+[The FFI Type Contract](type_contract.md) for the complete, generated table.
 
 ## Precompilation Support
 
@@ -1127,23 +1190,41 @@ Returns the generated Julia module code as a string.
 
 ## Troubleshooting
 
-### Crate not building
+### The crate does not build
 
-Ensure your crate has:
-- `crate-type = ["cdylib"]` in `[lib]` section
-- `rustcall_julia_macros` as a dependency
-- Valid Rust code that compiles
+The Rust compiler's output is included in the error. Check first that the
+crate builds on its own (`cargo build` in the crate directory, if you have
+Rust installed), then that `Cargo.toml` lists `rustcall_julia_macros` under
+`[dependencies]` and that `src/lib.rs` has `use rustcall_julia_macros::julia;`.
+A message such as `cannot find attribute julia in this scope` means that `use`
+line is missing.
 
-### Functions not found
+The first build needs network access to download dependencies. Offline, it
+fails while resolving them.
 
-Check that:
-- Functions have the `#[julia]` attribute
-- Function signatures use FFI-compatible types
-- The crate builds without errors
+### A function or method is missing from the bindings
 
-### Type errors
+- The item needs `#[julia]`. For a method, both the `impl` block and the
+  method need it.
+- The item may have been refused because of its signature. Run
+  `RustCall.boundary_report(crate_path)`: it names every refused item and the
+  reason.
+- A generic function or struct cannot be bound from a crate; see
+  [Generic items are refused](#Generic-items-are-refused).
+- An item behind `#[cfg(feature = "…")]` exists only when that feature is
+  enabled: pass `features=[…]`.
 
-Ensure you're using the correct Julia types that match the Rust function signatures.
+### A call raises `InexactError` or `ArgumentError`
+
+Arguments are converted to the Rust type exactly. An integer that does not fit
+(`2^40` for an `i32`) or a `Vector{Int}` passed where `&[f64]` is expected is
+refused in Julia before Rust is called. Convert on the Julia side.
+
+### The bindings do not reflect an edit
+
+`@rust_crate` rebuilds when a source file changed, but a value obtained from an
+earlier `@rust_crate` keeps the module and library it was created with. Call
+`@rust_crate` again and use the new value, or use [Hot Reload](hot_reload.md).
 
 ### Precompilation issues
 

@@ -1,26 +1,26 @@
-# RustCall.jl Examples
+# Examples
 
-This document provides practical examples of using RustCall.jl.
+A cookbook of small, complete examples. Each one shows the Rust and the Julia
+side together, and all of them except the few marked otherwise are run when
+this documentation is built, so the outputs are real.
 
+The examples use `#[julia]`, which lets you write ordinary Rust with ordinary
+Rust types. If you have not read the [Tutorial](tutorial.md) yet, start there;
+if a piece of Rust syntax is unfamiliar, see
+[Rust for Julia Users](rust_primer.md).
 
-## Table of Contents
+```@setup cookbook
+using RustCall
+```
 
-1. [Numerical Computations](#numerical-computations)
-2. [String Processing](#string-processing)
-3. [Data Structures](#data-structures)
-4. [Additional Reference Examples](#additional-reference-examples)
-5. [Performance Comparison](#performance-comparison)
-6. [Real-world Examples](#real-world-examples)
-7. [Best Practices](#best-practices)
+## Numerical kernels
 
-## Numerical Computations
+### A loop
 
-### Basic Math Functions
-
-```julia
+```@example cookbook
 rust"""
 #[julia]
-fn power(x: f64, n: i32) -> f64 {
+fn power(x: f64, n: u32) -> f64 {
     let mut result = 1.0;
     for _ in 0..n {
         result *= x;
@@ -29,13 +29,14 @@ fn power(x: f64, n: i32) -> f64 {
 }
 """
 
-# Usage - wrapper auto-generated
-result = power(2.0, 10)  # => 1024.0
+power(2.0, 10)
 ```
 
-### Fibonacci Sequence
+`for _ in 0..n` runs `n` times; `_` is Rust's "I do not need this variable".
 
-```julia
+### Fibonacci
+
+```@example cookbook
 rust"""
 #[julia]
 fn fibonacci(n: u32) -> u64 {
@@ -43,609 +44,365 @@ fn fibonacci(n: u32) -> u64 {
         return n as u64;
     }
 
-    let mut a = 0u64;
-    let mut b = 1u64;
-
+    let (mut a, mut b) = (0u64, 1u64);
     for _ in 2..=n {
-        let temp = a + b;
-        a = b;
-        b = temp;
+        (a, b) = (b, a + b);
     }
-
     b
 }
 """
 
-# Usage - wrapper auto-generated
-fib_10 = fibonacci(UInt32(10))  # => 55
-fib_20 = fibonacci(UInt32(20))  # => 6765
+Int.(fibonacci.(0:10))
 ```
 
-### Statistical Calculations
+`0u64` is a literal with an explicit type, and `n as u64` is an explicit
+conversion: Rust never converts between numeric types on its own. The Julia
+side broadcasts over the generated function like over any other.
 
-```julia
+### Statistics over an array
+
+A function can take a Julia array as a *slice* (`&[f64]`), without a copy. To
+give several values back, return a `#[julia]` struct and read its fields:
+
+```@example cookbook
 rust"""
-#[no_mangle]
-pub extern "C" fn calculate_mean(data: *const f64, len: usize) -> f64 {
-    let slice = unsafe { std::slice::from_raw_parts(data, len) };
-    let sum: f64 = slice.iter().sum();
-    sum / len as f64
+#[julia]
+pub struct Summary {
+    pub mean: f64,
+    pub variance: f64,
+    pub min: f64,
+    pub max: f64,
 }
 
-#[no_mangle]
-pub extern "C" fn calculate_variance(data: *const f64, len: usize, mean: f64) -> f64 {
-    let slice = unsafe { std::slice::from_raw_parts(data, len) };
-    let sum_sq_diff: f64 = slice.iter()
-        .map(|&x| (x - mean) * (x - mean))
-        .sum();
-    sum_sq_diff / len as f64
-}
-"""
-
-# Julia wrapper
-function compute_statistics(data::Vector{Float64})
-    len = length(data)
-    ptr = pointer(data)
-
-    mean = @rust calculate_mean(ptr, len)::Float64
-    variance = @rust calculate_variance(ptr, len, mean)::Float64
-
-    return (mean=mean, variance=variance, stddev=sqrt(variance))
-end
-
-# Usage
-data = [1.0, 2.0, 3.0, 4.0, 5.0]
-stats = compute_statistics(data)
-println("Mean: $(stats.mean), StdDev: $(stats.stddev)")
-```
-
-## String Processing
-
-### String Search and Replacement
-
-```julia
-rust"""
-#[no_mangle]
-pub extern "C" fn find_substring(haystack: *const u8, needle: *const u8) -> i32 {
-    let haystack_str = unsafe {
-        std::ffi::CStr::from_ptr(haystack as *const i8)
-            .to_str()
-            .unwrap_or("")
-    };
-    let needle_str = unsafe {
-        std::ffi::CStr::from_ptr(needle as *const i8)
-            .to_str()
-            .unwrap_or("")
-    };
-
-    match haystack_str.find(needle_str) {
-        Some(pos) => pos as i32,
-        None => -1,
+impl Summary {
+    pub fn new(xs: &[f64]) -> Self {
+        let n = xs.len() as f64;
+        let mean = xs.iter().sum::<f64>() / n;
+        let variance = xs.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>() / n;
+        let min = xs.iter().copied().fold(f64::INFINITY, f64::min);
+        let max = xs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        Self { mean, variance, min, max }
     }
 }
 """
 
-# Usage
-pos = @rust find_substring("hello world", "world")::Int32  # => 6
-pos = @rust find_substring("hello world", "xyz")::Int32    # => -1
+s = Summary([1.0, 2.0, 3.0, 4.0, 5.0])
+(mean = s.mean, std = sqrt(s.variance), min = s.min, max = s.max)
 ```
 
-### Word Counting
+`xs.iter()` is an iterator, `.map(|x| …)` applies a closure (Julia's
+`x -> …`), and `.sum::<f64>()` names the result type explicitly, which Rust
+needs here. `.fold(init, f)` is Julia's `foldl(f, xs; init)`.
 
-```julia
+## Strings
+
+`&str` is a borrowed UTF-8 string and `String` an owned one. Both are a Julia
+`String` on the Julia side.
+
+### Searching
+
+```@example cookbook
 rust"""
-#[no_mangle]
-pub extern "C" fn count_words(text: *const u8) -> u32 {
-    let text_str = unsafe {
-        std::ffi::CStr::from_ptr(text as *const i8)
-            .to_str()
-            .unwrap_or("")
-    };
+#[julia]
+fn find_substring(haystack: &str, needle: &str) -> Option<usize> {
+    haystack.find(needle)
+}
 
-    text_str.split_whitespace().count() as u32
+#[julia]
+fn count_words(text: &str) -> usize {
+    text.split_whitespace().count()
 }
 """
 
-# Usage
-word_count = @rust count_words("The quick brown fox")::UInt32  # => 4
+found   = find_substring("hello world", "world")
+missing = find_substring("hello world", "xyz")
+RustCall.unwrap(found), RustCall.is_none(missing), count_words("The quick brown fox")
 ```
 
-### UTF-8 String Processing
+`str::find` returns an `Option`: `Some(position)` or `None`, where Julia's
+`findfirst` returns a range or `nothing`. The position is a **zero-based byte
+offset**, so `6` here is Julia's index `7`.
 
-```julia
+### Returning a new string
+
+```@example cookbook
 rust"""
-#[no_mangle]
-pub extern "C" fn count_utf8_chars(s: *const u8) -> u32 {
-    let c_str = unsafe { std::ffi::CStr::from_ptr(s as *const i8) };
-    let utf8_str = std::str::from_utf8(c_str.to_bytes()).unwrap_or("");
-    utf8_str.chars().count() as u32
+#[julia]
+fn reverse_chars(s: &str) -> String {
+    s.chars().rev().collect()
 }
 
-#[no_mangle]
-pub extern "C" fn reverse_utf8_string(s: *const u8, output: *mut u8, len: usize) {
-    let c_str = unsafe { std::ffi::CStr::from_ptr(s as *const i8) };
-    let utf8_str = std::str::from_utf8(c_str.to_bytes()).unwrap_or("");
-    let reversed: String = utf8_str.chars().rev().collect();
-
-    let output_slice = unsafe { std::slice::from_raw_parts_mut(output, len) };
-    let bytes = reversed.as_bytes();
-    let copy_len = bytes.len().min(len);
-    output_slice[..copy_len].copy_from_slice(&bytes[..copy_len]);
+#[julia]
+fn shout(s: &str) -> String {
+    format!("{}!", s.to_uppercase())
 }
 """
 
-# Usage
-char_count = @rust count_utf8_chars("こんにちは")::UInt32  # => 5
+reverse_chars("こんにちは"), shout("hello")
 ```
 
-## Data Structures
+`.chars()` iterates over Unicode characters, not bytes, so the reversal is
+correct for non-ASCII text. `.collect()` gathers an iterator into the declared
+return type, here a `String`.
 
-### Array Operations
+### Validating input
 
-```julia
+```@example cookbook
 rust"""
-#[no_mangle]
-pub extern "C" fn sum_array(data: *const i32, len: usize) -> i64 {
-    let slice = unsafe { std::slice::from_raw_parts(data, len) };
-    slice.iter().map(|&x| x as i64).sum()
-}
-
-#[no_mangle]
-pub extern "C" fn max_element(data: *const i32, len: usize) -> i32 {
-    let slice = unsafe { std::slice::from_raw_parts(data, len) };
-    *slice.iter().max().unwrap_or(&0)
+#[julia]
+fn is_ipv4(text: &str) -> bool {
+    let parts: Vec<&str> = text.split('.').collect();
+    parts.len() == 4 && parts.iter().all(|part| part.parse::<u8>().is_ok())
 }
 """
 
-# Julia wrapper
-function process_array(data::Vector{Int32})
-    ptr = pointer(data)
-    len = length(data)
+is_ipv4("192.168.1.1"), is_ipv4("999.1.1.1"), is_ipv4("1.2.3")
+```
 
-    total = @rust sum_array(ptr, len)::Int64
-    maximum = @rust max_element(ptr, len)::Int32
+`part.parse::<u8>()` tries to read the text as an 8-bit unsigned integer and
+returns a `Result`, so "is a number from 0 to 255" is one expression.
+`Vec<&str>` is Rust's growable array; it is used freely *inside* a function,
+it just cannot be an argument or return type at the boundary.
 
-    return (sum=total, max=maximum)
-end
+## Arrays
 
-# Usage
+### Reading
+
+```@example cookbook
+rust"""
+#[julia]
+fn sum_wide(xs: &[i32]) -> i64 {
+    xs.iter().map(|&x| x as i64).sum()
+}
+
+#[julia]
+fn max_element(xs: &[i32]) -> Option<i32> {
+    xs.iter().copied().max()
+}
+"""
+
 arr = Int32[1, 5, 3, 9, 2]
-result = process_array(arr)
-println("Sum: $(result.sum), Max: $(result.max)")
+sum_wide(arr), RustCall.unwrap(max_element(arr)), RustCall.is_none(max_element(Int32[]))
 ```
 
-### In-place Sorting
+The maximum of an empty slice does not exist, and the Rust type says so:
+`max()` returns an `Option`. Summing into an `i64` avoids overflowing `i32`.
 
-```julia
-rust"""
-#[no_mangle]
-pub extern "C" fn sort_array(data: *mut i32, len: usize) {
-    let slice = unsafe { std::slice::from_raw_parts_mut(data, len) };
-    slice.sort();
-}
-"""
+### Modifying in place
 
-# Julia wrapper
-function sort_in_place(arr::Vector{Int32})
-    ptr = pointer(arr)
-    len = length(arr)
-    @rust sort_array(ptr, len)::Cvoid
-    return arr
-end
+`&mut [T]` is a writable view of the Julia array:
 
-# Usage
-arr = Int32[5, 2, 8, 1, 9]
-sort_in_place(arr)
-println(arr)  # => [1, 2, 5, 8, 9]
-```
-
-## Additional Reference Examples
-
-This section collects longer reference examples that previously lived in the top-level README.
-
-### Type Mapping Quick Reference
-
-| Rust Type | Julia Type |
-|-----------|------------|
-| `i8` | `Int8` |
-| `i16` | `Int16` |
-| `i32` | `Int32` |
-| `i64` | `Int64` |
-| `u8` | `UInt8` |
-| `u16` | `UInt16` |
-| `u32` | `UInt32` |
-| `u64` | `UInt64` |
-| `f32` | `Float32` |
-| `f64` | `Float64` |
-| `bool` | `Bool` |
-| `usize` | `UInt` |
-| `isize` | `Int` |
-| `()` | `Cvoid` |
-| `*const u8` | `Cstring` / `String` |
-| `*mut u8` | `Ptr{UInt8}` |
-
-### Result And Option Types
-
-```julia
-using RustCall
-
-# Result type
-ok_result = RustCall.RustResult{Int32, String}(true, Int32(42))
-RustCall.is_ok(ok_result)        # => true
-RustCall.unwrap(ok_result)       # => 42
-
-err_result = RustCall.RustResult{Int32, String}(false, "error")
-RustCall.is_err(err_result)      # => true
-RustCall.unwrap_or(err_result, Int32(0))  # => 0
-
-# Convert Result to exception
-try
-    RustCall.result_to_exception(err_result)
-catch e
-    println(e isa RustCall.RustError)      # => true
-end
-
-# Option type
-some_opt = RustCall.RustOption{Int32}(true, Int32(42))
-RustCall.is_some(some_opt)      # => true
-RustCall.unwrap(some_opt)       # => 42
-
-none_opt = RustCall.RustOption{Int32}(false, nothing)
-RustCall.is_none(none_opt)      # => true
-RustCall.unwrap_or(none_opt, Int32(0))    # => 0
-```
-
-### Ownership Types And Collections
-
-```julia
-using RustCall
-
-if RustCall.is_rust_helpers_available()
-    # RustBox - heap-allocated value (single ownership)
-    box = RustCall.RustBox(Int32(42))
-    RustCall.is_valid(box)       # => true
-    RustCall.drop!(box)
-    RustCall.is_dropped(box)     # => true
-
-    # RustRc - reference counting (single-threaded)
-    rc1 = RustCall.RustRc(Int32(100))
-    rc2 = RustCall.clone(rc1)
-    RustCall.drop!(rc1)
-    RustCall.is_valid(rc2)       # => true
-    RustCall.drop!(rc2)
-
-    # RustArc - atomic reference counting (thread-safe)
-    arc1 = RustCall.RustArc(Int32(200))
-    arc2 = RustCall.clone(arc1)
-    RustCall.drop!(arc1)
-    RustCall.is_valid(arc2)      # => true
-    RustCall.drop!(arc2)
-
-    # RustVec - growable array backed by Rust-managed memory
-    vec = RustCall.create_rust_vec(Int32[1, 2, 3])
-    vec[1] = 42
-    collect(vec)                 # => Int32[42, 2, 3]
-
-    # Bounds checking and iteration
-    try
-        vec[0]
-    catch e
-        println(e isa BoundsError)  # => true
-    end
-
-    for x in vec
-        println(x)
-    end
-
-    julia_vec = Vector(vec)      # or collect(vec)
-    println(julia_vec)
-
-    RustCall.drop!(vec)
-
-    # RustSlice - borrowed view into existing memory
-    backing = Int32[10, 20, 30]
-    slice = RustCall.RustSlice{Int32}(pointer(backing), UInt(length(backing)))
-    slice[2]                     # => 20
-
-    for x in slice
-        println(x)
-    end
-
-    Base.IteratorSize(RustCall.RustVec{Int32}) == Base.HasLength()
-    Base.eltype(RustCall.RustVec{Int32}) == Int32
-end
-```
-
-`RustBox`, `RustRc`, `RustArc`, `RustVec`, and `RustSlice` require the helper library built during package installation. If the helper library is unavailable, run `Pkg.build("RustCall")` to rebuild it.
-
-### Cargo-Backed External Libraries
-
-RustCall can build Cargo dependencies directly from inline Rust code.
-
-```julia
-using RustCall
-
-rust"""
-// cargo-deps: ndarray = "0.15"
-
-use ndarray::Array1;
-
-#[no_mangle]
-pub extern "C" fn compute_sum(data: *const f64, len: usize) -> f64 {
-    unsafe {
-        let slice = std::slice::from_raw_parts(data, len);
-        let arr = Array1::from_vec(slice.to_vec());
-        arr.sum()
-    }
-}
-"""
-
-data = [1.0, 2.0, 3.0, 4.0, 5.0]
-result = @rust compute_sum(pointer(data), length(data))::Float64
-println(result)  # => 15.0
-```
-
-Supported dependency declaration styles include:
-
-```rust
-// cargo-deps: serde = "1.0", serde_json = "1.0"
-```
-
-and:
-
-```rust
-//! ```cargo
-//! [dependencies]
-//! rand = "0.8"
-//! ```
-```
-
-You can also use structured Cargo dependency declarations:
-
-```julia
-using RustCall
-
-rust"""
-// cargo-deps: serde = { version = "1.0", features = ["derive"] }
-
-use serde::{Serialize, Deserialize};
-
-#[derive(Serialize, Deserialize)]
-pub struct Data {
-    value: i32,
-}
-
-#[no_mangle]
-pub extern "C" fn process_data(val: i32) -> i32 {
-    let data = Data { value: val };
-    data.value * 2
-}
-"""
-
-result = @rust process_data(Int32(21))::Int32
-```
-
-### Rust Structs As Julia Objects
-
-Rust structs marked with `#[julia]` can be used from Julia as generated wrapper types and functions.
-
-```julia
-using RustCall
-
+```@example cookbook
 rust"""
 #[julia]
-pub struct Person {
-    age: u32,
-    height: f64,
+fn sort_in_place(xs: &mut [i32]) {
+    xs.sort();
 }
 
-impl Person {
-    pub fn new(age: u32, height: f64) -> Self {
-        Self { age, height }
+#[julia]
+fn normalize(xs: &mut [f64]) -> Result<(), String> {
+    let norm = xs.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if norm == 0.0 {
+        return Err("cannot normalize a zero vector".to_string());
     }
-
-    pub fn greet(&self) {
-        println!("Hello, I am {} years old.", self.age);
+    for x in xs.iter_mut() {
+        *x /= norm;
     }
-
-    pub fn have_birthday(&mut self) {
-        self.age += 1;
-    }
-
-    pub fn get_height(&self) -> f64 {
-        self.height
-    }
+    Ok(())
 }
 """
 
-person = Person(30, 175.5)
-greet(person)
-have_birthday(person)
-height = get_height(person)
+a = Int32[5, 2, 8, 1, 9]
+sort_in_place(a)
+
+v = [3.0, 4.0]
+normalize(v)
+a, v
 ```
 
-Generic structs can also be exposed:
+`Result<(), String>` is the type of "nothing to return, but it can fail".
+On failure the array is left untouched and Julia gets the message:
 
-```julia
-using RustCall
+```@example cookbook
+RustCall.result_to_exception(normalize([3.0, 4.0]))   # Ok: returns nothing
+r = normalize(zeros(3))
+RustCall.is_err(r), r.value
+```
 
+The element type must match exactly (`Vector{Int32}` for `&[i32]`); see
+[Julia arrays as Rust slices](tutorial_new_features.md#Julia-arrays-as-Rust-slices)
+for views, matrices and the aliasing rules.
+
+## Bytes
+
+### A hash function
+
+```@example cookbook
 rust"""
 #[julia]
-pub struct Point<T> {
-    x: T,
-    y: T,
-}
-
-impl<T> Point<T> {
-    pub fn new(x: T, y: T) -> Self {
-        Self { x, y }
+fn fnv1a(data: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in data {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
     }
-}
-
-impl Point<f64> {
-    pub fn distance(&self) -> f64 {
-        (self.x * self.x + self.y * self.y).sqrt()
-    }
+    hash
 }
 """
 
-point = Point{Float64}(3.0, 4.0)
-dist = distance(point)  # => 5.0
-```
-
-Automatic cleanup works through Rust `Drop` integration:
-
-```julia
-using RustCall
-
-rust"""
-#[julia]
-pub struct Resource {
-    data: Vec<u8>,
-}
-
-impl Resource {
-    pub fn new(size: usize) -> Self {
-        Self { data: vec![0; size] }
-    }
-}
-
-impl Drop for Resource {
-    fn drop(&mut self) {
-        println!("Rust: Dropping Resource");
-    }
-}
-"""
-
-function use_resource()
-    res = Resource(1000)
-    nothing
-end
-```
-
-### Compilation Caching
-
-Compilation results are cached automatically for repeated Rust snippets.
-
-```julia
-using RustCall
-
-rust"""
-#[no_mangle]
-pub extern "C" fn test() -> i32 { 42 }
-"""
-
-rust"""
-#[no_mangle]
-pub extern "C" fn test() -> i32 { 42 }
-"""
-
-RustCall.clear_cache()
-RustCall.get_cache_size()
-RustCall.list_cached_libraries()
-RustCall.cleanup_old_cache(30)
-```
-
-## Performance Comparison
-
-### Julia vs Rust: Numerical Computation
-
-If you want to run this example locally, install `BenchmarkTools` first:
-
-```julia
-using Pkg
-Pkg.add("BenchmarkTools")
-```
-
-```julia
-using BenchmarkTools
-
-# Rust implementation
-rust"""
-#[no_mangle]
-pub extern "C" fn rust_sum_range(n: u64) -> u64 {
-    (1..=n).sum()
-}
-"""
-
-# Julia implementation
-function julia_sum_range(n::UInt64)
-    sum = UInt64(0)
-    for i in 1:n
-        sum += i
+function fnv1a_julia(data::Vector{UInt8})
+    hash = 0xcbf29ce484222325
+    for byte in data
+        hash = (hash ⊻ byte) * 0x100000001b3
     end
-    return sum
+    return hash
 end
 
-# Benchmark
-n = UInt64(1_000_000)
-
-println("Julia native:")
-@btime julia_sum_range($n)
-
-println("Rust (@rust):")
-@btime @rust rust_sum_range($n)::UInt64
+data = Vector{UInt8}("hello world")
+fnv1a(data) == fnv1a_julia(data)
 ```
 
-### String Processing Performance
+Julia's integer arithmetic wraps on overflow silently. Rust makes you say so:
+`wrapping_mul` is the wrapping multiplication, and a plain `*` that overflows
+is treated as a bug.
 
-```julia
+### Writing into a buffer the caller owns
+
+A Rust function cannot hand a freshly allocated `Vec<u8>` to Julia directly.
+The usual pattern is that Julia allocates the output and Rust fills it and
+reports how much it used. Here is run-length encoding:
+
+```@example cookbook
 rust"""
-#[no_mangle]
-pub extern "C" fn rust_count_words(text: *const u8) -> u32 {
-    let text_str = unsafe {
-        std::ffi::CStr::from_ptr(text as *const i8)
-            .to_str()
-            .unwrap_or("")
-    };
-    text_str.split_whitespace().count() as u32
+#[julia]
+fn rle_encode(input: &[u8], output: &mut [u8]) -> Result<usize, String> {
+    let mut written = 0;
+    let mut i = 0;
+    while i < input.len() {
+        let byte = input[i];
+        let mut run = 1;
+        while i + run < input.len() && input[i + run] == byte && run < 255 {
+            run += 1;
+        }
+        if written + 2 > output.len() {
+            return Err(format!("output buffer too small ({} bytes)", output.len()));
+        }
+        output[written] = run as u8;
+        output[written + 1] = byte;
+        written += 2;
+        i += run;
+    }
+    Ok(written)
 }
 """
 
-function julia_count_words(text::String)
-    return length(split(text))
+function rle(data::Vector{UInt8})
+    output = zeros(UInt8, 2 * length(data))        # worst case
+    n = RustCall.result_to_exception(rle_encode(data, output))
+    return resize!(output, n)
 end
 
-# Benchmark
-text = repeat("The quick brown fox jumps over the lazy dog. ", 1000)
-
-println("Julia native:")
-@btime julia_count_words($text)
-
-println("Rust (@rust):")
-@btime @rust rust_count_words($text)::UInt32
+rle(Vector{UInt8}("aaabbbbcd"))
 ```
 
-## Real-world Examples
+Indexing a slice (`input[i]`) is bounds-checked in Rust as in Julia. An
+out-of-range index is a panic, which RustCall turns into a
+`RustCall.RustPanicError` rather than a crash.
 
-### Cryptographic Hash Calculation
+## Objects that keep state
 
-```julia
+When Rust needs to own growing data, keep it inside a `#[julia]` struct. Julia
+holds a handle; the `Vec` never crosses the boundary.
+
+```@example cookbook
 rust"""
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+#[julia]
+pub struct Recorder {
+    samples: Vec<f64>,
+}
 
-#[no_mangle]
-pub extern "C" fn calculate_hash(data: *const u8, len: usize) -> u64 {
-    let slice = unsafe { std::slice::from_raw_parts(data, len) };
-    let mut hasher = DefaultHasher::new();
-    slice.hash(&mut hasher);
-    hasher.finish()
+impl Recorder {
+    pub fn new() -> Self {
+        Self { samples: Vec::new() }
+    }
+
+    pub fn record(&mut self, value: f64) {
+        self.samples.push(value);
+    }
+
+    pub fn record_all(&mut self, values: &[f64]) {
+        self.samples.extend_from_slice(values);
+    }
+
+    pub fn count(&self) -> usize {
+        self.samples.len()
+    }
+
+    pub fn average(&self) -> Option<f64> {
+        if self.samples.is_empty() {
+            None
+        } else {
+            Some(self.samples.iter().sum::<f64>() / self.samples.len() as f64)
+        }
+    }
+
+    pub fn copy_into(&self, out: &mut [f64]) -> Result<(), String> {
+        if out.len() != self.samples.len() {
+            return Err(format!("need a buffer of length {}", self.samples.len()));
+        }
+        out.copy_from_slice(&self.samples);
+        Ok(())
+    }
 }
 """
 
-# Usage
-data = Vector{UInt8}(b"hello world")
-ptr = pointer(data)
-hash_value = @rust calculate_hash(ptr, length(data))::UInt64
-println("Hash: $hash_value")
+rec = Recorder()
+record(rec, 1.5)
+record_all(rec, [2.5, 3.5, 4.5])
+
+out = zeros(Int(count(rec)))
+copy_into(rec, out)
+Int(count(rec)), RustCall.unwrap(average(rec)), out
 ```
 
-### Image Processing (Simplified)
+`&mut self` methods change the object, `&self` methods only read it. The Rust
+value is dropped automatically when the Julia object is garbage collected.
+`count` here is a new function in this module, not `Base.count`; see the note
+on method names in the [Tutorial](tutorial.md#Objects).
 
-This example demonstrates using Rust for image processing with visualization using Images.jl.
+## Errors with structure
 
-If you want to run this example locally, install `Images` first:
+Returning `Result<T, String>` gives Julia a message. Parsing and validation
+code reads naturally with the `?` operator, which returns early on an error:
+
+```@example cookbook
+rust"""
+#[julia]
+fn parse_endpoint(text: &str) -> Result<u16, String> {
+    let (host, port) = text
+        .split_once(':')
+        .ok_or_else(|| format!("`{}` has no `:port`", text))?;
+    if host.is_empty() {
+        return Err("empty host".to_string());
+    }
+    let port: u16 = port
+        .parse()
+        .map_err(|e| format!("bad port `{}`: {}", port, e))?;
+    Ok(port)
+}
+"""
+
+results = parse_endpoint.(["localhost:8080", "localhost", "localhost:http", ":80"])
+[RustCall.is_ok(r) ? Int(RustCall.unwrap(r)) : r.value for r in results]
+```
+
+## Image processing
+
+An image is a large, flat buffer of bytes, which is the ideal shape for a
+Rust kernel: Julia keeps the image types and the plotting, Rust does the
+per-pixel loop in place. This example uses Images.jl for display.
+
+To run it locally, install `Images` first:
 
 ```julia
 using Pkg
@@ -656,38 +413,25 @@ Pkg.add("Images")
 using RustCall
 using Images
 
-# Define Rust grayscale conversion function
+# Rust converts the buffer in place. `&mut [u8]` is the Julia vector's own memory.
 rust"""
-#[no_mangle]
-pub extern "C" fn grayscale_image(
-    pixels: *mut u8,
-    width: usize,
-    height: usize
-) {
-    let total_pixels = width * height * 3;  // RGB
-    let slice = unsafe { std::slice::from_raw_parts_mut(pixels, total_pixels) };
-
-    for i in 0..(width * height) {
-        let r = slice[i * 3] as f32;
-        let g = slice[i * 3 + 1] as f32;
-        let b = slice[i * 3 + 2] as f32;
+#[julia]
+fn grayscale_image(pixels: &mut [u8]) {
+    // Interleaved RGB: three bytes per pixel.
+    for rgb in pixels.chunks_exact_mut(3) {
+        let r = rgb[0] as f32;
+        let g = rgb[1] as f32;
+        let b = rgb[2] as f32;
 
         // Standard luminance formula (ITU-R BT.601)
         let gray = (0.299 * r + 0.587 * g + 0.114 * b) as u8;
 
-        slice[i * 3] = gray;
-        slice[i * 3 + 1] = gray;
-        slice[i * 3 + 2] = gray;
+        rgb[0] = gray;
+        rgb[1] = gray;
+        rgb[2] = gray;
     }
 }
 """
-
-# Julia wrapper for grayscale conversion
-function convert_to_grayscale!(pixels::Vector{UInt8}, width::Int, height::Int)
-    ptr = pointer(pixels)
-    @rust grayscale_image(ptr, UInt(width), UInt(height))::Cvoid
-    return pixels
-end
 
 # Create a sample RGB image (gradient with colors)
 function create_sample_image(width, height)
@@ -747,7 +491,7 @@ Now let's convert it to grayscale using Rust:
 ```@example imageprocessing
 # Process the image with Rust
 pixels = image_to_bytes(original_img)
-convert_to_grayscale!(pixels, width, height)
+grayscale_image(pixels)
 grayscale_img = bytes_to_image(pixels, width, height)
 nothing # hide
 ```
@@ -784,272 +528,170 @@ comparison = [original_img grayscale_img]
     julia --project=docs -e 'using LiveServer; servedocs()'
     ```
 
-### Network Processing (Simplified)
+## Using crates from crates.io
+
+*Not run in this build: it downloads from the network.*
+
+A block can depend on published crates. Name them in a `// cargo-deps:`
+comment and RustCall builds the block with Cargo:
 
 ```julia
 rust"""
-#[no_mangle]
-pub extern "C" fn validate_ip_address(ip: *const u8) -> bool {
-    let ip_str = unsafe {
-        std::ffi::CStr::from_ptr(ip as *const i8)
-            .to_str()
-            .unwrap_or("")
-    };
+// cargo-deps: regex = "1"
 
-    let parts: Vec<&str> = ip_str.split('.').collect();
-    if parts.len() != 4 {
-        return false;
-    }
+use regex::Regex;
 
-    for part in parts {
-        match part.parse::<u8>() {
-            Ok(num) if num <= 255 => continue,
-            _ => return false,
-        }
-    }
-
-    true
+#[julia]
+fn count_matches(pattern: &str, text: &str) -> Result<usize, String> {
+    let re = Regex::new(pattern).map_err(|e| e.to_string())?;
+    Ok(re.find_iter(text).count())
 }
 """
 
-# Usage
-is_valid = @rust validate_ip_address("192.168.1.1")::Bool  # => true
-is_valid = @rust validate_ip_address("999.999.999.999")::Bool  # => false
+RustCall.unwrap(count_matches(raw"\d+", "a1 b22 c333"))   # => 3
 ```
 
-### Data Compression (Simplified)
+Dependencies use Cargo's own syntax, so features and several crates work too:
 
-```julia
-rust"""
-#[no_mangle]
-pub extern "C" fn simple_compress(
-    input: *const u8,
-    input_len: usize,
-    output: *mut u8,
-    output_capacity: usize
-) -> usize {
-    let input_slice = unsafe { std::slice::from_raw_parts(input, input_len) };
-    let output_slice = unsafe { std::slice::from_raw_parts_mut(output, output_capacity) };
-
-    let mut output_idx = 0;
-    let mut i = 0;
-
-    while i < input_len && output_idx + 1 < output_capacity {
-        let mut count = 1;
-        let current = input_slice[i];
-
-        // Count consecutive identical characters
-        while i + count < input_len && input_slice[i + count] == current && count < 255 {
-            count += 1;
-        }
-
-        if output_idx + 2 <= output_capacity {
-            output_slice[output_idx] = count as u8;
-            output_slice[output_idx + 1] = current;
-            output_idx += 2;
-        }
-
-        i += count;
-    }
-
-    output_idx
-}
-"""
-
-# Julia wrapper
-function compress_data(data::Vector{UInt8})
-    input_len = length(data)
-    output_capacity = input_len * 2  # Worst case
-    output = Vector{UInt8}(undef, output_capacity)
-
-    input_ptr = pointer(data)
-    output_ptr = pointer(output)
-
-    compressed_len = @rust simple_compress(
-        input_ptr, input_len,
-        output_ptr, output_capacity
-    )::UInt
-
-    return output[1:compressed_len]
-end
-
-# Usage
-data = Vector{UInt8}(b"aaabbbcccddd")
-compressed = compress_data(data)
-println("Original: $(length(data)) bytes")
-println("Compressed: $(length(compressed)) bytes")
+```rust
+// cargo-deps: serde = { version = "1.0", features = ["derive"] }, serde_json = "1.0"
 ```
 
-## Best Practices
+or, for a longer list, a manifest section in a documentation comment:
 
-### 1. Memory Safety
+```rust
+//! ```cargo
+//! [dependencies]
+//! rand = "0.8"
+//! ndarray = "0.15"
+//! ```
+```
 
-When working with pointers, ensure Julia memory remains valid using `GC.@preserve`:
+The first build downloads and compiles the dependencies and can take a minute.
+After that the compiled library is cached.
 
-```julia
-using RustCall
+## The same thing by hand: `extern "C"` and `@rust`
 
-# Define a Rust function that processes an array
+Everything above can be written without `#[julia]`, in the classic C-ABI
+style. You then pass raw pointers and lengths yourself, and the Rust side
+rebuilds the slice in `unsafe` code:
+
+```@example cookbook
 rust"""
 #[no_mangle]
-pub extern "C" fn sum_array(arr: *const i32, len: usize) -> i32 {
-    let slice = unsafe { std::slice::from_raw_parts(arr, len) };
-    slice.iter().sum()
+pub extern "C" fn sum_array(data: *const i32, len: usize) -> i64 {
+    let slice = unsafe { std::slice::from_raw_parts(data, len) };
+    slice.iter().map(|&x| x as i64).sum()
 }
 """
 
-function safe_array_sum(arr::Vector{Int32})
-    if isempty(arr)
-        return Int32(0)
-    end
-
-    ptr = pointer(arr)
-    len = length(arr)
-
-    # GC.@preserve ensures arr remains valid during Rust call
+function sum_by_hand(arr::Vector{Int32})
     GC.@preserve arr begin
-        result = @rust sum_array(ptr, UInt(len))::Int32
+        @rust sum_array(pointer(arr), UInt(length(arr)))::Int64
     end
-
-    return result
 end
 
-# Test the safe function
-arr = Int32[1, 2, 3, 4, 5]
-result = safe_array_sum(arr)
-println("Sum of $arr = $result")  # => Sum of [1, 2, 3, 4, 5] = 15
+sum_by_hand(Int32[1, 5, 3, 9, 2])
 ```
 
-### 2. Error Handling
+Compared with `sum_wide` above, you are now responsible for three things that
+`#[julia]` did for you:
 
-Use error codes or Result types for safe error handling:
+- **`GC.@preserve`.** `pointer(arr)` is a bare address. Without the
+  `GC.@preserve` block Julia may free or move `arr` while Rust is reading it.
+- **Exact types.** `UInt(length(arr))` must match `usize`; nothing is
+  converted.
+- **Panics.** A panic in a hand-written `extern "C"` function aborts the
+  Julia process.
 
-```julia
-rust"""
-#[no_mangle]
-pub extern "C" fn safe_divide(a: i32, b: i32) -> i32 {
-    if b == 0 {
-        return -1;  // Indicate error
-    }
-    a / b
-}
-"""
+Use this style to bind existing C-style Rust, and prefer `#[julia]` for new
+code.
 
-function divide_safely(a::Int32, b::Int32)
-    result = @rust safe_divide(a, b)::Int32
-    if result == -1
-        throw(DomainError(b, "Division by zero"))
-    end
-    return result
-end
+## Measuring performance
 
-# Test successful division
-divide_safely(Int32(10), Int32(2))  # => 5
-
-# Test error handling
-try
-    divide_safely(Int32(10), Int32(0))
-catch e
-    println("Caught error: $e")  # => DomainError
-end
-```
-
-### 3. Performance Optimization
-
-Benchmark to compare Julia and Rust performance:
-
-If you want to run this example locally, install `BenchmarkTools` first:
-
-```julia
-using Pkg
-Pkg.add("BenchmarkTools")
-```
+*Not run in this build.*
 
 ```julia
 using BenchmarkTools
 
-# Rust implementation for computing sum of squares
 rust"""
-#[no_mangle]
-pub extern "C" fn sum_of_squares_rust(arr: *const f64, len: usize) -> f64 {
-    let slice = unsafe { std::slice::from_raw_parts(arr, len) };
-    slice.iter().map(|x| x * x).sum()
+#[julia]
+fn sum_of_squares(xs: &[f64]) -> f64 {
+    xs.iter().map(|x| x * x).sum()
 }
 """
 
-# Julia implementation
-function sum_of_squares_julia(arr::Vector{Float64})
-    sum(x -> x * x, arr)
-end
+julia_sum_of_squares(xs) = sum(x -> x * x, xs)
 
-# Wrapper for Rust
-function sum_of_squares_rust_wrapper(arr::Vector{Float64})
-    GC.@preserve arr begin
-        @rust sum_of_squares_rust(pointer(arr), UInt(length(arr)))::Float64
-    end
-end
-
-# Benchmark
-data = rand(10000)
-@btime sum_of_squares_julia($data)
-@btime sum_of_squares_rust_wrapper($data)
+data = rand(10_000)
+@btime julia_sum_of_squares($data)
+@btime sum_of_squares($data)
 ```
 
-**Performance tips:**
-- Use `GC.@preserve` for large arrays to prevent garbage collection during Rust calls
-- Let `rustc` optimize the Rust side (`-C opt-level`, see `RustCall.RustCompiler`)
-- Leverage caching to avoid recompilation (functions are cached automatically)
-- Always specify explicit types in `@rust` macro calls
+Three things to keep in mind when you read such numbers:
 
-### 4. Debugging
+- **Julia is already fast.** For a simple numeric loop, well-typed Julia and
+  Rust compile to similar machine code. Expect parity, not a miracle. Rust
+  earns its place through libraries you do not want to rewrite, predictable
+  memory use, and code whose safety you want the compiler to check.
+- **A call has a fixed cost.** Crossing the boundary costs a few nanoseconds
+  for a `#[julia]` function. That is negligible for a function that does real
+  work and dominant for one that adds two numbers. Move the loop to the Rust
+  side and pass the whole array, rather than calling Rust once per element.
+- **Annotate `@rust` calls.** `@rust f(x)::T` is a direct call; `@rust f(x)`
+  without the annotation is resolved dynamically and is far slower.
 
-When issues occur, use these debugging techniques:
+The [Performance Guide](performance.md) has measurements and details.
+
+## Ownership types
+
+*Not run in this build: these need the helper library built by
+`Pkg.build("RustCall")`.*
+
+RustCall can also hold standalone Rust smart pointers and vectors. Most code
+never needs them, since `#[julia]` structs cover the common case, but they are
+useful for experimenting with Rust's ownership model from the REPL:
 
 ```julia
-# Check cache status
-cache_size = RustCall.get_cache_size()
-println("Current cache size: $cache_size libraries")
+using RustCall
 
-# List cached libraries
-cached = RustCall.list_cached_libraries()
-println("Cached libraries: $(length(cached)) items")
+# RustBox: one owner, freed once.
+box = RustCall.RustBox(Int32(42))
+RustCall.is_valid(box)       # => true
+RustCall.drop!(box)
+RustCall.is_dropped(box)     # => true
 
-# Clear cache if needed
-RustCall.clear_cache()
-println("Cache cleared")
+# RustRc / RustArc: shared ownership by reference counting.
+rc1 = RustCall.RustRc(Int32(100))
+rc2 = RustCall.clone(rc1)    # a second owner of the same value
+RustCall.drop!(rc1)
+RustCall.is_valid(rc2)       # => true: the value lives until the last owner goes
+RustCall.drop!(rc2)
+
+# RustVec: a growable array whose memory Rust manages.
+vec = RustCall.create_rust_vec(Int32[1, 2, 3])
+vec[1] = 42
+collect(vec)                 # => Int32[42, 2, 3]
+RustCall.drop!(vec)
 ```
 
-### 5. Type Safety with Generics
+`RustArc` is the thread-safe variant of `RustRc`. See
+[Types, memory and ownership](reference/ownership.md) for the full API.
 
-Use generics for type-safe, reusable code:
+## Checklist
 
-```julia
-# Register a generic identity function
-code = """
-pub fn identity<T>(x: T) -> T {
-    x
-}
-"""
+- Prefer `#[julia]` functions with `&str`, `String`, `&[T]`, `&mut [T]`,
+  `Result` and `Option` in their signatures. They are checked and converted
+  for you.
+- Pass whole arrays and loop in Rust. Do not call across the boundary per
+  element.
+- Return `Result` for failures a caller should handle. Leave panics for bugs.
+- To return several values, return a `#[julia]` struct. To return a large
+  buffer, let Julia allocate it and have Rust fill a `&mut [T]`.
+- Keep growing or long-lived Rust data inside a `#[julia]` struct.
+- When a block does not compile, read the `help:` lines of the compiler
+  message first. [Common first errors](rust_primer.md#Common-first-errors)
+  translates the usual ones.
 
-RustCall.register_generic_function("identity", code, [:T])
-
-# Call with different types - automatic monomorphization
-result_i32 = RustCall.call_generic_function("identity", Int32(42))  # => 42
-result_f64 = RustCall.call_generic_function("identity", 3.14)       # => 3.14
-
-
-println("identity(Int32(42)) = $result_i32")
-println("identity(3.14) = $result_f64")
-```
-
-## Summary
-
-These examples demonstrate practical usage of RustCall.jl:
-
-- **Memory Safety**: Always use `GC.@preserve` when passing Julia arrays to Rust
-- **Error Handling**: Use error codes or Result types instead of panics
-- **Performance**: Benchmark and optimize with explicit types
-- **Debugging**: Use cache management functions to troubleshoot
-- **Generics**: Leverage automatic monomorphization for type-safe code
-
-For more detailed information, see the [Tutorial](tutorial.md) and [API Reference](api.md).
+For a project of real size, continue with
+[Safe Rust/Julia Integration](integration_guide.md).

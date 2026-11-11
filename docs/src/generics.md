@@ -1,146 +1,228 @@
-# Generics Support in RustCall.jl
+# Generics
 
-RustCall.jl now supports calling generic Rust functions from Julia. This document explains how to use this feature.
+A Rust *generic* function is written once for a whole family of types, like a
+Julia method with a type parameter:
+
+```rust
+fn largest<T: PartialOrd + Copy>(a: T, b: T) -> T {
+    if a > b { a } else { b }
+}
+```
+
+```julia
+largest(a::T, b::T) where {T} = a > b ? a : b      # the Julia counterpart
+```
+
+Both languages compile a separate specialized version for each concrete `T`
+that is actually used. Rust calls this *monomorphization*. The difference is
+*when*: Julia specializes at run time, the first time a new type shows up,
+while Rust specializes when the library is compiled. A compiled Rust library
+therefore contains no generic functions at all, only the instantiations that
+were requested at build time, and there is nothing for Julia to call until a
+concrete `T` has been chosen.
+
+RustCall closes that gap by doing for Rust what Julia does for itself: **the
+first time you call a generic Rust function with a new combination of types, it
+compiles that instantiation, caches it, and calls it.** This page explains how
+to use that and what its limits are. If the syntax above is unfamiliar, read
+[Generics in Rust for Julia Users](rust_primer.md#Generics) first.
 
 ```@setup generics
 using RustCall
 ```
 
-## Overview
+## A first generic function
 
-Generic functions in Rust use type parameters (e.g., `fn identity<T>(x: T) -> T`). RustCall.jl automatically:
-
-1. **Detects** generic functions in `rust""` blocks
-2. **Monomorphizes** them with specific type parameters when called
-3. **Caches** the monomorphized instances for reuse
-
-## Basic Usage
-
-### Dependency-backed specializations
-
-Generics declared in a `rust"""` block with `// cargo-deps:` are specialized
-through Cargo, including generic bodies containing `#[cfg]` or `cfg!`.
-Registration retains the dependency specifications, tracked build environment
-and exact Cargo.lock contents. Later specializations replay that environment
-and lockfile even if the session's environment or persisted lockfile changes.
-The artifact identity also includes the dependency contents and build context.
-The generated root package name is captured with the lockfile: changing a path
-dependency's source creates a new specialization without invalidating that root
-entry. Existing generic objects continue to use their original image's members.
-
-If the effective Cargo configuration files change after registration, evaluate
-the original block again: specialization rejects the mismatched configuration
-instead of compiling already-pruned source under different settings. Generic
-struct members, including allocation and destruction, share one Cargo-built
-image per instantiation. Blocks without dependencies still use direct rustc.
-
-### Automatic Detection
-
-When you define a generic function in a `rust""` block, RustCall.jl automatically detects and registers it:
-
-```julia
-
-rust"""
-pub fn identity<T>(x: T) -> T {
-    x
-}
-"""
-
-# The function is automatically registered as generic
-# When you call it, it's automatically monomorphized
-result = @rust identity(Int32(42))::Int32  # => 42
-result = @rust identity(Float64(3.14))::Float64  # => 3.14
-```
-
-### Which `f` a call reaches
-
-`@rust f(x)` resolves `f` the same way whether it is annotated or not, and
-whether `f` turns out to be generic or not:
-
-1. **The calling module's own `rust"""` blocks**, the most recently run first
-   (for `@rust lib::f(x)`, that library alone). Each block is asked whether it
-   exports a function `f` or registered a generic `f`, both at once, and the
-   first block that defines `f` answers — calling the function or
-   specializing the generic. So a later block of the module redefines `f`,
-   whichever kind either definition is.
-2. **Otherwise**, a generic registered process-wide under that name —
-   `register_generic_function`, or another module's block — and then a
-   function another loaded block exports (refused when two libraries do).
-
-So two modules may each define a generic `f`, or one a generic `f` and the
-other a plain `f`, and each module's `@rust f(x)` reaches its own.
-`call_generic_function("f", ...)` names no module and reads the process-wide
-registration: the one made last.
-
-A generic `#[julia]` struct's constructor, methods, accessors and destructor
-are not looked up by name at all: they are the members the block that defines
-the struct registered. Two modules may each define a generic `Boxed`, and each
-module's `Boxed{Int32}(x)` builds its own, from its own source; a later block
-exporting a plain function called `Boxed_new` does not change that.
-
-### Manual Registration
-
-You can also register a generic function by hand, from source text that is not
-loaded through `rust"""`. The source is ordinary Rust: the bound
-`T: std::ops::Add<Output = T>` is what lets `a + b` compile, and no
-`#[no_mangle]` / `extern "C"` is needed, because the extractor emits the
-exported wrapper for each instantiation:
+Define the function in a `rust"""` block and call it with `@rust`:
 
 ```@example generics
-code = """
-pub fn generic_add<T: std::ops::Add<Output = T>>(a: T, b: T) -> T {
-    a + b
+rust"""
+pub fn largest<T: PartialOrd + Copy>(a: T, b: T) -> T {
+    if a > b { a } else { b }
 }
 """
 
-RustCall.register_generic_function("generic_add", code, [:T])
-
-# Call with different types; each new type is monomorphized on first use
-sum_i32 = RustCall.call_generic_function("generic_add", Int32(10), Int32(20))  # => 30
-sum_f64 = RustCall.call_generic_function("generic_add", 1.5, 2.25)             # => 3.75
-(sum_i32, sum_f64)
+(@rust largest(Int32(3), Int32(7))), (@rust largest(2.5, 1.5))
 ```
 
+Two instantiations were compiled here, `largest::<i32>` and `largest::<f64>`,
+each on its first call. Calling again with the same types reuses them, in this
+session and (through the on-disk cache) in later ones.
 
-## How It Works
+Three things differ from the non-generic functions of the
+[Tutorial](tutorial.md):
 
-### 1. Type Parameter Inference
+- **A generic function is called through `@rust`.** No Julia function named
+  `largest` is defined, with or without `#[julia]`, because there is no single
+  compiled function for it to call.
+- **The type parameters are inferred from the Julia arguments**, so the
+  arguments must have exactly the types you mean: `Int32(3)`, not `3`, if you
+  want `T = i32`. A plain `3` is an `Int64` and selects `T = i64`.
+- **The return type annotation is optional.** `@rust largest(2.5, 1.5)::Float64`
+  is accepted, but RustCall already knows the instantiation's return type.
 
-When you call a generic function, RustCall.jl infers type parameters from the argument types:
+Arguments that disagree about `T` are refused before anything is compiled:
 
-```julia
-# For function: fn identity<T>(x: T) -> T
-# Called with: identity(Int32(42))
-# Type parameter T is inferred as Int32
+```@example generics
+try
+    @rust largest(1, 2.5)
+catch err
+    sprint(showerror, err)
+end
 ```
 
-### 2. Monomorphization
+## Trait bounds
 
-The generic function is specialized (monomorphized) with the inferred types:
+The part of the signature after the colon, `T: PartialOrd + Copy`, is a *trait
+bound*, and it is the main thing a Julia user has to get used to.
+
+In Julia, `a > b` inside a generic method is simply tried, and fails with a
+`MethodError` at run time if the type has no `>`. Rust checks the generic
+function *once, before any type is chosen*, so it must be told what every `T`
+is guaranteed to support. A *trait* is a named capability, and the bound lists
+the capabilities the body relies on. Leaving one out is a compile error, and
+the compiler says which:
+
+```text
+error[E0369]: cannot add `T` to `T`
+ help: consider restricting type parameter `T` with trait `Add`
+   |
+   | pub fn add<T: std::ops::Add<Output = T>>(a: T, b: T) -> T {
+   |             +++++++++++++++++++++++++++
+```
+
+The bounds you will need most often for numeric code:
+
+| Bound | Allows in the body | Julia intuition |
+|-------|--------------------|-----------------|
+| `Copy` | using a value more than once without `.clone()` | every `isbits` number |
+| `PartialOrd` | `<`, `>`, `<=`, `>=` | `isless` is defined |
+| `PartialEq` | `==`, `!=` | `==` is defined |
+| `std::ops::Add<Output = T>` | `a + b`, giving a `T` | `+` is defined and closed over `T` |
+| `std::ops::Mul<Output = T>` | `a * b`, giving a `T` | `*` likewise (`Sub`, `Div` are analogous) |
+| `Default` | `T::default()` | `zero(T)` for numbers |
+| `std::fmt::Display` | `format!("{}", x)` | `print` is defined |
+
+Several bounds are joined with `+`. A long list can move to a `where` clause
+after the signature, which means the same thing:
 
 ```rust
-// Original: fn identity<T>(x: T) -> T { x }
-// Specialized: fn identity_i32(x: i32) -> i32 { x }
+pub fn dot2<T>(a: T, b: T, c: T, d: T) -> T
+where
+    T: std::ops::Mul<Output = T> + std::ops::Add<Output = T> + Copy,
+{
+    a * b + c * d
+}
 ```
 
-### 3. Compilation and Caching
+Every integer and floating-point type of [the type table](rust_primer.md#Types)
+satisfies all the bounds above. RustCall does not check the bounds itself: if
+you call a generic with a type that does not satisfy them, the Rust compiler
+rejects the instantiation and you see its message in a
+`RustCall.CompilationError`.
 
-The specialized function is compiled and cached. Subsequent calls with the same type parameters reuse the cached version.
+## More than one type parameter
 
-## Advanced Usage
+Each parameter is inferred independently from the arguments that mention it:
 
-### Multiple Type Parameters
-
-```julia
+```@example generics
 rust"""
-pub fn first<T, U>(a: T, b: U) -> T {
+pub fn pick_first<T, U>(a: T, _b: U) -> T {
     a
 }
 """
 
-# Type parameters are inferred from arguments
-result = @rust first(Int32(10), Float64(3.14))::Int32  # => 10
+@rust pick_first(Int32(10), 2.5)
 ```
+
+## Generic structs
+
+A `#[julia]` struct may have type parameters. On the Julia side it becomes a
+parametric type, and you choose the parameter explicitly when constructing:
+
+```@example generics
+rust"""
+#[julia]
+pub struct Span<T> {
+    lo: T,
+    hi: T,
+}
+
+impl<T: Copy> Span<T> {
+    pub fn new(lo: T, hi: T) -> Self {
+        Self { lo, hi }
+    }
+
+    pub fn flip(&mut self) {
+        let tmp = self.lo;
+        self.lo = self.hi;
+        self.hi = tmp;
+    }
+
+    pub fn low(&self) -> T {
+        self.lo
+    }
+}
+"""
+
+s = Span{Int32}(1, 9)
+flip(s)
+low(s), s.hi, typeof(s)
+```
+
+`impl<T: Copy> Span<T>` reads "for every `T` that is `Copy`, these are the
+methods of `Span<T>`". Unlike generic *functions*, the methods of a generic
+struct are ordinary Julia functions (`flip`, `low`), because the object you
+pass already fixes `T`. Write the parameter in the constructor call
+(`Span{Int32}(1, 9)`); it is not inferred from the arguments.
+
+All wrappers of one instantiation, constructor and destructor included, are
+compiled into one library. [Struct Mapping](struct_mapping.md#Generic-Structs)
+has more.
+
+## What happens on a call
+
+1. **Registration.** When the `rust"""` block is evaluated, the Rust-side
+   parser reports each generic function in its manifest. Nothing is exported
+   for it; RustCall stores the block's source and the function's signature in
+   a registry.
+2. **Inference.** `@rust largest(Int32(3), Int32(7))` matches the Julia
+   argument types against the signature and finds `T = i32`.
+3. **Specialization.** If that instantiation does not exist yet, the
+   `rustcall-extract specialize` tool rewrites the function with `T` replaced
+   by `i32` and adds an exported C-ABI wrapper:
+
+   ```rust
+   // registered:   pub fn largest<T: PartialOrd + Copy>(a: T, b: T) -> T { … }
+   // instantiated: pub fn largest_i32(a: i32, b: i32) -> i32 { … }
+   //               + #[no_mangle] pub extern "C" fn rustcall_largest_i32_…(…)
+   ```
+
+4. **Compilation and caching.** The instantiation is compiled into a small
+   library of its own, stored in the artifact cache, and loaded.
+5. **The call.** From here on it is an ordinary call into that library.
+
+Steps 3 and 4 make the *first* call with a new type slow (a `rustc` run).
+[Compiling several instantiations at once](@ref) shows how to pay that cost up
+front, and [Implementation Details](#Implementation-Details) describes the
+machinery.
+
+## What is not supported
+
+- **A parameter is inferred only from an argument that is exactly that
+  parameter** (`x: T`), and is bound to a scalar: an integer or floating-point
+  type, or `bool`. A generic slice such as `xs: &[T]` is not bound from a
+  Julia `Vector`; write a non-generic function per element type, or a generic
+  struct that owns the data.
+- **`#[julia]` generics in a separate crate.** Monomorphization on demand needs
+  the source, so it is a feature of `rust"""` blocks. In a crate bound with
+  `@rust_crate`, a generic `#[julia]` item is a compile error; expose a
+  concrete function per type, or see
+  [Explicit instances of generic types](crate_bindings.md#Explicit-instances-of-generic-types).
+- **Generic methods.** A method with type parameters of its own is refused;
+  see [Limitations](#Limitations) below for this and for the finer points.
+
+## Advanced Usage
 
 ### Explicit Type Parameters
 
@@ -174,9 +256,77 @@ instantiation; [`RustCall.precompile_generics`](@ref) builds several
 instantiations at once (see [Compiling several instantiations at
 once](@ref)).
 
-## Trait Bounds Support
+### Manual Registration
 
-RustCall.jl now supports parsing trait bounds in generic functions. This includes:
+You can also register a generic function by hand, from source text that is not
+loaded through `rust"""`. The source is ordinary Rust: the bound
+`T: std::ops::Add<Output = T>` is what lets `a + b` compile, and no
+`#[no_mangle]` / `extern "C"` is needed, because the extractor emits the
+exported wrapper for each instantiation:
+
+```@example generics
+code = """
+pub fn generic_add<T: std::ops::Add<Output = T>>(a: T, b: T) -> T {
+    a + b
+}
+"""
+
+RustCall.register_generic_function("generic_add", code, [:T])
+
+# Call with different types; each new type is monomorphized on first use
+sum_i32 = RustCall.call_generic_function("generic_add", Int32(10), Int32(20))  # => 30
+sum_f64 = RustCall.call_generic_function("generic_add", 1.5, 2.25)             # => 3.75
+(sum_i32, sum_f64)
+```
+
+
+### Which `f` a call reaches
+
+`@rust f(x)` resolves `f` the same way whether it is annotated or not, and
+whether `f` turns out to be generic or not:
+
+1. **The calling module's own `rust"""` blocks**, the most recently run first
+   (for `@rust lib::f(x)`, that library alone). Each block is asked whether it
+   exports a function `f` or registered a generic `f`, both at once, and the
+   first block that defines `f` answers — calling the function or
+   specializing the generic. So a later block of the module redefines `f`,
+   whichever kind either definition is.
+2. **Otherwise**, a generic registered process-wide under that name —
+   `register_generic_function`, or another module's block — and then a
+   function another loaded block exports (refused when two libraries do).
+
+So two modules may each define a generic `f`, or one a generic `f` and the
+other a plain `f`, and each module's `@rust f(x)` reaches its own.
+`call_generic_function("f", ...)` names no module and reads the process-wide
+registration: the one made last.
+
+A generic `#[julia]` struct's constructor, methods, accessors and destructor
+are not looked up by name at all: they are the members the block that defines
+the struct registered. Two modules may each define a generic `Boxed`, and each
+module's `Boxed{Int32}(x)` builds its own, from its own source; a later block
+exporting a plain function called `Boxed_new` does not change that.
+
+### Dependency-backed specializations
+
+Generics declared in a `rust"""` block with `// cargo-deps:` are specialized
+through Cargo, including generic bodies containing `#[cfg]` or `cfg!`.
+Registration retains the dependency specifications, tracked build environment
+and exact Cargo.lock contents. Later specializations replay that environment
+and lockfile even if the session's environment or persisted lockfile changes.
+The artifact identity also includes the dependency contents and build context.
+The generated root package name is captured with the lockfile: changing a path
+dependency's source creates a new specialization without invalidating that root
+entry. Existing generic objects continue to use their original image's members.
+
+If the effective Cargo configuration files change after registration, evaluate
+the original block again: specialization rejects the mismatched configuration
+instead of compiling already-pruned source under different settings. Generic
+struct members, including allocation and destruction, share one Cargo-built
+image per instantiation. Blocks without dependencies still use direct rustc.
+
+## How trait bounds are recorded
+
+RustCall reads the trait bounds of a generic function from the manifest. All of Rust's spellings are understood:
 
 1. **Inline bounds**: `fn foo<T: Copy + Clone, U: Debug>(x: T) -> U`
 2. **Where clauses**: `fn foo<T, U>(x: T) -> U where T: Copy, U: Debug`
@@ -233,7 +383,7 @@ RustCall.register_generic_function("add_legacy", code, [:T], Dict(:T => "Copy + 
 
 ### Trait Bounds Validation
 
-While trait bounds are now properly parsed and stored, runtime validation (checking if a Julia type satisfies Rust trait bounds) is not yet implemented. The bounds are stored for:
+While trait bounds are parsed and stored, runtime validation (checking if a Julia type satisfies Rust trait bounds) is not yet implemented. The bounds are stored for:
 
 1. Documentation and introspection
 2. Future code generation improvements
