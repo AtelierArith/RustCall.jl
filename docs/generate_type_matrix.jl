@@ -1,4 +1,4 @@
-# Generates `docs/src/type_contract.md` from the FFI contract itself
+# Generates `docs/src/en/type_contract.md` from the FFI contract itself
 # (`src/ffi/ffi_contract.jl`), so the documented matrix cannot drift from the table
 # generated code actually consults (#276, #245 item 4).
 #

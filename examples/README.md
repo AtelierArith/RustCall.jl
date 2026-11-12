@@ -26,13 +26,13 @@ Before running the examples, ensure you have:
 | [SampleCratePyO3Only.jl](./SampleCratePyO3Only.jl/) | Julia package with a **PyO3-only** crate (no RustCall attribute, no `pub`) embedded under `deps/sample_crate_pyo3_only/`, bound through RustCall's Python-host path | Advanced | `#[pyfunction]` / `#[pyclass]` without `#[julia]`, the crate built as the Python extension it is and imported through PythonCall, `PyResult` → `RustResult` with the real message |
 | [RustCrateMacroPyO3Only.jl](./RustCrateMacroPyO3Only.jl/) | The same **PyO3-only** shape, embedded under `deps/macro_pyo3_only/`, bound with the **`@rust_crate` macro** at the package's top level | Advanced | `@rust_crate ... submodule="Bindings" pyo3_host=true` in a package, bindings generated while the package is precompiled, the crate built and imported lazily on first call, nothing generated in the repository |
 | [Pyo3HostImport.jl](./Pyo3HostImport.jl/) | Two **PyO3-only** crates under `deps/macro_crate/` and `deps/direct_crate/`, bound through the host path with the **`@rust_crate` macro** and with **`RustCall.pyo3_host_import`** respectively | Advanced | The two host-path front doors side by side; the direct import plus an explicit inner constructor work around a one-argument `#[new]` the macro cannot bind ([#433](https://github.com/AtelierArith/RustCall.jl/issues/433)) |
-| [SafeLedger.jl](./SafeLedger.jl/) | The safe integration pattern of the [integration guide](../docs/src/integration_guide.md): a facade crate under `deps/safe_ledger/` exposes one opaque, Rust-owned `#[julia]` struct, bound with `@rust_crate`, behind a small Julia API | Intermediate | Opaque handle, `Result` → Julia exception, explicit `close` and do-block release, unload behaviour |
+| [SafeLedger.jl](./SafeLedger.jl/) | The safe integration pattern of the [integration guide](../docs/src/en/integration_guide.md): a facade crate under `deps/safe_ledger/` exposes one opaque, Rust-owned `#[julia]` struct, bound with `@rust_crate`, behind a small Julia API | Intermediate | Opaque handle, `Result` → Julia exception, explicit `close` and do-block release, unload behaviour |
 | [pluto/hello.jl](./pluto/hello.jl) | Pluto notebook with a `// cargo-deps:` block | Beginner | Inline Rust in Pluto, run headlessly in CI |
 
 Every `*.jl` directory is a Julia package: `Pkg.test()` runs its tests, and the
 `Examples` GitHub workflow runs them for every push. Each package is
 **self-contained**: the Rust crate it binds is a plain Cargo crate under its own
-`deps/<crate>/` (the layout the [Precompilation Support](../docs/src/precompilation.md)
+`deps/<crate>/` (the layout the [Precompilation Support](../docs/src/en/precompilation.md)
 guide prescribes). Most keep Rust and Julia in separate files; the inline
 `rust"""` (the `@rust_str` macro) is the subject of `MyExample.jl`, and
 `SampleCrate.jl` and `RustCrateMacro.jl` use it deliberately beside a crate to
@@ -442,9 +442,9 @@ We recommend learning RustCall.jl in this order:
      ([#433](https://github.com/AtelierArith/RustCall.jl/issues/433))
 
 8. **Read the documentation**
-   - [Tutorial](../docs/src/tutorial.md)
-   - [Crate Bindings (Phase 6)](../docs/src/crate_bindings.md)
-   - [Troubleshooting](../docs/src/troubleshooting.md)
+   - [Tutorial](../docs/src/en/tutorial.md)
+   - [Crate Bindings (Phase 6)](../docs/src/en/crate_bindings.md)
+   - [Troubleshooting](../docs/src/en/troubleshooting.md)
 
 ## Troubleshooting
 
@@ -465,7 +465,7 @@ depot) and retry; or install Rust yourself from [rustup.rs](https://rustup.rs/)
 so a `rustc` is on `PATH` (it then takes precedence). On Windows the MSVC
 target — RustCall's default, and the only one the artifact toolchain
 provides — also needs the MSVC build tools; the GNU route that avoids them is
-described in `docs/src/platforms/windows.md`.
+described in `docs/src/en/platforms/windows.md`.
 
 ### Library build fails
 

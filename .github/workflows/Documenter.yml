@@ -29,3 +29,8 @@ jobs:
       - uses: julia-actions/julia-docdeploy@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish language landing page
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: python3 scripts/publish_docs_landing.py
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

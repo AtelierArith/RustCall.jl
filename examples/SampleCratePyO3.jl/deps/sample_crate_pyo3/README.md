@@ -222,7 +222,7 @@ your own can depend on the release instead (`rustcall_julia_macros = "0.4"`).
 The same source produces both; only the feature decides which half is compiled
 in. (RustCall can also bind a crate that has *only* PyO3 attributes and no
 `#[julia]` at all — see RustCall's test fixture
-`test/fixtures/sample_crate_pyo3_only` and `docs/src/pyo3.md`.)
+`test/fixtures/sample_crate_pyo3_only` and `docs/src/en/pyo3.md`.)
 
 ## Migrating from `#[julia_pyo3]`
 
@@ -234,7 +234,7 @@ in. (RustCall can also bind a crate that has *only* PyO3 attributes and no
 
 `#[julia_pyo3]` no longer exists: a crate that still uses it fails to build
 with ``cannot find attribute `julia_pyo3` ``. The full write-up is in
-`docs/src/pyo3.md`, "Migrating from `#[julia_pyo3]`".
+`docs/src/en/pyo3.md`, "Migrating from `#[julia_pyo3]`".
 
 ## Files
 

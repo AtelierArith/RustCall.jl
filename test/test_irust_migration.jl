@@ -8,14 +8,14 @@
 using Test
 using RustCall
 
-# The migration page of the manual (`docs/src/migrating_from_irust.md`), one
+# The migration page of the manual (`docs/src/en/migrating_from_irust.md`), one
 # string per code block.
 function _migration_blocks()
     # A Windows checkout may have CRLF line endings.
-    page = joinpath(dirname(@__DIR__), "docs", "src", "migrating_from_irust.md")
+    page = joinpath(dirname(@__DIR__), "docs", "src", "en", "migrating_from_irust.md")
     text = replace(read(page, String), "\r\n" => "\n")
     startswith(text, "# Migrating from `@irust`") ||
-        error("docs/src/migrating_from_irust.md does not start with its \"Migrating from `@irust`\" heading")
+        error("docs/src/en/migrating_from_irust.md does not start with its \"Migrating from `@irust`\" heading")
     return String[m.captures[1] for m in eachmatch(r"```julia\n(.*?)```"s, text)]
 end
 

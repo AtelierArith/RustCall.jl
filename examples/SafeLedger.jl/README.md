@@ -1,7 +1,7 @@
 # SafeLedger.jl
 
 The runnable example of RustCall's
-[safe integration pattern](../../docs/src/integration_guide.md): a Rust facade
+[safe integration pattern](../../docs/src/en/integration_guide.md): a Rust facade
 exposes one opaque, Rust-owned object, and a small Julia API turns its errors
 into Julia exceptions and gives it an explicit release path.
 

@@ -1,88 +1,46 @@
 using Documenter
 using RustCall
 
-# The supported-type matrix is generated from the contract itself, so the page
-# cannot drift from the table generated code consults (#276, #245 item 4).
 include("generate_type_matrix.jl")
-generate_type_matrix(joinpath(@__DIR__, "src", "type_contract.md"))
+include("navigation.jl")
+include("i18n.jl")
 
-makedocs(
-    sitename = "RustCall.jl",
-    modules = [RustCall],
-    authors = "Satoshi Terasaki",
-    format = Documenter.HTML(
-        prettyurls = get(ENV, "CI", nothing) == "true",
-        canonical = "https://atelierarith.github.io/RustCall.jl",
-        assets = String[],
-        edit_link = :commit,
-        # The API reference is one page per group of source files
-        # (`docs/src/reference/`, #288), each with its own `@autodocs`
-        # `Pages` filter, so no single page renders every docstring in the
-        # package and the hard limit is Documenter's default again. If a
-        # reference page grows past the warning, split it further rather than
-        # raising the limit: the single-page reference hit the limit twice
-        # (500 KiB, then #287 at 501.2 KiB), and #463 split the compilation,
-        # loading and crates pages when they crossed the warning.
-        size_threshold = 200 * 2^10,         # 200 KiB — hard failure (Documenter's default)
-        size_threshold_warn = 150 * 2^10,    # 150 KiB — warn, split before it fails
-    ),
-    warnonly = [:missing_docs],
-    pages = [
-        "Home" => "index.md",
-        "Getting Started" => [
-            "Rust for Julia Users" => "rust_primer.md",
-            "Tutorial" => "tutorial.md",
-            "What's New in v0.9 and v0.10" => "tutorial_new_features.md",
-            "Examples" => "examples.md",
-        ],
-        "User Guide" => [
-            "Safe Rust/Julia Integration" => "integration_guide.md",
-            "The FFI Type Contract" => "type_contract.md",
-            "Callbacks" => "callbacks.md",
-            "Struct Mapping" => "struct_mapping.md",
-            "Generics" => "generics.md",
-            "External Crate Bindings" => "crate_bindings.md",
-            "Hot Reload" => "hot_reload.md",
-            "PyO3 Crates" => "pyo3.md",
-            "Panics, Visibility and Lifetime" => "panics.md",
-            "Precompilation" => "precompilation.md",
-            "Performance" => "performance.md",
-            "Troubleshooting" => "troubleshooting.md",
-            "Migrating from @irust" => "migrating_from_irust.md",
-        ],
-        "Reference" => [
-            "API Reference" => [
-                "Overview" => "api.md",
-                "Artifact identity and caching" => "reference/artifacts.md",
-                "The FFI type contract" => "reference/ffi_contract.md",
-                "Front doors" => "reference/compilation.md",
-                "Compiler and codegen" => "reference/codegen.md",
-                "The FFI manifest" => "reference/manifest.md",
-                "Cargo projects and dependencies" => "reference/cargo.md",
-                "External crates" => "reference/crates.md",
-                "Hot reload API" => "reference/hot_reload.md",
-                "PyO3 crates" => "reference/pyo3.md",
-                "Types, memory and ownership" => "reference/ownership.md",
-                "Generics and #[julia] functions" => "reference/generics.md",
-                "Errors" => "reference/errors.md",
-                "Load policy" => "reference/loading.md",
-            ],
-            "Project Status" => "status.md",
-        ],
-        "Developer" => [
-            "How RustCall Calls Rust" => "internals.md",
-            "Project Guide" => "project_guide.md",
-            "Windows Development" => "developer_windows.md",
-            "Developer Pitfalls" => "developer_pitfalls.md",
-        ],
-        "Platforms" => [
-            "Windows" => "platforms/windows.md",
-        ],
-    ],
-)
+generate_type_matrix(joinpath(@__DIR__, "src", "en", "type_contract.md"))
 
-deploydocs(
-    repo = "github.com/atelierarith/RustCall.jl.git",
-    devbranch = "main",
-    push_preview = true,
-)
+# Stage fallback pages without adding generated translations to the source tree.
+mktempdir() do staging
+    for lang in ("en", "ja")
+        source = joinpath(staging, lang)
+        stage_language(joinpath(@__DIR__, "src"), source, lang)
+        makedocs(
+            root = @__DIR__,
+            source = source,
+            build = "build/$(lang)",
+            sitename = lang == "ja" ? "RustCall.jl 日本語" : "RustCall.jl",
+            modules = [RustCall],
+            authors = "Satoshi Terasaki",
+            format = Documenter.HTML(
+                lang = lang,
+                prettyurls = get(ENV, "CI", nothing) == "true",
+                canonical = "https://atelierarith.github.io/RustCall.jl/$(lang)/stable/",
+                edit_link = nothing, # Staged pages have no repository source path.
+                assets = String[],
+                size_threshold = 200 * 2^10,
+                size_threshold_warn = 150 * 2^10,
+            ),
+            warnonly = [:missing_docs],
+            pages = lang == "ja" ? japanese_navigation(EN_PAGES) : EN_PAGES,
+        )
+    end
+end
+
+# Each language owns its version selector and PR previews. Deploy sequentially.
+for lang in ("en", "ja")
+    deploydocs(
+        repo = "github.com/atelierarith/RustCall.jl.git",
+        devbranch = "main",
+        push_preview = true,
+        dirname = lang,
+        target = "build/$(lang)",
+    )
+end

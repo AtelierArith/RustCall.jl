@@ -1,5 +1,5 @@
 #!/usr/bin/env julia
-# Test suite for sample code in docs/src/*.md files
+# Test suite for sample code in docs/src/en/*.md files
 #
 # This file tests all executable sample code from the documentation
 # to ensure they work correctly.
@@ -532,11 +532,11 @@ const _DOCS_SAMPLE_CRATE_AVAILABLE = isdir(DOCS_SAMPLE_CRATE_PATH)
     end
 
     # The generics guide's runnable blocks, executed exactly as written (#465):
-    # every `@setup generics` / `@example generics` block of docs/src/generics.md,
+    # every `@setup generics` / `@example generics` block of docs/src/en/generics.md,
     # in page order, in one fresh module — what Documenter does when it builds
     # the page. Copying the snippets here instead would let the page drift.
     @testset "generics.md - runnable examples (automatic and manual)" begin
-        page = read(joinpath(@__DIR__, "..", "docs", "src", "generics.md"), String)
+        page = read(joinpath(@__DIR__, "..", "docs", "src", "en", "generics.md"), String)
         blocks = String[]
         open_block = nothing
         for line in split(page, '\n')
@@ -561,7 +561,7 @@ const _DOCS_SAMPLE_CRATE_AVAILABLE = isdir(DOCS_SAMPLE_CRATE_PATH)
         sandbox = Module(:GenericsGuideSandbox)
         redirect_stdout(devnull) do
             for block in blocks
-                include_string(sandbox, block, "docs/src/generics.md")
+                include_string(sandbox, block, "docs/src/en/generics.md")
             end
         end
         value(name) = Base.invokelatest(getfield, sandbox, name)
@@ -590,7 +590,7 @@ const _DOCS_SAMPLE_CRATE_AVAILABLE = isdir(DOCS_SAMPLE_CRATE_PATH)
     # hand-copied "tutorial.md" / "examples.md" testsets above predate these
     # pages' rewrite and keep covering the `extern "C"` + `@rust` forms.
     function _docs_page_sandbox(page_name::AbstractString, block_name::AbstractString)
-        page = replace(read(joinpath(@__DIR__, "..", "docs", "src", page_name), String),
+        page = replace(read(joinpath(@__DIR__, "..", "docs", "src", "en", page_name), String),
                        "\r\n" => "\n")
         blocks = String[]
         open_block = nothing
@@ -606,11 +606,11 @@ const _DOCS_SAMPLE_CRATE_AVAILABLE = isdir(DOCS_SAMPLE_CRATE_PATH)
                 println(open_block, line)
             end
         end
-        open_block === nothing || error("unterminated block in docs/src/$(page_name)")
+        open_block === nothing || error("unterminated block in docs/src/en/$(page_name)")
         sandbox = Module(:DocsPageSandbox)
         redirect_stdout(devnull) do
             for block in blocks
-                include_string(sandbox, block, "docs/src/$(page_name)")
+                include_string(sandbox, block, "docs/src/en/$(page_name)")
             end
         end
         return sandbox, length(blocks)

@@ -1,4 +1,4 @@
-# Checks for the safe integration pattern of docs/src/integration_guide.md (#441):
+# Checks for the safe integration pattern of docs/src/en/integration_guide.md (#441):
 # construction, normal use, the error path, explicit release, and what an
 # object does once its library is unloaded. Every name is qualified, so the
 # file runs both under `using SafeLedger` and after `include`-ing the source.
