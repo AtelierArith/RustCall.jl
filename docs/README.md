@@ -18,6 +18,10 @@ version and page but clear the anchor because translated headings can differ.
 Source edit links are disabled because builds use staged sources.
 
 Deployment runs sequentially in one CI job, using `dirname = "en"` and `"ja"`.
+The options are shared in `deployment.jl`. Every build first runs
+`test_deployment.jl` against Documenter's GitHub Actions deployment decision for
+both development and release events; this catches silent deployment skips
+(such as a repository name whose casing differs from `GITHUB_REPOSITORY`).
 Each language has its own `stable`, release versions, `dev` and PR previews.
 New release documentation appears on the next tag; existing historical releases
 are not rebuilt. The root language chooser links to `dev` so it works before the

@@ -4,6 +4,8 @@ using RustCall
 include("generate_type_matrix.jl")
 include("navigation.jl")
 include("i18n.jl")
+include("deployment.jl")
+include("test_deployment.jl")
 
 generate_type_matrix(joinpath(@__DIR__, "src", "en", "type_contract.md"))
 
@@ -36,11 +38,5 @@ end
 
 # Each language owns its version selector and PR previews. Deploy sequentially.
 for lang in ("en", "ja")
-    deploydocs(
-        repo = "github.com/atelierarith/RustCall.jl.git",
-        devbranch = "main",
-        push_preview = true,
-        dirname = lang,
-        target = "build/$(lang)",
-    )
+    deploydocs(; documentation_deployment(lang)...)
 end

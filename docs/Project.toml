@@ -4,6 +4,7 @@ Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 Images = "916415d5-f1e6-5110-898d-aaa5f9f070e0"
 RustCall = "7ac5b1a4-9e37-4f0e-9aa3-3305a66bfb1c"
 RustToolChain = "e9dc52e2-edb8-4742-9783-5e542d30dbb5"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [sources]
 RustCall = { path = ".." }
@@ -11,3 +12,4 @@ RustCall = { path = ".." }
 [compat]
 Documenter = "1"
 RustToolChain = "0.1.1"
+Test = "1"
