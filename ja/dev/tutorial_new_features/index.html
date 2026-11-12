@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><meta name="referrer" content="no-referrer"/><title>What&#39;s New in v0.9 and v0.10 · RustCall.jl 日本語</title><meta name="title" content="What&#39;s New in v0.9 and v0.10 · RustCall.jl 日本語"/><meta property="og:title" content="What&#39;s New in v0.9 and v0.10 · RustCall.jl 日本語"/><meta property="twitter:title" content="What&#39;s New in v0.9 and v0.10 · RustCall.jl 日本語"/><meta name="description" content="Documentation for RustCall.jl 日本語."/><meta property="og:description" content="Documentation for RustCall.jl 日本語."/><meta property="twitter:description" content="Documentation for RustCall.jl 日本語."/><meta property="og:url" content="https://atelierarith.github.io/RustCall.jl/ja/stable/tutorial_new_features/"/><meta property="twitter:url" content="https://atelierarith.github.io/RustCall.jl/ja/stable/tutorial_new_features/"/><link rel="canonical" href="https://atelierarith.github.io/RustCall.jl/ja/stable/tutorial_new_features/"/><script data-outdated-warner src="../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.63.2/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL=".."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../assets/documenter.js"></script><script src="../search_index.js"></script><script src="../siteinfo.js"></script><script src="../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../">RustCall.jl 日本語</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../">ホーム</a></li><li><span class="tocitem">はじめに</span><ul><li><a class="tocitem" href="../rust_primer/">Rust for Julia Users</a></li><li><a class="tocitem" href="../tutorial/">チュートリアル</a></li><li class="is-active"><a class="tocitem" href>What&#39;s New in v0.9 and v0.10</a><ul class="internal"><li><a class="tocitem" href="#Before-you-start"><span>Before you start</span></a></li><li><a class="tocitem" href="#Fallible-constructors"><span>Fallible constructors</span></a></li><li><a class="tocitem" href="#Borrowing-Rust-objects"><span>Borrowing Rust objects</span></a></li><li><a class="tocitem" href="#Methods-that-return-a-new-object"><span>Methods that return a new object</span></a></li><li><a class="tocitem" href="#Optional-borrows"><span>Optional borrows</span></a></li><li><a class="tocitem" href="#Julia-arrays-as-Rust-slices"><span>Julia arrays as Rust slices</span></a></li><li><a class="tocitem" href="#Staged-numeric-buffers"><span>Staged numeric buffers</span></a></li><li><a class="tocitem" href="#Concrete-instances-of-a-generic-crate-type"><span>Concrete instances of a generic crate type</span></a></li><li><a class="tocitem" href="#Where-to-read-more"><span>Where to read more</span></a></li></ul></li><li><a class="tocitem" href="../examples/">Examples</a></li></ul></li><li><span class="tocitem">利用ガイド</span><ul><li><a class="tocitem" href="../integration_guide/">Safe Rust/Julia Integration</a></li><li><a class="tocitem" href="../type_contract/">The FFI Type Contract</a></li><li><a class="tocitem" href="../callbacks/">Callbacks</a></li><li><a class="tocitem" href="../struct_mapping/">Struct Mapping</a></li><li><a class="tocitem" href="../generics/">Generics</a></li><li><a class="tocitem" href="../crate_bindings/">External Crate Bindings</a></li><li><a class="tocitem" href="../hot_reload/">Hot Reload</a></li><li><a class="tocitem" href="../pyo3/">PyO3 Crates</a></li><li><a class="tocitem" href="../panics/">Panics, Visibility and Lifetime</a></li><li><a class="tocitem" href="../precompilation/">Precompilation</a></li><li><a class="tocitem" href="../performance/">Performance</a></li><li><a class="tocitem" href="../troubleshooting/">トラブルシューティング</a></li><li><a class="tocitem" href="../migrating_from_irust/">Migrating from @irust</a></li></ul></li><li><span class="tocitem">リファレンス</span><ul><li><input class="collapse-toggle" id="menuitem-4-1" type="checkbox"/><label class="tocitem" for="menuitem-4-1"><span class="docs-label">API リファレンス</span><i class="docs-chevron"></i></label><ul class="collapsed"><li><a class="tocitem" href="../api/">Overview</a></li><li><a class="tocitem" href="../reference/artifacts/">Artifact identity and caching</a></li><li><a class="tocitem" href="../reference/ffi_contract/">The FFI type contract</a></li><li><a class="tocitem" href="../reference/compilation/">Front doors</a></li><li><a class="tocitem" href="../reference/codegen/">Compiler and codegen</a></li><li><a class="tocitem" href="../reference/manifest/">The FFI manifest</a></li><li><a class="tocitem" href="../reference/cargo/">Cargo projects and dependencies</a></li><li><a class="tocitem" href="../reference/crates/">External crates</a></li><li><a class="tocitem" href="../reference/hot_reload/">Hot reload API</a></li><li><a class="tocitem" href="../reference/pyo3/">PyO3 crates</a></li><li><a class="tocitem" href="../reference/ownership/">Types, memory and ownership</a></li><li><a class="tocitem" href="../reference/generics/">Generics and #[julia] functions</a></li><li><a class="tocitem" href="../reference/errors/">Errors</a></li><li><a class="tocitem" href="../reference/loading/">Load policy</a></li></ul></li><li><a class="tocitem" href="../status/">Project Status</a></li></ul></li><li><span class="tocitem">開発者向け</span><ul><li><a class="tocitem" href="../internals/">How RustCall Calls Rust</a></li><li><a class="tocitem" href="../project_guide/">Project Guide</a></li><li><a class="tocitem" href="../developer_windows/">Windows Development</a></li><li><a class="tocitem" href="../developer_pitfalls/">Developer Pitfalls</a></li></ul></li><li><span class="tocitem">プラットフォーム</span><ul><li><a class="tocitem" href="../platforms/windows/">Windows</a></li></ul></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">はじめに</a></li><li class="is-active"><a href>What&#39;s New in v0.9 and v0.10</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>What&#39;s New in v0.9 and v0.10</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/AtelierArith/RustCall.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><nav aria-label="Language"><a class="language-en" lang="en">English</a> / <a class="language-ja" lang="ja">日本語</a></nav>
+<script>
+for (const lang of ['en', 'ja']) {
+    const url = new URL(location.href);
+    url.pathname = url.pathname.replace(/\/(en|ja)\//, '/' + lang + '/');
+    url.hash = '';
+    document.querySelector('.language-' + lang).href = url.href;
+}
+</script><div class="admonition is-info" id="未翻訳：英語原文-cf148dd285db41"><header class="admonition-header">未翻訳：英語原文<a class="admonition-anchor" href="#未翻訳：英語原文-cf148dd285db41" title="Permalink"></a></header><div class="admonition-body"><p>このページはまだ翻訳されていません。以下に同じバージョンの英語原文を掲載しています。</p></div></div><h1 id="Tutorial:-What&#39;s-New-in-v0.9-and-v0.10"><a class="docs-heading-anchor" href="#Tutorial:-What&#39;s-New-in-v0.9-and-v0.10">Tutorial: What&#39;s New in v0.9 and v0.10</a><a id="Tutorial:-What&#39;s-New-in-v0.9-and-v0.10-1"></a><a class="docs-heading-anchor-permalink" href="#Tutorial:-What&#39;s-New-in-v0.9-and-v0.10" title="Permalink"></a></h1><p>This tutorial walks through the features added between v0.9.1 and v0.10.0, one runnable example at a time. It assumes you have read the <a href="../tutorial/">Tutorial</a> and know how a <code>#[julia]</code> function in a <code>rust&quot;&quot;&quot;...&quot;&quot;&quot;</code> block becomes a Julia function.</p><table><tr><th style="text-align: left">Feature</th><th style="text-align: left">Since</th><th style="text-align: left">Section</th></tr><tr><td style="text-align: left">Fallible constructors (<code>fn new(..) -&gt; Result&lt;Self, E&gt;</code>)</td><td style="text-align: left">v0.9.1</td><td style="text-align: left"><a href="#Fallible-constructors">Fallible constructors</a></td></tr><tr><td style="text-align: left">Passing Rust objects by reference (<code>&amp;T</code>, <code>&amp;mut T</code>)</td><td style="text-align: left">v0.9.2</td><td style="text-align: left"><a href="#Borrowing-Rust-objects">Borrowing Rust objects</a></td></tr><tr><td style="text-align: left">Methods that return a new object (<code>fn f(&amp;self) -&gt; Result&lt;Self, E&gt;</code>)</td><td style="text-align: left">v0.9.2</td><td style="text-align: left"><a href="#Methods-that-return-a-new-object">Methods that return a new object</a></td></tr><tr><td style="text-align: left">Optional borrows (<code>Option&lt;&amp;T&gt;</code>, <code>Option&lt;&amp;mut T&gt;</code>)</td><td style="text-align: left">v0.10.0</td><td style="text-align: left"><a href="#Optional-borrows">Optional borrows</a></td></tr><tr><td style="text-align: left">Julia arrays as Rust slices (<code>&amp;[T]</code>, <code>&amp;mut [T]</code>)</td><td style="text-align: left">v0.10.0</td><td style="text-align: left"><a href="#Julia-arrays-as-Rust-slices">Julia arrays as Rust slices</a></td></tr><tr><td style="text-align: left">Staged copies for pointer/length APIs (<code>with_numeric_buffer</code>)</td><td style="text-align: left">v0.9.1</td><td style="text-align: left"><a href="#Staged-numeric-buffers">Staged numeric buffers</a></td></tr><tr><td style="text-align: left">Concrete instances of a dependency&#39;s generic type (<code>generate_crate_instances</code>)</td><td style="text-align: left">v0.9.1, composed in v0.10.0</td><td style="text-align: left"><a href="#Concrete-instances-of-a-generic-crate-type">Concrete instances of a generic crate type</a></td></tr></table><p>Every example in this page uses an inline <code>rust&quot;&quot;&quot;</code> block except the last one, which builds a small Cargo workspace. The same signatures work in a <code>#[julia]</code> crate loaded with <code>@rust_crate</code> and in bindings written by <code>write_bindings_to_file</code>.</p><h2 id="Before-you-start"><a class="docs-heading-anchor" href="#Before-you-start">Before you start</a><a id="Before-you-start-1"></a><a class="docs-heading-anchor-permalink" href="#Before-you-start" title="Permalink"></a></h2><ul><li><strong>Rebuild after upgrading.</strong> A minor release changes the manifest schema (<code>0.10</code> for v0.10.x), so an extractor built by an earlier release is refused. Run <code>Pkg.build(&quot;RustCall&quot;)</code> once after upgrading.</li><li><strong>Update the macro crate of your <code>#[julia]</code> crates.</strong> The new argument and return shapes need a matching producer: <code>rustcall_julia_macros = &quot;0.7&quot;</code> for v0.10.0 (slices, optional borrows, composed owned returns), <code>&quot;0.6&quot;</code> for v0.9.2 (borrowed objects, methods returning <code>Result&lt;Self, E&gt;</code>), <code>&quot;0.5&quot;</code> for v0.9.1 (fallible constructors). Bindings check a marker the producer exports and refuse an older library <em>before</em> calling it, with a message to rebuild. Inline <code>rust&quot;&quot;&quot;</code> blocks need nothing: RustCall generates their wrappers itself.</li><li><strong>Regenerate written bindings.</strong> A file written by <code>write_bindings_to_file</code> under an earlier minor release is refused with a message to regenerate it.</li></ul><h2 id="Fallible-constructors"><a class="docs-heading-anchor" href="#Fallible-constructors">Fallible constructors</a><a id="Fallible-constructors-1"></a><a class="docs-heading-anchor-permalink" href="#Fallible-constructors" title="Permalink"></a></h2><p>A static method returning <code>Result&lt;Self, E&gt;</code> is bound as the struct&#39;s constructor (v0.9.1, #559). Calling it returns a <code>RustResult</code>: <code>Ok</code> owns a new Julia object, <code>Err</code> carries the error and allocates nothing.</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[julia]
+pub struct Account { cents: i64 }
+
+#[julia]
+impl Account {
+    pub fn new(cents: i64) -&gt; Result&lt;Self, String&gt; {
+        if cents &lt; 0 {
+            Err(format!(&quot;negative opening balance: {cents}&quot;))
+        } else {
+            Ok(Self { cents })
+        }
+    }
+
+    pub fn balance(&amp;self) -&gt; i64 { self.cents }
+}
+&quot;&quot;&quot;
+
+opened = Account(100)
+RustCall.is_ok(opened)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">true</code></pre><pre><code class="language-julia hljs">acc = RustCall.unwrap(opened)
+balance(acc)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">100</code></pre><pre><code class="language-julia hljs">refused = Account(-5)
+(RustCall.is_err(refused), refused.value)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">(true, &quot;negative opening balance: -5&quot;)</code></pre><p>A panic inside the constructor is raised in Julia as <code>RustCall.RustPanicError</code>, as for any other <code>#[julia]</code> call.</p><h2 id="Borrowing-Rust-objects"><a class="docs-heading-anchor" href="#Borrowing-Rust-objects">Borrowing Rust objects</a><a id="Borrowing-Rust-objects-1"></a><a class="docs-heading-anchor-permalink" href="#Borrowing-Rust-objects" title="Permalink"></a></h2><p>An argument of type <code>&amp;T</code>, <code>&amp;mut T</code> or <code>&amp;Self</code>, where <code>T</code> is a <code>#[julia]</code> struct, takes that struct&#39;s Julia handle (v0.9.2, #565). The handle is passed as the pointer it owns; nothing is copied.</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[julia]
+pub struct Wallet { cents: i64 }
+
+#[julia]
+impl Wallet {
+    pub fn new(cents: i64) -&gt; Self { Self { cents } }
+    pub fn cents(&amp;self) -&gt; i64 { self.cents }
+
+    pub fn richer_than(&amp;self, other: &amp;Wallet) -&gt; bool {
+        self.cents &gt; other.cents
+    }
+
+    pub fn take_from(&amp;mut self, other: &amp;mut Wallet, amount: i64) -&gt; bool {
+        if other.cents &lt; amount {
+            return false;
+        }
+        other.cents -= amount;
+        self.cents += amount;
+        true
+    }
+}
+
+#[julia]
+pub fn combined(a: &amp;Wallet, b: &amp;Wallet) -&gt; i64 { a.cents + b.cents }
+&quot;&quot;&quot;
+
+alice, bob = Wallet(70), Wallet(30)
+take_from(bob, alice, 10)
+(cents(alice), cents(bob), richer_than(alice, bob), combined(alice, bob))</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">(60, 40, true, 100)</code></pre><p>RustCall checks every handle before Rust sees it:</p><ul><li>It must be a handle of the struct the signature names. Passing another struct&#39;s handle, or an integer, raises <code>ArgumentError</code>.</li><li>It must still be live. Passing an object whose finalizer has already run raises <code>RustError</code>.</li><li>A <code>&amp;mut</code> borrow may not alias another borrow of the same call, so <code>take_from(alice, alice, 1)</code> raises <code>ArgumentError</code>. Shared borrows may alias: <code>combined(alice, alice)</code> is fine.</li><li>The handle stays rooted for the whole call, so a temporary such as <code>combined(Wallet(1), Wallet(2))</code> is safe.</li></ul><p>These checks apply to handles. A required <code>&amp;T</code> / <code>&amp;mut T</code> position also still accepts an explicit <code>Ptr{Cvoid}</code> (for example <code>combined(alice, bob.ptr)</code>), which is passed through <strong>unchecked</strong>: its layout, liveness and aliasing are then your responsibility. The optional positions of the next sections refuse raw pointers altogether.</p><pre><code class="language-julia hljs">try
+    take_from(alice, alice, 1)
+catch err
+    sprint(showerror, err)
+end</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">&quot;ArgumentError: `take_from` cannot borrow one Rust object as `self` and `other`: a `&amp;mut` borrow may not alias another borrow&quot;</code></pre><h2 id="Methods-that-return-a-new-object"><a class="docs-heading-anchor" href="#Methods-that-return-a-new-object">Methods that return a new object</a><a id="Methods-that-return-a-new-object-1"></a><a class="docs-heading-anchor-permalink" href="#Methods-that-return-a-new-object" title="Permalink"></a></h2><p>A method <em>with a receiver</em> returning <code>Result&lt;Self, E&gt;</code> keeps its own name and returns an independent object (v0.9.2, #564). The receiver stays valid.</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[julia]
+pub struct Jar { beans: i64 }
+
+#[julia]
+impl Jar {
+    pub fn new(beans: i64) -&gt; Self { Self { beans } }
+    pub fn beans(&amp;self) -&gt; i64 { self.beans }
+
+    pub fn split_off(&amp;mut self, amount: i64) -&gt; Result&lt;Self, String&gt; {
+        if amount &gt; self.beans {
+            return Err(&quot;not enough beans&quot;.to_string());
+        }
+        self.beans -= amount;
+        Ok(Self { beans: amount })
+    }
+}
+
+// Used in the next section, &quot;Optional borrows&quot;.
+#[julia]
+pub fn total_beans(a: &amp;Jar, b: Option&lt;&amp;Jar&gt;) -&gt; i64 {
+    a.beans + b.map_or(0, |b| b.beans)
+}
+
+#[julia]
+pub fn refill(target: &amp;mut Jar, donor: Option&lt;&amp;mut Jar&gt;) {
+    if let Some(donor) = donor {
+        target.beans += donor.beans;
+        donor.beans = 0;
+    }
+}
+&quot;&quot;&quot;
+
+jar = Jar(100)
+small = RustCall.unwrap(split_off(jar, 30))
+(beans(jar), beans(small))</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">(70, 30)</code></pre><pre><code class="language-julia hljs">split_off(jar, 1000).value</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">&quot;not enough beans&quot;</code></pre><p>The new object owns its own Rust allocation and is freed by its own finalizer, independently of <code>jar</code>.</p><h2 id="Optional-borrows"><a class="docs-heading-anchor" href="#Optional-borrows">Optional borrows</a><a id="Optional-borrows-1"></a><a class="docs-heading-anchor-permalink" href="#Optional-borrows" title="Permalink"></a></h2><p><code>Option&lt;&amp;T&gt;</code> and <code>Option&lt;&amp;mut T&gt;</code> of a <code>#[julia]</code> struct take that struct&#39;s handle or <code>nothing</code> (v0.10.0, #571). A present handle gets the same checks as a required borrow; <code>nothing</code> alone means <code>None</code>.</p><p>The <code>Jar</code> block of the previous section also defines two such functions:</p><pre><code class="language-rust hljs">#[julia]
+pub fn total_beans(a: &amp;Jar, b: Option&lt;&amp;Jar&gt;) -&gt; i64 {
+    a.beans + b.map_or(0, |b| b.beans)
+}
+
+#[julia]
+pub fn refill(target: &amp;mut Jar, donor: Option&lt;&amp;mut Jar&gt;) {
+    if let Some(donor) = donor {
+        target.beans += donor.beans;
+        donor.beans = 0;
+    }
+}</code></pre><pre><code class="language-julia hljs">(total_beans(jar, nothing), total_beans(jar, small))</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">(70, 100)</code></pre><pre><code class="language-julia hljs">refill(jar, small)
+(beans(jar), beans(small))</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">(100, 0)</code></pre><p>A raw pointer is never accepted in an optional position, not even <code>C_NULL</code>: write <code>nothing</code>.</p><div class="admonition is-info" id="Declare-the-struct-where-you-borrow-it-b96024cbf8932114"><header class="admonition-header">Declare the struct where you borrow it<a class="admonition-anchor" href="#Declare-the-struct-where-you-borrow-it-b96024cbf8932114" title="Permalink"></a></header><div class="admonition-body"><p>Each <code>rust&quot;&quot;&quot;</code> block is compiled into its own library, so a function borrowing <code>Jar</code> must live in the same block as <code>Jar</code> itself. In a crate, RustCall must also prove which <code>#[julia]</code> struct a borrowed type names: a struct imported with <code>use</code>, a qualified path such as <code>&amp;crate::model::Jar</code>, or an unambiguous <code>use super::*</code> all work; a type alias does not. See <a href="../crate_bindings/">Borrowed owners imported through module globs</a> for the exact rules.</p></div></div><h2 id="Julia-arrays-as-Rust-slices"><a class="docs-heading-anchor" href="#Julia-arrays-as-Rust-slices">Julia arrays as Rust slices</a><a id="Julia-arrays-as-Rust-slices-1"></a><a class="docs-heading-anchor-permalink" href="#Julia-arrays-as-Rust-slices" title="Permalink"></a></h2><p>A <code>#[julia]</code> argument of type <code>&amp;[T]</code> or <code>&amp;mut [T]</code>, with <code>T</code> a primitive number, borrows the Julia array directly, with no copy (v0.10.0, #570). Writes through <code>&amp;mut [T]</code> land in the caller&#39;s array.</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[julia]
+pub fn norm2(xs: &amp;[f64]) -&gt; f64 {
+    xs.iter().map(|x| x * x).sum::&lt;f64&gt;().sqrt()
+}
+
+#[julia]
+pub fn axpy(a: f64, x: &amp;[f64], y: &amp;mut [f64]) -&gt; Result&lt;(), String&gt; {
+    if x.len() != y.len() {
+        return Err(format!(&quot;length mismatch: {} vs {}&quot;, x.len(), y.len()));
+    }
+    for (xi, yi) in x.iter().zip(y.iter_mut()) {
+        *yi += a * xi;
+    }
+    Ok(())
+}
+&quot;&quot;&quot;
+
+y = ones(3)
+axpy(2.0, [1.0, 2.0, 3.0], y)
+y</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">3-element Vector{Float64}:
+ 3.0
+ 5.0
+ 7.0</code></pre><pre><code class="language-julia hljs">norm2([3.0, 4.0])</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">5.0</code></pre><p>A contiguous view, such as a matrix column, is borrowed too:</p><pre><code class="language-julia hljs">A = [1.0 2.0; 3.0 4.0]
+norm2(@view A[:, 2])</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">4.47213595499958</code></pre><p>What is checked before Rust runs:</p><ul><li><strong>Element type, exactly.</strong> <code>&amp;[f64]</code> takes <code>Float64</code> storage; there is no conversion, so <code>norm2([1, 2])</code> raises <code>ArgumentError</code>. The supported element types are <code>f32</code>, <code>f64</code>, the signed and unsigned 8–64-bit integers, <code>isize</code> / <code>usize</code> (<code>Int</code> / <code>UInt</code>), and <code>num_complex::Complex&lt;f32&gt;</code> / <code>Complex&lt;f64&gt;</code> (<code>ComplexF32</code> / <code>ComplexF64</code>).</li><li><strong>Contiguous, one-dimensional storage.</strong> A <code>Vector</code>, a unit-stride view or a compatible <code>reinterpret</code> is borrowed. A matrix, a reversed view or a strided view is refused rather than silently copied; copy it yourself, or see <a href="#Staged-numeric-buffers">Staged numeric buffers</a>.</li><li><strong>No mutable aliasing.</strong> A <code>&amp;mut [T]</code> overlapping another slice of the same call is refused:</li></ul><pre><code class="language-julia hljs">try
+    axpy(1.0, y, y)
+catch err
+    sprint(showerror, err)
+end</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">&quot;ArgumentError: arguments `x` and `y` of `axpy` overlap: a mutable slice may not alias another live borrow&quot;</code></pre><p>What is <em>your</em> responsibility:</p><ul><li>The borrow lasts until Rust returns. Rust must not keep the pointer, and no other task may resize or write the array during the call.</li><li>Mutable storage must be initialized (use <code>zeros(T, n)</code>, not <code>Vector{T}(undef, n)</code>).</li><li>There is no rollback: if Rust writes and then returns <code>Err</code> or panics, the writes stay.</li></ul><p>Use the generated Julia function (<code>axpy(...)</code>) to get these checks. Calling the exported symbol with <code>@rust</code> or <code>ccall</code> is the raw ABI and checks nothing.</p><h2 id="Staged-numeric-buffers"><a class="docs-heading-anchor" href="#Staged-numeric-buffers">Staged numeric buffers</a><a id="Staged-numeric-buffers-1"></a><a class="docs-heading-anchor-permalink" href="#Staged-numeric-buffers" title="Permalink"></a></h2><p>Some Rust APIs take a raw pointer and a length rather than a slice. <code>RustCall.with_numeric_buffer</code> (v0.9.1, #557) copies any numeric array — including a non-contiguous view — into an aligned temporary, hands the callback its pointer and length, and keeps the temporary alive until the callback returns.</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[julia]
+pub fn sum_raw(ptr: *const f64, len: usize) -&gt; f64 {
+    let xs = unsafe { std::slice::from_raw_parts(ptr, len) };
+    xs.iter().sum()
+}
+&quot;&quot;&quot;
+
+M = reshape(collect(1.0:6.0), 2, 3)
+row = @view M[1, :]          # stride 2: not borrowable as a slice
+RustCall.with_numeric_buffer(row; element_type = Float64) do ptr, len
+    sum_raw(ptr, len)
+end</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">9.0</code></pre><p>Pass <code>write = true</code> when Rust writes through the pointer: the temporary is copied back into the array after the callback returns normally. Throw inside the callback to skip the copy-back. Prefer a <code>&amp;[T]</code> / <code>&amp;mut [T]</code> signature when you control the Rust side: it borrows without copying and RustCall checks the element type for you, whereas <code>element_type</code> here is only checked against the Julia array — the Rust pointer type is your promise.</p><h2 id="Concrete-instances-of-a-generic-crate-type"><a class="docs-heading-anchor" href="#Concrete-instances-of-a-generic-crate-type">Concrete instances of a generic crate type</a><a id="Concrete-instances-of-a-generic-crate-type-1"></a><a class="docs-heading-anchor-permalink" href="#Concrete-instances-of-a-generic-crate-type" title="Permalink"></a></h2><p>A <code>#[julia]</code> item in a crate cannot be generic (generic functions and structs are a <code>rust&quot;&quot;&quot;</code> feature, see <a href="../generics/">Generics</a>). When a dependency exposes a generic type such as <code>Accumulator&lt;T&gt;</code>, <code>RustCall.generate_crate_instances</code> writes a small <em>facade</em> crate that wraps the concrete instances you list (v0.9.1, #558). Since v0.10.0 (#572) the wrappers compose: an argument can borrow another declared wrapper, and a method can return one.</p><p>Suppose a crate <code>stats</code> (in <code>stats/</code>) contains:</p><pre><code class="language-rust hljs">pub struct Accumulator&lt;T&gt; { total: T, count: u64 }
+
+impl Accumulator&lt;f64&gt; {
+    pub fn new(start: f64) -&gt; Self { Self { total: start, count: 0 } }
+    pub fn push(&amp;mut self, x: f64) { self.total += x; self.count += 1; }
+    pub fn mean(&amp;self) -&gt; f64 { self.total / self.count.max(1) as f64 }
+    pub fn merge(&amp;mut self, other: &amp;Self) {
+        self.total += other.total;
+        self.count += other.count;
+    }
+    pub fn snapshot(&amp;self) -&gt; Summary {
+        Summary { mean: self.mean(), count: self.count }
+    }
+    pub fn checked_snapshot(&amp;self) -&gt; Result&lt;Summary, String&gt; {
+        if self.count == 0 { Err(&quot;no samples yet&quot;.into()) } else { Ok(self.snapshot()) }
+    }
+}
+
+impl Accumulator&lt;i64&gt; {
+    pub fn new(start: i64) -&gt; Self { Self { total: start, count: 0 } }
+    pub fn push(&amp;mut self, x: i64) { self.total += x; self.count += 1; }
+    pub fn total(&amp;self) -&gt; i64 { self.total }
+}
+
+pub struct Summary { pub mean: f64, pub count: u64 }
+
+impl Summary {
+    pub fn new(mean: f64, count: u64) -&gt; Self { Self { mean, count } }
+    pub fn mean(&amp;self) -&gt; f64 { self.mean }
+    pub fn count(&amp;self) -&gt; u64 { self.count }
+}</code></pre><p>Declare the instances and their methods, and write the facade&#39;s source:</p><pre><code class="language-julia hljs">using RustCall
+
+empty = Pair{String,String}[]
+instances = [
+    (name = &quot;FloatAcc&quot;, rust_type = &quot;stats::Accumulator&lt;f64&gt;&quot;,
+     constructor = (name = &quot;new&quot;, args = [&quot;start&quot; =&gt; &quot;f64&quot;]),
+     methods = [
+        (name = &quot;push&quot;, args = [&quot;x&quot; =&gt; &quot;f64&quot;], return_type = &quot;()&quot;, mutable = true),
+        (name = &quot;mean&quot;, args = empty, return_type = &quot;f64&quot;, mutable = false),
+        # Borrow another declared wrapper (`other: &amp;FloatAcc`).
+        (name = &quot;merge&quot;, args = [&quot;other&quot; =&gt; (wrapper = :FloatAcc,)],
+         return_type = &quot;()&quot;, mutable = true),
+        # Return a value owned by another declared wrapper.
+        (name = &quot;snapshot&quot;, args = empty, return_wrapper = :Summary, mutable = false),
+        (name = &quot;checked_snapshot&quot;, args = empty, return_wrapper = :Summary,
+         error_type = &quot;String&quot;, mutable = false),
+     ]),
+    (name = &quot;IntAcc&quot;, rust_type = &quot;stats::Accumulator&lt;i64&gt;&quot;,
+     constructor = (name = &quot;new&quot;, args = [&quot;start&quot; =&gt; &quot;i64&quot;]),
+     methods = [
+        (name = &quot;push&quot;, args = [&quot;x&quot; =&gt; &quot;i64&quot;], return_type = &quot;()&quot;, mutable = true),
+        (name = &quot;total&quot;, args = empty, return_type = &quot;i64&quot;, mutable = false),
+     ]),
+    (name = &quot;Summary&quot;, rust_type = &quot;stats::Summary&quot;,
+     constructor = (name = &quot;new&quot;, args = [&quot;mean&quot; =&gt; &quot;f64&quot;, &quot;count&quot; =&gt; &quot;u64&quot;]),
+     methods = [
+        (name = &quot;mean&quot;, args = empty, return_type = &quot;f64&quot;, mutable = false),
+        (name = &quot;count&quot;, args = empty, return_type = &quot;u64&quot;, mutable = false),
+     ]),
+]
+
+mkpath(&quot;stats_facade/src&quot;)
+write(&quot;stats_facade/src/lib.rs&quot;, RustCall.generate_crate_instances(instances))</code></pre><p>The generated source is ordinary <code>#[julia]</code> code. For example, the first wrapper reads:</p><pre><code class="language-rust hljs">#[julia]
+pub struct FloatAcc { inner: stats::Accumulator&lt;f64&gt; }
+#[julia]
+impl FloatAcc {
+    #[julia]
+    pub fn new(start: f64) -&gt; Self {
+        Self { inner: &lt;stats::Accumulator&lt;f64&gt;&gt;::new(start) }
+    }
+    // ...
+    #[julia]
+    pub fn merge(&amp;mut self, other: &amp;FloatAcc) -&gt; () {
+        self.inner.merge(&amp;other.inner)
+    }
+    #[julia]
+    #[rustcall_owned_return(Summary)]
+    pub fn snapshot(&amp;self) -&gt; Summary {
+        Summary { inner: self.inner.snapshot() }
+    }
+    // ...
+}</code></pre><p>The generator does not write a <code>Cargo.toml</code>; supply one:</p><pre><code class="language-toml hljs"># stats_facade/Cargo.toml
+[package]
+name = &quot;stats_facade&quot;
+version = &quot;0.1.0&quot;
+edition = &quot;2021&quot;
+
+[lib]
+crate-type = [&quot;cdylib&quot;]
+
+[dependencies]
+stats = { path = &quot;../stats&quot; }
+rustcall_julia_macros = &quot;0.7&quot;</code></pre><p>Then load the facade like any <code>#[julia]</code> crate:</p><pre><code class="language-julia hljs">S = @rust_crate &quot;stats_facade&quot;
+
+a = S.FloatAcc(0.0)
+S.push(a, 1.0); S.push(a, 3.0)
+b = S.FloatAcc(0.0)
+S.push(b, 5.0)
+S.merge(a, b)
+S.mean(a)                         # 3.0
+
+s = S.snapshot(a)                 # a `Summary`, owned by Julia
+(S.mean(s), S.count(s))           # (3.0, 0x0000000000000003)
+
+S.checked_snapshot(S.FloatAcc(0.0)).value   # &quot;no samples yet&quot;
+
+i = S.IntAcc(10)
+S.push(i, 5)
+S.total(i)                        # 15
+
+S.merge(a, a)                     # ArgumentError: a `&amp;mut` borrow may not alias
+S.merge(a, i)                     # ArgumentError: expected a `FloatAcc` handle</code></pre><p>Points to keep in mind:</p><ul><li>Every method is declared explicitly. The generator inspects nothing in <code>stats</code>; Cargo checks the types and signatures you wrote.</li><li><code>return_wrapper</code> must name the wrapper that owns the returned native value (here <code>Summary</code> for <code>stats::Summary</code>). Add <code>error_type</code> for a <code>Result&lt;Owner, E&gt;</code>. Wrappers may be named before they are declared.</li><li>A method&#39;s Rust call can be replaced with a trusted <code>expression</code>, emitted verbatim (for example <code>expression = &quot;self.inner.checked_snapshot()&quot;</code>).</li><li>The same mapping works as a constructor argument, so <code>constructor = (name = &quot;from_other&quot;, args = [&quot;other&quot; =&gt; (wrapper = :FloatAcc,)])</code> builds one wrapper from another.</li></ul><h2 id="Where-to-read-more"><a class="docs-heading-anchor" href="#Where-to-read-more">Where to read more</a><a id="Where-to-read-more-1"></a><a class="docs-heading-anchor-permalink" href="#Where-to-read-more" title="Permalink"></a></h2><ul><li><a href="../crate_bindings/">External Crate Bindings</a>: the full rules for slices, optional owners, scoped buffers and generated instances, including the manifest fields and producer markers.</li><li><a href="../struct_mapping/">Struct Mapping</a>: <code>Result&lt;Self, E&gt;</code> constructors and methods.</li><li><a href="../panics/">Panics, Visibility and Lifetime</a>: what happens to a borrow when Rust panics or a library is reloaded.</li><li><a href="https://github.com/AtelierArith/RustCall.jl/blob/main/CHANGELOG.md">CHANGELOG</a>: every change, release by release.</li></ul></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../tutorial/">« チュートリアル</a><a class="docs-footer-nextpage" href="../examples/">Examples »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.20.0 on <span class="colophon-date" title="Thursday 12 November 2026 06:36">Thursday 12 November 2026</span>. Using Julia version 1.13.3.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
