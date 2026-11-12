@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><meta name="referrer" content="no-referrer"/><title>Examples · RustCall.jl 日本語</title><meta name="title" content="Examples · RustCall.jl 日本語"/><meta property="og:title" content="Examples · RustCall.jl 日本語"/><meta property="twitter:title" content="Examples · RustCall.jl 日本語"/><meta name="description" content="Documentation for RustCall.jl 日本語."/><meta property="og:description" content="Documentation for RustCall.jl 日本語."/><meta property="twitter:description" content="Documentation for RustCall.jl 日本語."/><meta property="og:url" content="https://atelierarith.github.io/RustCall.jl/ja/stable/examples/"/><meta property="twitter:url" content="https://atelierarith.github.io/RustCall.jl/ja/stable/examples/"/><link rel="canonical" href="https://atelierarith.github.io/RustCall.jl/ja/stable/examples/"/><script data-outdated-warner src="../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.63.2/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL=".."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../assets/documenter.js"></script><script src="../search_index.js"></script><script src="../siteinfo.js"></script><script src="../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../">RustCall.jl 日本語</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../">ホーム</a></li><li><span class="tocitem">はじめに</span><ul><li><a class="tocitem" href="../rust_primer/">Rust for Julia Users</a></li><li><a class="tocitem" href="../tutorial/">チュートリアル</a></li><li><a class="tocitem" href="../tutorial_new_features/">What&#39;s New in v0.9 and v0.10</a></li><li class="is-active"><a class="tocitem" href>Examples</a><ul class="internal"><li><a class="tocitem" href="#Numerical-kernels"><span>Numerical kernels</span></a></li><li><a class="tocitem" href="#Strings"><span>Strings</span></a></li><li><a class="tocitem" href="#Arrays"><span>Arrays</span></a></li><li><a class="tocitem" href="#Bytes"><span>Bytes</span></a></li><li><a class="tocitem" href="#Objects-that-keep-state"><span>Objects that keep state</span></a></li><li><a class="tocitem" href="#Errors-with-structure"><span>Errors with structure</span></a></li><li><a class="tocitem" href="#Image-processing"><span>Image processing</span></a></li><li><a class="tocitem" href="#Using-crates-from-crates.io"><span>Using crates from crates.io</span></a></li><li><a class="tocitem" href="#The-same-thing-by-hand:-extern-&quot;C&quot;-and-@rust"><span>The same thing by hand: <code>extern &quot;C&quot;</code> and <code>@rust</code></span></a></li><li><a class="tocitem" href="#Measuring-performance"><span>Measuring performance</span></a></li><li><a class="tocitem" href="#Ownership-types"><span>Ownership types</span></a></li><li><a class="tocitem" href="#Checklist"><span>Checklist</span></a></li></ul></li></ul></li><li><span class="tocitem">利用ガイド</span><ul><li><a class="tocitem" href="../integration_guide/">Safe Rust/Julia Integration</a></li><li><a class="tocitem" href="../type_contract/">The FFI Type Contract</a></li><li><a class="tocitem" href="../callbacks/">Callbacks</a></li><li><a class="tocitem" href="../struct_mapping/">Struct Mapping</a></li><li><a class="tocitem" href="../generics/">Generics</a></li><li><a class="tocitem" href="../crate_bindings/">External Crate Bindings</a></li><li><a class="tocitem" href="../hot_reload/">Hot Reload</a></li><li><a class="tocitem" href="../pyo3/">PyO3 Crates</a></li><li><a class="tocitem" href="../panics/">Panics, Visibility and Lifetime</a></li><li><a class="tocitem" href="../precompilation/">Precompilation</a></li><li><a class="tocitem" href="../performance/">Performance</a></li><li><a class="tocitem" href="../troubleshooting/">トラブルシューティング</a></li><li><a class="tocitem" href="../migrating_from_irust/">Migrating from @irust</a></li></ul></li><li><span class="tocitem">リファレンス</span><ul><li><input class="collapse-toggle" id="menuitem-4-1" type="checkbox"/><label class="tocitem" for="menuitem-4-1"><span class="docs-label">API リファレンス</span><i class="docs-chevron"></i></label><ul class="collapsed"><li><a class="tocitem" href="../api/">Overview</a></li><li><a class="tocitem" href="../reference/artifacts/">Artifact identity and caching</a></li><li><a class="tocitem" href="../reference/ffi_contract/">The FFI type contract</a></li><li><a class="tocitem" href="../reference/compilation/">Front doors</a></li><li><a class="tocitem" href="../reference/codegen/">Compiler and codegen</a></li><li><a class="tocitem" href="../reference/manifest/">The FFI manifest</a></li><li><a class="tocitem" href="../reference/cargo/">Cargo projects and dependencies</a></li><li><a class="tocitem" href="../reference/crates/">External crates</a></li><li><a class="tocitem" href="../reference/hot_reload/">Hot reload API</a></li><li><a class="tocitem" href="../reference/pyo3/">PyO3 crates</a></li><li><a class="tocitem" href="../reference/ownership/">Types, memory and ownership</a></li><li><a class="tocitem" href="../reference/generics/">Generics and #[julia] functions</a></li><li><a class="tocitem" href="../reference/errors/">Errors</a></li><li><a class="tocitem" href="../reference/loading/">Load policy</a></li></ul></li><li><a class="tocitem" href="../status/">Project Status</a></li></ul></li><li><span class="tocitem">開発者向け</span><ul><li><a class="tocitem" href="../internals/">How RustCall Calls Rust</a></li><li><a class="tocitem" href="../project_guide/">Project Guide</a></li><li><a class="tocitem" href="../developer_windows/">Windows Development</a></li><li><a class="tocitem" href="../developer_pitfalls/">Developer Pitfalls</a></li></ul></li><li><span class="tocitem">プラットフォーム</span><ul><li><a class="tocitem" href="../platforms/windows/">Windows</a></li></ul></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">はじめに</a></li><li class="is-active"><a href>Examples</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Examples</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/AtelierArith/RustCall.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><nav aria-label="Language"><a class="language-en" lang="en">English</a> / <a class="language-ja" lang="ja">日本語</a></nav>
+<script>
+for (const lang of ['en', 'ja']) {
+    const url = new URL(location.href);
+    url.pathname = url.pathname.replace(/\/(en|ja)\//, '/' + lang + '/');
+    url.hash = '';
+    document.querySelector('.language-' + lang).href = url.href;
+}
+</script><div class="admonition is-info" id="未翻訳：英語原文-cf148dd285db41"><header class="admonition-header">未翻訳：英語原文<a class="admonition-anchor" href="#未翻訳：英語原文-cf148dd285db41" title="Permalink"></a></header><div class="admonition-body"><p>このページはまだ翻訳されていません。以下に同じバージョンの英語原文を掲載しています。</p></div></div><h1 id="Examples"><a class="docs-heading-anchor" href="#Examples">Examples</a><a id="Examples-1"></a><a class="docs-heading-anchor-permalink" href="#Examples" title="Permalink"></a></h1><p>A cookbook of small, complete examples. Each one shows the Rust and the Julia side together, and all of them except the few marked otherwise are run when this documentation is built, so the outputs are real.</p><p>The examples use <code>#[julia]</code>, which lets you write ordinary Rust with ordinary Rust types. If you have not read the <a href="../tutorial/">Tutorial</a> yet, start there; if a piece of Rust syntax is unfamiliar, see <a href="../rust_primer/">Rust for Julia Users</a>.</p><h2 id="Numerical-kernels"><a class="docs-heading-anchor" href="#Numerical-kernels">Numerical kernels</a><a id="Numerical-kernels-1"></a><a class="docs-heading-anchor-permalink" href="#Numerical-kernels" title="Permalink"></a></h2><h3 id="A-loop"><a class="docs-heading-anchor" href="#A-loop">A loop</a><a id="A-loop-1"></a><a class="docs-heading-anchor-permalink" href="#A-loop" title="Permalink"></a></h3><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[julia]
+fn power(x: f64, n: u32) -&gt; f64 {
+    let mut result = 1.0;
+    for _ in 0..n {
+        result *= x;
+    }
+    result
+}
+&quot;&quot;&quot;
+
+power(2.0, 10)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">1024.0</code></pre><p><code>for _ in 0..n</code> runs <code>n</code> times; <code>_</code> is Rust&#39;s &quot;I do not need this variable&quot;.</p><h3 id="Fibonacci"><a class="docs-heading-anchor" href="#Fibonacci">Fibonacci</a><a id="Fibonacci-1"></a><a class="docs-heading-anchor-permalink" href="#Fibonacci" title="Permalink"></a></h3><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[julia]
+fn fibonacci(n: u32) -&gt; u64 {
+    if n &lt;= 1 {
+        return n as u64;
+    }
+
+    let (mut a, mut b) = (0u64, 1u64);
+    for _ in 2..=n {
+        (a, b) = (b, a + b);
+    }
+    b
+}
+&quot;&quot;&quot;
+
+Int.(fibonacci.(0:10))</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">11-element Vector{Int64}:
+  0
+  1
+  1
+  2
+  3
+  5
+  8
+ 13
+ 21
+ 34
+ 55</code></pre><p><code>0u64</code> is a literal with an explicit type, and <code>n as u64</code> is an explicit conversion: Rust never converts between numeric types on its own. The Julia side broadcasts over the generated function like over any other.</p><h3 id="Statistics-over-an-array"><a class="docs-heading-anchor" href="#Statistics-over-an-array">Statistics over an array</a><a id="Statistics-over-an-array-1"></a><a class="docs-heading-anchor-permalink" href="#Statistics-over-an-array" title="Permalink"></a></h3><p>A function can take a Julia array as a <em>slice</em> (<code>&amp;[f64]</code>), without a copy. To give several values back, return a <code>#[julia]</code> struct and read its fields:</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[julia]
+pub struct Summary {
+    pub mean: f64,
+    pub variance: f64,
+    pub min: f64,
+    pub max: f64,
+}
+
+impl Summary {
+    pub fn new(xs: &amp;[f64]) -&gt; Self {
+        let n = xs.len() as f64;
+        let mean = xs.iter().sum::&lt;f64&gt;() / n;
+        let variance = xs.iter().map(|x| (x - mean) * (x - mean)).sum::&lt;f64&gt;() / n;
+        let min = xs.iter().copied().fold(f64::INFINITY, f64::min);
+        let max = xs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        Self { mean, variance, min, max }
+    }
+}
+&quot;&quot;&quot;
+
+s = Summary([1.0, 2.0, 3.0, 4.0, 5.0])
+(mean = s.mean, std = sqrt(s.variance), min = s.min, max = s.max)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">(mean = 3.0, std = 1.4142135623730951, min = 1.0, max = 5.0)</code></pre><p><code>xs.iter()</code> is an iterator, <code>.map(|x| …)</code> applies a closure (Julia&#39;s <code>x -&gt; …</code>), and <code>.sum::&lt;f64&gt;()</code> names the result type explicitly, which Rust needs here. <code>.fold(init, f)</code> is Julia&#39;s <code>foldl(f, xs; init)</code>.</p><h2 id="Strings"><a class="docs-heading-anchor" href="#Strings">Strings</a><a id="Strings-1"></a><a class="docs-heading-anchor-permalink" href="#Strings" title="Permalink"></a></h2><p><code>&amp;str</code> is a borrowed UTF-8 string and <code>String</code> an owned one. Both are a Julia <code>String</code> on the Julia side.</p><h3 id="Searching"><a class="docs-heading-anchor" href="#Searching">Searching</a><a id="Searching-1"></a><a class="docs-heading-anchor-permalink" href="#Searching" title="Permalink"></a></h3><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[julia]
+fn find_substring(haystack: &amp;str, needle: &amp;str) -&gt; Option&lt;usize&gt; {
+    haystack.find(needle)
+}
+
+#[julia]
+fn count_words(text: &amp;str) -&gt; usize {
+    text.split_whitespace().count()
+}
+&quot;&quot;&quot;
+
+found   = find_substring(&quot;hello world&quot;, &quot;world&quot;)
+missing = find_substring(&quot;hello world&quot;, &quot;xyz&quot;)
+RustCall.unwrap(found), RustCall.is_none(missing), count_words(&quot;The quick brown fox&quot;)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">(0x0000000000000006, true, 0x0000000000000004)</code></pre><p><code>str::find</code> returns an <code>Option</code>: <code>Some(position)</code> or <code>None</code>, where Julia&#39;s <code>findfirst</code> returns a range or <code>nothing</code>. The position is a <strong>zero-based byte offset</strong>, so <code>6</code> here is Julia&#39;s index <code>7</code>.</p><h3 id="Returning-a-new-string"><a class="docs-heading-anchor" href="#Returning-a-new-string">Returning a new string</a><a id="Returning-a-new-string-1"></a><a class="docs-heading-anchor-permalink" href="#Returning-a-new-string" title="Permalink"></a></h3><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[julia]
+fn reverse_chars(s: &amp;str) -&gt; String {
+    s.chars().rev().collect()
+}
+
+#[julia]
+fn shout(s: &amp;str) -&gt; String {
+    format!(&quot;{}!&quot;, s.to_uppercase())
+}
+&quot;&quot;&quot;
+
+reverse_chars(&quot;こんにちは&quot;), shout(&quot;hello&quot;)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">(&quot;はちにんこ&quot;, &quot;HELLO!&quot;)</code></pre><p><code>.chars()</code> iterates over Unicode characters, not bytes, so the reversal is correct for non-ASCII text. <code>.collect()</code> gathers an iterator into the declared return type, here a <code>String</code>.</p><h3 id="Validating-input"><a class="docs-heading-anchor" href="#Validating-input">Validating input</a><a id="Validating-input-1"></a><a class="docs-heading-anchor-permalink" href="#Validating-input" title="Permalink"></a></h3><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[julia]
+fn is_ipv4(text: &amp;str) -&gt; bool {
+    let parts: Vec&lt;&amp;str&gt; = text.split(&#39;.&#39;).collect();
+    parts.len() == 4 &amp;&amp; parts.iter().all(|part| part.parse::&lt;u8&gt;().is_ok())
+}
+&quot;&quot;&quot;
+
+is_ipv4(&quot;192.168.1.1&quot;), is_ipv4(&quot;999.1.1.1&quot;), is_ipv4(&quot;1.2.3&quot;)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">(true, false, false)</code></pre><p><code>part.parse::&lt;u8&gt;()</code> tries to read the text as an 8-bit unsigned integer and returns a <code>Result</code>, so &quot;is a number from 0 to 255&quot; is one expression. <code>Vec&lt;&amp;str&gt;</code> is Rust&#39;s growable array; it is used freely <em>inside</em> a function, it just cannot be an argument or return type at the boundary.</p><h2 id="Arrays"><a class="docs-heading-anchor" href="#Arrays">Arrays</a><a id="Arrays-1"></a><a class="docs-heading-anchor-permalink" href="#Arrays" title="Permalink"></a></h2><h3 id="Reading"><a class="docs-heading-anchor" href="#Reading">Reading</a><a id="Reading-1"></a><a class="docs-heading-anchor-permalink" href="#Reading" title="Permalink"></a></h3><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[julia]
+fn sum_wide(xs: &amp;[i32]) -&gt; i64 {
+    xs.iter().map(|&amp;x| x as i64).sum()
+}
+
+#[julia]
+fn max_element(xs: &amp;[i32]) -&gt; Option&lt;i32&gt; {
+    xs.iter().copied().max()
+}
+&quot;&quot;&quot;
+
+arr = Int32[1, 5, 3, 9, 2]
+sum_wide(arr), RustCall.unwrap(max_element(arr)), RustCall.is_none(max_element(Int32[]))</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">(20, 9, true)</code></pre><p>The maximum of an empty slice does not exist, and the Rust type says so: <code>max()</code> returns an <code>Option</code>. Summing into an <code>i64</code> avoids overflowing <code>i32</code>.</p><h3 id="Modifying-in-place"><a class="docs-heading-anchor" href="#Modifying-in-place">Modifying in place</a><a id="Modifying-in-place-1"></a><a class="docs-heading-anchor-permalink" href="#Modifying-in-place" title="Permalink"></a></h3><p><code>&amp;mut [T]</code> is a writable view of the Julia array:</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[julia]
+fn sort_in_place(xs: &amp;mut [i32]) {
+    xs.sort();
+}
+
+#[julia]
+fn normalize(xs: &amp;mut [f64]) -&gt; Result&lt;(), String&gt; {
+    let norm = xs.iter().map(|x| x * x).sum::&lt;f64&gt;().sqrt();
+    if norm == 0.0 {
+        return Err(&quot;cannot normalize a zero vector&quot;.to_string());
+    }
+    for x in xs.iter_mut() {
+        *x /= norm;
+    }
+    Ok(())
+}
+&quot;&quot;&quot;
+
+a = Int32[5, 2, 8, 1, 9]
+sort_in_place(a)
+
+v = [3.0, 4.0]
+normalize(v)
+a, v</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">(Int32[1, 2, 5, 8, 9], [0.6, 0.8])</code></pre><p><code>Result&lt;(), String&gt;</code> is the type of &quot;nothing to return, but it can fail&quot;. On failure the array is left untouched and Julia gets the message:</p><pre><code class="language-julia hljs">RustCall.result_to_exception(normalize([3.0, 4.0]))   # Ok: returns nothing
+r = normalize(zeros(3))
+RustCall.is_err(r), r.value</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">(true, &quot;cannot normalize a zero vector&quot;)</code></pre><p>The element type must match exactly (<code>Vector{Int32}</code> for <code>&amp;[i32]</code>); see <a href="../tutorial_new_features/#Julia-arrays-as-Rust-slices">Julia arrays as Rust slices</a> for views, matrices and the aliasing rules.</p><h2 id="Bytes"><a class="docs-heading-anchor" href="#Bytes">Bytes</a><a id="Bytes-1"></a><a class="docs-heading-anchor-permalink" href="#Bytes" title="Permalink"></a></h2><h3 id="A-hash-function"><a class="docs-heading-anchor" href="#A-hash-function">A hash function</a><a id="A-hash-function-1"></a><a class="docs-heading-anchor-permalink" href="#A-hash-function" title="Permalink"></a></h3><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[julia]
+fn fnv1a(data: &amp;[u8]) -&gt; u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in data {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+&quot;&quot;&quot;
+
+function fnv1a_julia(data::Vector{UInt8})
+    hash = 0xcbf29ce484222325
+    for byte in data
+        hash = (hash ⊻ byte) * 0x100000001b3
+    end
+    return hash
+end
+
+data = Vector{UInt8}(&quot;hello world&quot;)
+fnv1a(data) == fnv1a_julia(data)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">true</code></pre><p>Julia&#39;s integer arithmetic wraps on overflow silently. Rust makes you say so: <code>wrapping_mul</code> is the wrapping multiplication, and a plain <code>*</code> that overflows is treated as a bug.</p><h3 id="Writing-into-a-buffer-the-caller-owns"><a class="docs-heading-anchor" href="#Writing-into-a-buffer-the-caller-owns">Writing into a buffer the caller owns</a><a id="Writing-into-a-buffer-the-caller-owns-1"></a><a class="docs-heading-anchor-permalink" href="#Writing-into-a-buffer-the-caller-owns" title="Permalink"></a></h3><p>A Rust function cannot hand a freshly allocated <code>Vec&lt;u8&gt;</code> to Julia directly. The usual pattern is that Julia allocates the output and Rust fills it and reports how much it used. Here is run-length encoding:</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[julia]
+fn rle_encode(input: &amp;[u8], output: &amp;mut [u8]) -&gt; Result&lt;usize, String&gt; {
+    let mut written = 0;
+    let mut i = 0;
+    while i &lt; input.len() {
+        let byte = input[i];
+        let mut run = 1;
+        while i + run &lt; input.len() &amp;&amp; input[i + run] == byte &amp;&amp; run &lt; 255 {
+            run += 1;
+        }
+        if written + 2 &gt; output.len() {
+            return Err(format!(&quot;output buffer too small ({} bytes)&quot;, output.len()));
+        }
+        output[written] = run as u8;
+        output[written + 1] = byte;
+        written += 2;
+        i += run;
+    }
+    Ok(written)
+}
+&quot;&quot;&quot;
+
+function rle(data::Vector{UInt8})
+    output = zeros(UInt8, 2 * length(data))        # worst case
+    n = RustCall.result_to_exception(rle_encode(data, output))
+    return resize!(output, n)
+end
+
+rle(Vector{UInt8}(&quot;aaabbbbcd&quot;))</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">8-element Vector{UInt8}:
+ 0x03
+ 0x61
+ 0x04
+ 0x62
+ 0x01
+ 0x63
+ 0x01
+ 0x64</code></pre><p>Indexing a slice (<code>input[i]</code>) is bounds-checked in Rust as in Julia. An out-of-range index is a panic, which RustCall turns into a <code>RustCall.RustPanicError</code> rather than a crash.</p><h2 id="Objects-that-keep-state"><a class="docs-heading-anchor" href="#Objects-that-keep-state">Objects that keep state</a><a id="Objects-that-keep-state-1"></a><a class="docs-heading-anchor-permalink" href="#Objects-that-keep-state" title="Permalink"></a></h2><p>When Rust needs to own growing data, keep it inside a <code>#[julia]</code> struct. Julia holds a handle; the <code>Vec</code> never crosses the boundary.</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[julia]
+pub struct Recorder {
+    samples: Vec&lt;f64&gt;,
+}
+
+impl Recorder {
+    pub fn new() -&gt; Self {
+        Self { samples: Vec::new() }
+    }
+
+    pub fn record(&amp;mut self, value: f64) {
+        self.samples.push(value);
+    }
+
+    pub fn record_all(&amp;mut self, values: &amp;[f64]) {
+        self.samples.extend_from_slice(values);
+    }
+
+    pub fn count(&amp;self) -&gt; usize {
+        self.samples.len()
+    }
+
+    pub fn average(&amp;self) -&gt; Option&lt;f64&gt; {
+        if self.samples.is_empty() {
+            None
+        } else {
+            Some(self.samples.iter().sum::&lt;f64&gt;() / self.samples.len() as f64)
+        }
+    }
+
+    pub fn copy_into(&amp;self, out: &amp;mut [f64]) -&gt; Result&lt;(), String&gt; {
+        if out.len() != self.samples.len() {
+            return Err(format!(&quot;need a buffer of length {}&quot;, self.samples.len()));
+        }
+        out.copy_from_slice(&amp;self.samples);
+        Ok(())
+    }
+}
+&quot;&quot;&quot;
+
+rec = Recorder()
+record(rec, 1.5)
+record_all(rec, [2.5, 3.5, 4.5])
+
+out = zeros(Int(count(rec)))
+copy_into(rec, out)
+Int(count(rec)), RustCall.unwrap(average(rec)), out</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">(4, 3.0, [1.5, 2.5, 3.5, 4.5])</code></pre><p><code>&amp;mut self</code> methods change the object, <code>&amp;self</code> methods only read it. The Rust value is dropped automatically when the Julia object is garbage collected. <code>count</code> here is a new function in this module, not <code>Base.count</code>; see the note on method names in the <a href="../tutorial/#Objects">Tutorial</a>.</p><h2 id="Errors-with-structure"><a class="docs-heading-anchor" href="#Errors-with-structure">Errors with structure</a><a id="Errors-with-structure-1"></a><a class="docs-heading-anchor-permalink" href="#Errors-with-structure" title="Permalink"></a></h2><p>Returning <code>Result&lt;T, String&gt;</code> gives Julia a message. Parsing and validation code reads naturally with the <code>?</code> operator, which returns early on an error:</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[julia]
+fn parse_endpoint(text: &amp;str) -&gt; Result&lt;u16, String&gt; {
+    let (host, port) = text
+        .split_once(&#39;:&#39;)
+        .ok_or_else(|| format!(&quot;`{}` has no `:port`&quot;, text))?;
+    if host.is_empty() {
+        return Err(&quot;empty host&quot;.to_string());
+    }
+    let port: u16 = port
+        .parse()
+        .map_err(|e| format!(&quot;bad port `{}`: {}&quot;, port, e))?;
+    Ok(port)
+}
+&quot;&quot;&quot;
+
+results = parse_endpoint.([&quot;localhost:8080&quot;, &quot;localhost&quot;, &quot;localhost:http&quot;, &quot;:80&quot;])
+[RustCall.is_ok(r) ? Int(RustCall.unwrap(r)) : r.value for r in results]</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">4-element Vector{Any}:
+ 8080
+     &quot;`localhost` has no `:port`&quot;
+     &quot;bad port `http`: invalid digit found in string&quot;
+     &quot;empty host&quot;</code></pre><h2 id="Image-processing"><a class="docs-heading-anchor" href="#Image-processing">Image processing</a><a id="Image-processing-1"></a><a class="docs-heading-anchor-permalink" href="#Image-processing" title="Permalink"></a></h2><p>An image is a large, flat buffer of bytes, which is the ideal shape for a Rust kernel: Julia keeps the image types and the plotting, Rust does the per-pixel loop in place. This example uses Images.jl for display.</p><p>To run it locally, install <code>Images</code> first:</p><pre><code class="language-julia hljs">using Pkg
+Pkg.add(&quot;Images&quot;)</code></pre><pre><code class="language-julia hljs">using RustCall
+using Images
+
+# Rust converts the buffer in place. `&amp;mut [u8]` is the Julia vector&#39;s own memory.
+rust&quot;&quot;&quot;
+#[julia]
+fn grayscale_image(pixels: &amp;mut [u8]) {
+    // Interleaved RGB: three bytes per pixel.
+    for rgb in pixels.chunks_exact_mut(3) {
+        let r = rgb[0] as f32;
+        let g = rgb[1] as f32;
+        let b = rgb[2] as f32;
+
+        // Standard luminance formula (ITU-R BT.601)
+        let gray = (0.299 * r + 0.587 * g + 0.114 * b) as u8;
+
+        rgb[0] = gray;
+        rgb[1] = gray;
+        rgb[2] = gray;
+    }
+}
+&quot;&quot;&quot;
+
+# Create a sample RGB image (gradient with colors)
+function create_sample_image(width, height)
+    img = zeros(RGB{N0f8}, height, width)
+    for y in 1:height, x in 1:width
+        r = (x - 1) / (width - 1)    # Red increases left to right
+        g = (y - 1) / (height - 1)   # Green increases top to bottom
+        b = 0.5                       # Constant blue
+        img[y, x] = RGB{N0f8}(r, g, b)
+    end
+    return img
+end
+
+# Convert Julia image to raw RGB bytes (row-major, interleaved RGB)
+function image_to_bytes(img)
+    h, w = size(img)
+    pixels = Vector{UInt8}(undef, h * w * 3)
+    idx = 1
+    for y in 1:h, x in 1:w
+        pixel = img[y, x]
+        pixels[idx] = reinterpret(UInt8, red(pixel))
+        pixels[idx + 1] = reinterpret(UInt8, green(pixel))
+        pixels[idx + 2] = reinterpret(UInt8, blue(pixel))
+        idx += 3
+    end
+    return pixels
+end
+
+# Convert raw RGB bytes back to Julia image
+function bytes_to_image(pixels, width, height)
+    img = zeros(RGB{N0f8}, height, width)
+    idx = 1
+    for y in 1:height, x in 1:width
+        r = reinterpret(N0f8, pixels[idx])
+        g = reinterpret(N0f8, pixels[idx + 1])
+        b = reinterpret(N0f8, pixels[idx + 2])
+        img[y, x] = RGB{N0f8}(r, g, b)
+        idx += 3
+    end
+    return img
+end
+
+# Create sample image
+width, height = 256, 256
+original_img = create_sample_image(width, height)</code></pre><p><strong>Original Image (Color Gradient):</strong></p><pre><code class="language-julia hljs">original_img</code></pre><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAIAAADTED8xAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAgY0hSTQAAeiYAAICEAAD6AAAAgOgAAHUwAADqYAAAOpgAABdwnLpRPAAAA/RJREFUeAHtwQENADAMAyCaVPilX8gK5YUQQgghhBBCCCGEEEIIIYQQQgghhBBCCCGEEEIIIYQQQgghhBBCCCGEEEIIIYQQQgghhBBCCCGEEEIIIYQQQgghhBBCCCGEEEIIIYQQQgghhBBCCCGEEEIIIYQQQgghhBBCCCGEEEIIIYQQQgghhBBCCCGEEEIIIYQQQgghhBBCCCGEEEIIIYQQQgghhBBCCCGEEEIIIYQQQgghhBBCCKFi5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs6qmDmrYuasipmzKmbOqpg5q2LmrIqZsypmzqqYOati5qyKmbMqZs76suwGf6tbGn8AAAAASUVORK5C"><p>Now let&#39;s convert it to grayscale using Rust:</p><pre><code class="language-julia hljs"># Process the image with Rust
+pixels = image_to_bytes(original_img)
+grayscale_image(pixels)
+grayscale_img = bytes_to_image(pixels, width, height)</code></pre><p><strong>Grayscale Image (Processed by Rust):</strong></p><pre><code class="language-julia hljs">grayscale_img</code></pre><img src="c9d51cc7.png" alt="Example block output" width="256" height="256"/><p>Let&#39;s verify the grayscale conversion worked correctly:</p><pre><code class="language-julia hljs"># Check that R, G, B are equal (grayscale property)
+sample_pixel = grayscale_img[128, 128]
+println(&quot;Sample pixel at (128, 128):&quot;)
+println(&quot;  R = $(red(sample_pixel))&quot;)
+println(&quot;  G = $(green(sample_pixel))&quot;)
+println(&quot;  B = $(blue(sample_pixel))&quot;)
+println(&quot;  Grayscale verified: &quot;, red(sample_pixel) == green(sample_pixel) == blue(sample_pixel))</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">Sample pixel at (128, 128):
+  R = 0.498N0f8
+  G = 0.498N0f8
+  B = 0.498N0f8
+  Grayscale verified: true</code></pre><p><strong>Side-by-side comparison:</strong></p><pre><code class="language-julia hljs"># Create a side-by-side comparison image
+comparison = [original_img grayscale_img]</code></pre><img src="74c7eab3.png" alt="Example block output" width="512" height="256"/><div class="admonition is-info" id="Running-this-example-2b04883ee3c17ea6"><header class="admonition-header">Running this example<a class="admonition-anchor" href="#Running-this-example-2b04883ee3c17ea6" title="Permalink"></a></header><div class="admonition-body"><p>For <code>servedocs()</code>, make sure to run it from the docs environment:</p><pre><code class="language-julia hljs">julia --project=docs -e &#39;using Pkg; Pkg.instantiate()&#39;
+julia --project=docs -e &#39;using LiveServer; servedocs()&#39;</code></pre></div></div><h2 id="Using-crates-from-crates.io"><a class="docs-heading-anchor" href="#Using-crates-from-crates.io">Using crates from crates.io</a><a id="Using-crates-from-crates.io-1"></a><a class="docs-heading-anchor-permalink" href="#Using-crates-from-crates.io" title="Permalink"></a></h2><p><em>Not run in this build: it downloads from the network.</em></p><p>A block can depend on published crates. Name them in a <code>// cargo-deps:</code> comment and RustCall builds the block with Cargo:</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+// cargo-deps: regex = &quot;1&quot;
+
+use regex::Regex;
+
+#[julia]
+fn count_matches(pattern: &amp;str, text: &amp;str) -&gt; Result&lt;usize, String&gt; {
+    let re = Regex::new(pattern).map_err(|e| e.to_string())?;
+    Ok(re.find_iter(text).count())
+}
+&quot;&quot;&quot;
+
+RustCall.unwrap(count_matches(raw&quot;\d+&quot;, &quot;a1 b22 c333&quot;))   # =&gt; 3</code></pre><p>Dependencies use Cargo&#39;s own syntax, so features and several crates work too:</p><pre><code class="language-rust hljs">// cargo-deps: serde = { version = &quot;1.0&quot;, features = [&quot;derive&quot;] }, serde_json = &quot;1.0&quot;</code></pre><p>or, for a longer list, a manifest section in a documentation comment:</p><pre><code class="language-rust hljs">//! ```cargo
+//! [dependencies]
+//! rand = &quot;0.8&quot;
+//! ndarray = &quot;0.15&quot;
+//! ```</code></pre><p>The first build downloads and compiles the dependencies and can take a minute. After that the compiled library is cached.</p><h2 id="The-same-thing-by-hand:-extern-&quot;C&quot;-and-@rust"><a class="docs-heading-anchor" href="#The-same-thing-by-hand:-extern-&quot;C&quot;-and-@rust">The same thing by hand: <code>extern &quot;C&quot;</code> and <code>@rust</code></a><a id="The-same-thing-by-hand:-extern-&quot;C&quot;-and-@rust-1"></a><a class="docs-heading-anchor-permalink" href="#The-same-thing-by-hand:-extern-&quot;C&quot;-and-@rust" title="Permalink"></a></h2><p>Everything above can be written without <code>#[julia]</code>, in the classic C-ABI style. You then pass raw pointers and lengths yourself, and the Rust side rebuilds the slice in <code>unsafe</code> code:</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[no_mangle]
+pub extern &quot;C&quot; fn sum_array(data: *const i32, len: usize) -&gt; i64 {
+    let slice = unsafe { std::slice::from_raw_parts(data, len) };
+    slice.iter().map(|&amp;x| x as i64).sum()
+}
+&quot;&quot;&quot;
+
+function sum_by_hand(arr::Vector{Int32})
+    GC.@preserve arr begin
+        @rust sum_array(pointer(arr), UInt(length(arr)))::Int64
+    end
+end
+
+sum_by_hand(Int32[1, 5, 3, 9, 2])</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">20</code></pre><p>Compared with <code>sum_wide</code> above, you are now responsible for three things that <code>#[julia]</code> did for you:</p><ul><li><strong><code>GC.@preserve</code>.</strong> <code>pointer(arr)</code> is a bare address. Without the <code>GC.@preserve</code> block Julia may free or move <code>arr</code> while Rust is reading it.</li><li><strong>Exact types.</strong> <code>UInt(length(arr))</code> must match <code>usize</code>; nothing is converted.</li><li><strong>Panics.</strong> A panic in a hand-written <code>extern &quot;C&quot;</code> function aborts the Julia process.</li></ul><p>Use this style to bind existing C-style Rust, and prefer <code>#[julia]</code> for new code.</p><h2 id="Measuring-performance"><a class="docs-heading-anchor" href="#Measuring-performance">Measuring performance</a><a id="Measuring-performance-1"></a><a class="docs-heading-anchor-permalink" href="#Measuring-performance" title="Permalink"></a></h2><p><em>Not run in this build.</em></p><pre><code class="language-julia hljs">using BenchmarkTools
+
+rust&quot;&quot;&quot;
+#[julia]
+fn sum_of_squares(xs: &amp;[f64]) -&gt; f64 {
+    xs.iter().map(|x| x * x).sum()
+}
+&quot;&quot;&quot;
+
+julia_sum_of_squares(xs) = sum(x -&gt; x * x, xs)
+
+data = rand(10_000)
+@btime julia_sum_of_squares($data)
+@btime sum_of_squares($data)</code></pre><p>Three things to keep in mind when you read such numbers:</p><ul><li><strong>Julia is already fast.</strong> For a simple numeric loop, well-typed Julia and Rust compile to similar machine code. Expect parity, not a miracle. Rust earns its place through libraries you do not want to rewrite, predictable memory use, and code whose safety you want the compiler to check.</li><li><strong>A call has a fixed cost.</strong> Crossing the boundary costs a few nanoseconds for a <code>#[julia]</code> function. That is negligible for a function that does real work and dominant for one that adds two numbers. Move the loop to the Rust side and pass the whole array, rather than calling Rust once per element.</li><li><strong>Annotate <code>@rust</code> calls.</strong> <code>@rust f(x)::T</code> is a direct call; <code>@rust f(x)</code> without the annotation is resolved dynamically and is far slower.</li></ul><p>The <a href="../performance/">Performance Guide</a> has measurements and details.</p><h2 id="Ownership-types"><a class="docs-heading-anchor" href="#Ownership-types">Ownership types</a><a id="Ownership-types-1"></a><a class="docs-heading-anchor-permalink" href="#Ownership-types" title="Permalink"></a></h2><p><em>Not run in this build: these need the helper library built by <code>Pkg.build(&quot;RustCall&quot;)</code>.</em></p><p>RustCall can also hold standalone Rust smart pointers and vectors. Most code never needs them, since <code>#[julia]</code> structs cover the common case, but they are useful for experimenting with Rust&#39;s ownership model from the REPL:</p><pre><code class="language-julia hljs">using RustCall
+
+# RustBox: one owner, freed once.
+box = RustCall.RustBox(Int32(42))
+RustCall.is_valid(box)       # =&gt; true
+RustCall.drop!(box)
+RustCall.is_dropped(box)     # =&gt; true
+
+# RustRc / RustArc: shared ownership by reference counting.
+rc1 = RustCall.RustRc(Int32(100))
+rc2 = RustCall.clone(rc1)    # a second owner of the same value
+RustCall.drop!(rc1)
+RustCall.is_valid(rc2)       # =&gt; true: the value lives until the last owner goes
+RustCall.drop!(rc2)
+
+# RustVec: a growable array whose memory Rust manages.
+vec = RustCall.create_rust_vec(Int32[1, 2, 3])
+vec[1] = 42
+collect(vec)                 # =&gt; Int32[42, 2, 3]
+RustCall.drop!(vec)</code></pre><p><code>RustArc</code> is the thread-safe variant of <code>RustRc</code>. See <a href="../reference/ownership/">Types, memory and ownership</a> for the full API.</p><h2 id="Checklist"><a class="docs-heading-anchor" href="#Checklist">Checklist</a><a id="Checklist-1"></a><a class="docs-heading-anchor-permalink" href="#Checklist" title="Permalink"></a></h2><ul><li>Prefer <code>#[julia]</code> functions with <code>&amp;str</code>, <code>String</code>, <code>&amp;[T]</code>, <code>&amp;mut [T]</code>, <code>Result</code> and <code>Option</code> in their signatures. They are checked and converted for you.</li><li>Pass whole arrays and loop in Rust. Do not call across the boundary per element.</li><li>Return <code>Result</code> for failures a caller should handle. Leave panics for bugs.</li><li>To return several values, return a <code>#[julia]</code> struct. To return a large buffer, let Julia allocate it and have Rust fill a <code>&amp;mut [T]</code>.</li><li>Keep growing or long-lived Rust data inside a <code>#[julia]</code> struct.</li><li>When a block does not compile, read the <code>help:</code> lines of the compiler message first. <a href="../rust_primer/#Common-first-errors">Common first errors</a> translates the usual ones.</li></ul><p>For a project of real size, continue with <a href="../integration_guide/">Safe Rust/Julia Integration</a>.</p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../tutorial_new_features/">« What&#39;s New in v0.9 and v0.10</a><a class="docs-footer-nextpage" href="../integration_guide/">Safe Rust/Julia Integration »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.20.0 on <span class="colophon-date" title="Thursday 12 November 2026 05:43">Thursday 12 November 2026</span>. Using Julia version 1.13.3.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
