@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><meta name="referrer" content="no-referrer"/><title>Tutorial · RustCall.jl</title><meta name="title" content="Tutorial · RustCall.jl"/><meta property="og:title" content="Tutorial · RustCall.jl"/><meta property="twitter:title" content="Tutorial · RustCall.jl"/><meta name="description" content="Documentation for RustCall.jl."/><meta property="og:description" content="Documentation for RustCall.jl."/><meta property="twitter:description" content="Documentation for RustCall.jl."/><meta property="og:url" content="https://atelierarith.github.io/RustCall.jl/en/stable/tutorial/"/><meta property="twitter:url" content="https://atelierarith.github.io/RustCall.jl/en/stable/tutorial/"/><link rel="canonical" href="https://atelierarith.github.io/RustCall.jl/en/stable/tutorial/"/><script data-outdated-warner src="../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.63.2/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL=".."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../assets/documenter.js"></script><script src="../search_index.js"></script><script src="../siteinfo.js"></script><script src="../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../">RustCall.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../">Home</a></li><li><span class="tocitem">Getting Started</span><ul><li><a class="tocitem" href="../rust_primer/">Rust for Julia Users</a></li><li class="is-active"><a class="tocitem" href>Tutorial</a><ul class="internal"><li><a class="tocitem" href="#Before-you-start"><span>Before you start</span></a></li><li><a class="tocitem" href="#Your-first-Rust-function"><span>Your first Rust function</span></a></li><li><a class="tocitem" href="#Numbers"><span>Numbers</span></a></li><li><a class="tocitem" href="#Strings"><span>Strings</span></a></li><li><a class="tocitem" href="#Arrays"><span>Arrays</span></a></li><li><a class="tocitem" href="#Errors"><span>Errors</span></a></li><li><a class="tocitem" href="#Objects"><span>Objects</span></a></li><li><a class="tocitem" href="#Using-crates-from-crates.io"><span>Using crates from crates.io</span></a></li><li><a class="tocitem" href="#The-manual-way:-extern-&quot;C&quot;-and-@rust"><span>The manual way: <code>extern &quot;C&quot;</code> and <code>@rust</code></span></a></li><li><a class="tocitem" href="#Things-worth-knowing-early"><span>Things worth knowing early</span></a></li><li><a class="tocitem" href="#Using-Rust-in-a-package"><span>Using Rust in a package</span></a></li><li><a class="tocitem" href="#Where-to-go-next"><span>Where to go next</span></a></li></ul></li><li><a class="tocitem" href="../tutorial_new_features/">What&#39;s New in v0.9 and v0.10</a></li><li><a class="tocitem" href="../examples/">Examples</a></li></ul></li><li><span class="tocitem">User Guide</span><ul><li><a class="tocitem" href="../integration_guide/">Safe Rust/Julia Integration</a></li><li><a class="tocitem" href="../type_contract/">The FFI Type Contract</a></li><li><a class="tocitem" href="../callbacks/">Callbacks</a></li><li><a class="tocitem" href="../struct_mapping/">Struct Mapping</a></li><li><a class="tocitem" href="../generics/">Generics</a></li><li><a class="tocitem" href="../crate_bindings/">External Crate Bindings</a></li><li><a class="tocitem" href="../hot_reload/">Hot Reload</a></li><li><a class="tocitem" href="../pyo3/">PyO3 Crates</a></li><li><a class="tocitem" href="../panics/">Panics, Visibility and Lifetime</a></li><li><a class="tocitem" href="../precompilation/">Precompilation</a></li><li><a class="tocitem" href="../performance/">Performance</a></li><li><a class="tocitem" href="../troubleshooting/">Troubleshooting</a></li><li><a class="tocitem" href="../migrating_from_irust/">Migrating from @irust</a></li></ul></li><li><span class="tocitem">Reference</span><ul><li><input class="collapse-toggle" id="menuitem-4-1" type="checkbox"/><label class="tocitem" for="menuitem-4-1"><span class="docs-label">API Reference</span><i class="docs-chevron"></i></label><ul class="collapsed"><li><a class="tocitem" href="../api/">Overview</a></li><li><a class="tocitem" href="../reference/artifacts/">Artifact identity and caching</a></li><li><a class="tocitem" href="../reference/ffi_contract/">The FFI type contract</a></li><li><a class="tocitem" href="../reference/compilation/">Front doors</a></li><li><a class="tocitem" href="../reference/codegen/">Compiler and codegen</a></li><li><a class="tocitem" href="../reference/manifest/">The FFI manifest</a></li><li><a class="tocitem" href="../reference/cargo/">Cargo projects and dependencies</a></li><li><a class="tocitem" href="../reference/crates/">External crates</a></li><li><a class="tocitem" href="../reference/hot_reload/">Hot reload API</a></li><li><a class="tocitem" href="../reference/pyo3/">PyO3 crates</a></li><li><a class="tocitem" href="../reference/ownership/">Types, memory and ownership</a></li><li><a class="tocitem" href="../reference/generics/">Generics and #[julia] functions</a></li><li><a class="tocitem" href="../reference/errors/">Errors</a></li><li><a class="tocitem" href="../reference/loading/">Load policy</a></li></ul></li><li><a class="tocitem" href="../status/">Project Status</a></li></ul></li><li><span class="tocitem">Developer</span><ul><li><a class="tocitem" href="../internals/">How RustCall Calls Rust</a></li><li><a class="tocitem" href="../project_guide/">Project Guide</a></li><li><a class="tocitem" href="../developer_windows/">Windows Development</a></li><li><a class="tocitem" href="../developer_pitfalls/">Developer Pitfalls</a></li></ul></li><li><span class="tocitem">Platforms</span><ul><li><a class="tocitem" href="../platforms/windows/">Windows</a></li></ul></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">Getting Started</a></li><li class="is-active"><a href>Tutorial</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Tutorial</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/AtelierArith/RustCall.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><nav aria-label="Language"><a class="language-en" lang="en">English</a> / <a class="language-ja" lang="ja">日本語</a></nav>
+<script>
+for (const lang of ['en', 'ja']) {
+    const url = new URL(location.href);
+    url.pathname = url.pathname.replace(/\/(en|ja)\//, '/' + lang + '/');
+    url.hash = '';
+    document.querySelector('.language-' + lang).href = url.href;
+}
+</script><h1 id="Tutorial"><a class="docs-heading-anchor" href="#Tutorial">Tutorial</a><a id="Tutorial-1"></a><a class="docs-heading-anchor-permalink" href="#Tutorial" title="Permalink"></a></h1><p>This tutorial takes you from an empty Julia session to calling Rust functions that work with numbers, strings, arrays, errors and objects. It assumes you know Julia and does not assume you know Rust. If a piece of Rust syntax is unfamiliar, <a href="../rust_primer/">Rust for Julia Users</a> explains it in Julia terms.</p><p>Every example on this page is run when the documentation is built, so the output you see is real.</p><h2 id="Before-you-start"><a class="docs-heading-anchor" href="#Before-you-start">Before you start</a><a id="Before-you-start-1"></a><a class="docs-heading-anchor-permalink" href="#Before-you-start" title="Permalink"></a></h2><pre><code class="language-julia hljs">using Pkg
+Pkg.add(&quot;RustCall&quot;)</code></pre><p>You need Julia 1.12 or later. You do <strong>not</strong> need to install Rust: RustCall uses the <code>rustc</code> and <code>cargo</code> on your <code>PATH</code> when they exist and otherwise downloads a toolchain through <a href="https://github.com/AtelierArith/RustToolChain.jl">RustToolChain.jl</a>. On Windows, the linker from the MSVC build tools is also required; see the <a href="../platforms/windows/">Windows guide</a>.</p><p>To check that everything is in place:</p><pre><code class="language-julia hljs">using RustCall
+RustCall.check_toolchain().ok</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">true</code></pre><p>If this prints <code>false</code>, look at <code>RustCall.check_toolchain().problems</code> and at <a href="../troubleshooting/">Troubleshooting</a>.</p><h2 id="Your-first-Rust-function"><a class="docs-heading-anchor" href="#Your-first-Rust-function">Your first Rust function</a><a id="Your-first-Rust-function-1"></a><a class="docs-heading-anchor-permalink" href="#Your-first-Rust-function" title="Permalink"></a></h2><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[julia]
+fn add(a: i32, b: i32) -&gt; i32 {
+    a + b
+}
+&quot;&quot;&quot;
+
+add(10, 20)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">30</code></pre><p>That is the whole workflow. Three things happened:</p><ol><li><code>rust&quot;&quot;&quot;...&quot;&quot;&quot;</code> is a Julia string macro. It handed the text to the Rust compiler, which produced a shared library, and loaded that library into the running Julia session.</li><li><code>#[julia]</code> marked <code>add</code> as a function to expose. For each marked function RustCall defines a Julia function of the same name in the current module.</li><li><code>add(10, 20)</code> is an ordinary Julia call. Its arguments were converted to Rust&#39;s <code>i32</code> and the <code>i32</code> result came back as an <code>Int32</code>.</li></ol><p>Reading the Rust: <code>fn</code> defines a function, <code>a: i32</code> is an argument named <code>a</code> of type 32-bit integer, <code>-&gt; i32</code> is the return type, and the last expression of the body, written without a semicolon, is the returned value.</p><p>The first evaluation of a block takes a second or so because <code>rustc</code> runs. The result is cached on disk, so the same block loads almost instantly in every later session.</p><h3 id="Arguments-are-converted,-strictly"><a class="docs-heading-anchor" href="#Arguments-are-converted,-strictly">Arguments are converted, strictly</a><a id="Arguments-are-converted,-strictly-1"></a><a class="docs-heading-anchor-permalink" href="#Arguments-are-converted,-strictly" title="Permalink"></a></h3><p>The generated Julia function accepts anything that converts <em>exactly</em> to the declared Rust type, and refuses the rest in Julia, before Rust is called:</p><pre><code class="language-julia hljs">typeof(add(10, 20))</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">Int32</code></pre><pre><code class="language-julia hljs">try
+    add(2^40, 1)          # does not fit in an i32
+catch err
+    sprint(showerror, err)
+end</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">&quot;InexactError: trunc(Int32, 1099511627776)&quot;</code></pre><h2 id="Numbers"><a class="docs-heading-anchor" href="#Numbers">Numbers</a><a id="Numbers-1"></a><a class="docs-heading-anchor-permalink" href="#Numbers" title="Permalink"></a></h2><p>Rust&#39;s numeric types have fixed widths and map directly onto Julia&#39;s: <code>i32</code> ↔ <code>Int32</code>, <code>i64</code> ↔ <code>Int64</code>, <code>u64</code> ↔ <code>UInt64</code>, <code>f64</code> ↔ <code>Float64</code>, <code>bool</code> ↔ <code>Bool</code>, and <code>usize</code> ↔ <code>UInt</code> (the type Rust uses for every length and index). The full table is in the <a href="../rust_primer/#Types">primer</a>.</p><p>A block may define any number of functions:</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[julia]
+fn sum_of_squares(n: u64) -&gt; u64 {
+    let mut total = 0;
+    for i in 1..=n {
+        total += i * i;
+    }
+    total
+}
+
+#[julia]
+fn hypot2(x: f64, y: f64) -&gt; f64 {
+    (x * x + y * y).sqrt()
+}
+
+#[julia]
+fn is_even(n: i64) -&gt; bool {
+    n % 2 == 0
+}
+&quot;&quot;&quot;
+
+sum_of_squares(10), hypot2(3.0, 4.0), is_even(42)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">(0x0000000000000181, 5.0, true)</code></pre><p>New Rust in this block:</p><ul><li><code>let mut total = 0;</code> declares a variable that may be reassigned. Without <code>mut</code> a variable is immutable.</li><li><code>1..=n</code> is the inclusive range, Julia&#39;s <code>1:n</code>. <code>1..n</code> would stop at <code>n - 1</code>.</li><li><code>(…).sqrt()</code> is a method call on an <code>f64</code>.</li></ul><p>Note that <code>sum_of_squares</code> returns a <code>UInt64</code>, which Julia prints in hexadecimal (<code>0x0000000000000181</code> is 385). If you want Julia&#39;s usual <code>Int</code>, declare the Rust return type as <code>i64</code>.</p><h2 id="Strings"><a class="docs-heading-anchor" href="#Strings">Strings</a><a id="Strings-1"></a><a class="docs-heading-anchor-permalink" href="#Strings" title="Permalink"></a></h2><p>Take a string as <code>&amp;str</code> (a borrowed UTF-8 string) and return one as <code>String</code> (an owned one). Both are a Julia <code>String</code> on the Julia side:</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[julia]
+fn greet(name: &amp;str) -&gt; String {
+    format!(&quot;Hello, {name}!&quot;)
+}
+
+#[julia]
+fn count_chars(s: &amp;str) -&gt; usize {
+    s.chars().count()
+}
+&quot;&quot;&quot;
+
+greet(&quot;Julia&quot;), count_chars(&quot;世界&quot;)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">(&quot;Hello, Julia!&quot;, 0x0000000000000002)</code></pre><p><code>format!</code> is Rust&#39;s <code>string(...)</code> / interpolation; <code>{name}</code> inserts the variable. Julia strings and Rust strings are both UTF-8, so the argument is passed without re-encoding, and the returned <code>String</code> is copied into a new Julia <code>String</code> and then released on the Rust side for you.</p><h2 id="Arrays"><a class="docs-heading-anchor" href="#Arrays">Arrays</a><a id="Arrays-1"></a><a class="docs-heading-anchor-permalink" href="#Arrays" title="Permalink"></a></h2><p>A Rust <em>slice</em>, written <code>&amp;[T]</code>, is a pointer and a length: a view of someone else&#39;s contiguous memory. A <code>#[julia]</code> function that takes one receives a view of your Julia <code>Vector</code>, with no copy. <code>&amp;mut [T]</code> is the writable version, and writes land in your array:</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[julia]
+fn mean(xs: &amp;[f64]) -&gt; f64 {
+    xs.iter().sum::&lt;f64&gt;() / xs.len() as f64
+}
+
+#[julia]
+fn scale(xs: &amp;mut [f64], factor: f64) {
+    for x in xs.iter_mut() {
+        *x *= factor;
+    }
+}
+&quot;&quot;&quot;
+
+v = [1.0, 2.0, 3.0]
+m = mean(v)
+scale(v, 10.0)
+m, v</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">(2.0, [10.0, 20.0, 30.0])</code></pre><p>New Rust: <code>xs.iter()</code> is an iterator over the elements, <code>xs.len()</code> is the length (a <code>usize</code>, so <code>as f64</code> converts it), and <code>*x</code> writes <em>through</em> the mutable reference <code>x</code>.</p><p>Because the memory is shared rather than copied, the element type must match exactly. A <code>Vector{Int}</code> is not silently converted to <code>Float64</code>:</p><pre><code class="language-julia hljs">try
+    mean([1, 2, 3])
+catch err
+    sprint(showerror, err)
+end</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">&quot;ArgumentError: argument `xs` of `mean` requires contiguous vector storage with exact element type Float64; use with_numeric_buffer explicitly when a copy is desired&quot;</code></pre><p>The rules for views, aliasing and multi-dimensional data are in <a href="../tutorial_new_features/#Julia-arrays-as-Rust-slices">Julia arrays as Rust slices</a>.</p><h2 id="Errors"><a class="docs-heading-anchor" href="#Errors">Errors</a><a id="Errors-1"></a><a class="docs-heading-anchor-permalink" href="#Errors" title="Permalink"></a></h2><p>Rust does not throw exceptions for expected failures. A function that can fail returns a <code>Result&lt;T, E&gt;</code>: either <code>Ok(value)</code> or <code>Err(error)</code>. A function that may have no answer returns an <code>Option&lt;T&gt;</code>: either <code>Some(value)</code> or <code>None</code>.</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[julia]
+fn safe_div(a: i32, b: i32) -&gt; Result&lt;i32, String&gt; {
+    if b == 0 {
+        Err(&quot;division by zero&quot;.to_string())
+    } else {
+        Ok(a / b)
+    }
+}
+
+#[julia]
+fn first_positive(xs: &amp;[i64]) -&gt; Option&lt;i64&gt; {
+    xs.iter().copied().find(|x| *x &gt; 0)
+}
+&quot;&quot;&quot;
+
+ok  = safe_div(10, 2)
+err = safe_div(1, 0)
+ok, err</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">(RustCall.RustResult{Int32, String}(true, 5), RustCall.RustResult{Int32, String}(false, &quot;division by zero&quot;))</code></pre><p>These arrive in Julia as <code>RustCall.RustResult</code> and <code>RustCall.RustOption</code>. Nothing is exported from RustCall except its macros, so the helper functions are written with the <code>RustCall.</code> prefix (or imported with <code>using RustCall: unwrap, is_ok</code>):</p><pre><code class="language-julia hljs">RustCall.is_ok(ok), RustCall.unwrap(ok), RustCall.is_err(err), err.value</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">(true, 5, true, &quot;division by zero&quot;)</code></pre><pre><code class="language-julia hljs">RustCall.unwrap_or(err, Int32(-1))     # a default instead of the error</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">-1</code></pre><p>If you prefer Julia&#39;s style, turn an <code>Err</code> into an exception:</p><pre><code class="language-julia hljs">try
+    RustCall.result_to_exception(err)
+catch e
+    sprint(showerror, e)
+end</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">&quot;RustError: division by zero (code: -1) [original: \&quot;division by zero\&quot;]&quot;</code></pre><p><code>Option</code> works the same way:</p><pre><code class="language-julia hljs">some = first_positive([-1, 0, 7])
+none = first_positive([-1])
+RustCall.is_some(some), RustCall.unwrap(some), RustCall.is_none(none), RustCall.unwrap_or(none, 0)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">(true, 7, true, 0)</code></pre><p>(<code>|x| *x &gt; 0</code> in the Rust above is a closure, Rust&#39;s <code>x -&gt; x &gt; 0</code>.)</p><h3 id="Panics"><a class="docs-heading-anchor" href="#Panics">Panics</a><a id="Panics-1"></a><a class="docs-heading-anchor-permalink" href="#Panics" title="Permalink"></a></h3><p>A <em>panic</em> is Rust&#39;s unrecoverable error: an out-of-bounds index, an integer division by zero, an explicit <code>panic!</code>. A panic inside a <code>#[julia]</code> function does not take the Julia session down. It is caught at the boundary and raised as a Julia exception:</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[julia]
+fn checked_sqrt(x: f64) -&gt; f64 {
+    if x &lt; 0.0 {
+        panic!(&quot;sqrt of a negative number: {}&quot;, x);
+    }
+    x.sqrt()
+}
+&quot;&quot;&quot;
+
+try
+    checked_sqrt(-1.0)
+catch e
+    sprint(showerror, e)
+end</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">&quot;RustPanicError: checked_sqrt panicked: sqrt of a negative number: -1\n  in Rust function: checked_sqrt\n  The panic was caught at the FFI boundary; the Julia session is intact.&quot;</code></pre><p>Use <code>Result</code> for failures the caller is expected to handle, and leave panics for bugs. <a href="../panics/">Panics, Visibility and Lifetime</a> has the details.</p><h2 id="Objects"><a class="docs-heading-anchor" href="#Objects">Objects</a><a id="Objects-1"></a><a class="docs-heading-anchor-permalink" href="#Objects" title="Permalink"></a></h2><p>Put <code>#[julia]</code> on a <code>struct</code> and RustCall creates a Julia type for it. The functions in its <code>impl</code> block become Julia functions:</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[julia]
+pub struct Counter {
+    value: i32,
+}
+
+impl Counter {
+    pub fn new(initial: i32) -&gt; Self {
+        Self { value: initial }
+    }
+
+    pub fn increment(&amp;mut self) {
+        self.value += 1;
+    }
+
+    pub fn current(&amp;self) -&gt; i32 {
+        self.value
+    }
+}
+&quot;&quot;&quot;
+
+c = Counter(0)        # calls Counter::new
+increment(c)
+increment(c)
+current(c)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">2</code></pre><p>How the Rust maps to Julia:</p><table><tr><th style="text-align: right">Rust</th><th style="text-align: right">Julia</th></tr><tr><td style="text-align: right"><code>Counter::new(0)</code> (a function returning <code>Self</code>)</td><td style="text-align: right"><code>Counter(0)</code></td></tr><tr><td style="text-align: right"><code>c.increment()</code> (takes <code>&amp;mut self</code>)</td><td style="text-align: right"><code>increment(c)</code></td></tr><tr><td style="text-align: right"><code>c.current()</code> (takes <code>&amp;self</code>)</td><td style="text-align: right"><code>current(c)</code></td></tr><tr><td style="text-align: right">the field <code>value</code></td><td style="text-align: right"><code>c.value</code>, readable and assignable</td></tr></table><pre><code class="language-julia hljs">c.value = 10
+current(c)</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">10</code></pre><p>The data lives on the Rust side. The Julia <code>Counter</code> holds a pointer to it, and when Julia&#39;s garbage collector collects the Julia object, RustCall has Rust drop the value. You never free it by hand.</p><div class="admonition is-info" id="Method-names-are-ordinary-Julia-functions-b75c31b24aef8750"><header class="admonition-header">Method names are ordinary Julia functions<a class="admonition-anchor" href="#Method-names-are-ordinary-Julia-functions-b75c31b24aef8750" title="Permalink"></a></header><div class="admonition-body"><p><code>increment</code> and <code>current</code> are defined in your module like any other function. A Rust method named <code>get</code>, <code>length</code> or <code>show</code> would therefore define a <em>new</em> function of that name in your module rather than extend <code>Base</code>&#39;s. Choose method names that do not collide with the names you use from <code>Base</code> in the same module.</p></div></div><p><a href="../struct_mapping/">Struct Mapping</a> covers static methods, <code>Result</code>-returning methods, generic structs and <code>Clone</code>.</p><h2 id="Using-crates-from-crates.io"><a class="docs-heading-anchor" href="#Using-crates-from-crates.io">Using crates from crates.io</a><a id="Using-crates-from-crates.io-1"></a><a class="docs-heading-anchor-permalink" href="#Using-crates-from-crates.io" title="Permalink"></a></h2><p>Rust&#39;s package registry is <a href="https://crates.io">crates.io</a>. To use a crate in a block, name it in a <code>// cargo-deps:</code> comment on the first lines:</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+// cargo-deps: rand = &quot;0.8&quot;
+
+use rand::Rng;
+
+#[julia]
+fn roll_die() -&gt; i32 {
+    rand::thread_rng().gen_range(1..=6)
+}
+&quot;&quot;&quot;
+
+roll_die()</code></pre><p>RustCall then builds the block with <code>cargo</code> instead of plain <code>rustc</code>, which downloads and compiles the dependency. The first build needs network access and takes longer; the result is cached like any other block.</p><h2 id="The-manual-way:-extern-&quot;C&quot;-and-@rust"><a class="docs-heading-anchor" href="#The-manual-way:-extern-&quot;C&quot;-and-@rust">The manual way: <code>extern &quot;C&quot;</code> and <code>@rust</code></a><a id="The-manual-way:-extern-&quot;C&quot;-and-@rust-1"></a><a class="docs-heading-anchor-permalink" href="#The-manual-way:-extern-&quot;C&quot;-and-@rust" title="Permalink"></a></h2><p><code>#[julia]</code> is a convenience over the classic way of exposing Rust to other languages, which you can also use directly:</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[no_mangle]
+pub extern &quot;C&quot; fn multiply(a: i32, b: i32) -&gt; i32 {
+    a * b
+}
+&quot;&quot;&quot;
+
+@rust multiply(Int32(5), Int32(7))::Int32</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">35</code></pre><ul><li><code>extern &quot;C&quot;</code> makes the function use the C calling convention, and <code>#[no_mangle]</code> keeps its name <code>multiply</code> in the compiled library. (<a href="../rust_primer/#What-makes-a-Rust-function-callable-from-another-language">Why both are needed</a>.)</li><li>No Julia function is generated for it. <code>@rust name(args...)::T</code> looks the symbol up in the loaded library and calls it.</li><li>Nothing is converted for you: pass the exact types (<code>Int32(5)</code>, not <code>5</code>).</li></ul><p>The <code>::Int32</code> annotation is checked against what RustCall read from the Rust source, so a wrong one is an error instead of a misread value:</p><pre><code class="language-julia hljs">try
+    @rust multiply(Int32(5), Int32(7))::Float64
+catch e
+    first(sprint(showerror, e), 110) * &quot;…&quot;
+end</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">&quot;RustError: return type annotation `::Float64` on `@rust multiply(...)` disagrees with the manifest, which reco…&quot;</code></pre><p>The annotation can be omitted, at a cost: the call is then resolved dynamically and is much slower. Keep it.</p><p>When to choose which:</p><p>| | <code>#[julia]</code> | <code>#[no_mangle] extern &quot;C&quot;</code> + <code>@rust</code> | |-|————|————————————-| | Julia function generated | yes | no, call with <code>@rust</code> | | <code>&amp;str</code>, <code>String</code>, slices, <code>Result</code>, <code>Option</code>, structs | yes | no, C types and raw pointers only | | Argument conversion (<code>10</code> → <code>i32</code>) | yes | no | | A panic becomes a Julia exception | yes | <strong>no</strong>: a panic aborts the process | | Use it when | almost always | you are binding existing C-style Rust, or need full control of the ABI |</p><p>Only C-compatible types can appear in a hand-written <code>extern &quot;C&quot;</code> signature. A string, for example, is passed as a pointer to NUL-terminated bytes and must be decoded in <code>unsafe</code> Rust:</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[no_mangle]
+pub extern &quot;C&quot; fn string_length(s: *const u8) -&gt; u32 {
+    let c_str = unsafe { std::ffi::CStr::from_ptr(s as *const i8) };
+    c_str.to_bytes().len() as u32
+}
+&quot;&quot;&quot;
+
+@rust string_length(&quot;世界&quot;)::UInt32      # bytes, not characters</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">0x00000006</code></pre><p>This is the work <code>#[julia]</code> does for you.</p><h2 id="Things-worth-knowing-early"><a class="docs-heading-anchor" href="#Things-worth-knowing-early">Things worth knowing early</a><a id="Things-worth-knowing-early-1"></a><a class="docs-heading-anchor-permalink" href="#Things-worth-knowing-early" title="Permalink"></a></h2><p><strong>One block, one library.</strong> Every <code>rust&quot;&quot;&quot;</code> block is compiled into its own shared library. Functions in different blocks cannot call each other from Rust, and a function that takes a <code>#[julia]</code> struct must be defined in the same block as the struct.</p><p><strong>Editing a block.</strong> Re-evaluating an <em>unchanged</em> block is free: it is the same library. Re-evaluating a block whose Rust code changed compiles a second library, and if it exports a function name the first one still exports, RustCall refuses it rather than guess which of the two you mean:</p><pre><code class="language-julia hljs">lib = rust&quot;&quot;&quot;
+#[julia]
+fn answer() -&gt; i32 { 41 }
+&quot;&quot;&quot;
+
+try
+    @eval rust&quot;&quot;&quot;
+    #[julia]
+    fn answer() -&gt; i32 { 42 }
+    &quot;&quot;&quot;
+catch e
+    first(split(sprint(showerror, e), &#39;\n&#39;))
+end</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">&quot;RustError: `rustcall_answer` is already exported by another `rust\&quot;\&quot;\&quot;` block in module Main.&quot;</code></pre><p>The full message names the library to drop. A <code>rust&quot;&quot;&quot;</code> block evaluates to the name of the library it loaded, so you can also keep it, as <code>lib</code> does above. Unload the old library and evaluate the edited block again:</p><pre><code class="language-julia hljs">RustCall.unload_library(lib)
+rust&quot;&quot;&quot;
+#[julia]
+fn answer() -&gt; i32 { 42 }
+&quot;&quot;&quot;
+
+answer()</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">42</code></pre><p>For an edit-compile-run loop on a real crate, <a href="../hot_reload/">Hot Reload</a> rebuilds and swaps the library when a source file changes.</p><p><strong>Where a block may appear.</strong> Put blocks at the top level of a module or script, not inside a function body. The block defines functions and types, and inside a function those definitions would be local to it.</p><p><strong>The Rust edition.</strong> A block without <code>// cargo-deps:</code> is compiled by <code>rustc</code> directly, under <code>rustc</code>&#39;s default edition. A few newer conveniences, such as <code>panic!(&quot;{x}&quot;)</code> capturing a variable by name, need the form with explicit arguments (<code>panic!(&quot;{}&quot;, x)</code>) there. <code>format!(&quot;{x}&quot;)</code> works everywhere.</p><p><strong>The cache.</strong> Compiled libraries are kept in a Julia scratch space and reused across sessions. A changed source, compiler or dependency rebuilds; nothing else does.</p><pre><code class="language-julia hljs">RustCall.get_cache_size() &gt; 0</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">true</code></pre><p><code>RustCall.clear_cache()</code> empties it. That is rarely the fix for a problem, but it is always safe.</p><p><strong>When compilation fails.</strong> The Rust compiler&#39;s message is shown in a <code>RustCall.CompilationError</code>. Its <code>help:</code> lines usually contain the fix. The <a href="../rust_primer/#Common-first-errors">primer&#39;s table of common first errors</a> translates the frequent ones.</p><h2 id="Using-Rust-in-a-package"><a class="docs-heading-anchor" href="#Using-Rust-in-a-package">Using Rust in a package</a><a id="Using-Rust-in-a-package-1"></a><a class="docs-heading-anchor-permalink" href="#Using-Rust-in-a-package" title="Permalink"></a></h2><p>A <code>rust&quot;&quot;&quot;</code> block works inside a package module exactly as above, and the package precompiles. For a larger amount of Rust, keep it in a real crate with its own <code>Cargo.toml</code>, mark the items <code>#[julia]</code>, and bind the crate from Julia:</p><pre><code class="language-julia hljs">module MyPackage
+using RustCall
+@rust_crate joinpath(@__DIR__, &quot;..&quot;, &quot;deps&quot;, &quot;my_crate&quot;) submodule = &quot;Bindings&quot;
+end</code></pre><p><a href="../crate_bindings/">External Crate Bindings</a> explains this workflow, <a href="../precompilation/">Precompilation</a> explains how it behaves in a package, and <a href="../integration_guide/">Safe Rust/Julia Integration</a> recommends how to lay out a project of real size.</p><h2 id="Where-to-go-next"><a class="docs-heading-anchor" href="#Where-to-go-next">Where to go next</a><a id="Where-to-go-next-1"></a><a class="docs-heading-anchor-permalink" href="#Where-to-go-next" title="Permalink"></a></h2><ul><li><a href="../tutorial_new_features/">What&#39;s New in v0.9 and v0.10</a>: fallible constructors, borrowing objects, optional arguments, slices in depth.</li><li><a href="../examples/">Examples</a>: longer worked examples.</li><li><a href="../type_contract/">The FFI Type Contract</a>: exactly which types may cross the boundary.</li><li><a href="../generics/">Generics</a>, <a href="../callbacks/">Callbacks</a>, <a href="../hot_reload/">Hot Reload</a>.</li><li><a href="../internals/">How RustCall Calls Rust</a>: what happens underneath, for the curious and for contributors.</li></ul></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../rust_primer/">« Rust for Julia Users</a><a class="docs-footer-nextpage" href="../tutorial_new_features/">What&#39;s New in v0.9 and v0.10 »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.20.0 on <span class="colophon-date" title="Thursday 12 November 2026 06:36">Thursday 12 November 2026</span>. Using Julia version 1.13.3.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
