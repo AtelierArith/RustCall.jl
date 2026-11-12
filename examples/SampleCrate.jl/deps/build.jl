@@ -2,7 +2,7 @@
 # bindings that `src/SampleCrate.jl` includes.
 #
 # `Pkg.build("SampleCrate")` runs this file. It is the "Precompilation Support"
-# workflow from RustCall's documentation (docs/src/precompilation.md):
+# workflow from RustCall's documentation (docs/src/en/precompilation.md):
 #
 #   1. `cargo build --release` of deps/sample_crate, the crate embedded in
 #      this package (RustCall runs it);

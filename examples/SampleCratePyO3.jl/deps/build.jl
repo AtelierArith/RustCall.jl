@@ -2,7 +2,7 @@
 # the bindings that `src/SampleCratePyO3.jl` includes.
 #
 # `Pkg.build("SampleCratePyO3")` runs this file (RustCall's "Precompilation
-# Support" workflow, docs/src/precompilation.md):
+# Support" workflow, docs/src/en/precompilation.md):
 #
 #   1. `cargo build --release` of deps/sample_crate_pyo3, the crate embedded
 #      in this package, *without* the `python` feature — the Julia build

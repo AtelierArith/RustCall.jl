@@ -1,5 +1,5 @@
 # The hot reload documentation runs as written (#465): the runnable example of
-# docs/src/hot_reload.md, and the examples in the docstrings of
+# docs/src/en/hot_reload.md, and the examples in the docstrings of
 # `enable_hot_reload` and `enable_hot_reload_for_crate`. Each is read from where
 # a user reads it — the page, the docstring — and executed, so neither can drift
 # from what RustCall does.
@@ -8,7 +8,7 @@ using Test
 using RustCall
 using RustToolChain: cargo
 
-const _HRD_GUIDE = joinpath(dirname(@__DIR__), "docs", "src", "hot_reload.md")
+const _HRD_GUIDE = joinpath(dirname(@__DIR__), "docs", "src", "en", "hot_reload.md")
 
 _hrd_cargo_available() = try
     run(pipeline(`$(cargo()) --version`, devnull))
@@ -122,7 +122,7 @@ end
     if !_hrd_cargo_available()
         @test_skip "cargo not available"
     else
-        @testset "docs/src/hot_reload.md example" begin
+        @testset "docs/src/en/hot_reload.md example" begin
             blocks = _hrd_example_blocks(_HRD_GUIDE, "hotreload")
             @test length(blocks) >= 4
             joined = join(blocks, '\n')
@@ -134,7 +134,7 @@ end
             lib_name = nothing
             try
                 for block in blocks
-                    include_string(sandbox, block, "docs/src/hot_reload.md")
+                    include_string(sandbox, block, "docs/src/en/hot_reload.md")
                     Base.invokelatest(isdefined, sandbox, :state) &&
                         (lib_name = _hrd_get(sandbox, :state).lib_name)
                 end

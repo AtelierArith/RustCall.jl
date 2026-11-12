@@ -1,4 +1,4 @@
-# The runnable example of docs/src/integration_guide.md (#441), run as part of
+# The runnable example of docs/src/en/integration_guide.md (#441), run as part of
 # RustCall's own suite. The Examples workflow runs the same checks through the
 # package's `Pkg.test()`; here its source is included so every OS job and the
 # 4-thread job exercise it against this checkout.

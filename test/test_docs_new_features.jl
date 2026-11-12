@@ -1,4 +1,4 @@
-# Runs the code of docs/src/tutorial_new_features.md as written on the page,
+# Runs the code of docs/src/en/tutorial_new_features.md as written on the page,
 # so the tutorial cannot drift from what RustCall does. The `@example` blocks
 # are also run by the docs build; the facade section is not (it builds a Cargo
 # workspace), so it is only checked here.
@@ -6,7 +6,7 @@
 using Test
 using RustCall
 
-const NEW_FEATURES_PAGE = joinpath(@__DIR__, "..", "docs", "src", "tutorial_new_features.md")
+const NEW_FEATURES_PAGE = joinpath(@__DIR__, "..", "docs", "src", "en", "tutorial_new_features.md")
 
 # The fenced blocks of the page, in order, as (info string, body) pairs.
 function _fenced_blocks(path)

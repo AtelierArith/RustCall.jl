@@ -23,7 +23,7 @@ end
 @testset "the documented bindings format is the current one (#460 review)" begin
     # The user guide names the marker a freshly written file carries; a
     # MAJOR.MINOR release bump moves the constant and must update it (#489).
-    guide = read(joinpath(@__DIR__, "..", "docs", "src", "crate_bindings.md"), String)
+    guide = read(joinpath(@__DIR__, "..", "docs", "src", "en", "crate_bindings.md"), String)
     v = RustCall.BINDINGS_FORMAT_VERSION
     @test occursin("(`# Bindings format: $(v)`)", guide)
     @test occursin("RustCall.check_bindings_format(\"$(v)\")", guide)

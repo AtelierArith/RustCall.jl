@@ -2,7 +2,7 @@
     SafeLedger
 
 The runnable example of RustCall's safe integration pattern
-(`docs/src/integration_guide.md`, #441): a Rust facade exposes one opaque,
+(`docs/src/en/integration_guide.md`, #441): a Rust facade exposes one opaque,
 Rust-owned object whose methods take and return only simple FFI types, and a
 small Julia API on top turns Rust errors into Julia exceptions and gives the
 object an explicit release path.

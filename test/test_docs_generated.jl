@@ -1,4 +1,4 @@
-# The docs build regenerates `docs/src/type_contract.md` (`docs/make.jl`), so
+# The docs build regenerates `docs/src/en/type_contract.md` (`docs/make.jl`), so
 # whatever is committed there and the generator does not emit is lost on the
 # next build. #419's callbacks section was, twice: from every published build,
 # then from the repository when #534 committed a rebuilt copy (#544).
@@ -11,7 +11,7 @@ include(joinpath(_DOCS_DIR, "generate_type_matrix.jl"))
 
 @testset "generated docs pages hold nothing hand-written (#544)" begin
     @testset "type_contract.md is exactly what the generator writes" begin
-        committed = read(joinpath(_DOCS_DIR, "src", "type_contract.md"), String)
+        committed = read(joinpath(_DOCS_DIR, "src", "en", "type_contract.md"), String)
         generated = mktempdir() do dir
             read(generate_type_matrix(joinpath(dir, "type_contract.md")), String)
         end
@@ -20,15 +20,15 @@ include(joinpath(_DOCS_DIR, "generate_type_matrix.jl"))
     end
 
     @testset "the callbacks section is a page of its own" begin
-        page = read(joinpath(_DOCS_DIR, "src", "callbacks.md"), String)
+        page = read(joinpath(_DOCS_DIR, "src", "en", "callbacks.md"), String)
         @test startswith(page, "# Callbacks: passing a Julia function to Rust")
         for rule in ("**Synchronous borrow.**", "**Same thread.**",
                      "**A Julia exception never unwinds through Rust.**")
             @test occursin(rule, page)
         end
-        @test occursin("\"callbacks.md\"", read(joinpath(_DOCS_DIR, "make.jl"), String))
+        @test occursin("\"callbacks.md\"", read(joinpath(_DOCS_DIR, "navigation.jl"), String))
         @test occursin("(callbacks.md)",
-                       read(joinpath(_DOCS_DIR, "src", "integration_guide.md"), String))
+                       read(joinpath(_DOCS_DIR, "src", "en", "integration_guide.md"), String))
     end
 
     @testset "the callbacks page's example computes what it says" begin

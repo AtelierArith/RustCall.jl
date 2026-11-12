@@ -429,7 +429,7 @@ end
     # (d) The allocator contract is written down.
     # ------------------------------------------------------------------
     @testset "the allocator contract is documented" begin
-        docs = joinpath(dirname(_TEST_SOURCE_ROOT), "docs", "src", "panics.md")
+        docs = joinpath(dirname(_TEST_SOURCE_ROOT), "docs", "src", "en", "panics.md")
         @test isfile(docs)
         text = read(docs, String)
         @test occursin("allocator contract", lowercase(text))

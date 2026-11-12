@@ -11,7 +11,7 @@ using RustCall
 # read-only, binds it with one flavour, and checks that the binding works and
 # that nothing appeared in the crate. What a read-only crate must ship is its
 # `Cargo.lock`: no flavour passes `--locked`, and Cargo writes that file beside
-# the manifest when it is missing or stale (docs/src/integration_guide.md).
+# the manifest when it is missing or stale (docs/src/en/integration_guide.md).
 
 include(joinpath(@__DIR__, "pyo3_wrapper_helpers.jl"))
 
