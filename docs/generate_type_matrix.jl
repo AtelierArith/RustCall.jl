@@ -317,3 +317,20 @@ function generate_type_matrix(path)
     end
     return path
 end
+
+"""Refresh the shared type rows inside a translated page without replacing its prose."""
+function generate_translated_type_matrix(path)
+    content = read(path, String)
+    start_marker = "<!-- TYPE_MATRIX_START -->"
+    end_marker = "<!-- TYPE_MATRIX_END -->"
+    count(start_marker, content) == 1 && count(end_marker, content) == 1 ||
+        error("translated type matrix must have exactly one pair of markers: $path")
+    table = String[
+        "| Rust | ABI（戻り値） | 引数スロット | 戻り値スロット | Julia | 所有権（戻り値） | 解放関数 |",
+        "| ---- | ------------ | -------------- | ----------- | ----- | ------------------ | ----------- |",
+    ]
+    append!(table, _matrix_rows())
+    region = start_marker * "\n" * join(table, "\n") * "\n" * end_marker
+    write(path, replace(content, r"(?s)<!-- TYPE_MATRIX_START -->.*?<!-- TYPE_MATRIX_END -->" => region))
+    return path
+end

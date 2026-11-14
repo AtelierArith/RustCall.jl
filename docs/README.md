@@ -3,16 +3,25 @@
 English (`src/en`) is the source of truth. Japanese overrides live in `src/ja`
 with the same relative filenames. Each translation records its source commit in
 an HTML comment; update that marker after checking changes to the English page.
-The initial Japanese guides are introductory adaptations, not full translations.
+All English pages have Japanese counterparts, including reference introductions and
+platform/developer guides. Translations retain the examples and the technical
+conditions while using concise Japanese prose.
 
 `julia --project=docs docs/make.jl` builds both languages into `build/en` and
 `build/ja`. `i18n.jl` stages complete source trees in a temporary directory,
-overlays translations and marks untranslated Japanese pages as English originals.
-API docstrings and the generated type matrix remain shared English content.
-Do not copy generated fallback pages into `src/ja`.
+overlays translations. The build first checks translation coverage so a new
+English page cannot silently appear in Japanese as an English fallback.
+The staging helper retains its marked fallback for standalone use.
+API docstrings remain shared English content, explicitly identified in the
+Japanese API index; executable examples and their output remain unchanged.
+The Japanese type-contract prose is maintained in Markdown, and the build
+refreshes only the region between `TYPE_MATRIX_START` / `TYPE_MATRIX_END`
+from the same contract as the English table, with Japanese column headings.
 
 Navigation lives in `navigation.jl`; Japanese section labels are in `i18n.jl`.
-Keep corresponding filenames and explicit heading IDs stable. Cross-references
+Keep corresponding filenames and heading IDs stable. Japanese headings use the
+English page's original IDs, retaining the three introductory pages' existing
+explicit IDs (`home`, `tutorial`, `troubleshooting`). Cross-references
 are resolved independently within each language. Language links preserve the
 version and page but clear the anchor because translated headings can differ.
 Source edit links are disabled because builds use staged sources.

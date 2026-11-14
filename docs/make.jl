@@ -9,7 +9,9 @@ include("test_deployment.jl")
 
 generate_type_matrix(joinpath(@__DIR__, "src", "en", "type_contract.md"))
 
-# Stage fallback pages without adding generated translations to the source tree.
+# Require translations before staging so new pages cannot silently fall back to English.
+check_translation_coverage(joinpath(@__DIR__, "src"))
+generate_translated_type_matrix(joinpath(@__DIR__, "src", "ja", "type_contract.md"))
 mktempdir() do staging
     for lang in ("en", "ja")
         source = joinpath(staging, lang)
