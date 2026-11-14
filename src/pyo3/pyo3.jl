@@ -633,7 +633,10 @@ function _cargo_probe_context(output::AbstractString, package_id::AbstractString
 end
 
 function _cargo_rerun_inputs(out_dir::AbstractString, package_root::AbstractString)
-    output = joinpath(dirname(String(out_dir)), "output")
+    build_dir = dirname(String(out_dir))
+    # Cargo 1.100 stores build-script stdout under run/; older Cargo uses output.
+    output = joinpath(build_dir, "run", "stdout")
+    isfile(output) || (output = joinpath(build_dir, "output"))
     isfile(output) || return String[]
     inputs = String[]
     for line in eachline(output)

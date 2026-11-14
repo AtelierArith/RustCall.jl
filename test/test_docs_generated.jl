@@ -19,6 +19,31 @@ include(joinpath(_DOCS_DIR, "generate_type_matrix.jl"))
         @test replace(committed, "\r\n" => "\n") == generated
     end
 
+    @testset "Japanese type matrix shares contract rows without replacing prose" begin
+        committed = read(joinpath(_DOCS_DIR, "src", "ja", "type_contract.md"), String)
+        generated = mktempdir() do dir
+            path = joinpath(dir, "type_contract.md")
+            write(path, committed)
+            read(generate_translated_type_matrix(path), String)
+        end
+        @test replace(committed, "\r\n" => "\n") == replace(generated, "\r\n" => "\n")
+        mktempdir() do dir
+            path = joinpath(dir, "crlf.md")
+            normalized = replace(committed, "\r\n" => "\n")
+            write(path, replace(normalized, "\n" => "\r\n"))
+            regenerated = read(generate_translated_type_matrix(path), String)
+            @test replace(regenerated, "\r\n" => "\n") == normalized
+        end
+        @test occursin("引数スロット", generated)
+        @test occursin("文字列引数は正しい UTF-8 が必要", generated)
+        @test all(row -> occursin(row, generated), _matrix_rows())
+        mktempdir() do dir
+            path = joinpath(dir, "missing-markers.md")
+            write(path, "# 日本語の型契約\n")
+            @test_throws ErrorException generate_translated_type_matrix(path)
+        end
+    end
+
     @testset "the callbacks section is a page of its own" begin
         page = read(joinpath(_DOCS_DIR, "src", "en", "callbacks.md"), String)
         @test startswith(page, "# Callbacks: passing a Julia function to Rust")

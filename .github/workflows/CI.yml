@@ -167,6 +167,14 @@ jobs:
           workspaces: |
             deps/rustcall_helpers -> target
             deps/rustcall_extract -> target
+      # Cargo 1.100's longer build paths exceed MAX_PATH under the Windows
+      # user temp directory once the test-only Scratch depot is prepended.
+      - name: Use a short Windows temporary directory
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "TMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TEMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - uses: julia-actions/julia-buildpkg@v1
       - name: Bounds-checked state and mixed reload stress
         if: matrix.threads == '4' && matrix.shard == '1'
