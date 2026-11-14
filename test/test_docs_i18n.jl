@@ -48,10 +48,10 @@ end
                 check_navigation(last(en), last(ja))
             else
                 @test last(en) == last(ja)
-                text = read(joinpath(docs_src, "ja", last(ja)), String)
+                text = replace(read(joinpath(docs_src, "ja", last(ja)), String), "\r\n" => "\n")
                 @test occursin("<!-- Translation source:", text)
                 @test occursin(r"[ぁ-んァ-ヶ一-龠]", text)
-                original = read(joinpath(docs_src, "en", last(en)), String)
+                original = replace(read(joinpath(docs_src, "en", last(en)), String), "\r\n" => "\n")
                 @test text != original
                 # Translations must retain runnable examples and Documenter directives.
                 fences = r"(?ms)^[ \t]*`{3,}[^\n]*\n.*?^[ \t]*`{3,}[^\n]*(?:\n|$)"
