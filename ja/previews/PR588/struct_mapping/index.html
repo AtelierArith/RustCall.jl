@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><meta name="referrer" content="no-referrer"/><title>構造体の対応付け · RustCall.jl 日本語</title><meta name="title" content="構造体の対応付け · RustCall.jl 日本語"/><meta property="og:title" content="構造体の対応付け · RustCall.jl 日本語"/><meta property="twitter:title" content="構造体の対応付け · RustCall.jl 日本語"/><meta name="description" content="Documentation for RustCall.jl 日本語."/><meta property="og:description" content="Documentation for RustCall.jl 日本語."/><meta property="twitter:description" content="Documentation for RustCall.jl 日本語."/><meta property="og:url" content="https://atelierarith.github.io/RustCall.jl/ja/stable/struct_mapping/"/><meta property="twitter:url" content="https://atelierarith.github.io/RustCall.jl/ja/stable/struct_mapping/"/><link rel="canonical" href="https://atelierarith.github.io/RustCall.jl/ja/stable/struct_mapping/"/><script data-outdated-warner src="../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.63.2/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL=".."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../assets/documenter.js"></script><script src="../search_index.js"></script><script src="../siteinfo.js"></script><script src="../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../">RustCall.jl 日本語</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../">ホーム</a></li><li><span class="tocitem">はじめに</span><ul><li><a class="tocitem" href="../rust_primer/">Julia 利用者のための Rust 入門</a></li><li><a class="tocitem" href="../tutorial/">チュートリアル</a></li><li><a class="tocitem" href="../tutorial_new_features/">v0.9 と v0.10 の新機能</a></li><li><a class="tocitem" href="../examples/">使用例</a></li></ul></li><li><span class="tocitem">利用ガイド</span><ul><li><a class="tocitem" href="../integration_guide/">安全な Rust/Julia 連携</a></li><li><a class="tocitem" href="../type_contract/">FFI の型契約</a></li><li><a class="tocitem" href="../callbacks/">コールバック</a></li><li class="is-active"><a class="tocitem" href>構造体の対応付け</a><ul class="internal"><li><a class="tocitem" href="#Overview"><span>概要</span></a></li><li><a class="tocitem" href="#Basic-Usage"><span>基本的な使い方</span></a></li><li><a class="tocitem" href="#Derive-Options"><span>derive のオプション</span></a></li><li><a class="tocitem" href="#Field-Access"><span>フィールドへのアクセス</span></a></li><li><a class="tocitem" href="#Generic-Structs"><span>ジェネリック構造体</span></a></li><li><a class="tocitem" href="#Memory-Management"><span>メモリ管理</span></a></li><li><a class="tocitem" href="#Method-Binding"><span>メソッドのバインド</span></a></li><li><a class="tocitem" href="#Static-Methods"><span>静的メソッド</span></a></li><li><a class="tocitem" href="#Names-Julia-reserves"><span>Julia の予約語</span></a></li><li><a class="tocitem" href="#Result-and-Option-Returning-Methods"><span>Result / Option を返すメソッド</span></a></li><li><a class="tocitem" href="#Best-Practices"><span>推奨事項</span></a></li><li><a class="tocitem" href="#Limitations"><span>制約</span></a></li><li><a class="tocitem" href="#Examples"><span>例</span></a></li><li><a class="tocitem" href="#Troubleshooting"><span>トラブルシューティング</span></a></li><li><a class="tocitem" href="#See-Also"><span>関連情報</span></a></li></ul></li><li><a class="tocitem" href="../generics/">ジェネリクス</a></li><li><a class="tocitem" href="../crate_bindings/">外部クレートのバインディング</a></li><li><a class="tocitem" href="../hot_reload/">ホットリロード</a></li><li><a class="tocitem" href="../pyo3/">PyO3 クレート</a></li><li><a class="tocitem" href="../panics/">パニック・可視性・生存期間</a></li><li><a class="tocitem" href="../precompilation/">プリコンパイル</a></li><li><a class="tocitem" href="../performance/">性能</a></li><li><a class="tocitem" href="../troubleshooting/">トラブルシューティング</a></li><li><a class="tocitem" href="../migrating_from_irust/">@irust からの移行</a></li></ul></li><li><span class="tocitem">リファレンス</span><ul><li><input class="collapse-toggle" id="menuitem-4-1" type="checkbox"/><label class="tocitem" for="menuitem-4-1"><span class="docs-label">API リファレンス</span><i class="docs-chevron"></i></label><ul class="collapsed"><li><a class="tocitem" href="../api/">概要</a></li><li><a class="tocitem" href="../reference/artifacts/">成果物の識別とキャッシュ</a></li><li><a class="tocitem" href="../reference/ffi_contract/">FFI の型契約</a></li><li><a class="tocitem" href="../reference/compilation/">利用者向けの入口</a></li><li><a class="tocitem" href="../reference/codegen/">コンパイラとコード生成</a></li><li><a class="tocitem" href="../reference/manifest/">FFI マニフェスト</a></li><li><a class="tocitem" href="../reference/cargo/">Cargo プロジェクトと依存関係</a></li><li><a class="tocitem" href="../reference/crates/">外部クレート</a></li><li><a class="tocitem" href="../reference/hot_reload/">ホットリロード API</a></li><li><a class="tocitem" href="../reference/pyo3/">PyO3 クレート</a></li><li><a class="tocitem" href="../reference/ownership/">型・メモリ・所有権</a></li><li><a class="tocitem" href="../reference/generics/">ジェネリクスと #[julia] 関数</a></li><li><a class="tocitem" href="../reference/errors/">エラー</a></li><li><a class="tocitem" href="../reference/loading/">読み込みポリシー</a></li></ul></li><li><a class="tocitem" href="../status/">プロジェクトの状況</a></li></ul></li><li><span class="tocitem">開発者向け</span><ul><li><a class="tocitem" href="../internals/">RustCall が Rust を呼ぶ仕組み</a></li><li><a class="tocitem" href="../project_guide/">プロジェクトガイド</a></li><li><a class="tocitem" href="../developer_windows/">Windows での開発</a></li><li><a class="tocitem" href="../developer_pitfalls/">開発時の注意点</a></li></ul></li><li><span class="tocitem">プラットフォーム</span><ul><li><a class="tocitem" href="../platforms/windows/">Windows</a></li></ul></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">利用ガイド</a></li><li class="is-active"><a href>構造体の対応付け</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>構造体の対応付け</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/AtelierArith/RustCall.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><nav aria-label="Language"><a class="language-en" lang="en">English</a> / <a class="language-ja" lang="ja">日本語</a></nav>
+<script>
+for (const lang of ['en', 'ja']) {
+    const url = new URL(location.href);
+    url.pathname = url.pathname.replace(/\/(en|ja)\//, '/' + lang + '/');
+    url.hash = '';
+    document.querySelector('.language-' + lang).href = url.href;
+}
+</script><p>&lt;!– Translation source: 960be32b16e7387ce39c1f3ca662c2e057d3b9c5; English counterpart: ../en/struct_mapping.md. –&gt;</p><h1 id="Struct-Mapping-with-#[derive(JuliaStruct)]"><a class="docs-heading-anchor" href="#Struct-Mapping-with-#[derive(JuliaStruct)]"><code>#[derive(JuliaStruct)]</code> による構造体の対応付け</a><a id="Struct-Mapping-with-#[derive(JuliaStruct)]-1"></a><a class="docs-heading-anchor-permalink" href="#Struct-Mapping-with-#[derive(JuliaStruct)]" title="Permalink"></a></h1><p>Rust の構造体を Julia のオブジェクトとして利用するバインディングを自動生成します。</p><div class="admonition is-info" id="#[julia]-と-#[derive(JuliaStruct)]-5935d6210c4d68af"><header class="admonition-header">`#[julia]` と `#[derive(JuliaStruct)]`<a class="admonition-anchor" href="##[julia]-と-#[derive(JuliaStruct)]-5935d6210c4d68af" title="Permalink"></a></header><div class="admonition-body"><p>インラインでは両方が同じ印です。<code>#[derive(JuliaStruct, Clone)]</code> の <code>Clone</code> はコピー機能を導出します。外部クレートでは <code>#[julia]</code> を使います（<a href="../crate_bindings/">ガイド</a>）。構文は<a href="../rust_primer/#Structs-and-methods">構造体とメソッド</a>を参照してください。</p></div></div><h2 id="Overview"><a class="docs-heading-anchor" href="#Overview">概要</a><a id="Overview-1"></a><a class="docs-heading-anchor-permalink" href="#Overview" title="Permalink"></a></h2><p>Julia 型、フィールドの getter / setter、指定したトレイト実装、メモリを解放する finalizer を生成します。</p><h2 id="Basic-Usage"><a class="docs-heading-anchor" href="#Basic-Usage">基本的な使い方</a><a id="Basic-Usage-1"></a><a class="docs-heading-anchor-permalink" href="#Basic-Usage" title="Permalink"></a></h2><h3 id="Simple-Struct"><a class="docs-heading-anchor" href="#Simple-Struct">単純な構造体</a><a id="Simple-Struct-1"></a><a class="docs-heading-anchor-permalink" href="#Simple-Struct" title="Permalink"></a></h3><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[derive(JuliaStruct)]
+pub struct Point2D {
+    x: f64,
+    y: f64,
+}
+
+impl Point2D {
+    pub fn new(x: f64, y: f64) -&gt; Self {
+        Point2D { x, y }
+    }
+
+    pub fn distance(&amp;self) -&gt; f64 {
+        (self.x * self.x + self.y * self.y).sqrt()
+    }
+}
+&quot;&quot;&quot;
+
+# Create a Point2D instance
+p = Point2D(3.0, 4.0)
+
+# Access fields directly
+println(p.x)  # =&gt; 3.0
+println(p.y)  # =&gt; 4.0
+
+# Modify fields
+p.y = 5.0
+println(p.y)  # =&gt; 5.0
+
+# Call methods
+dist = p.distance()
+println(dist)  # =&gt; 5.830951894845301</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">3.0
+4.0
+5.0
+5.830951894845301</code></pre><h3 id="With-Clone-Support"><a class="docs-heading-anchor" href="#With-Clone-Support">Clone への対応</a><a id="With-Clone-Support-1"></a><a class="docs-heading-anchor-permalink" href="#With-Clone-Support" title="Permalink"></a></h3><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[derive(JuliaStruct, Clone)]
+pub struct PersonInfo {
+    name: String,
+    age: i32,
+}
+
+impl PersonInfo {
+    pub fn new(name: String, age: i32) -&gt; Self {
+        PersonInfo { name, age }
+    }
+
+    pub fn get_name(&amp;self) -&gt; String {
+        self.name.clone()
+    }
+}
+&quot;&quot;&quot;
+
+# Create a person
+person = PersonInfo(&quot;Alice&quot;, 30)
+println(person.name)      # =&gt; &quot;Alice&quot;
+println(get_name(person)) # =&gt; &quot;Alice&quot;
+
+# Clone the person
+person2 = copy(person)  # Uses Rust&#39;s Clone trait
+
+# Both are independent objects
+person.age = 31
+println(person.age)   # =&gt; 31
+println(person2.age)  # =&gt; 30</code></pre><pre class="documenter-example-output"><code class="nohighlight hljs ansi">Alice
+Alice
+31
+30</code></pre><h2 id="Derive-Options"><a class="docs-heading-anchor" href="#Derive-Options">derive のオプション</a><a id="Derive-Options-1"></a><a class="docs-heading-anchor-permalink" href="#Derive-Options" title="Permalink"></a></h2><p>追加の derive を指定できます。</p><h3 id="Supported-Traits"><a class="docs-heading-anchor" href="#Supported-Traits">対応トレイト</a><a id="Supported-Traits-1"></a><a class="docs-heading-anchor-permalink" href="#Supported-Traits" title="Permalink"></a></h3><ul><li><strong><code>Clone</code></strong>：Julia の <code>copy()</code> を可能にします。</li><li><strong><code>Debug</code>、<code>PartialEq</code>、<code>Eq</code>、<code>PartialOrd</code>、<code>Ord</code>、<code>Hash</code>、<code>Default</code></strong>：将来の対応用です。</li></ul><h3 id="Example-with-Multiple-Traits"><a class="docs-heading-anchor" href="#Example-with-Multiple-Traits">複数トレイトの例</a><a id="Example-with-Multiple-Traits-1"></a><a class="docs-heading-anchor-permalink" href="#Example-with-Multiple-Traits" title="Permalink"></a></h3><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[derive(JuliaStruct, Clone)]
+pub struct Config {
+    host: String,
+    port: i32,
+    timeout: f64,
+}
+
+impl Config {
+    pub fn new(host: String, port: i32, timeout: f64) -&gt; Self {
+        Config { host, port, timeout }
+    }
+}
+&quot;&quot;&quot;
+
+config = Config(&quot;localhost&quot;, 8080, 30.0)
+config2 = copy(config)  # Clone support</code></pre><h2 id="Field-Access"><a class="docs-heading-anchor" href="#Field-Access">フィールドへのアクセス</a><a id="Field-Access-1"></a><a class="docs-heading-anchor-permalink" href="#Field-Access" title="Permalink"></a></h2><h3 id="Automatic-Getters-and-Setters"><a class="docs-heading-anchor" href="#Automatic-Getters-and-Setters">自動 getter と setter</a><a id="Automatic-Getters-and-Setters-1"></a><a class="docs-heading-anchor-permalink" href="#Automatic-Getters-and-Setters" title="Permalink"></a></h3><p><code>obj.field_name</code> と <code>obj.field_name = value</code> を生成します。</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[derive(JuliaStruct)]
+pub struct Rectangle {
+    width: f64,
+    height: f64,
+}
+
+impl Rectangle {
+    pub fn new(width: f64, height: f64) -&gt; Self {
+        Rectangle { width, height }
+    }
+
+    pub fn area(&amp;self) -&gt; f64 {
+        self.width * self.height
+    }
+}
+&quot;&quot;&quot;
+
+rect = Rectangle(10.0, 20.0)
+
+# Get field values
+w = rect.width   # =&gt; 10.0
+h = rect.height  # =&gt; 20.0
+
+# Set field values
+rect.width = 15.0
+rect.height = 25.0
+
+# Calculate area
+rect_area = rect.area()  # =&gt; 375.0</code></pre><h3 id="Field-Type-Mapping"><a class="docs-heading-anchor" href="#Field-Type-Mapping">フィールド型の対応</a><a id="Field-Type-Mapping-1"></a><a class="docs-heading-anchor-permalink" href="#Field-Type-Mapping" title="Permalink"></a></h3><p>独立関数・メソッドと同じ <a href="../type_contract/">FFI 型契約</a>を使います。</p><table><tr><th style="text-align: right">Rust</th><th style="text-align: right">Julia</th><th style="text-align: right">備考</th></tr><tr><td style="text-align: right"><code>i8</code> … <code>i128</code>, <code>u8</code> … <code>u128</code></td><td style="text-align: right"><code>Int8</code> … <code>Int128</code>, <code>UInt8</code> … <code>UInt128</code></td><td style="text-align: right"></td></tr><tr><td style="text-align: right"><code>f32</code>, <code>f64</code></td><td style="text-align: right"><code>Float32</code>, <code>Float64</code></td><td style="text-align: right"></td></tr><tr><td style="text-align: right"><code>bool</code></td><td style="text-align: right"><code>Bool</code></td><td style="text-align: right"></td></tr><tr><td style="text-align: right"><code>usize</code>, <code>isize</code></td><td style="text-align: right"><code>Csize_t</code>, <code>Cssize_t</code></td><td style="text-align: right"></td></tr><tr><td style="text-align: right"><code>char</code></td><td style="text-align: right"><code>Char</code></td><td style="text-align: right"><code>UInt32</code> のコードポイントから変換。再解釈しない</td></tr><tr><td style="text-align: right"><code>*const T</code>, <code>*mut T</code></td><td style="text-align: right"><code>Ptr{T}</code></td><td style="text-align: right">再帰的解決。不透明な参照先は <code>Ptr{Cvoid}</code></td></tr><tr><td style="text-align: right"><code>String</code></td><td style="text-align: right"><code>String</code></td><td style="text-align: right">所有バッファを読み、<code>&lt;Struct&gt;_free_rust_string</code> で解放</td></tr><tr><td style="text-align: right"><code>&amp;str</code></td><td style="text-align: right"><code>String</code></td><td style="text-align: right">メソッドの戻り値をコピー</td></tr></table><p>基本型、生ポインタ、<code>String</code>、ジェネリック構造体自身の型引数だけにアクセサーを生成します。<code>Vec</code>、<code>HashMap</code>、<code>Box</code>、値で保持する別構造体などには、公開フィールドでも生成しません。内部に保ち、長さやコピーを返すメソッドを公開します（<a href="https://github.com/AtelierArith/RustCall.jl/issues/453">#453</a>）。</p><h2 id="Generic-Structs"><a class="docs-heading-anchor" href="#Generic-Structs">ジェネリック構造体</a><a id="Generic-Structs-1"></a><a class="docs-heading-anchor-permalink" href="#Generic-Structs" title="Permalink"></a></h2><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[derive(JuliaStruct)]
+pub struct Pair&lt;T&gt; {
+    first: T,
+    second: T,
+}
+
+impl&lt;T&gt; Pair&lt;T&gt; {
+    pub fn new(first: T, second: T) -&gt; Self {
+        Pair { first, second }
+    }
+}
+&quot;&quot;&quot;
+
+# Create a Pair with Int32
+pair_int = Pair{Int32}(10, 20)
+println(pair_int.first)   # =&gt; 10
+println(pair_int.second)  # =&gt; 20
+
+# Create a Pair with Float64
+pair_float = Pair{Float64}(3.14, 2.71)
+println(pair_float.first)   # =&gt; 3.14
+println(pair_float.second)  # =&gt; 2.71</code></pre><div class="admonition is-info" id="Note-fc05dffa4e276c2"><header class="admonition-header">Note<a class="admonition-anchor" href="#Note-fc05dffa4e276c2" title="Permalink"></a></header><div class="admonition-body"><p><code>Pair{Int32}</code> / <code>Pair{Float64}</code> のような例に対応します。複雑な制約は追加検証が必要な場合があります。</p></div></div><h2 id="Memory-Management"><a class="docs-heading-anchor" href="#Memory-Management">メモリ管理</a><a id="Memory-Management-1"></a><a class="docs-heading-anchor-permalink" href="#Memory-Management" title="Permalink"></a></h2><p>Julia の GC がラッパーを回収すると、対応する Rust のメモリも自動で解放します。</p><h2 id="Method-Binding"><a class="docs-heading-anchor" href="#Method-Binding">メソッドのバインド</a><a id="Method-Binding-1"></a><a class="docs-heading-anchor-permalink" href="#Method-Binding" title="Permalink"></a></h2><p>インラインの <code>impl</code> 内の <code>pub fn</code> を自動でバインドします。</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[derive(JuliaStruct)]
+pub struct Calculator {
+    value: f64,
+}
+
+impl Calculator {
+    pub fn new(value: f64) -&gt; Self {
+        Calculator { value }
+    }
+
+    pub fn add(&amp;mut self, x: f64) {
+        self.value += x;
+    }
+
+    pub fn multiply(&amp;mut self, x: f64) {
+        self.value *= x;
+    }
+
+    pub fn get_value(&amp;self) -&gt; f64 {
+        self.value
+    }
+
+    pub fn reset(&amp;mut self) {
+        self.value = 0.0;
+    }
+}
+&quot;&quot;&quot;
+
+calc = Calculator(10.0)
+calc.add(5.0)
+calc.multiply(2.0)
+println(calc.get_value())  # =&gt; 30.0
+calc.reset()
+println(calc.get_value())  # =&gt; 0.0</code></pre><h3 id="Generic-methods-of-a-non-generic-struct"><a class="docs-heading-anchor" href="#Generic-methods-of-a-non-generic-struct">非ジェネリック構造体のジェネリックメソッド</a><a id="Generic-methods-of-a-non-generic-struct-1"></a><a class="docs-heading-anchor-permalink" href="#Generic-methods-of-a-non-generic-struct" title="Permalink"></a></h3><p>固定シンボルの C ABI には具体型が必要です。メソッド独自の型・const 引数や <code>impl Trait</code> は、そのメソッドを示す <code>compile_error!</code> で拒否します（#471）。</p><pre><code class="language-text hljs">error: `Acc::echo` is generic over `T`: every `pub fn` of a `#[julia]` struct in a
+`rust&quot;&quot;&quot;` block gets an `extern &quot;C&quot;` entry point, which needs concrete types, ...</code></pre><p><a href="../generics/">独立関数</a>または<a href="#Generic-Structs">構造体自身</a>のジェネリクスを使うか、具体型ごとの委譲メソッドにします。Julia から不要なら <code>pub</code> を外します。</p><pre><code class="language-rust hljs">impl Acc {
+    fn scaled_by&lt;T: Copy + Into&lt;i64&gt;&gt;(&amp;self, k: T) -&gt; i64 { self.total * k.into() }
+    pub fn scaled_i32(&amp;self, k: i32) -&gt; i64 { self.scaled_by(k) }
+}
+
+#[julia]
+pub fn echo&lt;T: Copy&gt;(x: T) -&gt; T { x }</code></pre><p><code>Wrap&lt;T&gt;</code> のメソッド独自の <code>U</code> も、構造体の具体化が束縛しないため拒否します（#477）。ライフタイム引数は別で、<code>&lt;&#39;a, &#39;b: &#39;a&gt;</code> や <code>where &#39;b: &#39;a</code> をラッパーにも宣言します。外部クレートもジェネリックメソッドは拒否します（#462）。</p><h3 id="Where-predicates"><a class="docs-heading-anchor" href="#Where-predicates">where 条件</a><a id="Where-predicates-1"></a><a class="docs-heading-anchor-permalink" href="#Where-predicates" title="Permalink"></a></h3><p>ラッパーは impl とメソッドのライフタイム・<code>where</code> をそのまま宣言します（#482）。<code>Self</code> は impl 型へ書き換え、型・式の両方で <code>where Self: Tagged</code> → <code>where Buf: Tagged</code>、<code>&lt;Self as Tagged&gt;::Tag</code> → <code>&lt;Buf as Tagged&gt;::Tag</code>、<code>[(); Self::N]</code> → <code>[(); &lt;Buf&gt;::N]</code> とします。高階境界、関数ポインタ、トレイトオブジェクトなどの条件を選別・削除しません。マクロ内の <code>Self</code> は書き換えられず拒否するため型を明示します。</p><p><code>&amp;str</code> はポインタ・長さから呼び出し中だけ再構成します。呼び出しまで縮められるライフタイム関係は可能ですが、<code>&#39;static</code>、戻り値に現れる期間、他引数の最外参照以外で使う期間、型条件に使う期間は拒否します。必要なら <code>String</code> を使います。</p><h3 id="Receivers"><a class="docs-heading-anchor" href="#Receivers">レシーバー</a><a id="Receivers-1"></a><a class="docs-heading-anchor-permalink" href="#Receivers" title="Permalink"></a></h3><p>ラッパーはポインタを受け、<code>&lt;Buf&gt;::m(..)</code> または <code>&lt;Buf as tr::Tr&gt;::m(..)</code> とパスで呼びます（#509）。<code>Self</code> または impl ヘッダーと同じ型表記の参照階層に対応します。</p><table><tr><th style="text-align: right">レシーバー</th><th style="text-align: right">C 引数</th><th style="text-align: right">Julia オブジェクト</th></tr><tr><td style="text-align: right"><code>&amp;self</code>, <code>self: &amp;Self</code>, <code>self: &amp;Buf</code>, <code>self: &amp;&amp;Self</code></td><td style="text-align: right"><code>*const Buf</code></td><td style="text-align: right">読み取り</td></tr><tr><td style="text-align: right"><code>&amp;mut self</code>, <code>self: &amp;mut Self</code>, <code>self: &amp;mut Buf</code>, <code>self: &amp;mut &amp;mut Self</code></td><td style="text-align: right"><code>*mut Buf</code></td><td style="text-align: right">その場で変更</td></tr><tr><td style="text-align: right"><code>self</code>, <code>mut self</code>, <code>self: Self</code></td><td style="text-align: right"><code>*const Buf</code></td><td style="text-align: right"><code>Copy</code> 型のコピーを渡す</td></tr></table><p>エイリアス、<code>Box</code> / <code>Rc</code> / <code>Arc</code> / <code>Pin</code>、ヘッダーと異なる型表記は <code>receiver_type</code> として拒否します。対応レシーバーを取る委譲メソッドを追加してください。</p><h3 id="Borrowed-struct-arguments"><a class="docs-heading-anchor" href="#Borrowed-struct-arguments">構造体引数の借用</a><a id="Borrowed-struct-arguments-1"></a><a class="docs-heading-anchor-permalink" href="#Borrowed-struct-arguments" title="Permalink"></a></h3><p>同じクレート・ブロックの注釈型を指す <code>&amp;Self</code>、<code>&amp;Value</code>、<code>&amp;mut Value</code>、修飾パスや <code>use</code> の型はハンドルからポインタを渡せます（#565）。</p><pre><code class="language-rust hljs">#[julia]
+impl Value {
+    #[julia]
+    pub fn sum(&amp;self, other: &amp;Value) -&gt; i32 { self.n + other.n }
+    #[julia]
+    pub fn absorb(&amp;mut self, other: &amp;Value) { self.n += other.n; }
+}
+#[julia]
+pub fn total(a: &amp;Value, b: &amp;Value) -&gt; i32 { a.n + b.n }</code></pre><pre><code class="language-julia hljs">a, b = bindings.Value(Int32(2)), bindings.Value(Int32(3))
+bindings.sum(a, b)    # 5
+bindings.sum(a, a)    # 4: shared borrows may alias
+bindings.absorb(a, a) # ArgumentError: a `&amp;mut` borrow may not alias another</code></pre><p>コピーや値渡し登録は不要です。Julia は、正しい生成型（別モジュールや別生成経路の同名型は不可）、未解放、閉じていないイメージ、レシーバーを含む同じライブラリ世代、可変借用の非重複を検査します。</p><p>変換できる期間は呼び出し内だけで、省略・<code>&#39;_</code>・関数自身の境界なしライフタイムに限り、<code>where</code> や戻り値に現れるもの、impl の期間、<code>&#39;static</code> などはハンドルから変換しません。明示的 <code>Ptr{Cvoid}</code> は引き続き未検査で渡せます。全ハンドルは呼び出し中 GC 保護し、一時値も解放されません。再読み込みで配置が変われば新しい値を作ってください。</p><p>型は修飾・ローカル・import に従って確実に解決します。同名のローカル型を無視しません。型エイリアスや具体化済みジェネリックなどの制約があります。glob の最新のスコープ証明規則は<a href="../crate_bindings/">外部クレート</a>を参照してください。</p><h3 id="Returned-references"><a class="docs-heading-anchor" href="#Returned-references">参照の戻り値</a><a id="Returned-references-1"></a><a class="docs-heading-anchor-permalink" href="#Returned-references" title="Permalink"></a></h3><p><code>-&gt; &amp;i32</code>、<code>-&gt; &amp;Self</code>、<code>-&gt; Option&lt;&amp;i32&gt;</code>、<code>-&gt; &amp;&#39;_ i32</code> の省略期間は Rust の規則で名前を与えます（#484）。レシーバー、なければ1つの引数の期間を使い、公開名は変えません。</p><p>ただし型契約に <code>&amp;T</code> はないため、既定の厳密設定では拒否します。<code>:warn</code> ならコンパイルでき、<code>@rust rustcall_Buf_get(obj.ptr)::Ptr{Int32}</code> などで取れますが、有効なのはオブジェクトの生存中だけです。通常は <code>-&gt; i32</code> の値返却を選びます。</p><p>唯一の期間が変換した <code>&amp;str</code> 由来なら、返した参照が失効するため引数で拒否します。所有値か別の有効期間にしてください。元の出力期間が曖昧な関数は、ラッパーを作らず Rust の E0106 に任せます。</p><h2 id="Static-Methods"><a class="docs-heading-anchor" href="#Static-Methods">静的メソッド</a><a id="Static-Methods-1"></a><a class="docs-heading-anchor-permalink" href="#Static-Methods" title="Permalink"></a></h2><p>フィールドを持つ構造体の <code>self</code> なしメソッドに対応します。</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[derive(JuliaStruct)]
+pub struct MathUtils {
+    dummy: i32,
+}
+
+impl MathUtils {
+    pub fn new() -&gt; Self {
+        MathUtils { dummy: 0 }
+    }
+
+    pub fn add(a: f64, b: f64) -&gt; f64 {
+        a + b
+    }
+
+    pub fn multiply(a: f64, b: f64) -&gt; f64 {
+        a * b
+    }
+}
+&quot;&quot;&quot;
+
+# Call static methods with the type first — the Julia spelling of
+# `MathUtils::add(3.0, 4.0)`:
+result1 = add(MathUtils, 3.0, 4.0)      # =&gt; 7.0
+result2 = multiply(MathUtils, 3.0, 4.0) # =&gt; 12.0
+
+# The bare form exists too, as long as nothing else in the block is called
+# `add` or `multiply`:
+result1 = add(3.0, 4.0)                 # =&gt; 7.0</code></pre><p>型を先頭引数にして、同名の独立関数との上書きを防ぎます。独立関数や他の静的メソッドと衝突する場合、静的側は型付き形式だけです（#323）。外部クレートも同じです。</p><div class="admonition is-info" id="Note-31b5fcdf98ab33e2"><header class="admonition-header">Note<a class="admonition-anchor" href="#Note-31b5fcdf98ab33e2" title="Permalink"></a></header><div class="admonition-body"><p>ユニット構造体は将来の対応予定なので、例では通常の構造体を使います。</p></div></div><h2 id="Names-Julia-reserves"><a class="docs-heading-anchor" href="#Names-Julia-reserves">Julia の予約語</a><a id="Names-Julia-reserves-1"></a><a class="docs-heading-anchor-permalink" href="#Names-Julia-reserves" title="Permalink"></a></h2><p><code>end</code>、<code>begin</code>、<code>quote</code>、<code>r#for</code>、<code>r#let</code> などは、<code>r#</code> を除去し、Julia 予約語に <code>_</code> を付けます（#514）。全生成経路で共通です。</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[julia]
+pub struct end { pub r#let: i32, pub begin: i32 }
+
+#[julia]
+impl end {
+    pub fn new(a: i32, b: i32) -&gt; Self { end { r#let: a, begin: b } }
+    pub fn quote(&amp;self) -&gt; i32 { self.r#let + self.begin }
+}
+&quot;&quot;&quot;
+
+e = end_(Int32(2), Int32(3))
+e.let_, e.begin_   # (2, 3)
+quote_(e)          # 5</code></pre><p>Rust の公開シンボルは変えません。<code>r#for</code> と <code>for_</code> のように変換後が重なると、両項目を示して拒否します。</p><h2 id="Result-and-Option-Returning-Methods"><a class="docs-heading-anchor" href="#Result-and-Option-Returning-Methods">Result / Option を返すメソッド</a><a id="Result-and-Option-Returning-Methods-1"></a><a class="docs-heading-anchor-permalink" href="#Result-and-Option-Returning-Methods" title="Permalink"></a></h2><p>独立関数と同じく、<code>#[repr(C)]</code> の <code>CResult_&lt;Struct&gt;_&lt;method&gt;</code> / <code>COption_&lt;Struct&gt;_&lt;method&gt;</code> を介し、Julia に <code>RustResult{T,E}</code> / <code>RustOption{T}</code> を返します（#268）。インライン・クレート・保存済みファイルで共通です。</p><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[julia]
+pub struct Divider {
+    pub scale: i32,
+}
+
+impl Divider {
+    pub fn new(scale: i32) -&gt; Self { Divider { scale } }
+
+    pub fn checked_div(&amp;self, d: i32) -&gt; Result&lt;i32, String&gt; {
+        if d == 0 {
+            Err(format!(&quot;cannot divide {} by zero&quot;, self.scale))
+        } else {
+            Ok(self.scale / d)
+        }
+    }
+
+    pub fn ratio(&amp;self, d: i32) -&gt; Option&lt;f64&gt; {
+        if d == 0 { None } else { Some(self.scale as f64 / d as f64) }
+    }
+
+    pub fn describe(&amp;self, unit: String) -&gt; Result&lt;String, String&gt; {
+        if unit.is_empty() {
+            Err(&quot;empty unit&quot;.to_string())
+        } else {
+            Ok(format!(&quot;{} {}&quot;, self.scale, unit))
+        }
+    }
+}
+&quot;&quot;&quot;
+
+d = Divider(Int32(10))
+
+RustCall.unwrap(checked_div(d, Int32(2)))   # =&gt; 5
+checked_div(d, Int32(0)).value              # =&gt; &quot;cannot divide 10 by zero&quot;
+RustCall.unwrap(ratio(d, Int32(4)))         # =&gt; 2.5
+RustCall.is_none(ratio(d, Int32(0)))        # =&gt; true
+RustCall.unwrap(describe(d, &quot;meters&quot;))      # =&gt; &quot;10 meters&quot;</code></pre><p>可変レシーバー、静的、独立関数も同様です。</p><h3 id="String-payloads"><a class="docs-heading-anchor" href="#String-payloads">文字列のペイロード</a><a id="String-payloads-1"></a><a class="docs-heading-anchor-permalink" href="#String-payloads" title="Permalink"></a></h3><p><code>String</code> / <code>&amp;str</code> は <code>&lt;owner&gt;_RustCallOwnedString { ptr, len, cap }</code> に変換し、<code>&lt;owner&gt;_free_rust_string</code> で解放します。Result と文字列変換を合成でき、<code>Result&lt;String, String&gt;</code> にも対応します。owner はインラインでは構造体、クレートでは <code>&lt;Struct&gt;_&lt;method&gt;</code> です。</p><p>Julia はコピー後直ちに、呼び出しと<strong>同じ世代スナップショット</strong>の関数で解放します。有効なペイロードだけを読み、未初期化の非選択側は読みません。集成型内の <code>&amp;str</code> も一時値の期間を越えないよう、所有バッファへコピーします。</p><h3 id="Panics"><a class="docs-heading-anchor" href="#Panics">パニック</a><a id="Panics-1"></a><a class="docs-heading-anchor-permalink" href="#Panics" title="Permalink"></a></h3><p>境界で捕捉した場合は、ペイロードを初期化しない <code>panicked()</code>（Err / None タグ）を返します。Julia は復号前にチャネルを読み、<code>RustPanicError</code> を送出します。</p><p>非ジェネリック構造体の <code>Result&lt;Self,E&gt;</code> は成功値を Box 化し、<code>RustResult{Wrapper,E}</code> を返します。成功値は呼び出し世代のデストラクタと生存フラグを持ち、失敗時はラッパーを割り当てません。固有の静的メソッドはコンストラクタ（#559）、レシーバー付きとトレイト側は元の名前で独立オブジェクトを返します（#564）。元のレシーバーは有効です。</p><p>生成側はコンストラクタにマクロクレート 0.5.0 以降、その他は0.6.0以降が必要です。<code>&lt;symbol&gt;_boxed_result_v1</code> を呼び出し前に検査し、古い値渡しの <code>Self</code> を所有ポインタと誤読しません。更新後は <code>Pkg.build(&quot;RustCall&quot;)</code> と保存済みバインディング再生成を行います。0.9.0 の厳密検査を無効化して互換性検査を回避しないでください。</p><h3 id="What-is-not-lowered"><a class="docs-heading-anchor" href="#What-is-not-lowered">変換しないもの</a><a id="What-is-not-lowered-1"></a><a class="docs-heading-anchor-permalink" href="#What-is-not-lowered" title="Permalink"></a></h3><ul><li><code>Vec</code>、<code>Box</code>、<code>HashMap</code> など集成型に置けないペイロードのメソッドは、従来どおり元の型と <code>return_kind = plain</code> を記録します。独立関数ではコンパイルエラーです。</li><li>ジェネリック構造体のメソッドは必要時に単相化し、Result/Option の変換は適用しません。</li></ul><h3 id="Generic-objects-and-registration-updates"><a class="docs-heading-anchor" href="#Generic-objects-and-registration-updates">ジェネリックオブジェクトと登録更新</a><a id="Generic-objects-and-registration-updates-1"></a><a class="docs-heading-anchor-permalink" href="#Generic-objects-and-registration-updates" title="Permalink"></a></h3><p>具体化ごとの生成・破棄・メソッド・アクセサーは同じライブラリです。各オブジェクトはメンバーのスナップショットも保持し、登録更新は新しい値だけに影響します。既存値の文字列解放とパニックチャネルも元のイメージです。全メンバーをロック外で準備して一度に登録し、置換から消えたメソッドを外しても、既存値のスナップショットは残します。</p><p>厳しいトレイト境界や未束縛のメソッド型引数で使えないメンバーは、構築自体を妨げず、その値のメンバー集合から除きます。未提供・解放済みレシーバー・明示的に閉じたイメージはエラーにします。退役だけなら既存値は使えます。</p><h2 id="Best-Practices"><a class="docs-heading-anchor" href="#Best-Practices">推奨事項</a><a id="Best-Practices-1"></a><a class="docs-heading-anchor-permalink" href="#Best-Practices" title="Permalink"></a></h2><h3 id="1.-Always-Use-#[derive(JuliaStruct)]"><a class="docs-heading-anchor" href="#1.-Always-Use-#[derive(JuliaStruct)]">1. 属性を付ける</a><a id="1.-Always-Use-#[derive(JuliaStruct)]-1"></a><a class="docs-heading-anchor-permalink" href="#1.-Always-Use-#[derive(JuliaStruct)]" title="Permalink"></a></h3><pre><code class="language-rust hljs">#[derive(JuliaStruct)]  // ✅ Good
+pub struct MyStruct {
+    // ...
+}</code></pre><h3 id="2.-Use-Clone-for-Expensive-Operations"><a class="docs-heading-anchor" href="#2.-Use-Clone-for-Expensive-Operations">2. コピーするなら Clone</a><a id="2.-Use-Clone-for-Expensive-Operations-1"></a><a class="docs-heading-anchor-permalink" href="#2.-Use-Clone-for-Expensive-Operations" title="Permalink"></a></h3><pre><code class="language-rust hljs">#[derive(JuliaStruct, Clone)]  // ✅ Good for copyable structs
+pub struct Config {
+    // ...
+}</code></pre><h3 id="3.-Keep-Structs-Simple"><a class="docs-heading-anchor" href="#3.-Keep-Structs-Simple">3. 単純なフィールド型</a><a id="3.-Keep-Structs-Simple-1"></a><a class="docs-heading-anchor-permalink" href="#3.-Keep-Structs-Simple" title="Permalink"></a></h3><pre><code class="language-rust hljs">#[derive(JuliaStruct)]
+pub struct Point {
+    x: f64,  // ✅ Good: simple type
+    y: f64,
+}</code></pre><h3 id="4.-Use-Methods-for-Complex-Operations"><a class="docs-heading-anchor" href="#4.-Use-Methods-for-Complex-Operations">4. 複雑な操作はメソッドへ</a><a id="4.-Use-Methods-for-Complex-Operations-1"></a><a class="docs-heading-anchor-permalink" href="#4.-Use-Methods-for-Complex-Operations" title="Permalink"></a></h3><pre><code class="language-rust hljs">#[derive(JuliaStruct)]
+pub struct BankAccount {
+    balance: f64,
+}
+
+impl BankAccount {
+    pub fn new(balance: f64) -&gt; Self {
+        BankAccount { balance }
+    }
+
+    pub fn withdraw(&amp;mut self, amount: f64) -&gt; Result&lt;f64, String&gt; {
+        if amount &gt; self.balance {
+            Err(&quot;Insufficient funds&quot;.to_string())
+        } else {
+            self.balance -= amount;
+            Ok(self.balance)
+        }
+    }
+
+    pub fn get_balance(&amp;self) -&gt; f64 {
+        self.balance
+    }
+}</code></pre><h2 id="Limitations"><a class="docs-heading-anchor" href="#Limitations">制約</a><a id="Limitations-1"></a><a class="docs-heading-anchor-permalink" href="#Limitations" title="Permalink"></a></h2><h3 id="Current-Limitations"><a class="docs-heading-anchor" href="#Current-Limitations">現在の制約</a><a id="Current-Limitations-1"></a><a class="docs-heading-anchor-permalink" href="#Current-Limitations" title="Permalink"></a></h3><p>入れ子の構造体、複雑なジェネリクス、構造体のライフタイム引数、トレイトの関連型には制約があります。</p><h3 id="Workarounds"><a class="docs-heading-anchor" href="#Workarounds">回避方法</a><a id="Workarounds-1"></a><a class="docs-heading-anchor-permalink" href="#Workarounds" title="Permalink"></a></h3><p>入れ子はポインタや参照にします。</p><pre><code class="language-rust hljs">#[derive(JuliaStruct)]
+pub struct Outer {
+    inner: *mut Inner,  // Use pointer instead of direct nesting
+}
+
+#[derive(JuliaStruct)]
+pub struct Inner {
+    value: i32,
+}</code></pre><h2 id="Examples"><a class="docs-heading-anchor" href="#Examples">例</a><a id="Examples-1"></a><a class="docs-heading-anchor-permalink" href="#Examples" title="Permalink"></a></h2><h3 id="Complete-Example:-2D-Vector"><a class="docs-heading-anchor" href="#Complete-Example:-2D-Vector">完全な例：2次元ベクトル</a><a id="Complete-Example:-2D-Vector-1"></a><a class="docs-heading-anchor-permalink" href="#Complete-Example:-2D-Vector" title="Permalink"></a></h3><pre><code class="language-julia hljs">rust&quot;&quot;&quot;
+#[derive(JuliaStruct, Clone)]
+pub struct Vec2DD {
+    x: f64,
+    y: f64,
+}
+
+impl Vec2DD {
+    pub fn new(x: f64, y: f64) -&gt; Self {
+        Vec2DD { x, y }
+    }
+
+    pub fn zero() -&gt; Self {
+        Vec2DD { x: 0.0, y: 0.0 }
+    }
+
+    pub fn add(&amp;self, other: &amp;Vec2DD) -&gt; Vec2DD {
+        Vec2DD {
+            x: self.x + other.x,
+            y: self.y + other.y,
+        }
+    }
+
+    pub fn scale(&amp;mut self, factor: f64) {
+        self.x *= factor;
+        self.y *= factor;
+    }
+
+    pub fn magnitude(&amp;self) -&gt; f64 {
+        (self.x * self.x + self.y * self.y).sqrt()
+    }
+
+    pub fn normalize(&amp;mut self) {
+        let mag = self.magnitude();
+        if mag &gt; 0.0 {
+            self.scale(1.0 / mag);
+        }
+    }
+}
+&quot;&quot;&quot;
+
+# Create vectors
+v1 = Vec2DD(3.0, 4.0)
+v2 = Vec2DD(1.0, 2.0)
+
+# Access fields
+println(&quot;v1: ($(v1.x), $(v1.y))&quot;)  # =&gt; v1: (3.0, 4.0)
+
+# Modify fields
+v1.x = 5.0
+println(&quot;v1: ($(v1.x), $(v1.y))&quot;)  # =&gt; v1: (5.0, 4.0)
+
+# Call methods
+v3 = v1.add(v2)
+println(&quot;v3: ($(v3.x), $(v3.y))&quot;)  # =&gt; v3: (6.0, 6.0)
+
+# Static method
+v_zero = Vec2DD.zero()
+println(&quot;zero: ($(v_zero.x), $(v_zero.y))&quot;)  # =&gt; zero: (0.0, 0.0)
+
+# Clone
+v4 = copy(v1)
+v4.scale(2.0)
+println(&quot;v1 magnitude: $(v1.magnitude())&quot;)  # =&gt; v1 magnitude: 6.4031242374328485
+println(&quot;v4 magnitude: $(v4.magnitude())&quot;)  # =&gt; v4 magnitude: 12.806248474865697</code></pre><div class="admonition is-info" id="所有する結果-694be4a9c2696c27"><header class="admonition-header">所有する結果<a class="admonition-anchor" href="#所有する結果-694be4a9c2696c27" title="Permalink"></a></header><div class="admonition-body"><p>明示的な窓口の具体化は、別のラッパーが所有する値や <code>Result&lt;Owner,E&gt;</code> も返せます。<code>return_wrapper</code> を指定し、注釈型・<code>Sized</code>・<code>&#39;static</code> の証明が必要です。入力の借用は同期呼び出し内に限ります（<a href="../crate_bindings/">詳細</a>）。</p></div></div><h2 id="Troubleshooting"><a class="docs-heading-anchor" href="#Troubleshooting">トラブルシューティング</a><a id="Troubleshooting-1"></a><a class="docs-heading-anchor-permalink" href="#Troubleshooting" title="Permalink"></a></h2><h3 id="Struct-Not-Found"><a class="docs-heading-anchor" href="#Struct-Not-Found">構造体が見つからない</a><a id="Struct-Not-Found-1"></a><a class="docs-heading-anchor-permalink" href="#Struct-Not-Found" title="Permalink"></a></h3><p><code>pub</code>、<code>#[derive(JuliaStruct)]</code>、<code>rust&quot;&quot;</code> 内の定義を確認します。</p><pre><code class="language-rust hljs">// ❌ Bad: missing pub
+struct MyStruct { ... }
+
+// ✅ Good
+#[derive(JuliaStruct)]
+pub struct MyStruct { ... }</code></pre><h3 id="Field-Access-Errors"><a class="docs-heading-anchor" href="#Field-Access-Errors">フィールドアクセスの失敗</a><a id="Field-Access-Errors-1"></a><a class="docs-heading-anchor-permalink" href="#Field-Access-Errors" title="Permalink"></a></h3><p>属性、正確なフィールド名、対応型を確認します。</p><h3 id="Clone-Not-Working"><a class="docs-heading-anchor" href="#Clone-Not-Working">Clone が使えない</a><a id="Clone-Not-Working-1"></a><a class="docs-heading-anchor-permalink" href="#Clone-Not-Working" title="Permalink"></a></h3><p><code>#[derive(JuliaStruct, Clone)]</code> を指定し、全フィールドが Rust の <code>Clone</code> を実装することを確認します。</p><h2 id="See-Also"><a class="docs-heading-anchor" href="#See-Also">関連情報</a><a id="See-Also-1"></a><a class="docs-heading-anchor-permalink" href="#See-Also" title="Permalink"></a></h2><ul><li><a href="../tutorial/">チュートリアル</a></li><li><a href="../examples/">使用例</a></li><li><a href="../api/">API リファレンス</a></li><li><a href="../generics/">ジェネリクス</a></li></ul></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../callbacks/">« コールバック</a><a class="docs-footer-nextpage" href="../generics/">ジェネリクス »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.20.0 on <span class="colophon-date" title="Saturday 14 November 2026 04:39">Saturday 14 November 2026</span>. Using Julia version 1.13.4.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>

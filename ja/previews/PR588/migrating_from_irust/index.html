@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><meta name="referrer" content="no-referrer"/><title>@irust からの移行 · RustCall.jl 日本語</title><meta name="title" content="@irust からの移行 · RustCall.jl 日本語"/><meta property="og:title" content="@irust からの移行 · RustCall.jl 日本語"/><meta property="twitter:title" content="@irust からの移行 · RustCall.jl 日本語"/><meta name="description" content="Documentation for RustCall.jl 日本語."/><meta property="og:description" content="Documentation for RustCall.jl 日本語."/><meta property="twitter:description" content="Documentation for RustCall.jl 日本語."/><meta property="og:url" content="https://atelierarith.github.io/RustCall.jl/ja/stable/migrating_from_irust/"/><meta property="twitter:url" content="https://atelierarith.github.io/RustCall.jl/ja/stable/migrating_from_irust/"/><link rel="canonical" href="https://atelierarith.github.io/RustCall.jl/ja/stable/migrating_from_irust/"/><script data-outdated-warner src="../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.63.2/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL=".."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../assets/documenter.js"></script><script src="../search_index.js"></script><script src="../siteinfo.js"></script><script src="../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../">RustCall.jl 日本語</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../">ホーム</a></li><li><span class="tocitem">はじめに</span><ul><li><a class="tocitem" href="../rust_primer/">Julia 利用者のための Rust 入門</a></li><li><a class="tocitem" href="../tutorial/">チュートリアル</a></li><li><a class="tocitem" href="../tutorial_new_features/">v0.9 と v0.10 の新機能</a></li><li><a class="tocitem" href="../examples/">使用例</a></li></ul></li><li><span class="tocitem">利用ガイド</span><ul><li><a class="tocitem" href="../integration_guide/">安全な Rust/Julia 連携</a></li><li><a class="tocitem" href="../type_contract/">FFI の型契約</a></li><li><a class="tocitem" href="../callbacks/">コールバック</a></li><li><a class="tocitem" href="../struct_mapping/">構造体の対応付け</a></li><li><a class="tocitem" href="../generics/">ジェネリクス</a></li><li><a class="tocitem" href="../crate_bindings/">外部クレートのバインディング</a></li><li><a class="tocitem" href="../hot_reload/">ホットリロード</a></li><li><a class="tocitem" href="../pyo3/">PyO3 クレート</a></li><li><a class="tocitem" href="../panics/">パニック・可視性・生存期間</a></li><li><a class="tocitem" href="../precompilation/">プリコンパイル</a></li><li><a class="tocitem" href="../performance/">性能</a></li><li><a class="tocitem" href="../troubleshooting/">トラブルシューティング</a></li><li class="is-active"><a class="tocitem" href>@irust からの移行</a></li></ul></li><li><span class="tocitem">リファレンス</span><ul><li><input class="collapse-toggle" id="menuitem-4-1" type="checkbox"/><label class="tocitem" for="menuitem-4-1"><span class="docs-label">API リファレンス</span><i class="docs-chevron"></i></label><ul class="collapsed"><li><a class="tocitem" href="../api/">概要</a></li><li><a class="tocitem" href="../reference/artifacts/">成果物の識別とキャッシュ</a></li><li><a class="tocitem" href="../reference/ffi_contract/">FFI の型契約</a></li><li><a class="tocitem" href="../reference/compilation/">利用者向けの入口</a></li><li><a class="tocitem" href="../reference/codegen/">コンパイラとコード生成</a></li><li><a class="tocitem" href="../reference/manifest/">FFI マニフェスト</a></li><li><a class="tocitem" href="../reference/cargo/">Cargo プロジェクトと依存関係</a></li><li><a class="tocitem" href="../reference/crates/">外部クレート</a></li><li><a class="tocitem" href="../reference/hot_reload/">ホットリロード API</a></li><li><a class="tocitem" href="../reference/pyo3/">PyO3 クレート</a></li><li><a class="tocitem" href="../reference/ownership/">型・メモリ・所有権</a></li><li><a class="tocitem" href="../reference/generics/">ジェネリクスと #[julia] 関数</a></li><li><a class="tocitem" href="../reference/errors/">エラー</a></li><li><a class="tocitem" href="../reference/loading/">読み込みポリシー</a></li></ul></li><li><a class="tocitem" href="../status/">プロジェクトの状況</a></li></ul></li><li><span class="tocitem">開発者向け</span><ul><li><a class="tocitem" href="../internals/">RustCall が Rust を呼ぶ仕組み</a></li><li><a class="tocitem" href="../project_guide/">プロジェクトガイド</a></li><li><a class="tocitem" href="../developer_windows/">Windows での開発</a></li><li><a class="tocitem" href="../developer_pitfalls/">開発時の注意点</a></li></ul></li><li><span class="tocitem">プラットフォーム</span><ul><li><a class="tocitem" href="../platforms/windows/">Windows</a></li></ul></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">利用ガイド</a></li><li class="is-active"><a href>@irust からの移行</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>@irust からの移行</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/AtelierArith/RustCall.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><nav aria-label="Language"><a class="language-en" lang="en">English</a> / <a class="language-ja" lang="ja">日本語</a></nav>
+<script>
+for (const lang of ['en', 'ja']) {
+    const url = new URL(location.href);
+    url.pathname = url.pathname.replace(/\/(en|ja)\//, '/' + lang + '/');
+    url.hash = '';
+    document.querySelector('.language-' + lang).href = url.href;
+}
+</script><p>&lt;!– Translation source: 960be32b16e7387ce39c1f3ca662c2e057d3b9c5; English counterpart: ../en/migrating<em>from</em>irust.md. –&gt;</p><h1 id="Migrating-from-@irust"><a class="docs-heading-anchor" href="#Migrating-from-@irust"><code>@irust</code> からの移行</a><a id="Migrating-from-@irust-1"></a><a class="docs-heading-anchor-permalink" href="#Migrating-from-@irust" title="Permalink"></a></h1><div class="admonition is-info" id="0.9.0-で削除-6488d8bd2c54d6c8"><header class="admonition-header">0.9.0 で削除<a class="admonition-anchor" href="#0.9.0-で削除-6488d8bd2c54d6c8" title="Permalink"></a></header><div class="admonition-body"><p><code>@irust</code> と <code>irust&quot;...&quot;</code> は 0.8.0 で非推奨となり、0.9.0 で削除されました（<a href="https://github.com/AtelierArith/RustCall.jl/issues/538">#538</a>）。使用すると <span>$UndefVarError: `@irust` not defined$</span> が発生します。</p></div></div><p>以前の計算はすべて <code>rust&quot;&quot;&quot;...&quot;&quot;&quot;</code> 内の <code>#[julia]</code> 関数に書き換えられます。</p><ol><li>断片を関数の<strong>本体</strong>にします。末尾の式が戻り値となり、文・ループ・<code>return</code> はそのまま使えます。</li><li><code>$name</code>（または <code>arg1</code>、<code>arg2</code> など）を<strong>型付き引数</strong>にします。<code>Int64</code> → <code>i64</code>、<code>Int32</code> → <code>i32</code>、<code>Float64</code> → <code>f64</code>、<code>Bool</code> → <code>bool</code> など、渡した値に対応する Rust 型を書きます。</li><li>計算結果の型を<strong>戻り値型</strong>として書きます。</li><li>トップレベルで一度定義し、以前の断片の位置から生成された Julia 関数を呼びます。</li></ol><p><code>@irust</code> は新しい断片ごとに何度も <code>rustc</code> を実行して戻り値型を実行時に決めていました。そのためスカラーしか扱えず、呼び出し元の型推論を妨げ、<code>$name</code> のテキスト置換が Rust 文字列内にも及びました。<code>#[julia]</code> 関数は一度コンパイルすれば型安定な呼び出しができ、<code>String</code>、スライス、<code>Result</code> / <code>Option</code>、<code>#[julia]</code> 構造体にも対応します。</p><p>以下では旧形式をコメントで示し、その後に置き換えを示します。<code>test/test_irust_migration.jl</code> が全置き換えを実行して結果を検証します。</p><p><strong>変数を取り込む式</strong>。</p><pre><code class="language-julia hljs"># before (0.8 and earlier)
+# compute_irust(x, y) = @irust(&quot;\$x * \$y + 10&quot;)
+# compute_irust(Int32(3), Int32(4))   # 22
+
+# after
+rust&quot;&quot;&quot;
+#[julia]
+fn compute(x: i32, y: i32) -&gt; i32 {
+    x * y + 10
+}
+&quot;&quot;&quot;
+compute(Int32(3), Int32(4))         # =&gt; 22</code></pre><p><strong>変数を取り込まない式</strong>（<code>irust&quot;...&quot;</code>）と<strong>明示的な引数</strong>（<code>arg1</code> など）。</p><pre><code class="language-julia hljs"># before (0.8 and earlier)
+# irust&quot;40 + 2&quot;                     # 42
+# @irust(&quot;arg1 * 2&quot;, x)             # 42
+
+# after
+rust&quot;&quot;&quot;
+#[julia]
+fn answer() -&gt; i64 {
+    40 + 2
+}
+
+#[julia]
+fn twice(arg1: i64) -&gt; i64 {
+    arg1 * 2
+}
+&quot;&quot;&quot;
+x = Int64(21)
+answer()                            # =&gt; 42
+twice(x)                            # =&gt; 42</code></pre><p><strong>文とループ</strong>。本体は変更不要です。</p><pre><code class="language-julia hljs"># before (0.8 and earlier)
+# @irust(&quot;let mut s = 0i64; for i in 0..\$k { s += i; } s&quot;)   # 45
+
+# after
+rust&quot;&quot;&quot;
+#[julia]
+fn sum_below(k: i64) -&gt; i64 {
+    let mut s = 0i64;
+    for i in 0..k {
+        s += i;
+    }
+    s
+}
+&quot;&quot;&quot;
+k = Int64(10)
+sum_below(k)                        # =&gt; 45</code></pre><p><strong>戻り値型</strong>。以前は <code>rustc</code> に問い合わせていましたが、今は明示します。これが Julia の結果型になります。</p><pre><code class="language-julia hljs"># before (0.8 and earlier)
+# @irust(&quot;\$x as f64&quot;)                       # 7.0  :: Float64
+# @irust(&quot;if \$x &gt; 0 { 1 } else { -1 }&quot;)     # 1    :: Int64
+# @irust(&quot;\$f.is_finite()&quot;)                  # true :: Bool
+# @irust(&quot;(\$f * \$f).sqrt()&quot;)               # 3.5  :: Float64
+
+# after
+rust&quot;&quot;&quot;
+#[julia]
+fn as_float(x: i64) -&gt; f64 {
+    x as f64
+}
+
+#[julia]
+fn sign_of(x: i64) -&gt; i64 {
+    if x &gt; 0 { 1 } else { -1 }
+}
+
+#[julia]
+fn finite(f: f64) -&gt; bool {
+    f.is_finite()
+}
+
+#[julia]
+fn magnitude(f: f64) -&gt; f64 {
+    (f * f).sqrt()
+}
+&quot;&quot;&quot;
+x = Int64(7); f = 3.5
+as_float(x)                         # =&gt; 7.0  :: Float64
+sign_of(x)                          # =&gt; 1    :: Int64
+finite(f)                           # =&gt; true :: Bool
+magnitude(f)                        # =&gt; 3.5  :: Float64</code></pre><p>断片内の補助関数 <code>fn</code> は同じブロックのトップレベル関数にします。<code>macro_rules!</code> のメタ変数用の <code>$$</code> は、置換しない <code>rust&quot;&quot;&quot;</code> では <code>$</code> と直接書きます。パニックは引き続き捕捉可能な <code>RustCall.RustPanicError</code> です（<a href="../panics/">パニック・可視性・生存期間</a>）。</p><p>C ABI を直接使う場合は <code>#[julia]</code> の代わりに <code>#[no_mangle] pub extern &quot;C&quot;</code> と書き、<code>@rust name(args...)::T</code> で呼びます。</p></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../troubleshooting/">« トラブルシューティング</a><a class="docs-footer-nextpage" href="../api/">概要 »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.20.0 on <span class="colophon-date" title="Saturday 14 November 2026 04:39">Saturday 14 November 2026</span>. Using Julia version 1.13.4.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
