@@ -217,32 +217,48 @@ end
 end
 
 @testset "Cargo build context selects the target package only (#303)" begin
-    mktempdir() do root
-        target_out = joinpath(root, "target", "release", "build", "target-hash", "out")
-        dependency_out = joinpath(root, "target", "release", "build", "dependency-hash", "out")
-        mkpath(target_out)
-        mkpath(dependency_out)
-        write(joinpath(dirname(target_out), "output"),
-              "cargo:rerun-if-changed=relative.txt\n" *
-              "cargo::rerun-if-changed=$(joinpath(root, "external.txt"))\n")
-        write(joinpath(dirname(dependency_out), "output"),
-              "cargo:rerun-if-changed=dependency-only.txt\n")
-        output = """
-        {"reason":"build-script-executed","package_id":"dependency","out_dir":$(repr(dependency_out)),"env":[["API_FILE","wrong.rs"]]}
-        {"reason":"build-script-executed","package_id":"target","out_dir":$(repr(target_out)),"env":[["API_FILE","correct.rs"]]}
-        unix
-        feature="python"
-        """
-        context = RustCall._cargo_probe_context(output, "target", root)
-        @test context.cfg_text == "unix\nfeature=\"python\"\n"
-        @test context.build_env["OUT_DIR"] == target_out
-        @test context.build_env["API_FILE"] == "correct.rs"
-        @test context.build_env["CARGO_MANIFEST_DIR"] == root
-        @test context.build_inputs == sort([joinpath(root, "relative.txt"),
-                                            joinpath(root, "external.txt")])
-        absent = RustCall._cargo_probe_context(output, "absent", root)
-        @test !haskey(absent.build_env, "OUT_DIR")
-        @test isempty(absent.build_inputs)
+    for layout in ("output", joinpath("run", "stdout"))
+        @testset "$layout" begin
+            mktempdir() do root
+                target_out = joinpath(root, "target", "release", "build", "target-hash", "out")
+                dependency_out = joinpath(root, "target", "release", "build", "dependency-hash", "out")
+                mkpath(target_out)
+                mkpath(dependency_out)
+                target_output = joinpath(dirname(target_out), layout)
+                dependency_output = joinpath(dirname(dependency_out), layout)
+                mkpath(dirname(target_output))
+                mkpath(dirname(dependency_output))
+                @test isempty(RustCall._cargo_rerun_inputs(target_out, root))
+                write(target_output,
+                      "cargo:rerun-if-changed=relative.txt\n" *
+                      "cargo::rerun-if-changed=$(joinpath(root, "external.txt"))\n")
+                write(dependency_output,
+                      "cargo:rerun-if-changed=dependency-only.txt\n")
+                output = """
+                {"reason":"build-script-executed","package_id":"dependency","out_dir":$(repr(dependency_out)),"env":[["API_FILE","wrong.rs"]]}
+                {"reason":"build-script-executed","package_id":"target","out_dir":$(repr(target_out)),"env":[["API_FILE","correct.rs"]]}
+                unix
+                feature="python"
+                """
+                context = RustCall._cargo_probe_context(output, "target", root)
+                @test context.cfg_text == "unix\nfeature=\"python\"\n"
+                @test context.build_env["OUT_DIR"] == target_out
+                @test context.build_env["API_FILE"] == "correct.rs"
+                @test context.build_env["CARGO_MANIFEST_DIR"] == root
+                @test context.build_inputs == sort([joinpath(root, "relative.txt"),
+                                                    joinpath(root, "external.txt")])
+                absent = RustCall._cargo_probe_context(output, "absent", root)
+                @test !haskey(absent.build_env, "OUT_DIR")
+                @test isempty(absent.build_inputs)
+                if layout != "output"
+                    # A leftover old-layout file must not override current stdout.
+                    write(joinpath(dirname(target_out), "output"),
+                          "cargo:rerun-if-changed=stale.txt\n")
+                    @test RustCall._cargo_probe_context(output, "target", root).build_inputs ==
+                          context.build_inputs
+                end
+            end
+        end
     end
 end
 
