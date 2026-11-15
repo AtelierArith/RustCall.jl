@@ -70,7 +70,7 @@ impl Point {
 There are two, and they suit different crates.
 
 | | Native wrapper (the default) | Python host (`pyo3_host=true`) |
-|-|------------------------------|--------------------------------|
+|---|------------------------------|--------------------------------|
 | How it works | RustCall generates a second crate that calls the PyO3 crate's items as ordinary Rust and exports them through the C ABI | The crate is built as the Python extension it already is, imported with [PythonCall](https://github.com/JuliaPy/PythonCall.jl), and called through Python |
 | Python at run time | no interpreter is started | yes, PythonCall's interpreter |
 | Needs `using PythonCall` | no | yes |

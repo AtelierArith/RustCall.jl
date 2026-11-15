@@ -22,7 +22,7 @@ material on what `#[julia]` accepts.
 ## Inline block or crate?
 
 | | `rust"""` block | Crate + `@rust_crate` |
-|-|-----------------|------------------------|
+|---|-----------------|------------------------|
 | Where the Rust lives | in a Julia string | in `.rs` files, with `Cargo.toml` |
 | Editor support (rust-analyzer), `cargo test`, `cargo doc` | no | yes |
 | Dependencies | a `// cargo-deps:` comment | `[dependencies]` in `Cargo.toml` |
