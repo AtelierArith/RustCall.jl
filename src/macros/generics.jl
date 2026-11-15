@@ -642,7 +642,8 @@ const _JULIA_TO_RUST_TYPE = Base.ImmutableDict(Base.ImmutableDict{Type, String}(
     julia_type_to_rust_string(jt::Type) -> String
 
 Rust spelling of a Julia type used to instantiate a generic parameter
-(`Int32 -> "i32"`, `Point{Float64} -> "Point<f64>"`). Throws for unsupported types.
+(`Int32 -> "i32"`, `Point{Float64} -> "Point<f64>"`). Throws an
+`ErrorException` for a type RustCall cannot name, listing what it can (#595).
 """
 function julia_type_to_rust_string(jt::Type)
     haskey(_JULIA_TO_RUST_TYPE, jt) && return _JULIA_TO_RUST_TYPE[jt]
@@ -651,7 +652,30 @@ function julia_type_to_rust_string(jt::Type)
         params = join((julia_type_to_rust_string(p) for p in jt.parameters), ", ")
         return "$base<$params>"
     end
-    error("Unsupported type for generic specialization: $jt")
+    error(
+        "no Rust spelling for the Julia type $(jt). RustCall can specialize a generic item " *
+        "for $(join(sort!(String[string(t) for t in keys(_JULIA_TO_RUST_TYPE)]), ", ")), " *
+        "or for a parametric type whose parameters are among them; a trait bound Rust " *
+        "implements for a type outside that set needs a Julia type in it.")
+end
+
+"""
+    _monomorphization_bindings(params, values, item) -> Vector{Pair{String, String}}
+
+The Rust spelling of every type argument of one instantiation. A Julia type
+[`julia_type_to_rust_string`](@ref) cannot name is reported against `item` — the
+function or struct wrapper being specialized — so the message says what failed,
+not only which type (#595).
+"""
+function _monomorphization_bindings(type_params, values, item::AbstractString)
+    return Pair{String, String}[
+        try
+            string(p) => julia_type_to_rust_string(values[p])
+        catch err
+            err isa ErrorException || rethrow()
+            error("Rust `$(item)` cannot be instantiated: $(err.msg)")
+        end
+        for p in type_params]
 end
 
 """
@@ -907,8 +931,8 @@ function _monomorphize_function_once(func_name::String, type_params::Dict{Symbol
             # to the registered source (context + generic code) with the concrete
             # types substituted at the AST level and exported as
             # `#[no_mangle] extern "C"`.
-            bindings = Pair{String, String}[string(p) => julia_type_to_rust_string(type_params[p])
-                                            for p in generic_info.type_params]
+            bindings = _monomorphization_bindings(generic_info.type_params, type_params,
+                                                  generic_info.path)
             full_source = isempty(generic_info.context) ? generic_info.code :
                           generic_info.context * "\n" * generic_info.code
             specialized = specialize_generic(full_source, generic_info.path, bindings,
@@ -956,7 +980,8 @@ function _monomorphize_function_once(func_name::String, type_params::Dict{Symbol
 
         # Return and argument types come from the manifest of the specialized
         # function, never from scanning the generated source.
-        arg_types = Type[_specialized_arg_type(t, type_params) for t in specialized.arg_types]
+        arg_types = Type[_specialized_arg_type(t, type_params, abi)
+                         for (t, abi) in zip(specialized.arg_types, specialized.arg_abis)]
 
         # Fixed `String` / `&str` parameters and returns use the string ABI
         # (#242): the specialized wrapper takes `(ptr, len)` pairs and returns
@@ -1130,11 +1155,16 @@ function _instantiate_generic_struct_group(group::Symbol, members::Vector{Generi
         restored = _restore_generic_artifact(group_key, func_name)
         if restored === nothing
             type_suffix = join([_rust_type_suffix(t) for (_, t) in group_id.type_params], "_")
+            # The group is `generic_struct:<qualified struct name>`: name the
+            # struct itself in a specialization error, not whichever member of
+            # the group happened to be built first (#595).
+            group_label = replace(String(group), "generic_struct:" => "")
+            item_label = "$(group_label){$(join(String[string(t) for t in type_values], ", "))}"
             specs = NamedTuple[]
             for info in members
                 member_params = params_for(info)
-                bindings = Pair{String, String}[string(p) => julia_type_to_rust_string(member_params[p])
-                                                for p in info.type_params]
+                bindings = _monomorphization_bindings(info.type_params, member_params,
+                                                      item_label)
                 push!(specs, (fn = info.path, bindings = bindings,
                               new_name = "$(info.name)_$(type_suffix)_$(artifact_short_id(group_key, 8))")) # short-id: label
             end
@@ -1190,7 +1220,8 @@ function _instantiate_generic_struct_group(group::Symbol, members::Vector{Generi
             func_ptr = Libdl.dlsym(artifact.handle, sp.symbol; throw_error = false)
             (func_ptr === nothing || func_ptr == C_NULL) &&
                 error("Function '$(sp.symbol)' not found in library '$lib_path'")
-            arg_types = Type[_specialized_arg_type(t, params_for(info)) for t in sp.arg_types]
+            arg_types = Type[_specialized_arg_type(t, params_for(info), abi)
+                             for (t, abi) in zip(sp.arg_types, sp.arg_abis)]
             string_return = :none
             free_ptr = C_NULL
             if sp.has_owned_string_helper
@@ -1668,8 +1699,8 @@ function _batch_monomorphize(generic_info, func_name::String,
         # type names (the readable suffix), the bindings the Rust spellings.
         suffix = join([_rust_type_suffix(t) for (_, t) in entry.id.type_params], "_")
         push!(specs, (fn = generic_info.path,
-                      bindings = Pair{String, String}[string(p) => julia_type_to_rust_string(entry.params[p])
-                                                      for p in generic_info.type_params],
+                      bindings = _monomorphization_bindings(generic_info.type_params,
+                                                            entry.params, generic_info.path),
                       new_name = "$(func_name)_$(suffix)_$(artifact_short_id(entry.key, 8))")) # short-id: label
     end
     specialized = specialize_generic_group(full_source, specs)
@@ -1968,7 +1999,11 @@ function _specialized_return_type(rust_type::String, ctx::AbstractString)
     return ffi_return_type_or_throw(rust_type, "", ctx)
 end
 
-function _specialized_arg_type(rust_type::String, type_params::Dict{Symbol, <:Type})
+function _specialized_arg_type(rust_type::String, type_params::Dict{Symbol, <:Type},
+                               abi::AbstractString = "")
+    # A borrowed `#[julia]` struct (`other: &Self`, `&Vec2<T>`) crosses as the
+    # handle's pointer (#565, #591); the generated method passes `arg.ptr`.
+    _is_handle_abi(abi) && return Ptr{Cvoid}
     c = ffi_argument_contract(rust_type)
     c.known && c.abi === :void && return Cvoid
     if c.known && (c.abi === :by_value || c.abi === :pointer)

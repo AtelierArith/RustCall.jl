@@ -238,7 +238,12 @@ fn expand_items(
                 ))?);
 
                 if model.is_generic() {
-                    let entry = generic_struct_entry(model, &s, module_path, enclosing_cfg);
+                    let mut entry = generic_struct_entry(model, &s, module_path, enclosing_cfg);
+                    // A method of a generic struct may borrow the struct
+                    // itself — `other: &Self` / `&Vec2<T>` — which travels as
+                    // the handle's pointer like a concrete struct's argument
+                    // (#565, #591).
+                    mark_method_handles(&mut entry, model, module_path, tree);
                     // Emit the generic wrappers (not exported) next to the struct so
                     // `specialize` can instantiate them in place, with every
                     // module-scoped name in reach.
@@ -345,6 +350,19 @@ fn mark_method_handles(
             } else if let Some(reason) = tree.borrow_context_error(&site) {
                 Err(reason)
             } else if crate::extract::is_self_type(ty) {
+                match tree.borrow_context_error(module_path) {
+                    Some(reason) => Err(reason),
+                    None => Ok(Some(entry_ffi_name(module_path, model))),
+                }
+            } else if m
+                .host
+                .as_ref()
+                .is_some_and(|h| crate::receiver::same_spelling(ty, &h.self_ty))
+            {
+                // The impl's own type spelled out with its parameters —
+                // `&Vec2<T>` in `impl<T> Vec2<T>` — is `Self`, which
+                // `locate_borrowed_type` cannot resolve (a generic argument
+                // list names none) but the header already answered (#591).
                 match tree.borrow_context_error(module_path) {
                     Some(reason) => Err(reason),
                     None => Ok(Some(entry_ffi_name(module_path, model))),
