@@ -53,7 +53,7 @@ impl Point {
 ## [2つのバインド方法](@id Two-ways-to-bind-a-PyO3-crate)
 
 | | ネイティブラッパー（既定） | Python ホスト（`pyo3_host=true`） |
-|-|---------------------------|----------------------------------|
+|---|---------------------------|----------------------------------|
 | 仕組み | 別クレートから通常の Rust として呼び C ABI を公開 | 既存 Python 拡張としてビルドし [PythonCall](https://github.com/JuliaPy/PythonCall.jl) で import |
 | インタープリター | 起動しない | PythonCall のものを起動 |
 | `using PythonCall` | 不要 | 必要 |

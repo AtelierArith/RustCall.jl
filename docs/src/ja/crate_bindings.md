@@ -16,7 +16,7 @@
 ## [インラインブロックとクレートの選択](@id Inline-block-or-crate?)
 
 | | `rust"""` | クレートと `@rust_crate` |
-|-|-----------|------------------------|
+|---|-----------|------------------------|
 | Rust の置き場所 | Julia の文字列 | `.rs` と `Cargo.toml` |
 | rust-analyzer、`cargo test`、`cargo doc` | 非対応 | 対応 |
 | 依存関係 | `// cargo-deps:` | `[dependencies]` |

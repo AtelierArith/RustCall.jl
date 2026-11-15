@@ -82,7 +82,7 @@ using Pkg; Pkg.build("RustCall")    # rebuild the native components
 RustCall has three entry points. They can be mixed freely in one module.
 
 | | You write | You call | Use it for |
-|-|-----------|----------|------------|
+|---|-----------|----------|------------|
 | **`rust"""` + `#[julia]`** | ordinary Rust functions and structs, inline in a Julia file | generated Julia functions | Almost everything. Start here. |
 | **`rust"""` + `@rust`** | hand-written `#[no_mangle] extern "C"` functions | `@rust f(args...)::T` | Existing C-style Rust, or full control over the binary interface. |
 | **`@rust_crate`** | a separate Rust crate (its own directory and `Cargo.toml`) with `#[julia]` items | a generated Julia module | Larger Rust code bases and packages. |

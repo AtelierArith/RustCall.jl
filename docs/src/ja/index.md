@@ -63,7 +63,7 @@ using Pkg; Pkg.build("RustCall")    # rebuild the native components
 同じモジュールで次の方法を併用できます。
 
 | | 記述するもの | 呼び出し方 | 用途 |
-|-|--------------|------------|------|
+|---|--------------|------------|------|
 | **`rust"""` + `#[julia]`** | Julia ファイル内の通常の Rust 関数・構造体 | 自動生成された Julia 関数 | ほとんどの場合。まずはこちら |
 | **`rust"""` + `@rust`** | 手書きの `#[no_mangle] extern "C"` 関数 | `@rust f(args...)::T` | 既存の C 形式の Rust や ABI の完全な制御 |
 | **`@rust_crate`** | 独自のディレクトリと `Cargo.toml` を持ち、`#[julia]` を付けたクレート | 生成された Julia モジュール | 規模の大きい Rust コードやパッケージ |

@@ -411,7 +411,7 @@ dynamically and is much slower. Keep it.
 When to choose which:
 
 | | `#[julia]` | `#[no_mangle] extern "C"` + `@rust` |
-|-|------------|-------------------------------------|
+|---|------------|-------------------------------------|
 | Julia function generated | yes | no, call with `@rust` |
 | `&str`, `String`, slices, `Result`, `Option`, structs | yes | no, C types and raw pointers only |
 | Argument conversion (`10` → `i32`) | yes | no |
