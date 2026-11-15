@@ -716,15 +716,28 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
 
             if m.is_static
                  if is_ctor
-                     # Point(x, y) -> Point{T}(ptr, lib)
-                     # Needs to infer T? Or explicit?
-                     # For simplicity, we define: function Point{T}(args...)
+                     # `Vec2(x, y)`: infer the struct's parameters from the
+                     # constructor's arguments whose Rust type is exactly that
+                     # parameter (`new(x: T, y: T)` pins `T`), then take the
+                     # typed path below (#593). A parameter no argument pins —
+                     # or two arguments that disagree — is an error naming the
+                     # parameter, not a silent guess. The wrapper may name the
+                     # parameters differently (`impl<U> Pair<U>`), so its
+                     # names are aligned with the struct's by position first.
+                     wrapper_params = String[]
+                     for (wrapper_name, _, params) in info.generic_wrappers
+                         if wrapper_name == m.generic_wrapper_name
+                             wrapper_params = params
+                             break
+                         end
+                     end
                      push!(exprs, quote
                          function (::Type{$esc_struct})($(esc_args...))
-                             # Infer T from args? Or assume args are T?
-                             # This is tricky without explicit types.
-                             # We assume simpler case: Point{Int32}(1, 2)
-                             error("Automatic constructor for generic structs is not yet fully implemented. Use explicit builder pattern.")
+                             types = RustCall._generic_constructor_params(
+                                 $struct_name_str, $(QuoteNode(Tuple(T_params))),
+                                 $(QuoteNode(Tuple(Symbol.(wrapper_params)))),
+                                 ($(map(String, m.arg_types)...),), ($(esc_args...),))
+                             return $esc_struct{types...}($(esc_args...))
                          end
 
                          function (::Type{$where_clause})($(esc_args...)) where {$(esc_T_params...)}
@@ -750,16 +763,63 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                  end
             else
                  # `self` stays alive for the whole call: a borrowed `&str`
-                 # result points into the Rust object (#242 review).
-                 push!(exprs, quote
-                     function $fname(self::$where_clause, $(esc_args...)) where {$(esc_T_params...)}
-                         RustCall.check_not_freed(self, $struct_name_str)
-                         GC.@preserve self begin
-                             _call_generic_method(self.lib_name, $wrapper_name, self.ptr, ($(esc_args...),), ($(esc_T_params...),), getfield(self, :alive);
-                                                  caller = @__MODULE__, block = $block)
+                 # result points into the Rust object (#242 review). A
+                 # borrowed sibling (`other: &Self` / `&Vec2<T>`, #591) also
+                 # travels as its handle's pointer, checked and rooted for the
+                 # call, exactly as a concrete struct's argument (#565).
+                 call_args = Any[esc_args[i] for i in eachindex(esc_args)]
+                 preserved_args = Symbol[]
+                 borrow_checks = Any[]
+                 borrow_mutables = Bool[]
+                 for (i, h) in enumerate(m.arg_handles)
+                     h === nothing && continue
+                     # A local, hygienic name: `GC.@preserve` takes symbols,
+                     # and `esc`aped user names are not ones.
+                     v = Symbol("__rustcall_borrow_", i)
+                     call_args[i] = :($v.ptr)
+                     push!(preserved_args, v)
+                     push!(borrow_mutables, m.arg_abis[i] == "handle_mut")
+                     push!(borrow_checks, :($v = $(esc_args[i])))
+                 end
+                 if !isempty(preserved_args)
+                     # One check over the whole borrow set: the receiver is a
+                     # borrow too (`&self` / `&mut self`), and two borrows may
+                     # alias only while both are shared (#591 review).
+                     push!(borrow_checks, :(RustCall._check_generic_borrows(
+                         self, $struct_name_str, $(m.is_mutable),
+                         ($(preserved_args...),), ($(borrow_mutables...),))))
+                 end
+                 if m.returns_boxed_struct
+                     # An instance method returning the struct allocates a new
+                     # one: its wrapper returns `*mut Self` and the result is a
+                     # handle of this instantiation, bound to the generation
+                     # that allocated it (#592).
+                     push!(exprs, quote
+                         function $fname(self::$where_clause, $(esc_args...)) where {$(esc_T_params...)}
+                             RustCall.check_not_freed(self, $struct_name_str)
+                             $(borrow_checks...)
+                             GC.@preserve self $(preserved_args...) begin
+                                 ptr_val, lib_val, gen = _call_generic_method_owned(
+                                     self.lib_name, $wrapper_name, self.ptr, ($(call_args...),),
+                                     ($(esc_T_params...),), getfield(self, :alive), $struct_stem;
+                                     caller = @__MODULE__, block = $block)
+                                 $esc_struct{$(esc_T_params...)}(ptr_val, lib_val,
+                                                                gen.free_ptr, gen.alive, gen.free_channel)
+                             end
                          end
-                     end
-                 end)
+                     end)
+                 else
+                     push!(exprs, quote
+                         function $fname(self::$where_clause, $(esc_args...)) where {$(esc_T_params...)}
+                             RustCall.check_not_freed(self, $struct_name_str)
+                             $(borrow_checks...)
+                             GC.@preserve self $(preserved_args...) begin
+                                 _call_generic_method(self.lib_name, $wrapper_name, self.ptr, ($(call_args...),), ($(esc_T_params...),), getfield(self, :alive);
+                                                      caller = @__MODULE__, block = $block)
+                             end
+                         end
+                     end)
+                 end
             end
         end
 
@@ -1718,6 +1778,24 @@ function _call_generic_constructor(func_name::String, struct_name::AbstractStrin
     _generic_struct_seam(snapshot)
     grouped = snapshot.member.group !== nothing
     ptr, lib_name, handle, generation = _generic_constructor_call(snapshot, args, types)
+    return _generic_owned_result(ptr, lib_name, handle, generation, struct_name, types, snapshot;
+                                 caller = caller, block = block)
+end
+
+"""
+    _generic_owned_result(ptr, lib, handle, generation, struct_name, types, snapshot)
+        -> (ptr, lib_name, gen)
+
+The generation an object allocated by a generic-struct constructor **or by an
+instance method returning the struct** must capture: its destructor, its
+liveness flag and its panic channel, all from the image that allocated it
+(#249, #277, #592). `snapshot` is the constructor's (or the method's) group.
+"""
+function _generic_owned_result(ptr::Ptr{Cvoid}, lib_name::String, handle::Ptr{Cvoid},
+                               generation::Integer, struct_name::AbstractString, types::Tuple,
+                               snapshot; caller::Union{Module, Nothing} = nothing,
+                               block::Union{Nothing, RustBlockSnapshot} = nothing)
+    grouped = snapshot.member.group !== nothing
     # Generic struct groups specialize the destructor beside the constructor.
     # Resolve that cached wrapper first so the object captures the same image
     # and allocator; the legacy symbol lookup remains a compatibility fallback
@@ -1872,6 +1950,46 @@ function _generic_struct_owner(mod::Module, block::RustBlockSnapshot)
     return nothing
 end
 
+"""
+    _check_generic_borrows(self, struct_name, receiver_mutable, args, mutables)
+
+Check that a generic struct's method may lend `args` to Rust as `&Vec2<T>` /
+`&mut Vec2<T>` alongside its receiver (#591): every argument carries the
+receiver's handle type, is alive, and comes from the same library image, and no
+borrow overlaps another when at least one of the two is exclusive. `mutables[i]`
+says whether `args[i]` is a `&mut` borrow; `receiver_mutable` whether the
+receiver is `&mut self`. Two shared borrows may alias — Rust allows that — but a
+`&mut` borrow may not overlap the receiver or another argument, which would
+create overlapping references involving an exclusive one (#591 review).
+"""
+function _check_generic_borrows(self, struct_name::AbstractString, receiver_mutable::Bool,
+                                args::Tuple, mutables::Tuple)
+    length(args) == length(mutables) || throw(ArgumentError(
+        "internal: $(length(args)) borrowed arguments but $(length(mutables)) mutability flags"))
+    for (i, arg) in enumerate(args)
+        mutable = mutables[i]
+        typeof(arg) === typeof(self) || throw(ArgumentError(
+            "argument $(i) of this `$(struct_name)` method borrows a `$(typeof(self))`, " *
+            "but a `$(typeof(arg))` was passed"))
+        check_not_freed(arg, struct_name)
+        arg.lib_name == self.lib_name || throw(RustError(
+            "argument $(i) of this `$(struct_name)` method borrows a handle from a " *
+            "different library image; recreate the object after a hot reload"))
+        arg === self && (mutable || receiver_mutable) && throw(ArgumentError(
+            _generic_borrow_overlap(struct_name, i, "the receiver")))
+        for j in 1:(i - 1)
+            args[j] === arg || continue
+            (mutable || mutables[j]) || continue
+            throw(ArgumentError(_generic_borrow_overlap(struct_name, i, "argument $(j)")))
+        end
+    end
+    return nothing
+end
+
+_generic_borrow_overlap(struct_name::AbstractString, i::Integer, other::AbstractString) =
+    "argument $(i) of this `$(struct_name)` method borrows the same object as $(other); " *
+    "a `&mut` borrow may not overlap another borrow"
+
 # The same block, whatever artifact-identity schema recorded it.
 _same_block(a::RustBlockSnapshot, b::RustBlockSnapshot) =
     a.code == b.code && a.cfg_text == b.cfg_text && a.compiler_target == b.compiler_target &&
@@ -1880,6 +1998,52 @@ _same_block(a::RustBlockSnapshot, b::RustBlockSnapshot) =
 # The type parameters of `generic`, bound positionally to `types`.
 _generic_type_params(generic::GenericFunctionInfo, types::Tuple) =
     Dict{Symbol, Type}(p => types[i] for (i, p) in enumerate(generic.type_params))
+
+"""
+    _generic_constructor_params(struct_name, params, wrapper_params, arg_rust_types, args)
+        -> Tuple
+
+The struct parameters a bare constructor call `Vec2(x, y)` pins (#593): each
+argument whose Rust type is exactly a parameter contributes `typeof(arg)`. All
+parameters must be pinned, and two arguments pinning one parameter must agree —
+otherwise the call is refused by name rather than guessing a parameter the
+constructor cannot know.
+
+`wrapper_params` are the constructor wrapper's parameter names in the struct's
+parameter order (`impl<U> Pair<U>` gives `(:U,)` for a `struct Pair<T>`); an
+argument type is read in that namespace and renamed to `params` first, so a
+wrapper that names its parameters differently still pins them (review).
+"""
+function _generic_constructor_params(struct_name::AbstractString, params::Tuple,
+                                     wrapper_params::Tuple, arg_rust_types::Tuple, args::Tuple)
+    rename = Dict{Symbol, Symbol}()
+    for (i, name) in enumerate(wrapper_params)
+        i <= length(params) || break
+        rename[Symbol(name)] = params[i]
+    end
+    pinned = Dict{Symbol, Any}()
+    for (rust_type, arg) in zip(arg_rust_types, args)
+        written = Symbol(strip(rust_type))
+        p = get(rename, written, written)
+        p in params || continue
+        t = typeof(arg)
+        if haskey(pinned, p) && pinned[p] !== t
+            throw(ArgumentError(
+                "cannot infer the type parameter $(p) of Rust `$(struct_name)` from the " *
+                "constructor arguments: one argument gives $(pinned[p]), another $(t). " *
+                "Call `$(struct_name){$(p)}(...)` explicitly."))
+        end
+        pinned[p] = t
+    end
+    missing = Symbol[p for p in params if !haskey(pinned, p)]
+    if !isempty(missing)
+        throw(ArgumentError(
+            "cannot infer the type parameter(s) $(join(missing, ", ")) of Rust " *
+            "`$(struct_name)` from the constructor arguments $(map(typeof, args)); " *
+            "call `$(struct_name){$(first(missing))}(...)` explicitly."))
+    end
+    return ntuple(i -> pinned[params[i]], length(params))
+end
 
 function _generic_constructor_call(snapshot::GenericStructSnapshot, args::Tuple, types::Tuple)
     # The explicit types bind the registration's parameters in order.
@@ -1909,6 +2073,37 @@ function _call_generic_method(lib_name::String, func_name::String, ptr::Ptr{Cvoi
     # first parameter, so the string arg plan of `_call_monomorphized` lines
     # up with `args` and a string result is decoded from its buffer.
     return _call_monomorphized(info, ptr, args...)
+end
+
+"""
+    _call_generic_method_owned(lib, func, ptr, args, types, alive) -> (ptr, lib, gen)
+
+The instance-method counterpart of [`_call_generic_constructor`](@ref): call a
+method of a generic struct whose Rust wrapper returns `*mut Self`, and hand back
+the new allocation together with the generation that allocated it — its
+destructor, liveness flag and panic channel (#592).
+"""
+function _call_generic_method_owned(lib_name::String, func_name::String, ptr::Ptr{Cvoid}, args::Tuple, types::Tuple, alive::Base.RefValue{Bool}, struct_name::AbstractString;
+                                    caller::Union{Module, Nothing} = nothing,
+                                    block::Union{Nothing, RustBlockSnapshot} = nothing)
+    original = _generic_artifact_member(lib_name, func_name, alive)
+    if original !== nothing
+        new_ptr = _call_monomorphized(original, ptr, args...)
+        snapshot = _generic_struct_snapshot(caller, func_name; block)
+        snapshot === nothing &&
+            throw(RustError("'$func_name' is not registered as a generic struct member"))
+        return _generic_owned_result(Ptr{Cvoid}(new_ptr), original.lib_name, original.handle,
+                                     original.generation, struct_name, types, snapshot;
+                                     caller = caller, block = block)
+    end
+    snapshot = _generic_struct_snapshot(caller, func_name; block)
+    snapshot === nothing &&
+        throw(RustError("'$func_name' is not registered as a generic struct member"))
+    info = monomorphize_function(snapshot, _generic_type_params(snapshot.member, types))
+    new_ptr = _call_monomorphized(info, ptr, args...)
+    return _generic_owned_result(Ptr{Cvoid}(new_ptr), info.lib_name, info.handle,
+                                 info.generation, struct_name, types, snapshot;
+                                 caller = caller, block = block)
 end
 
 function _call_generic_field(lib_name::String, func_name::String, ptr::Ptr{Cvoid}, ret_type::Type, types::Tuple, alive::Base.RefValue{Bool};

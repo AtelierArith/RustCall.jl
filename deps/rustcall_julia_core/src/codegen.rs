@@ -3641,11 +3641,27 @@ pub fn inline_generic_wrappers(model: &StructModel, module_path: &[String]) -> V
             (other, _) => (decl_generics.clone(), quote! { #other }),
         };
         let ret = &ret;
-        let func: ItemFn = if is_ctor {
+        let func: ItemFn = if is_ctor && receiver.is_static() {
             syn::parse_quote! {
                 pub fn #wrapper_name #decl_generics (#(#wrapper_args),*) -> *mut #self_ty #where_clause {
                     let obj = #struct_name::#method_name(#(#call_args),*);
                     Box::into_raw(Box::new(obj))
+                }
+            }
+        } else if is_ctor {
+            // An instance method returning the struct allocates a new one, so
+            // its wrapper boxes the result exactly as a constructor's does —
+            // but it still takes and passes the receiver (#592).
+            let self_obj = format_ident!("self_obj");
+            let binding = receiver.binding(&self_obj, &format_ident!("ptr"));
+            let args = receiver
+                .argument(&self_obj)
+                .into_iter()
+                .chain(call_args.iter().cloned());
+            syn::parse_quote! {
+                pub fn #wrapper_name #decl_generics (#(#wrapper_args),*) -> *mut #self_ty #where_clause {
+                    #binding
+                    Box::into_raw(Box::new(<#self_ty>::#method_name(#(#args),*)))
                 }
             }
         } else {

@@ -241,6 +241,47 @@ println(pair_float.second)  # => 2.71
     Generic struct support works for examples like `Pair{Int32}` and `Pair{Float64}` shown above.
     More complex patterns may still need additional testing.
 
+### Bounds, `Self`, and borrowed siblings
+
+A method of a generic struct may take the struct itself by reference —
+`other: &Self` or, with the same meaning, `other: &Pair<T>`. Julia passes the
+other handle's pointer; the two handles must be the same instantiation and come
+from the same library image, the borrowed handle must be alive, and a
+`&mut Pair<T>` argument may not alias the receiver. Both handles are rooted for
+the call. A method with a receiver may also return `Self`: the result is a new
+handle of that instantiation, bound to the image that allocated it.
+
+In an `impl` header's **bounds**, `Self` is the implementing type, not the type
+parameter — plain Rust semantics. `impl<T: Add<Output = Self>> Pair<T>` asks for
+`T: Add<Output = Pair<T>>`, which is rarely what a numeric bound wants:
+
+```rust
+rust"""
+#[derive(JuliaStruct)]
+pub struct Pair<T> { pub first: T, pub second: T }
+
+// `T: Add<Output = Pair<T>>` — not the elementwise sum this looks like.
+// impl<T: Copy + std::ops::Add<Output = Self>> Pair<T> { ... }
+
+// Constrain the parameter itself, and `Self` in the body is `Pair<T>` as usual.
+#[julia]
+impl<T: Copy + std::ops::Add<Output = T>> Pair<T> {
+    pub fn new(first: T, second: T) -> Self { Pair { first, second } }
+    pub fn plus(&self, other: &Pair<T>) -> Self {
+        Pair { first: self.first + other.first, second: self.second + other.second }
+    }
+}
+"""
+```
+
+`Self` is rewritten to the block's type only inside the generated wrappers,
+where a free function has no `Self` (see [Where predicates](#Where-predicates)).
+
+A constructor can be called without naming the parameter — `Pair(1.0, 2.0)` —
+when its arguments pin it: each argument whose Rust type is exactly `T`
+contributes `typeof(arg)`, and all of them must agree. Otherwise RustCall asks
+for `Pair{T}(...)` explicitly, naming the parameter it could not infer.
+
 
 ## Memory Management
 

@@ -206,6 +206,48 @@ println(pair_float.second)  # => 2.71
 !!! note
     `Pair{Int32}` / `Pair{Float64}` のような例に対応します。複雑な制約は追加検証が必要な場合があります。
 
+### [境界・`Self`・借用した仲間](@id Bounds-Self-and-borrowed-siblings)
+
+ジェネリック構造体のメソッドは、その構造体自身への参照 — `other: &Self`、
+同じ意味で `other: &Pair<T>` — を引数に取れます。Julia は相手ハンドルの
+ポインタを渡します。二つのハンドルは同じインスタンス化かつ同じライブラリ
+イメージでなければならず、借用するハンドルは生存している必要があり、
+`&mut Pair<T>` 引数はレシーバーと別名になってはいけません。どちらも呼び出しの
+間ルートされます。レシーバー付きのメソッドは `Self` を返すこともでき、結果は
+そのインスタンス化の新しいハンドルとして、確保したイメージに結び付きます。
+
+`impl` ヘッダーの**境界**では、`Self` は実装対象の型であり、型パラメータでは
+ありません（Rust の通常の意味）。`impl<T: Add<Output = Self>> Pair<T>` は
+`T: Add<Output = Pair<T>>` を要求し、数値の境界として意図したものとは通常
+異なります:
+
+```rust
+rust"""
+#[derive(JuliaStruct)]
+pub struct Pair<T> { pub first: T, pub second: T }
+
+// `T: Add<Output = Pair<T>>` — not the elementwise sum this looks like.
+// impl<T: Copy + std::ops::Add<Output = Self>> Pair<T> { ... }
+
+// Constrain the parameter itself, and `Self` in the body is `Pair<T>` as usual.
+#[julia]
+impl<T: Copy + std::ops::Add<Output = T>> Pair<T> {
+    pub fn new(first: T, second: T) -> Self { Pair { first, second } }
+    pub fn plus(&self, other: &Pair<T>) -> Self {
+        Pair { first: self.first + other.first, second: self.second + other.second }
+    }
+}
+"""
+```
+
+`Self` がブロックの型に書き換わるのは生成されたラッパーの中だけです
+（自由関数に `Self` はないため）。[where 条件](#Where-predicates) を参照。
+
+パラメータを名指ししないコンストラクタ呼び出し `Pair(1.0, 2.0)` は、引数が
+パラメータを一意に定めるときに使えます。Rust の型がちょうど `T` である各引数が
+`typeof(arg)` を与え、それらは一致しなければなりません。定まらない場合は
+推論できなかったパラメータを示して `Pair{T}(...)` の明示を求めます。
+
 ## [メモリ管理](@id Memory-Management)
 
 Julia の GC がラッパーを回収すると、対応する Rust のメモリも自動で解放します。

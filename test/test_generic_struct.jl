@@ -468,3 +468,138 @@ end
     finalize(gfx)
     @test RustCall.finalizer_failure_count() == before
 end
+
+@testset "generic struct: borrowed sibling, Self-returning method, bare constructor (#591, #592, #593, #595)" begin
+    if !RustCall.check_rustc_available()
+        @test_skip "rustc not found"
+        return
+    end
+    @eval module GenericMemberProbe
+    using RustCall
+    rust"""
+    #[derive(JuliaStruct)]
+    pub struct MemberVec<T> { pub x: T, pub y: T }
+
+    #[julia]
+    impl<T: Copy + std::ops::Add<Output = T>> MemberVec<T> {
+        pub fn new(x: T, y: T) -> Self { MemberVec { x, y } }
+        pub fn sum(&self, other: &MemberVec<T>) -> T { self.x + other.x }
+        pub fn absorb(&mut self, other: &mut MemberVec<T>) -> T {
+            self.x = self.x + other.x;
+            other.y = self.y;
+            self.x
+        }
+        pub fn update(&mut self, other: &MemberVec<T>) -> T {
+            self.x = self.x + other.x;
+            self.x
+        }
+        pub fn mix(&self, x: &MemberVec<T>, y: &mut MemberVec<T>) -> T {
+            y.y = x.y;
+            y.y
+        }
+        pub fn offset(&self, dx: T) -> Self { MemberVec { x: self.x + dx, y: self.y } }
+    }
+
+    /// The impl names its parameter `U` while the struct declares `T`.
+    #[derive(JuliaStruct)]
+    pub struct RenamedVec<T> { pub x: T, pub y: T }
+
+    #[julia]
+    impl<U: Copy + std::ops::Add<Output = U>> RenamedVec<U> {
+        pub fn new(x: U, y: U) -> Self { RenamedVec { x, y } }
+    }
+    """
+    end
+
+    @testset "a borrowed sibling travels as its handle's pointer (#591)" begin
+        a = Base.invokelatest(GenericMemberProbe.MemberVec{Float64}, 1.0, 2.0)
+        b = Base.invokelatest(GenericMemberProbe.MemberVec{Float64}, 10.0, 20.0)
+        @test Base.invokelatest(GenericMemberProbe.sum, a, b) == 11.0
+        @test Base.invokelatest(GenericMemberProbe.sum, a, a) == 2.0
+
+        # A `&mut` sibling is lent too, and its mutation is visible afterwards.
+        c = Base.invokelatest(GenericMemberProbe.MemberVec{Float64}, 5.0, 6.0)
+        @test Base.invokelatest(GenericMemberProbe.absorb, a, c) == 6.0
+        @test c.y == 2.0
+        @test Base.invokelatest(getproperty, c, :y) == 2.0
+
+        # Two shared borrows may alias; Rust allows that.
+        shared = Base.invokelatest(GenericMemberProbe.MemberVec{Float64}, 2.0, 3.0)
+        @test Base.invokelatest(GenericMemberProbe.sum, shared, shared) == 4.0
+
+        # Another instantiation, a freed handle, and any overlap involving an
+        # exclusive borrow are refused before Rust sees anything.
+        other = Base.invokelatest(GenericMemberProbe.MemberVec{Float32}, 1, 2)
+        @test_throws ArgumentError Base.invokelatest(GenericMemberProbe.sum, a, other)
+        @test_throws ArgumentError Base.invokelatest(GenericMemberProbe.absorb, a, a)
+        @test_throws ArgumentError Base.invokelatest(GenericMemberProbe.update, a, a)
+        @test_throws ArgumentError Base.invokelatest(GenericMemberProbe.mix, a, a, a)
+        finalize(b)
+        @test_throws RustCall.RustError Base.invokelatest(GenericMemberProbe.sum, a, b)
+
+        # Distinct borrows of the same instantiation still work.
+        d = Base.invokelatest(GenericMemberProbe.MemberVec{Float64}, 7.0, 8.0)
+        @test Base.invokelatest(GenericMemberProbe.update, shared, d) == 9.0
+        @test Base.invokelatest(GenericMemberProbe.mix, shared, d, c) == 8.0
+        @test c.y == 8.0
+    end
+
+    @testset "an instance method returning the struct allocates a handle (#592)" begin
+        v = Base.invokelatest(GenericMemberProbe.MemberVec{Float64}, 1.0, 2.0)
+        w = Base.invokelatest(GenericMemberProbe.offset, v, 1.0)
+        @test w isa GenericMemberProbe.MemberVec{Float64}
+        @test Base.invokelatest(getproperty, w, :x) == 2.0
+        @test Base.invokelatest(getproperty, w, :y) == 2.0
+        @test Base.invokelatest(getproperty, v, :x) == 1.0   # the receiver is untouched
+        # The result owns its allocation: finalizing it is safe and independent.
+        finalize(w)
+        @test Base.invokelatest(getproperty, v, :x) == 1.0
+
+        f = Base.invokelatest(GenericMemberProbe.MemberVec{Float32}, 1, 2)
+        g = Base.invokelatest(GenericMemberProbe.offset, f, 0.5f0)
+        @test g isa GenericMemberProbe.MemberVec{Float32}
+        @test Base.invokelatest(getproperty, g, :x) == 1.5f0
+    end
+
+    @testset "a bare constructor infers the struct's parameters (#593)" begin
+        v = Base.invokelatest(GenericMemberProbe.MemberVec, 3.0, 4.0)
+        @test v isa GenericMemberProbe.MemberVec{Float64}
+        @test Base.invokelatest(getproperty, v, :x) == 3.0
+
+        f = Base.invokelatest(GenericMemberProbe.MemberVec, 3.0f0, 4.0f0)
+        @test f isa GenericMemberProbe.MemberVec{Float32}
+
+        i = Base.invokelatest(GenericMemberProbe.MemberVec, Int64(3), Int64(4))
+        @test i isa GenericMemberProbe.MemberVec{Int64}
+
+        # The impl may name the parameter differently from the struct
+        # declaration; the argument types are read in the wrapper's namespace.
+        r = Base.invokelatest(GenericMemberProbe.RenamedVec, 1.0, 2.0)
+        @test r isa GenericMemberProbe.RenamedVec{Float64}
+        @test Base.invokelatest(getproperty, r, :y) == 2.0
+
+        # Arguments that disagree, or a parameter no argument pins, are named.
+        err = try
+            Base.invokelatest(GenericMemberProbe.MemberVec, 1.0, 2)
+            nothing
+        catch e
+            e
+        end
+        @test err isa ArgumentError
+        @test occursin("type parameter T", sprint(showerror, err))
+    end
+
+    @testset "an unsupported parameter is reported against the struct (#595)" begin
+        err = try
+            Base.invokelatest(GenericMemberProbe.MemberVec{Float16}, Float16(1), Float16(2))
+            nothing
+        catch e
+            e
+        end
+        @test err isa ErrorException
+        message = sprint(showerror, err)
+        @test occursin("MemberVec{Float16}", message)
+        @test occursin("Float16", message)
+        @test occursin("Float64", message)   # the supported set is named
+    end
+end
