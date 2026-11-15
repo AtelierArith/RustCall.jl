@@ -7,7 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- A method of an inline generic struct may take a borrowed sibling —
+  `other: &Self` or `other: &Vec2<T>` — and Julia passes the other handle's
+  pointer, with the same checks a concrete struct's borrowed argument gets:
+  the instantiation and the library image must match, the handle must be alive,
+  a `&mut` borrow may not alias the receiver, and the object is rooted for the
+  call ([#591](https://github.com/AtelierArith/RustCall.jl/issues/591)).
+- `Vec2(1.0, 2.0)` — a bare constructor call for an inline generic struct —
+  infers the struct's parameters from the constructor arguments whose Rust type
+  is exactly that parameter, and names the parameter when two arguments
+  disagree or none pins it
+  ([#593](https://github.com/AtelierArith/RustCall.jl/issues/593)).
+
+### Fixed
+- An instance method of an inline generic struct that has arguments and returns
+  `Self` no longer loses its receiver: its wrapper passes and uses the pointer,
+  boxes the result, and Julia binds the new allocation to the image that made
+  it, as a constructor's result is bound
+  ([#592](https://github.com/AtelierArith/RustCall.jl/issues/592)).
+- An unsupported type parameter now names the item being instantiated and the
+  Julia types RustCall can specialize for, instead of
+  `Unsupported type for generic specialization: Float16`
+  ([#595](https://github.com/AtelierArith/RustCall.jl/issues/595)).
+
 ### Documentation
+- The generic-struct pages state that `Self` in an `impl` header's bound is the
+  implementing type, not the type parameter (`Output = Self` asks for
+  `Output = Vec2<T>`; write `Output = T`), and document borrowed siblings and
+  the inferred bare constructor
+  ([#594](https://github.com/AtelierArith/RustCall.jl/issues/594)).
 - **A tutorial for the features added in v0.9.1 through v0.10.0**:
   "What's New in v0.9 and v0.10" (`docs/src/tutorial_new_features.md`)
   walks through fallible constructors, borrowed and optional `#[julia]`
