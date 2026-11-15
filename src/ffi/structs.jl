@@ -721,11 +721,21 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                      # parameter (`new(x: T, y: T)` pins `T`), then take the
                      # typed path below (#593). A parameter no argument pins —
                      # or two arguments that disagree — is an error naming the
-                     # parameter, not a silent guess.
+                     # parameter, not a silent guess. The wrapper may name the
+                     # parameters differently (`impl<U> Pair<U>`), so its
+                     # names are aligned with the struct's by position first.
+                     wrapper_params = String[]
+                     for (wrapper_name, _, params) in info.generic_wrappers
+                         if wrapper_name == m.generic_wrapper_name
+                             wrapper_params = params
+                             break
+                         end
+                     end
                      push!(exprs, quote
                          function (::Type{$esc_struct})($(esc_args...))
                              types = RustCall._generic_constructor_params(
                                  $struct_name_str, $(QuoteNode(Tuple(T_params))),
+                                 $(QuoteNode(Tuple(Symbol.(wrapper_params)))),
                                  ($(map(String, m.arg_types)...),), ($(esc_args...),))
                              return $esc_struct{types...}($(esc_args...))
                          end
@@ -760,6 +770,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                  call_args = Any[esc_args[i] for i in eachindex(esc_args)]
                  preserved_args = Symbol[]
                  borrow_checks = Any[]
+                 borrow_mutables = Bool[]
                  for (i, h) in enumerate(m.arg_handles)
                      h === nothing && continue
                      # A local, hygienic name: `GC.@preserve` takes symbols,
@@ -767,10 +778,16 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                      v = Symbol("__rustcall_borrow_", i)
                      call_args[i] = :($v.ptr)
                      push!(preserved_args, v)
+                     push!(borrow_mutables, m.arg_abis[i] == "handle_mut")
                      push!(borrow_checks, :($v = $(esc_args[i])))
-                     push!(borrow_checks, :(RustCall._check_generic_borrow(
-                         $v, self, $struct_name_str, $i;
-                         mutable = $(m.arg_abis[i] == "handle_mut"))))
+                 end
+                 if !isempty(preserved_args)
+                     # One check over the whole borrow set: the receiver is a
+                     # borrow too (`&self` / `&mut self`), and two borrows may
+                     # alias only while both are shared (#591 review).
+                     push!(borrow_checks, :(RustCall._check_generic_borrows(
+                         self, $struct_name_str, $(m.is_mutable),
+                         ($(preserved_args...),), ($(borrow_mutables...),))))
                  end
                  if m.returns_boxed_struct
                      # An instance method returning the struct allocates a new
@@ -1934,27 +1951,44 @@ function _generic_struct_owner(mod::Module, block::RustBlockSnapshot)
 end
 
 """
-    _check_generic_borrow(arg, self, struct_name, position; mutable = false)
+    _check_generic_borrows(self, struct_name, receiver_mutable, args, mutables)
 
-Check that `arg` may be lent to Rust as `&Vec2<T>` / `&mut Vec2<T>` for `self`'s
-instantiation (#591): it carries the receiver's handle type, is alive, and comes
-from the same library image. A `&mut` borrow may not alias the receiver. Returns
-`arg`; the caller passes `arg.ptr` and roots it for the call.
+Check that a generic struct's method may lend `args` to Rust as `&Vec2<T>` /
+`&mut Vec2<T>` alongside its receiver (#591): every argument carries the
+receiver's handle type, is alive, and comes from the same library image, and no
+borrow overlaps another when at least one of the two is exclusive. `mutables[i]`
+says whether `args[i]` is a `&mut` borrow; `receiver_mutable` whether the
+receiver is `&mut self`. Two shared borrows may alias — Rust allows that — but a
+`&mut` borrow may not overlap the receiver or another argument, which would
+create overlapping references involving an exclusive one (#591 review).
 """
-function _check_generic_borrow(arg, self, struct_name::AbstractString, position::Integer;
-                               mutable::Bool = false)
-    typeof(arg) === typeof(self) || throw(ArgumentError(
-        "argument $(position) of this `$(struct_name)` method borrows a `$(typeof(self))`, " *
-        "but a `$(typeof(arg))` was passed"))
-    check_not_freed(arg, struct_name)
-    arg.lib_name == self.lib_name || throw(RustError(
-        "argument $(position) of this `$(struct_name)` method borrows a handle from a " *
-        "different library image; recreate the object after a hot reload"))
-    mutable && arg === self && throw(ArgumentError(
-        "argument $(position) of this `$(struct_name)` method is a `&mut` borrow and may " *
-        "not alias its receiver"))
-    return arg
+function _check_generic_borrows(self, struct_name::AbstractString, receiver_mutable::Bool,
+                                args::Tuple, mutables::Tuple)
+    length(args) == length(mutables) || throw(ArgumentError(
+        "internal: $(length(args)) borrowed arguments but $(length(mutables)) mutability flags"))
+    for (i, arg) in enumerate(args)
+        mutable = mutables[i]
+        typeof(arg) === typeof(self) || throw(ArgumentError(
+            "argument $(i) of this `$(struct_name)` method borrows a `$(typeof(self))`, " *
+            "but a `$(typeof(arg))` was passed"))
+        check_not_freed(arg, struct_name)
+        arg.lib_name == self.lib_name || throw(RustError(
+            "argument $(i) of this `$(struct_name)` method borrows a handle from a " *
+            "different library image; recreate the object after a hot reload"))
+        arg === self && (mutable || receiver_mutable) && throw(ArgumentError(
+            _generic_borrow_overlap(struct_name, i, "the receiver")))
+        for j in 1:(i - 1)
+            args[j] === arg || continue
+            (mutable || mutables[j]) || continue
+            throw(ArgumentError(_generic_borrow_overlap(struct_name, i, "argument $(j)")))
+        end
+    end
+    return nothing
 end
+
+_generic_borrow_overlap(struct_name::AbstractString, i::Integer, other::AbstractString) =
+    "argument $(i) of this `$(struct_name)` method borrows the same object as $(other); " *
+    "a `&mut` borrow may not overlap another borrow"
 
 # The same block, whatever artifact-identity schema recorded it.
 _same_block(a::RustBlockSnapshot, b::RustBlockSnapshot) =
@@ -1966,19 +2000,31 @@ _generic_type_params(generic::GenericFunctionInfo, types::Tuple) =
     Dict{Symbol, Type}(p => types[i] for (i, p) in enumerate(generic.type_params))
 
 """
-    _generic_constructor_params(struct_name, params, arg_rust_types, args) -> Tuple
+    _generic_constructor_params(struct_name, params, wrapper_params, arg_rust_types, args)
+        -> Tuple
 
 The struct parameters a bare constructor call `Vec2(x, y)` pins (#593): each
 argument whose Rust type is exactly a parameter contributes `typeof(arg)`. All
 parameters must be pinned, and two arguments pinning one parameter must agree —
 otherwise the call is refused by name rather than guessing a parameter the
 constructor cannot know.
+
+`wrapper_params` are the constructor wrapper's parameter names in the struct's
+parameter order (`impl<U> Pair<U>` gives `(:U,)` for a `struct Pair<T>`); an
+argument type is read in that namespace and renamed to `params` first, so a
+wrapper that names its parameters differently still pins them (review).
 """
 function _generic_constructor_params(struct_name::AbstractString, params::Tuple,
-                                     arg_rust_types::Tuple, args::Tuple)
+                                     wrapper_params::Tuple, arg_rust_types::Tuple, args::Tuple)
+    rename = Dict{Symbol, Symbol}()
+    for (i, name) in enumerate(wrapper_params)
+        i <= length(params) || break
+        rename[Symbol(name)] = params[i]
+    end
     pinned = Dict{Symbol, Any}()
     for (rust_type, arg) in zip(arg_rust_types, args)
-        p = Symbol(strip(rust_type))
+        written = Symbol(strip(rust_type))
+        p = get(rename, written, written)
         p in params || continue
         t = typeof(arg)
         if haskey(pinned, p) && pinned[p] !== t

@@ -489,7 +489,24 @@ end
             other.y = self.y;
             self.x
         }
+        pub fn update(&mut self, other: &MemberVec<T>) -> T {
+            self.x = self.x + other.x;
+            self.x
+        }
+        pub fn mix(&self, x: &MemberVec<T>, y: &mut MemberVec<T>) -> T {
+            y.y = x.y;
+            y.y
+        }
         pub fn offset(&self, dx: T) -> Self { MemberVec { x: self.x + dx, y: self.y } }
+    }
+
+    /// The impl names its parameter `U` while the struct declares `T`.
+    #[derive(JuliaStruct)]
+    pub struct RenamedVec<T> { pub x: T, pub y: T }
+
+    #[julia]
+    impl<U: Copy + std::ops::Add<Output = U>> RenamedVec<U> {
+        pub fn new(x: U, y: U) -> Self { RenamedVec { x, y } }
     }
     """
     end
@@ -506,13 +523,25 @@ end
         @test c.y == 2.0
         @test Base.invokelatest(getproperty, c, :y) == 2.0
 
-        # Another instantiation, a freed handle, and a `&mut` aliasing the
-        # receiver are refused before Rust sees anything.
+        # Two shared borrows may alias; Rust allows that.
+        shared = Base.invokelatest(GenericMemberProbe.MemberVec{Float64}, 2.0, 3.0)
+        @test Base.invokelatest(GenericMemberProbe.sum, shared, shared) == 4.0
+
+        # Another instantiation, a freed handle, and any overlap involving an
+        # exclusive borrow are refused before Rust sees anything.
         other = Base.invokelatest(GenericMemberProbe.MemberVec{Float32}, 1, 2)
         @test_throws ArgumentError Base.invokelatest(GenericMemberProbe.sum, a, other)
         @test_throws ArgumentError Base.invokelatest(GenericMemberProbe.absorb, a, a)
+        @test_throws ArgumentError Base.invokelatest(GenericMemberProbe.update, a, a)
+        @test_throws ArgumentError Base.invokelatest(GenericMemberProbe.mix, a, a, a)
         finalize(b)
         @test_throws RustCall.RustError Base.invokelatest(GenericMemberProbe.sum, a, b)
+
+        # Distinct borrows of the same instantiation still work.
+        d = Base.invokelatest(GenericMemberProbe.MemberVec{Float64}, 7.0, 8.0)
+        @test Base.invokelatest(GenericMemberProbe.update, shared, d) == 9.0
+        @test Base.invokelatest(GenericMemberProbe.mix, shared, d, c) == 8.0
+        @test c.y == 8.0
     end
 
     @testset "an instance method returning the struct allocates a handle (#592)" begin
@@ -542,6 +571,12 @@ end
 
         i = Base.invokelatest(GenericMemberProbe.MemberVec, Int64(3), Int64(4))
         @test i isa GenericMemberProbe.MemberVec{Int64}
+
+        # The impl may name the parameter differently from the struct
+        # declaration; the argument types are read in the wrapper's namespace.
+        r = Base.invokelatest(GenericMemberProbe.RenamedVec, 1.0, 2.0)
+        @test r isa GenericMemberProbe.RenamedVec{Float64}
+        @test Base.invokelatest(getproperty, r, :y) == 2.0
 
         # Arguments that disagree, or a parameter no argument pins, are named.
         err = try
