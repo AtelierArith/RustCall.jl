@@ -216,7 +216,7 @@ The output is Rust source to place in a facade crate that depends on both the
 original crate and `rustcall_julia_macros`, then load with `@rust_crate`.
 `header = false` omits the `use rustcall_julia_macros::julia;` line, for a file
 that already has it (for example when composing this output with
-[`generate_crate_instances`](@ref)):
+`generate_crate_instances`):
 
 ```julia
 functions = [(
