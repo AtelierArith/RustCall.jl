@@ -5,7 +5,7 @@ All notable changes to RustCall.jl will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.10.3] - 2026-11-24
 
 ### Added
 - Non-generic `#[julia]` functions and methods accept `Option<T>` for a
@@ -14,6 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an `i32` presence tag and the value and reconstructs `Option<T>` in the shim;
   the manifest records `Arg.abi = "option_scalar"`
   ([#609](https://github.com/AtelierArith/RustCall.jl/issues/609)).
+
+### Rust crates
+- The published crates `rustcall_julia_core`, `rustcall_julia_macros_impl` and
+  `rustcall_julia_macros` move to 0.7.2. The generated-code change is the
+  primitive `Option<T>` argument ABI in
+  [#609](https://github.com/AtelierArith/RustCall.jl/issues/609): a crate must
+  build against 0.7.2 to accept those signatures. Earlier macros refuse them
+  at compile time, so existing binaries keep their current ABI and need no
+  rebuild unless they adopt the new argument form.
 
 ## [0.10.2] - 2026-11-24
 
@@ -3424,7 +3433,8 @@ rebuilt and a file written by `write_bindings_to_file` must be regenerated.
 - Integration tests for Rust helpers library
 - Documentation examples tests
 
-[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.10.2...HEAD
+[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.10.3...HEAD
+[0.10.3]: https://github.com/atelierarith/RustCall.jl/compare/v0.10.2...v0.10.3
 [0.10.2]: https://github.com/atelierarith/RustCall.jl/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/atelierarith/RustCall.jl/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/atelierarith/RustCall.jl/compare/v0.9.2...v0.10.0
