@@ -12,6 +12,7 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Node_free_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_DROP_PANIC_4E6F64655F66726565
@@ -47,6 +48,7 @@ pub extern "C" fn Node_free_take_panic(out: *mut u8, cap: usize) -> usize {
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Node_free(ptr: *mut user_crate::Node) {
     let _rustcall_boundary = ::rustcall_julia_macros::__RustCallBoundary::enter();
@@ -91,6 +93,7 @@ pub struct Node_RustCallOwnedString {
     pub len: usize,
     pub cap: usize,
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Node_free_rust_string(ptr: *mut u8, len: usize, cap: usize) {
     if !ptr.is_null() {
@@ -104,6 +107,7 @@ thread_local! {
     ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Node_get_level_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_HELPER_PANIC_7275737463616C6C5F4E6F64655F6765745F6C6576656C
@@ -139,6 +143,7 @@ pub extern "C" fn rustcall_Node_get_level_take_panic(out: *mut u8, cap: usize) -
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Node_get_level(
     ptr: *const user_crate::Node,
@@ -181,6 +186,7 @@ thread_local! {
     ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Node_set_level_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_HELPER_PANIC_7275737463616C6C5F4E6F64655F7365745F6C6576656C
@@ -216,6 +222,7 @@ pub extern "C" fn rustcall_Node_set_level_take_panic(out: *mut u8, cap: usize) -
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Node_set_level(ptr: *mut user_crate::Node, value: i32) {
     let _rustcall_boundary = ::rustcall_julia_macros::__RustCallBoundary::enter();
@@ -259,6 +266,7 @@ thread_local! {
     ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Node_get_label_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_HELPER_PANIC_7275737463616C6C5F4E6F64655F6765745F6C6162656C
@@ -294,6 +302,7 @@ pub extern "C" fn rustcall_Node_get_label_take_panic(out: *mut u8, cap: usize) -
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Node_get_label(
     ptr: *const user_crate::Node,
@@ -345,6 +354,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Node_new_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_NODE_NEW
@@ -380,6 +391,7 @@ pub extern "C" fn rustcall_Node_new_take_panic(out: *mut u8, cap: usize) -> usiz
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Node_new(level: i32) -> *mut user_crate::Node {
     let _rustcall_boundary = ::rustcall_julia_macros::__RustCallBoundary::enter();

@@ -15,6 +15,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_const_expression_take_panic(
     out: *mut u8,
@@ -53,6 +55,7 @@ pub extern "C" fn rustcall_const_expression_take_panic(
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_const_expression(
     value: [u8; { if 1 < 2 { 3 } else { 4 } }],
@@ -99,6 +102,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_raw_braces_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_RAW_BRACES
@@ -139,6 +144,7 @@ pub struct raw_braces_RustCallBorrowedString {
     pub ptr: *const u8,
     pub len: usize,
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_raw_braces() -> raw_braces_RustCallBorrowedString {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -198,6 +204,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[cfg(any())]
 #[no_mangle]
 pub extern "C" fn rustcall_cfg_disabled_take_panic(out: *mut u8, cap: usize) -> usize {
@@ -234,6 +242,7 @@ pub extern "C" fn rustcall_cfg_disabled_take_panic(out: *mut u8, cap: usize) -> 
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[cfg(any())]
 #[no_mangle]
 pub extern "C" fn rustcall_cfg_disabled() -> ::std::mem::MaybeUninit<i32> {

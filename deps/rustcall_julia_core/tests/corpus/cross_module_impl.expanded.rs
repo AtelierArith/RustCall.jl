@@ -25,6 +25,7 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Gauge_free_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_DROP_PANIC_47617567655F66726565
@@ -60,6 +61,7 @@ pub extern "C" fn Gauge_free_take_panic(out: *mut u8, cap: usize) -> usize {
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Gauge_free(ptr: *mut Gauge) {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -103,6 +105,7 @@ thread_local! {
     < ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Gauge_get_value_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_HELPER_PANIC_47617567655F6765745F76616C7565
@@ -138,6 +141,7 @@ pub extern "C" fn Gauge_get_value_take_panic(out: *mut u8, cap: usize) -> usize 
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Gauge_get_value(ptr: *const Gauge) -> ::std::mem::MaybeUninit<i32> {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -178,6 +182,7 @@ thread_local! {
     < ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Gauge_set_value_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_HELPER_PANIC_47617567655F7365745F76616C7565
@@ -213,6 +218,7 @@ pub extern "C" fn Gauge_set_value_take_panic(out: *mut u8, cap: usize) -> usize 
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Gauge_set_value(ptr: *mut Gauge, value: i32) {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -256,6 +262,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Gauge_new_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_GAUGE_NEW
@@ -291,6 +299,7 @@ pub extern "C" fn rustcall_Gauge_new_take_panic(out: *mut u8, cap: usize) -> usi
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Gauge_new(value: i32) -> *mut Gauge {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -347,6 +356,8 @@ pub mod ops {
         ::std::option::Option < ::std::string::String >> =
         ::std::cell::RefCell::new(::std::option::Option::None);
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_Gauge_read_take_panic(out: *mut u8, cap: usize) -> usize {
         __RUSTCALL_PANIC_RUSTCALL_GAUGE_READ
@@ -382,6 +393,7 @@ pub mod ops {
                 }
             })
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_Gauge_read(
         ptr: *const super::Gauge,
@@ -425,6 +437,8 @@ pub mod ops {
         ::std::option::Option < ::std::string::String >> =
         ::std::cell::RefCell::new(::std::option::Option::None);
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_Gauge_bump_take_panic(out: *mut u8, cap: usize) -> usize {
         __RUSTCALL_PANIC_RUSTCALL_GAUGE_BUMP
@@ -460,6 +474,7 @@ pub mod ops {
                 }
             })
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_Gauge_bump(ptr: *mut super::Gauge) {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -510,6 +525,8 @@ pub mod more {
         ::std::option::Option < ::std::string::String >> =
         ::std::cell::RefCell::new(::std::option::Option::None);
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_Gauge_label_take_panic(
         out: *mut u8,
@@ -554,6 +571,8 @@ pub mod more {
         pub len: usize,
         pub cap: usize,
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn Gauge_label_free_rust_string(
         ptr: *mut u8,
@@ -566,6 +585,7 @@ pub mod more {
             }
         }
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_Gauge_label(
         ptr: *const crate::Gauge,
@@ -622,6 +642,8 @@ pub mod more {
         ::std::option::Option < ::std::string::String >> =
         ::std::cell::RefCell::new(::std::option::Option::None);
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_Gauge_scaled_take_panic(
         out: *mut u8,
@@ -660,6 +682,7 @@ pub mod more {
                 }
             })
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_Gauge_scaled(
         value: i32,
@@ -716,6 +739,8 @@ pub mod plain {
         ::std::option::Option < ::std::string::String >> =
         ::std::cell::RefCell::new(::std::option::Option::None);
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_Gauge_halved_take_panic(
         out: *mut u8,
@@ -760,6 +785,8 @@ pub mod plain {
         pub len: usize,
         pub cap: usize,
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn Gauge_halved_free_rust_string(
         ptr: *mut u8,
@@ -836,6 +863,7 @@ pub mod plain {
             }
         }
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_Gauge_halved(ptr: *const Gauge) -> CResult_Gauge_halved {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -905,6 +933,7 @@ pub mod a {
         ::std::option::Option < ::std::string::String >> =
         ::std::cell::RefCell::new(::std::option::Option::None);
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn a__C_free_take_panic(out: *mut u8, cap: usize) -> usize {
         __RUSTCALL_DROP_PANIC_615F5F435F66726565
@@ -940,6 +969,7 @@ pub mod a {
                 }
             })
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn a__C_free(ptr: *mut C) {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -983,6 +1013,7 @@ pub mod a {
         ::std::option::Option < ::std::string::String >> =
         ::std::cell::RefCell::new(::std::option::Option::None);
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn a__C_get_v_take_panic(out: *mut u8, cap: usize) -> usize {
         __RUSTCALL_HELPER_PANIC_615F5F435F6765745F76
@@ -1018,6 +1049,7 @@ pub mod a {
                 }
             })
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn a__C_get_v(ptr: *const C) -> ::std::mem::MaybeUninit<i32> {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -1058,6 +1090,7 @@ pub mod a {
         ::std::option::Option < ::std::string::String >> =
         ::std::cell::RefCell::new(::std::option::Option::None);
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn a__C_set_v_take_panic(out: *mut u8, cap: usize) -> usize {
         __RUSTCALL_HELPER_PANIC_615F5F435F7365745F76
@@ -1093,6 +1126,7 @@ pub mod a {
                 }
             })
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn a__C_set_v(ptr: *mut C, value: i32) {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -1136,6 +1170,8 @@ pub mod a {
         ::std::option::Option < ::std::string::String >> =
         ::std::cell::RefCell::new(::std::option::Option::None);
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_a__C_new_take_panic(out: *mut u8, cap: usize) -> usize {
         __RUSTCALL_PANIC_RUSTCALL_A__C_NEW
@@ -1171,6 +1207,7 @@ pub mod a {
                 }
             })
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_a__C_new(v: i32) -> *mut C {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -1224,6 +1261,8 @@ pub mod b {
         ::std::option::Option < ::std::string::String >> =
         ::std::cell::RefCell::new(::std::option::Option::None);
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_a__C_get_take_panic(out: *mut u8, cap: usize) -> usize {
         __RUSTCALL_PANIC_RUSTCALL_A__C_GET
@@ -1259,6 +1298,7 @@ pub mod b {
                 }
             })
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_a__C_get(
         ptr: *const crate::a::C,

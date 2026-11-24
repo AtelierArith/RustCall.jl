@@ -140,6 +140,8 @@ thread_local! {
     static __RUSTCALL_PANIC_RUSTCALL_DUAL : ::std::cell::RefCell < ::std::option::Option
     < ::std::string::String >> = ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_dual_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_DUAL
@@ -175,6 +177,7 @@ pub extern "C" fn rustcall_dual_take_panic(out: *mut u8, cap: usize) -> usize {
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_dual(a: i32, b: i32) -> ::std::mem::MaybeUninit<i32> {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();

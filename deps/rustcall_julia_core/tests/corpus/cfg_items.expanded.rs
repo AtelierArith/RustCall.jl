@@ -11,6 +11,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[cfg(unix)]
 #[no_mangle]
 pub extern "C" fn rustcall_unix_only_take_panic(out: *mut u8, cap: usize) -> usize {
@@ -47,6 +49,7 @@ pub extern "C" fn rustcall_unix_only_take_panic(out: *mut u8, cap: usize) -> usi
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[cfg(unix)]
 #[no_mangle]
 pub extern "C" fn rustcall_unix_only(x: i32) -> ::std::mem::MaybeUninit<i32> {
@@ -91,6 +94,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[cfg(all(windows, feature = "wide"))]
 #[no_mangle]
 pub extern "C" fn rustcall_windows_wide_take_panic(out: *mut u8, cap: usize) -> usize {
@@ -193,6 +198,7 @@ impl CResult_windows_wide {
         }
     }
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[cfg(all(windows, feature = "wide"))]
 #[no_mangle]
 pub extern "C" fn rustcall_windows_wide() -> CResult_windows_wide {
@@ -236,6 +242,8 @@ thread_local! {
     static __RUSTCALL_PANIC_RUSTCALL_MAYBE : ::std::cell::RefCell < ::std::option::Option
     < ::std::string::String >> = ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[cfg(not(target_os = "freebsd"))]
 #[no_mangle]
 pub extern "C" fn rustcall_maybe_take_panic(out: *mut u8, cap: usize) -> usize {
@@ -320,6 +328,7 @@ impl COption_maybe {
         }
     }
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[cfg(not(target_os = "freebsd"))]
 #[no_mangle]
 pub extern "C" fn rustcall_maybe(x: f64) -> COption_maybe {
@@ -371,6 +380,7 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[cfg(unix)]
 #[no_mangle]
 pub extern "C" fn Handle_free_take_panic(out: *mut u8, cap: usize) -> usize {
@@ -407,6 +417,7 @@ pub extern "C" fn Handle_free_take_panic(out: *mut u8, cap: usize) -> usize {
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[cfg(unix)]
 #[no_mangle]
 pub extern "C" fn Handle_free(ptr: *mut Handle) {
@@ -452,6 +463,7 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[cfg(unix)]
 #[no_mangle]
 pub extern "C" fn Handle_get_fd_take_panic(out: *mut u8, cap: usize) -> usize {
@@ -488,6 +500,7 @@ pub extern "C" fn Handle_get_fd_take_panic(out: *mut u8, cap: usize) -> usize {
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[cfg(unix)]
 #[no_mangle]
 pub extern "C" fn Handle_get_fd(ptr: *const Handle) -> ::std::mem::MaybeUninit<i32> {
@@ -530,6 +543,7 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[cfg(unix)]
 #[no_mangle]
 pub extern "C" fn Handle_set_fd_take_panic(out: *mut u8, cap: usize) -> usize {
@@ -566,6 +580,7 @@ pub extern "C" fn Handle_set_fd_take_panic(out: *mut u8, cap: usize) -> usize {
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[cfg(unix)]
 #[no_mangle]
 pub extern "C" fn Handle_set_fd(ptr: *mut Handle, value: i32) {
@@ -612,6 +627,7 @@ thread_local! {
     ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[cfg(unix)]
 #[cfg(target_os = "linux")]
 #[no_mangle]
@@ -649,6 +665,7 @@ pub extern "C" fn Handle_get_epoll_take_panic(out: *mut u8, cap: usize) -> usize
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[cfg(unix)]
 #[cfg(target_os = "linux")]
 #[no_mangle]
@@ -693,6 +710,7 @@ thread_local! {
     ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[cfg(unix)]
 #[cfg(target_os = "linux")]
 #[no_mangle]
@@ -730,6 +748,7 @@ pub extern "C" fn Handle_set_epoll_take_panic(out: *mut u8, cap: usize) -> usize
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[cfg(unix)]
 #[cfg(target_os = "linux")]
 #[no_mangle]
@@ -776,6 +795,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[cfg(unix)]
 #[no_mangle]
 pub extern "C" fn rustcall_Handle_fd_take_panic(out: *mut u8, cap: usize) -> usize {
@@ -812,6 +833,7 @@ pub extern "C" fn rustcall_Handle_fd_take_panic(out: *mut u8, cap: usize) -> usi
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[cfg(unix)]
 #[no_mangle]
 pub extern "C" fn rustcall_Handle_fd(
@@ -858,6 +880,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[cfg(unix)]
 #[cfg(target_os = "linux")]
 #[no_mangle]
@@ -895,6 +919,7 @@ pub extern "C" fn rustcall_Handle_epoll_take_panic(out: *mut u8, cap: usize) -> 
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[cfg(unix)]
 #[cfg(target_os = "linux")]
 #[no_mangle]
@@ -954,6 +979,8 @@ mod extra {
         ::std::option::Option < ::std::string::String >> =
         ::std::cell::RefCell::new(::std::option::Option::None);
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_extra__bonus_take_panic(
         out: *mut u8,
@@ -992,6 +1019,7 @@ mod extra {
                 }
             })
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_extra__bonus() -> ::std::mem::MaybeUninit<i32> {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();

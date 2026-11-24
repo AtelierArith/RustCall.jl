@@ -950,6 +950,7 @@ fn panic_channel(cfg_attrs: &[Attribute], slot: &Ident, reader: &Ident) -> Token
                 ::std::cell::RefCell::new(::std::option::Option::None);
         }
 
+        #[allow(clippy::not_unsafe_ptr_arg_deref)]
         #(#cfg_attrs)*
         #[no_mangle]
         pub extern "C" fn #reader(out: *mut u8, cap: usize) -> usize {
@@ -1255,9 +1256,43 @@ fn guarded_body(
 pub(crate) fn generate_wrapper(spec: WrapperSpec) -> TokenStream2 {
     let cfgs = spec.cfg_attrs.clone();
     match wrapper_tokens(spec) {
-        Ok(tokens) => tokens,
+        Ok(tokens) => allow_raw_ptr_deref(tokens),
         Err(refusal) => refusal.compile_error(&cfgs),
     }
+}
+
+/// Silence Clippy's `not_unsafe_ptr_arg_deref` on generated entry points.
+///
+/// A generated wrapper takes the raw pointers Julia passes, validates them
+/// against the handle contract and then dereferences them. The function is
+/// `extern "C"` by construction and cannot be `unsafe` without moving a
+/// safety contract to every caller, so Clippy's lint is a false positive here
+/// — and one the crate author cannot fix without an `allow` for code they did
+/// not write (#600).
+///
+/// The attribute is put on the generated items, not on the user's crate, so
+/// `cargo clippy -D warnings` works in a crate that uses `#[julia]` without
+/// a crate-level exception.
+fn allow_raw_ptr_deref(tokens: TokenStream2) -> TokenStream2 {
+    let Ok(mut file) = syn::parse2::<syn::File>(tokens.clone()) else {
+        return tokens;
+    };
+    let allow: syn::Attribute = syn::parse_quote!(#[allow(clippy::not_unsafe_ptr_arg_deref)]);
+    for item in &mut file.items {
+        let syn::Item::Fn(function) = item else {
+            continue;
+        };
+        let is_c = function
+            .sig
+            .abi
+            .as_ref()
+            .and_then(|abi| abi.name.as_ref())
+            .is_some_and(|name| name.value() == "C");
+        if is_c && matches!(function.vis, syn::Visibility::Public(_)) {
+            function.attrs.insert(0, allow.clone());
+        }
+    }
+    quote!(#file)
 }
 
 /// The refusal [`generate_wrapper`] would emit for `spec`, if any: the
@@ -1930,6 +1965,7 @@ fn owned_string_helper(cfg_attrs: &[Attribute], helper: &Ident, free: &Ident) ->
             pub cap: usize,
         }
 
+        #[allow(clippy::not_unsafe_ptr_arg_deref)]
         #(#cfg_attrs)*
         #[no_mangle]
         pub extern "C" fn #free(ptr: *mut u8, len: usize, cap: usize) {
@@ -2368,6 +2404,10 @@ pub fn crate_struct_needs_owned_string_helper(item_struct: &ItemStruct) -> bool 
 /// ABI of `T`.
 pub(crate) fn guard_struct_helper(tokens: TokenStream2, hook: PanicHook) -> TokenStream2 {
     let mut function: ItemFn = syn::parse2(tokens).expect("generated struct helper is a function");
+    function.attrs.insert(
+        0,
+        syn::parse_quote!(#[allow(clippy::not_unsafe_ptr_arg_deref)]),
+    );
     let symbol = &function.sig.ident;
     let suffix: String = symbol
         .to_string()
@@ -2559,6 +2599,7 @@ pub(crate) fn struct_free_wrapper(
     );
     quote! {
         #channel
+        #[allow(clippy::not_unsafe_ptr_arg_deref)]
         #(#cfgs)*
         #[no_mangle]
         pub extern "C" fn #free_fn_name(ptr: *mut #struct_type) {

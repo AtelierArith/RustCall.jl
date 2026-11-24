@@ -5,6 +5,8 @@ thread_local! {
     static __RUSTCALL_PANIC_RUSTCALL_APPLY : ::std::cell::RefCell < ::std::option::Option
     < ::std::string::String >> = ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_apply_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_APPLY
@@ -40,6 +42,7 @@ pub extern "C" fn rustcall_apply_take_panic(out: *mut u8, cap: usize) -> usize {
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_apply(
     f: extern "C" fn(i64) -> i64,
@@ -85,6 +88,8 @@ thread_local! {
     static __RUSTCALL_PANIC_RUSTCALL_EACH : ::std::cell::RefCell < ::std::option::Option
     < ::std::string::String >> = ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_each_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_EACH
@@ -120,6 +125,7 @@ pub extern "C" fn rustcall_each_take_panic(out: *mut u8, cap: usize) -> usize {
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_each(n: u32, visit: unsafe extern "C" fn(u32, f64)) {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -159,6 +165,8 @@ thread_local! {
     static __RUSTCALL_PANIC_RUSTCALL_PROBE : ::std::cell::RefCell < ::std::option::Option
     < ::std::string::String >> = ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_probe_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_PROBE
@@ -194,6 +202,7 @@ pub extern "C" fn rustcall_probe_take_panic(out: *mut u8, cap: usize) -> usize {
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_probe(
     cb: extern "C" fn(*const u8) -> bool,
@@ -237,6 +246,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_rust_abi_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_RUST_ABI
@@ -272,6 +283,7 @@ pub extern "C" fn rustcall_rust_abi_take_panic(out: *mut u8, cap: usize) -> usiz
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_rust_abi(f: fn(i64) -> i64) -> ::std::mem::MaybeUninit<i64> {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -317,6 +329,7 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Acc_free_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_DROP_PANIC_4163635F66726565
@@ -352,6 +365,7 @@ pub extern "C" fn Acc_free_take_panic(out: *mut u8, cap: usize) -> usize {
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Acc_free(ptr: *mut Acc) {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -395,6 +409,7 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Acc_get_total_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_HELPER_PANIC_4163635F6765745F746F74616C
@@ -430,6 +445,7 @@ pub extern "C" fn Acc_get_total_take_panic(out: *mut u8, cap: usize) -> usize {
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Acc_get_total(ptr: *const Acc) -> ::std::mem::MaybeUninit<i64> {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -470,6 +486,7 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Acc_set_total_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_HELPER_PANIC_4163635F7365745F746F74616C
@@ -505,6 +522,7 @@ pub extern "C" fn Acc_set_total_take_panic(out: *mut u8, cap: usize) -> usize {
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Acc_set_total(ptr: *mut Acc, value: i64) {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -548,6 +566,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Acc_new_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_ACC_NEW
@@ -583,6 +603,7 @@ pub extern "C" fn rustcall_Acc_new_take_panic(out: *mut u8, cap: usize) -> usize
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Acc_new(total: i64) -> *mut Acc {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -624,6 +645,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Acc_fold_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_ACC_FOLD
@@ -659,6 +682,7 @@ pub extern "C" fn rustcall_Acc_fold_take_panic(out: *mut u8, cap: usize) -> usiz
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Acc_fold(
     ptr: *const Acc,

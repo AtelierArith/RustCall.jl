@@ -12,6 +12,7 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Node_free_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_DROP_PANIC_4E6F64655F66726565
@@ -47,6 +48,7 @@ pub extern "C" fn Node_free_take_panic(out: *mut u8, cap: usize) -> usize {
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Node_free(ptr: *mut user_crate::Node) {
     let _rustcall_boundary = ::rustcall_julia_macros::__RustCallBoundary::enter();
