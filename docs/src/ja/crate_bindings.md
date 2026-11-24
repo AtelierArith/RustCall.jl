@@ -949,8 +949,37 @@ write("facade/src/lib.rs", RustCall.generate_crate_instances(instances))
 
 失敗し得るコンストラクタには `error_type` を指定すると成功時に所有する `RustResult` を返します。任意の信頼済み `expression` でポインタ・長さから `Vec` を組み立てることもできますが、有効性と GC 保護は利用者の責任です。必要ならスコープ付きバッファを使います。未対応 ABI、借用戻り値、追加 import が必要なトレイトメソッドには手書きの窓口を使います。`Cargo.toml` は生成しません。
 
+### [ジェネリックな free function](@id Generic-free-functions)
+
+`generate_crate_functions` は `generate_crate_instances` の free function 版です。スカラー型でジェネリックな API（例：[tenferro-sci-rs](https://github.com/tensor4all/tenferro-sci-rs)）は直接バインドできません。`#[julia]` 項目は具体型でなければならず、`macro_rules!` が生成した項目はソース走査から見えないためです。具体化を明示します。
+
+```julia
+functions = [(
+    name = "gamma_f64",
+    args = ["x" => "f64"],
+    return_type = "f64",
+    expression = "specials::gamma::<f64>(x)",
+)]
+write("specials_facade/src/lib.rs",
+      RustCall.generate_crate_functions(functions))
+```
+
+出力は次のとおりです。
+
+```rust
+use rustcall_julia_macros::julia;
+
+#[julia]
+pub fn gamma_f64(x: f64) -> f64 {
+    specials::gamma::<f64>(x)
+}
+```
+
+`header = false` は `julia` を既に import しているファイル（`generate_crate_instances` の出力に追記する場合など）で `use` 行を省略します。元クレートと `rustcall_julia_macros` に依存する `Cargo.toml` を用意し、`@rust_crate` で facade を読み込みます。
+
 ```@docs
 RustCall.with_numeric_buffer
 RustCall.copy_owned_numeric_buffer
 RustCall.generate_crate_instances
+RustCall.generate_crate_functions
 ```

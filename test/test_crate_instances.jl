@@ -66,6 +66,7 @@ using Test, RustCall
             impl<T: Copy, R, D> Drop for TypedTensor<T, R, D> {
                 fn drop(&mut self) { DROPPED.fetch_add(1, Ordering::SeqCst); }
             }
+            pub fn twice<T: Copy + std::ops::Add<Output = T>>(x: T) -> T { x + x }
             pub struct Cell<T: Copy, const N: usize> { value: T }
             impl<T: Copy, const N: usize> Cell<T, N> {
                 pub fn new(value: T) -> Self { Self { value } }
@@ -86,7 +87,15 @@ using Test, RustCall
             sample_generic = { path = "../generic" }
             rustcall_julia_macros = { path = "$runtime" }
             """)
-        write(joinpath(facade, "src", "lib.rs"), code * "\n#[julia]\npub fn drops() -> u32 { sample_generic::dropped() }\n")
+        functions = RustCall.generate_crate_functions([(
+            name = "twice_f32",
+            args = ["x" => "f32"],
+            return_type = "f32",
+            expression = "sample_generic::twice::<f32>(x)",
+        )]; header = false)
+        write(joinpath(facade, "src", "lib.rs"),
+              code * "\n" * functions *
+              "\n#[julia]\npub fn drops() -> u32 { sample_generic::dropped() }\n")
         bindings = Core.eval(@__MODULE__, :(@rust_crate $facade))
         try
             ok = RustCall.with_numeric_buffer(Float32[6]; element_type=Float32) do ptr, len
@@ -110,6 +119,7 @@ using Test, RustCall
             @test bindings.drops() == UInt32(1)
             @test bindings.get(a) == Float32(1.5)
             @test bindings.get(b) == Int64(7)
+            @test bindings.twice_f32(Float32(2.5)) == Float32(5.0)
             bindings.set(a, Float32(3.5))
             bindings.set(b, Int64(11))
             @test bindings.rank(a) == UInt32(2)
@@ -355,4 +365,58 @@ end
             end
         end
     end
+end
+
+@testset "Concrete free-function facades (#602)" begin
+    emptyargs = Pair{String,String}[]
+    functions = [(
+        name = "twice_f32",
+        args = ["x" => "f32"],
+        return_type = "f32",
+        expression = "sample_generic::twice::<f32>(x)",
+    )]
+    golden = """
+        use rustcall_julia_macros::julia;
+
+        #[julia]
+        pub fn twice_f32(x: f32) -> f32 {
+            sample_generic::twice::<f32>(x)
+        }
+        """
+    @test RustCall.generate_crate_functions(functions) == golden
+    @test RustCall.generate_crate_functions(functions) ==
+          RustCall.generate_crate_functions(functions)
+    @test RustCall.generate_crate_functions([(
+        name = "twice_f32", args = ["x" => "f32"], return_type = "f32",
+        expression = "sample_generic::twice::<f32>(x)",
+    )]; header = false) == """
+        #[julia]
+        pub fn twice_f32(x: f32) -> f32 {
+            sample_generic::twice::<f32>(x)
+        }
+        """
+    @test RustCall.generate_crate_functions([(
+        name = "zero", args = emptyargs, return_type = "i32",
+        expression = "0",
+    )]) == """
+        use rustcall_julia_macros::julia;
+
+        #[julia]
+        pub fn zero() -> i32 {
+            0
+        }
+        """
+    for bad in [
+        merge(functions[1], (expression = "",)),
+        merge(functions[1], (return_type = "",)),
+        merge(functions[1], (args = ["bad-name" => "f32"],)),
+        merge(functions[1], (args = ["x" => "f32", "x" => "f32"],)),
+        merge(functions[1], (name = "bad-name",)),
+        merge(functions[1], (name = "type",)),
+        merge(functions[1], (unknown = 1,)),
+        (name = "missing", args = emptyargs, return_type = "i32"),
+    ]
+        @test_throws ArgumentError RustCall.generate_crate_functions([bad])
+    end
+    @test_throws ArgumentError RustCall.generate_crate_functions([functions[1], functions[1]])
 end
