@@ -314,6 +314,26 @@ use rustcall_julia_macros::julia;
 
 省略可能な借用と `rustcall_owned_return` も同じスコープ内の証明を使います。ただし各 ABI、生存期間、生成側マーカーの規則は別途適用します。省略可能な位置は正しい型のハンドルか `nothing` だけで、未解決でも生ポインタへの回避はできません。
 
+### [省略可能なスカラー値](@id Optional-scalar-values)
+
+非ジェネリックな `#[julia]` 関数・メソッドは、`T` がプリミティブ（`bool`、`f32`、`f64`、`i8`–`i64`、`u8`–`u64`、`isize`、`usize`）であれば `Option<T>` を受け取れます。Julia からは `T` の値か `nothing` を渡します。
+
+```rust
+#[julia]
+pub fn set_rtol(rtol: Option<f64>) -> f64 {
+    rtol.unwrap_or(1e-6)
+}
+```
+
+```julia
+bindings.set_rtol(nothing)  # 1e-6
+bindings.set_rtol(1e-9)     # 1e-9
+```
+
+生成されるラッパーは C の引数を2つ — `i32` の存在フラグと値 — に下げ、shim 側で Rust の `Option<T>` を再構成します。Rust の `Option` 配置が ABI を越えることはありません。マニフェストは `Arg.abi = "option_scalar"` と要素型（`Arg.slice_element`）を記録し、生成側は `<symbol>_option_scalar_v1` を公開します。呼び出し前に対応するマーカーを検査するため、古い生成物を新しい2スロット形式で呼ぶことはありません。省略と要素型の値だけを受け付け、`missing`、`Some(x)`、変換できない値は Rust に入る前にエラーになります。
+
+`Option<&Owner>` は従来どおり省略可能な借用で、`Option<String>` は未対応です。所有 `String` を返し、Julia 側で変換します。
+
 ### [省略可能な借用対象](@id Optional-borrowed-owners)
 
 非ジェネリックな関数・メソッドは、具体的な注釈型のハンドルか `nothing` を受け取れます。
