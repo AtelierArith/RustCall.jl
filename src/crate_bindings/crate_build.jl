@@ -166,9 +166,9 @@ function generate_bindings(crate_path::String;
     )
 
     # Scan the crate
-    @info "Scanning crate at $crate_path"
+    @debug "Scanning crate at $crate_path"
     info = scan_crate(crate_path; cargo_env = snapshot_env(snapshot))
-    @info "Found $(length(info.julia_functions)) functions and $(length(info.julia_structs)) structs"
+    @debug "Found $(length(info.julia_functions)) $(length(info.julia_functions) == 1 ? "function" : "functions") and $(length(info.julia_structs)) $(length(info.julia_structs) == 1 ? "struct" : "structs")"
 
     # A crate that carries only PyO3 attributes gets a generated wrapper crate
     # (#275 Phase 2); everything else — including a PyO3 crate whose requested
@@ -270,7 +270,7 @@ function generate_bindings(crate_path::String;
     cached_lib = cache_enabled ? get_cargo_cached_library(cache_key) : nothing
 
     lib_path = if cached_lib !== nothing && isfile(cached_lib)
-        @info "Using cached library"
+        @debug "Using cached library"
         cached_lib
     else
         # Check if the crate already has cdylib crate-type
@@ -339,7 +339,7 @@ function generate_bindings(crate_path::String;
 
     # Generate module. The registry name follows the key, feature set
     # included, so two feature sets of one crate are two entries.
-    @info "Generating Julia module..."
+    @debug "Generating Julia module..."
     # The **same** snapshot decides the registry name as decides the cache key.
     # Passing it to one and not the other gave two builds under different
     # environments distinct artifacts under one `_LIB_NAME`: loading the second
