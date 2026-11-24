@@ -42,6 +42,7 @@ const EN_PAGES = [
     ],
     "Developer" => [
         "How RustCall Calls Rust" => "internals.md",
+        "Rust ASTs with syn" => "syn.md",
         "Project Guide" => "project_guide.md",
         "Windows Development" => "developer_windows.md",
         "Developer Pitfalls" => "developer_pitfalls.md",
