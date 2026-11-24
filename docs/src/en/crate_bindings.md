@@ -374,6 +374,32 @@ as a missing `mod` target elsewhere in the tree.
     but has no Julia wrapper until the alias is spelled as a type RustCall
     knows.
 
+### Owned returns from free functions
+
+A free `#[julia]` function can return an owned `#[julia]` struct. The signature
+alone does not say whether the value is owned, borrowed or a plain value, so
+name the owner on the item:
+
+```rust
+#[julia]
+pub struct Point {
+    pub x: f64,
+    pub y: f64,
+}
+
+#[julia]
+#[rustcall_owned_return(Point)]
+pub fn origin() -> Point {
+    Point { x: 0.0, y: 0.0 }
+}
+```
+
+Julia receives a `Point` handle for the Rust-owned value, and its finalizer
+drops it. Without the annotation the function is refused with `Point: not in
+the FFI contract`. The same annotation is emitted by
+[`generate_crate_instances`](#Explicit-instances-of-generic-types) for its
+constructors and `return_wrapper` methods.
+
 ### Borrowed owners imported through module globs
 
 Required `&Owner` and `&mut Owner` arguments use checked opaque handles when

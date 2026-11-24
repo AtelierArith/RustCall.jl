@@ -1598,7 +1598,9 @@ function _ffi_unsupported_return(rust_type, abi, ctx, strict::Symbol, fallback;
             "Add a `::T` return annotation at the call site, change the Rust " *
             "signature to a supported type, or set " *
             "`RustCall.FFI_STRICT[] = :warn` to fall back to `Any` (see " *
-            "https://github.com/AtelierArith/RustCall.jl/issues/276)."))
+            "https://github.com/AtelierArith/RustCall.jl/issues/276). " *
+            "For a `#[julia]` function that returns an owned `#[julia]` struct, " *
+            "annotate the Rust item with `#[rustcall_owned_return(Type)]`."))
     end
     # Test and insert atomically: reading the set outside the lock let two
     # threads both see the context as new and warn twice — and raced with the

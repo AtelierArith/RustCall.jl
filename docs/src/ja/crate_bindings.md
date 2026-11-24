@@ -257,6 +257,26 @@ impl Counter {
 !!! note "インラインのラッパーは impl の場所に生成"
     インラインも同じで、impl のモジュール内に生成するため、その場所だけから見える型をシグネチャに使えます（#342）。シンボルは対象構造体に従います。文字列バッファはメソッド専用（例：`Counter_label_RustCallOwnedString`）で、解放シンボルはマニフェストが指定します。ただし Julia へのバインドには型対応が必要なので、ローカルの型エイリアスを返す場合は対応する型を直接書いてください。
 
+### [free function の owned 戻り値](@id Owned-returns-from-free-functions)
+
+free な `#[julia]` 関数は `#[julia]` 構造体を所有値として返せます。シグネチャだけでは所有・借用・値渡しを区別できないため、所有する型を注釈で示します。
+
+```rust
+#[julia]
+pub struct Point {
+    pub x: f64,
+    pub y: f64,
+}
+
+#[julia]
+#[rustcall_owned_return(Point)]
+pub fn origin() -> Point {
+    Point { x: 0.0, y: 0.0 }
+}
+```
+
+Julia は Rust が所有する値の `Point` ハンドルを受け取り、ファイナライザが破棄します。注釈がないと `Point: not in the FFI contract` として拒否されます。`generate_crate_instances` のコンストラクタと `return_wrapper` メソッドも同じ注釈を生成します。
+
 ### [モジュールの glob で取り込む借用対象](@id Borrowed-owners-imported-through-module-globs)
 
 必須の `&Owner` / `&mut Owner` は、具体的な `#[julia]` 型だと証明できれば検査付きハンドルを受け取ります。インラインの `#[derive(JuliaStruct)]` も同様です。別 impl モジュールの曖昧でない `use super::*` も追跡します。
