@@ -4,6 +4,15 @@
 
 The project conventions live in `CLAUDE.md` (the `@CLAUDE.md` line above includes it for Claude Code). Agents that do not expand that directive must read `CLAUDE.md` directly. The pull-request loop is repeated here because every agent working on this repository must follow it.
 
+## Releasing
+
+The release procedure is the skill
+[`.claude/skills/release-rustcall/SKILL.md`](.claude/skills/release-rustcall/SKILL.md),
+also reachable as `.agents/skills/release-rustcall/SKILL.md`. Registration is
+requested on issue #229 with `@JuliaRegistrator register` — never on a pull
+request — and Rust crate publication is a separate `PublishCrates.yml` path.
+Read the skill before bumping a version or posting release notes.
+
 ## Pull request loop
 
 1. Branch off `origin/main`, never commit to `main`. Open a **draft** PR; commit in steps that each leave `Pkg.test()` green.
