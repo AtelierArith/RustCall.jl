@@ -393,8 +393,12 @@ function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
             # `Option<T>` for a primitive `T` (issue #609): an `i32` presence
             # tag and the value, reconstructed as `Option<T>` by the shim.
             T = _emitted_type(ffi_type_expr(ffi_scalar_element_type(slice_elements[index])))
-            present = Symbol(prefix, name, "_present")
-            value = Symbol(prefix, name, "_value")
+            # Position-indexed, in the emitter's own namespace: a name-derived
+            # temporary here would collide with the string buffer of another
+            # argument (`v` + `_value` vs an argument called `v_value`), and the
+            # two conversions would overwrite each other before the call.
+            present = Symbol(_EMITTER_LOCAL_PREFIX, "option_present′", index)
+            value = Symbol(_EMITTER_LOCAL_PREFIX, "option_value′", index)
             push!(bindings, @_emitted(:( $present = $arg_sym === nothing ? Int32(0) : Int32(1) )))
             push!(bindings, @_emitted(:( $value = $arg_sym === nothing ? zero($T) : convert($T, $arg_sym) )))
             push!(call_args, present)

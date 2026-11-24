@@ -34,6 +34,25 @@ pub fn opt_scalar_result(v: Option<u32>) -> Result<u32, String> {
 pub fn opt_scalar_mixed(a: Option<f64>, xs: &[f64], label: &str) -> String {
     format!("{} {} {}", a.map(|x| x.to_string()).unwrap_or_else(|| "none".to_string()), xs.len(), label)
 }
+
+// Regression for a temporary-name collision: `v`'s value temporary and the
+// string buffer of `v_value` must not share a name, in either argument order.
+#[julia]
+pub fn opt_scalar_collision(v: Option<i32>, v_value: &str) -> String {
+    format!("{}:{}", v.map(|x| x.to_string()).unwrap_or_else(|| "none".to_string()), v_value)
+}
+
+#[julia]
+pub fn opt_scalar_collision_reordered(v_value: &str, v: Option<i32>) -> String {
+    format!("{}:{}", v.map(|x| x.to_string()).unwrap_or_else(|| "none".to_string()), v_value)
+}
+
+#[julia]
+pub fn opt_scalar_two(a: Option<i32>, a_value: Option<i32>) -> String {
+    format!("{}:{}",
+        a.map(|x| x.to_string()).unwrap_or_else(|| "none".to_string()),
+        a_value.map(|x| x.to_string()).unwrap_or_else(|| "none".to_string()))
+}
 """
 
 @testset "inline optional scalar arguments (#609)" begin
@@ -55,6 +74,13 @@ pub fn opt_scalar_mixed(a: Option<f64>, xs: &[f64], label: &str) -> String {
 
     @test opt_scalar_mixed(nothing, [1.0, 2.0], "x") == "none 2 x"
     @test opt_scalar_mixed(1.5, Float64[], "y") == "1.5 0 y"
+
+    # A string argument named like an optional-scalar temporary.
+    @test opt_scalar_collision(Int32(4), "four") == "4:four"
+    @test opt_scalar_collision(nothing, "four") == "none:four"
+    @test opt_scalar_collision_reordered("four", Int32(4)) == "4:four"
+    @test opt_scalar_two(Int32(1), nothing) == "1:none"
+    @test opt_scalar_two(nothing, Int32(2)) == "none:2"
 
     report = RustCall.inline_boundary_report("""
         #[julia]

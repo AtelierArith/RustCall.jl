@@ -470,7 +470,6 @@ fn string_arg_conversion(
         // Option layout through the C boundary.
         let present = fresh_call_ident(&format!("{name}_present"), taken);
         let value = fresh_call_ident(&format!("{name}_value"), taken);
-        let core = fresh_call_ident("__rustcall_option_core", taken);
         let scalar = format_ident!("{}", element);
         (
             vec![
@@ -478,13 +477,12 @@ fn string_arg_conversion(
                 quote! { #value: ::std::primitive::#scalar },
             ],
             Some(quote! {
-                extern crate core as #core;
-                let #name: #core::option::Option<::std::primitive::#scalar> = {
+                let #name: ::std::option::Option<::std::primitive::#scalar> = {
                     let _: ::std::primitive::i32 = #present;
                     if #present != 0 {
-                        #core::option::Option::Some(#value)
+                        ::std::option::Option::Some(#value)
                     } else {
-                        #core::option::Option::None
+                        ::std::option::Option::None
                     }
                 };
             }),
