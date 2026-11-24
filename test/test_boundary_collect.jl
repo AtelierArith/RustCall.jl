@@ -265,3 +265,21 @@ end
     @test !RustCall._rust_refused_item!("not_public", "f")
     @test RustCall._rust_refused_item!("unsafe_fn", "f")
 end
+
+@testset "the boundary report names the owned-return annotation (#601)" begin
+    io = IOBuffer()
+    RustCall.inline_boundary_report(raw"""
+        #[julia]
+        pub struct Bag {
+            pub x: i32,
+        }
+
+        #[julia]
+        pub fn make(x: i32) -> Bag {
+            Bag { x }
+        }
+        """; io = io)
+    text = String(take!(io))
+    @test occursin("not in the FFI contract", text)
+    @test occursin("rustcall_owned_return", text)
+end

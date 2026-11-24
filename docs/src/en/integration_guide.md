@@ -239,7 +239,8 @@ generators record them, and there are two:
   release function; a raw pointer carries none, and whether it transfers
   ownership is not in the signature. If it does, export a matching release
   function (`#[no_mangle] pub extern "C" fn <name>_free(p)`) and call it from
-  the Julia wrapper, or return an opaque `#[julia]` struct instead;
+  the Julia wrapper, or return an opaque `#[julia]` struct instead (annotate a
+  free function's owned return with `#[rustcall_owned_return(Type)]`);
 - a hand-written **`#[no_mangle] extern "C"` function** in a `rust"""` block,
   which `@rust` can call with no generated panic boundary: a panic in it
   aborts the process. Put the entry point behind `#[julia]`.
@@ -270,7 +271,7 @@ and same-thread execution; it is not a general asynchronous callback system.
 | Scalars | integers, floats, `bool` | `i128`/`u128` on Windows (a platform ABI mismatch) | split into two `u64`, or pass behind a pointer |
 | Strings | `String`/`&str` arguments and returns, copied at the boundary | invalid UTF-8 (rejected with a `RustError`) | send non-text bytes as `*const u8` plus a length |
 | Collections | — | `Vec<T>`, `HashMap`, `&[T]` arguments, `Box`/`Rc`/`Arc`/`Cow` in signatures | keep them inside an opaque `#[julia]` struct and expose methods |
-| Structs | `#[julia]` structs, used as handles or with `pub` fields of supported types | borrowed references into a struct that outlive it | return owned values; see `examples/SafeLedger.jl` |
+| Structs | `#[julia]` structs, used as handles or with `pub` fields of supported types | borrowed references into a struct that outlive it | return owned values (`#[rustcall_owned_return(Type)]` on a free function); see `examples/SafeLedger.jl` |
 | Errors | `Result<T, E>` / `Option<T>` of supported types, as `RustResult` / `RustOption` | — | turn them into Julia exceptions in your wrapper |
 | Panics | caught at a generated `#[julia]` boundary, raised as `RustPanicError` | raw `#[no_mangle] extern "C"` functions, and threads Rust spawns | put every entry point behind `#[julia]` |
 | Callbacks | `extern "C" fn` arguments ([Callbacks](callbacks.md)), synchronous, on the calling thread | storing a callback for later, calling it from another thread | return control to Julia and call again |

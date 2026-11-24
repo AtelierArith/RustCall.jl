@@ -74,9 +74,9 @@ function write_bindings_to_file(crate_path::String, output_path::String;
     # `generate_bindings` (#481): nothing below reads `ENV`.
     snapshot = BuildEnvSnapshot()
     # Scan and build the crate
-    @info "Scanning crate at $crate_path"
+    @debug "Scanning crate at $crate_path"
     info = scan_crate(crate_path; cargo_env = snapshot_env(snapshot))
-    @info "Found $(length(info.julia_functions)) functions and $(length(info.julia_structs)) structs"
+    @debug "Found $(length(info.julia_functions)) $(length(info.julia_functions) == 1 ? "function" : "functions") and $(length(info.julia_structs)) $(length(info.julia_structs) == 1 ? "struct" : "structs")"
 
     # A PyO3-only crate is bound through a generated wrapper crate, exactly as
     # `@rust_crate` binds it (#275 Phase 2); `info` and the library name that

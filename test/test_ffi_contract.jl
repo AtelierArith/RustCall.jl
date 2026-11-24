@@ -638,6 +638,10 @@ const ALL_SPELLINGS = vcat(
         @test err isa RustCall.RustError
         @test occursin(ctx, sprint(showerror, err))
         @test occursin("not in the FFI contract", sprint(showerror, err))
+        # The remedy for an owned `#[julia]` return is the Rust item's
+        # annotation, not a call-site type (which a @rust_crate user does not
+        # write) (#601).
+        @test occursin("rustcall_owned_return", sprint(showerror, err))
         # `:warn` / `:none` fall back to the pre-#276 `Any`.
         @test RustCall.ffi_return_symbol_or_throw("Vec<f64>", "", ctx; strict = :none) === :Any
         @test_throws ArgumentError RustCall.ffi_return_symbol_or_throw(

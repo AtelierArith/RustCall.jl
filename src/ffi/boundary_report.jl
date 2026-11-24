@@ -132,7 +132,9 @@ function _print_boundary_report(io::IO, label, unsupported, checked::Int, notes)
             println(io, "  ", u.item, ", ", u.position, ": ", u.rust_type, " — ", u.reason)
         end
         println(io, "Keep these types inside the Rust facade and expose supported types or an ",
-                "opaque #[julia] struct instead; see the integration guide's limitation matrix.")
+                "opaque #[julia] struct instead. An owned `#[julia]` return from a free ",
+                "function needs `#[rustcall_owned_return(Type)]` on the Rust item; see ",
+                "the integration guide's limitation matrix.")
     end
     isempty(notes) && return nothing
     println(io, length(notes), " note(s) — supported, but the author's responsibility:")
