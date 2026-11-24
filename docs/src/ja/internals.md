@@ -33,6 +33,48 @@ Rust を通常の共有ライブラリへコンパイルし、C ABI の `ccall` 
      ──► ccall(panic channel)   # did Rust panic?
 ```
 
+## [2 つの入口の比較](@id Two-entry-points-side-by-side)
+
+どちらも Rust のネイティブコードを Julia から利用する仕組みですが、処理を行う段階が異なります。
+
+| | `rust"""`（`@rust_str`） | `@rust_crate` |
+|---|---|---|
+| 入力 | Rust のソース文字列 | Cargo ライブラリクレートのパス |
+| Julia ラッパーの式を生成する時点 | マクロ展開時 | 展開された呼び出し式の評価時 |
+| Rust ラッパーを生成する方法 | コンパイル前の `rustcall-extract expand` | Cargo ビルド中の `#[julia]` 手続きマクロ |
+| Rust のビルド | `rustc`、依存があれば Cargo | Cargo |
+| 依存関係 | `// cargo-deps:` または Cargo ドキュメントコメント | `Cargo.toml` と Cargo features |
+| Julia の名前空間 | 呼び出し元に関数・型を定義 | 生成したモジュール（バインディング経由または名前付きサブモジュール） |
+| 主な用途 | 実験、小さなカーネル、インラインのジェネリック具体化 | 既存の Rust ライブラリ、Rust を利用する Julia パッケージ |
+
+例えばインライン形式では、呼び出し元のモジュールに Julia 関数を定義します。
+
+```julia
+using RustCall
+
+rust"""
+#[julia]
+fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+"""
+
+add(10, 20) # 30
+```
+
+同じ関数を Cargo クレートで `#[julia]` により公開した場合（[外部クレートの手順](crate_bindings.md)を参照）、独立した名前空間から呼び出します。
+
+```julia
+using RustCall
+
+const B = @rust_crate "./my_crate"
+B.add(Int32(10), Int32(20)) # 30
+```
+
+通常の C ABI 経路では、両者は共通の FFI 型契約に合流します。Rust ソースを署名の情報源とし、
+`rustcall_julia_core` が共通の Rust 側コード生成とマニフェストモデルを提供し、Julia が対応するラッパーを生成します。
+利用者が手書きで `ccall` を用意する必要はありません。ただし、対応している公開対象のみがバインドされ、クレートの全 API が自動的に Julia API になるわけではありません。
+
 ## [手動で全体を動かす](@id The-whole-thing-by-hand)
 
 REPL で段階的に実行できます。
@@ -121,6 +163,26 @@ Rust 構文はすべて [syn](https://docs.rs/syn) で解析します。Julia �
 
 展開時と実行時を分けます。
 
+Julia の非標準文字列リテラル（non-standard string literal）が入口です。
+`rust"..."` や `rust"""..."""` は、文字列の内容を引数とする `@rust_str` マクロの呼び出しとして解釈されます。
+Rust のインタプリタでも、LLVM IR を直接埋め込む仕組みでもありません。
+次のように、展開されたブロックを評価せずに Julia の式を確認できます。
+
+```julia
+using RustCall
+
+expr = @macroexpand rust"""
+#[julia]
+fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+"""
+Base.remove_linenums!(expr)
+```
+
+マクロ展開時には extractor の実行やコンパイラ構成の調査が行われますが、ブロック自体の共有ライブラリはまだビルドしません。
+返される式にコンパイル・ロード処理と Julia 関数の定義が含まれています。
+
 ### [マクロ展開時](@id At-macro-expansion-time)
 
 Julia の解析・lowering 時に、cfg と既定コンパイラ設定を捕捉し、extractor の `expand --manifest ... --cfg-file ...` を実行します。TOML マニフェストの版を検査し、`(source,cfg)` で結果をメモ化します。`manifest_function_signatures` / `manifest_struct_infos` が型情報を作り、`_inline_wrapper_exprs` が関数・構造体・生成・メソッド・プロパティの式を返します。
@@ -132,7 +194,7 @@ function add(a, b) ... end        # the generated wrappers
 lib_name
 ```
 
-Julia 関数は展開時に存在して呼び出し元のプリコンパイルに入り、ライブラリはブロック実行時に作ります。
+Julia 関数の定義式は展開時に生成し、返されたブロックの評価時に定義します。呼び出し元のプリコンパイルに含めることができ、ライブラリはブロック実行時にビルドまたは再利用します。
 
 ### [実行時](@id At-run-time)
 
@@ -300,6 +362,84 @@ end
 
 `generate_bindings` が、環境スナップショット、モジュール走査と実 cfg 再走査、直接 cdylib または依存するラッパーのビルド、Julia モジュール生成を行います。式の生成器（`@rust_crate`）とソース生成器（保存ファイル）は、配置・フィールド・ペイロード計画を共有し同等に保ちます。
 
+### [マクロから Julia モジュールまで](@id From-the-macro-to-a-module)
+
+マクロそのものは小さな実装です。`@rust_str` と異なり、マクロ展開時には Rust ソースを走査しません。
+オプションを処理し、呼び出し元のモジュール（`__module__`）を渡す `load_crate_bindings` の呼び出し式を生成します。
+既定のオプションでは、概ね次のコードに相当します（既定値を省略）。
+
+```julia
+RustCall.load_crate_bindings("./my_crate"; target_module = @__MODULE__)
+```
+
+この式が評価されると、通常の C ABI 経路では次の処理を行います。
+
+```text
+@rust_crate path
+    │  マクロ展開：呼び出し式を生成
+    ▼
+load_crate_bindings(path; ...)
+    │  式の評価
+    ▼
+generate_bindings
+    ├── scan_crate → rustcall-extract manifest → TOML → CrateInfo
+    ├── 実際のビルド構成を解決して再走査
+    ├── compute_crate_hash → キャッシュ済みライブラリ？
+    │       ├── Yes → 再利用
+    │       └── No  → cdylib が指定済み？
+    │                  ├── Yes → 元のクレートを cargo build
+    │                  └── No  → ラッパークレートを生成 → cargo build
+    └── emit_crate_module → Julia モジュールの Expr
+             │
+             ▼
+        Core.eval → モジュールの __init__ → load_artifact!
+             │
+             ▼
+        CrateBindings(module_ref)
+```
+
+最初の走査では Cargo features を厳密に決定しません。その後、`features`、`default_features`、
+ターゲット条件、プロファイルを含む実際のビルド構成を使って再走査します。
+これにより、Rust 側で無効化されたシンボルを Julia 側から参照することを防ぎます。
+
+### [Cargo のビルド経路が 2 種類ある理由](@id Why-two-Cargo-build-paths?)
+
+`Cargo.toml` に `cdylib` が指定されている場合は、元のクレートを自身の Cargo プロファイルでビルドします。
+指定されていなければ、`create_wrapper_crate` が元のクレートを path dependency として参照する一時 Cargo プロジェクトを生成します。
+生成されるマニフェストを簡略化すると次のようになります。
+
+```toml
+[package]
+name = "my_crate_julia_wrapper"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+my_crate = { path = "/path/to/my_crate" }
+rustcall_julia_macros = { path = "/path/to/RustCall.jl/deps/rustcall_julia_macros" }
+
+[profile.release]
+opt-level = 3
+lto = true
+panic = "unwind"
+```
+
+この経路では、要求された features を依存クレートの項目に設定します。
+元のクレートも同一のソースにある互換性のある `#[julia]` ランタイムを使用する必要があります。
+C ABI の公開関数は元のクレートの手続きマクロが生成するため、ラッパークレートが同じシンボルを二重に定義する必要はありません。
+ビルドした共有ライブラリは一時プロジェクトを削除する前に、その外に保存します。
+
+走査と手続きマクロは、シンボル命名規則を含む共通の Rust コード生成基盤を利用します。
+例えば対応する公開対象 `a::run` は Julia 側で `B.a.run(...)` というサブモジュールに対応し、
+公開シンボルにもモジュール名が含まれます。
+
+PyO3 のみを公開しているクレートには、別途ラッパーと Python host の経路があります。
+後者はこの C ABI 経路ではなく、PythonCall を介して Python インタプリタを使用します。
+詳しくは [PyO3 クレート](pyo3.md)を参照してください。
+
 ```julia
 const var"#TC#fn#rustcall_add" = RustCall.CrateTargetCache()
 function add(a, b)
@@ -310,6 +450,96 @@ end
 ```
 
 モジュールの `__init__` が専用コピーを開き、原子的な `_LIB_GEN` の1記録（ハンドル・生存フラグ・世代）を読みます。保存ソースにオブジェクトを埋め込めないためキャッシュは名前付き const です。`#` や `′` を含む Rust から作れない名前で、利用者の公開名との衝突を防ぎます。
+
+### [World Age と直接呼び出し](@id World-age-and-direct-calls)
+
+式の生成器は `Expr(:module, ...)` を構築し、`_instantiate_runtime_bindings` が `Core.eval` で評価します。
+`@rust_crate` の戻り値はモジュール自体ではなく、`module_ref::Module` を保持する `CrateBindings` です。
+このオブジェクトのプロパティとして取得した関数は、呼び出し可能な `CrateBindingMember` で表現されます。
+
+Julia では動的に定義したメソッドの World Age が、バインディングを要求した実行中の関数より新しいことがあります。
+例えば次のような呼び出しです。
+
+```julia
+function run_add(crate_path)
+    B = @rust_crate crate_path
+    B.add(Int32(1), Int32(2))
+end
+```
+
+通常の関数呼び出しでは、プロキシが `Base.invokelatest` を利用してこれに対応します。
+
+```text
+B.add(a, b)
+    → getproperty(B, :add)
+    → CrateBindingMember
+    → Base.invokelatest(generated_add, ...)
+    → 生成された Julia ラッパー
+    → キャッシュされた C ABI 呼び出し先 → ccall
+    → panic の確認
+```
+
+実際のプロキシは必要に応じて引数のラッパーを外し、返されたオブジェクトをラップします。
+`invokelatest` は動的ロードに便利ですが、呼び出し先の型推論を制限し、オーバーヘッドが生じることがあります。
+数値計算カーネルを繰り返し呼ぶ場合は、モジュールのトップレベルで名前付きサブモジュールを定義します。
+
+```julia
+module MyPackage
+using RustCall
+
+@rust_crate joinpath(@__DIR__, "..", "deps", "my_crate") submodule="Bindings"
+using .Bindings: add
+
+export add
+end
+```
+
+| バインディング定義後の呼び出し方法 | 各関数呼び出しでのプロキシ／`invokelatest` |
+|---|---|
+| `B.add(a, b)`（戻り値のバインディングオブジェクト） | あり |
+| `Bindings.add(a, b)`（名前付きモジュール） | なし |
+| `add(a, b)`（インポート済み関数） | なし |
+
+直接呼び出す場合も、生成されたラッパーによる ABI 変換、キャッシュされた呼び出し先の取得、panic の確認は行われます。
+どちらもオーバーヘッドがゼロとは限らないため、実際のワークロードで測定してください。
+
+`name="Bindings"` は生成するモジュールの名前だけを指定し、`submodule="Bindings"` は呼び出し元にそのモジュールを可視な名前で定義します。
+後者では戻り値をサブモジュールと同じ名前に代入しないでください。
+プリコンパイル時には、可視・不可視のいずれの形式でも呼び出し元のモジュールツリーに属するため、Julia が定義を保存できます。
+ネイティブハンドルは保存されず、ロード時の `__init__` が専用の世代コピーを開きます。
+`include_dependency` によってクレートの入力ファイルと永続ライブラリを追跡し、プリコンパイルの無効化に利用します。
+詳しくは [プリコンパイル](precompilation.md)を参照してください。
+
+### [中間表現の確認](@id Inspecting-the-intermediate-representations)
+
+各段階を REPL から個別に確認することもできます。
+`Cargo.toml` と対応する `#[julia]` 項目を持つクレートを用意してください。
+
+```julia
+using RustCall
+
+@macroexpand @rust_crate "./my_crate"
+
+info = RustCall.scan_crate("./my_crate")
+info.julia_functions
+info.julia_structs
+
+# この段階ではクレートをビルドする場合があります。
+expr = RustCall.generate_bindings("./my_crate")
+Base.remove_linenums!(expr)
+
+# 対応するバインディングを Julia ソースとして保存する場合。
+RustCall.write_bindings_to_file(
+    "./my_crate",
+    "./MyCrateBindings.jl";
+    output_module_name = "MyCrate",
+)
+```
+
+実装は `src/crate_bindings/crate_runtime.jl`（マクロ、モジュール評価、プロキシ）、
+`crate_scan.jl`（マニフェスト走査、ラッパープロジェクト）、
+`crate_build.jl`（ビルド、キャッシュ）、`crate_module_expr.jl`（モジュール式、初期化）、
+`crate_wrappers_expr.jl`（FFI ラッパー）、`crate_write.jl` / `crate_module_source.jl`（ファイルへのバインディング出力）に分かれています。
 
 ## [読み込みと生存期間](@id Loading-and-lifetime)
 
