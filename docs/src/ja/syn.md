@@ -1,3 +1,4 @@
+<!-- Translation source: 960be32b16e7387ce39c1f3ca662c2e057d3b9c5; English counterpart: ../en/syn.md. -->
 # [syn による Rust AST の解析と変換](@id Rust-ASTs-with-syn)
 
 RustCall.jl は Rust の構文を **AST（Abstract Syntax Tree：抽象構文木）** に変換する
