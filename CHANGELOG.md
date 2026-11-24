@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Non-generic `#[julia]` functions and methods accept `Option<T>` for a
+  primitive `T` (`bool`, `f32`, `f64`, the integer types, `isize`, `usize`),
+  passing a value or `nothing` from Julia. The wrapper lowers the argument to
+  an `i32` presence tag and the value and reconstructs `Option<T>` in the shim;
+  the manifest records `Arg.abi = "option_scalar"`
+  ([#609](https://github.com/AtelierArith/RustCall.jl/issues/609)).
+
 ## [0.10.2] - 2026-11-24
 
 ### Added
@@ -50,14 +58,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.10.1] - 2026-11-15
 
 ### Added
-- Non-generic `#[julia]` functions and methods accept `Option<T>` for a
-  primitive `T` (`bool`, `f32`, `f64`, the integer types, `isize`, `usize`),
-  passing a value or `nothing` from Julia. The wrapper lowers the argument to
-  an `i32` presence tag and the value and reconstructs `Option<T>` in the shim;
-  the manifest records `Arg.abi = "option_scalar"` and a producer export
-  (`<symbol>_option_scalar_v1`) keeps an older macro from being called with
-  the new shape
-  ([#609](https://github.com/AtelierArith/RustCall.jl/issues/609)).
 - A method of an inline generic struct may take a borrowed sibling —
   `other: &Self` or `other: &Vec2<T>` — and Julia passes the other handle's
   pointer, with the same checks a concrete struct's borrowed argument gets:

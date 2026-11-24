@@ -902,9 +902,6 @@ function _inline_handle_target_bindings!(bindings, sig, target, frame, snapshot)
     if _uses_slice_ffi(sig)
         push!(checks, @_emitted(:(RustCall._require_slice_args_abi($target.handle, $(sig.symbol)))))
     end
-    if _uses_option_scalar_ffi(sig)
-        push!(checks, @_emitted(:(RustCall._require_option_scalar_abi($target.handle, $(sig.symbol)))))
-    end
     if _uses_optional_owner_ffi(sig)
         push!(checks, @_emitted(:(RustCall._require_optional_owner_abi($target.handle, $(sig.symbol)))))
     end
@@ -941,7 +938,7 @@ function _generate_inline_string_wrapper(sig, func_name, symbol_str, arg_syms)
             RustCall.module_symbol_library(@__MODULE__, $symbol_str), $symbol_str;
             free_symbol = $(c.free_symbol)))
     else
-        :($channel_sym = RustCall.cached_call_target($string_cache, @__MODULE__, $symbol_str; slice_args = $(_uses_slice_ffi(sig)), optional_owner_args = $(_uses_optional_owner_ffi(sig)), option_scalar_args = $(_uses_option_scalar_ffi(sig))))
+        :($channel_sym = RustCall.cached_call_target($string_cache, @__MODULE__, $symbol_str; slice_args = $(_uses_slice_ffi(sig)), optional_owner_args = $(_uses_optional_owner_ffi(sig))))
     end
     _inline_handle_target_bindings!(bindings, sig, channel_sym, frame, snapshot)
     call = if ffi_owned_string_return(c)
@@ -1265,7 +1262,6 @@ function _owned_return_wrapper(
                 RustCall.resolve_call_target($lib, $symbol; free_symbol = $free_symbol),
                 $borrows;
                 slice_symbol = $(_uses_slice_ffi(item) ? symbol : ""),
-                option_scalar_symbol = $(_uses_option_scalar_ffi(item) ? symbol : ""),
                 optional_symbol = $(_uses_optional_owner_ffi(item) ? symbol : ""),
             )
             RustCall._require_owned_return_abi($target.handle, $symbol)

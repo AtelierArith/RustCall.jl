@@ -330,7 +330,7 @@ bindings.set_rtol(nothing)  # 1e-6
 bindings.set_rtol(1e-9)     # 1e-9
 ```
 
-生成されるラッパーは C の引数を2つ — `i32` の存在フラグと値 — に下げ、shim 側で Rust の `Option<T>` を再構成します。Rust の `Option` 配置が ABI を越えることはありません。マニフェストは `Arg.abi = "option_scalar"` と要素型（`Arg.slice_element`）を記録し、生成側は `<symbol>_option_scalar_v1` を公開します。呼び出し前に対応するマーカーを検査するため、古い生成物を新しい2スロット形式で呼ぶことはありません。省略と要素型の値だけを受け付け、`missing`、`Some(x)`、変換できない値は Rust に入る前にエラーになります。
+生成されるラッパーは C の引数を2つ — `i32` の存在フラグと値 — に下げ、shim 側で Rust の `Option<T>` を再構成します。Rust の `Option` 配置が ABI を越えることはありません。マニフェストは `Arg.abi = "option_scalar"` と要素型（`Arg.slice_element`）を記録します。この ABI より前のマクロはシグネチャ自体を拒否するため、古い生成物が2スロット形式で呼ばれることはありません。省略と要素型の値だけを受け付け、`missing`、`Some(x)`、変換できない値は Rust に入る前にエラーになります。
 
 `Option<&Owner>` は従来どおり省略可能な借用で、`Option<String>` は未対応です。所有 `String` を返し、Julia 側で変換します。
 

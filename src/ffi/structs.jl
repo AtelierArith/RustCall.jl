@@ -544,11 +544,9 @@ function _inline_method_borrows(method; receiver = :self)
 end
 
 function _check_inline_call_borrows(target, borrows; slice_symbol::AbstractString = "",
-                                    optional_symbol::AbstractString = "",
-                                    option_scalar_symbol::AbstractString = "")
+                                    optional_symbol::AbstractString = "")
     isempty(slice_symbol) || _require_slice_args_abi(target.handle, slice_symbol)
     isempty(optional_symbol) || _require_optional_owner_abi(target.handle, optional_symbol)
-    isempty(option_scalar_symbol) || _require_option_scalar_abi(target.handle, option_scalar_symbol)
     for obj in borrows
         obj isa Ptr{Cvoid} && continue
         getfield(obj, :alive) === target.alive || throw(ArgumentError(
@@ -593,7 +591,7 @@ function _inline_boxed_result_body(info::RustStructInfo, m::RustMethod,
         $target_sym = RustCall._check_inline_call_borrows(
             RustCall.resolve_call_target($lib, $wrapper_name;
                 free_symbol = RustCall.ffi_struct_free_symbol($struct_stem)), $borrows;
-            slice_symbol = $(_uses_slice_ffi(m) ? wrapper_name : ""), optional_symbol = $(_uses_optional_owner_ffi(m) ? wrapper_name : ""), option_scalar_symbol = $(_uses_option_scalar_ffi(m) ? wrapper_name : ""))
+            slice_symbol = $(_uses_slice_ffi(m) ? wrapper_name : ""), optional_symbol = $(_uses_optional_owner_ffi(m) ? wrapper_name : ""))
         RustCall.Libdl.dlsym($target_sym.handle, $wrapper_name * "_boxed_result_v1")
         $payload_sym = isempty($payload_free) ? C_NULL : RustCall.Libdl.dlsym($target_sym.handle, $payload_free)
     end
@@ -988,7 +986,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                         # One snapshot for the whole construction: the wrapper
                         # that allocates, its panic channel, and the destructor
                         # and liveness flag the object will carry (#277).
-                        ptr, tgt = $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) _call_rust_constructor(lib, $wrapper_name, $struct_stem, $(expanded_call_args...); borrows = $borrows, slice_args = $(_uses_slice_ffi(m)), optional_owner_args = $(_uses_optional_owner_ffi(m)), option_scalar_args = $(_uses_option_scalar_ffi(m))))))
+                        ptr, tgt = $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) _call_rust_constructor(lib, $wrapper_name, $struct_stem, $(expanded_call_args...); borrows = $borrows, slice_args = $(_uses_slice_ffi(m)), optional_owner_args = $(_uses_optional_owner_ffi(m))))))
                         return $esc_struct(ptr, tgt.lib_name, tgt.free_ptr, tgt.alive, tgt.free_channel)
                     end
                 end)
@@ -1004,7 +1002,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                         function $fname(::Type{$esc_struct}, $(esc_args...))
                             $(bindings...)
                             lib = RustCall.module_symbol_library(@__MODULE__, $wrapper_name)
-                            return $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) _call_rust_owned_string(lib, $wrapper_name, $free_fn, $(expanded_call_args...); borrows = $borrows, slice_args = $(_uses_slice_ffi(m)), optional_owner_args = $(_uses_optional_owner_ffi(m)), option_scalar_args = $(_uses_option_scalar_ffi(m))))))
+                            return $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) _call_rust_owned_string(lib, $wrapper_name, $free_fn, $(expanded_call_args...); borrows = $borrows, slice_args = $(_uses_slice_ffi(m)), optional_owner_args = $(_uses_optional_owner_ffi(m))))))
                         end
                     end)
                 elseif ffi_borrowed_string_return(mc)
@@ -1012,7 +1010,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                         function $fname(::Type{$esc_struct}, $(esc_args...))
                             $(bindings...)
                             lib = RustCall.module_symbol_library(@__MODULE__, $wrapper_name)
-                            return $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) _call_rust_borrowed_string(lib, $wrapper_name, $(expanded_call_args...); borrows = $borrows, slice_args = $(_uses_slice_ffi(m)), optional_owner_args = $(_uses_optional_owner_ffi(m)), option_scalar_args = $(_uses_option_scalar_ffi(m))))))
+                            return $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) _call_rust_borrowed_string(lib, $wrapper_name, $(expanded_call_args...); borrows = $borrows, slice_args = $(_uses_slice_ffi(m)), optional_owner_args = $(_uses_optional_owner_ffi(m))))))
                         end
                     end)
                 else
@@ -1025,7 +1023,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                         function $fname(::Type{$esc_struct}, $(esc_args...))
                             $(bindings...)
                             lib = RustCall.module_symbol_library(@__MODULE__, $wrapper_name)
-                            return $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) _call_rust_method(lib, $wrapper_name, C_NULL, $jl_ret_type, $(expanded_call_args...); is_static = true, borrows = $borrows, slice_args = $(_uses_slice_ffi(m)), optional_owner_args = $(_uses_optional_owner_ffi(m)), option_scalar_args = $(_uses_option_scalar_ffi(m))))))
+                            return $(_in_callback_frame(frame, :(GC.@preserve $(preserved...) _call_rust_method(lib, $wrapper_name, C_NULL, $jl_ret_type, $(expanded_call_args...); is_static = true, borrows = $borrows, slice_args = $(_uses_slice_ffi(m)), optional_owner_args = $(_uses_optional_owner_ffi(m))))))
                         end
                     end)
                 end
@@ -1053,7 +1051,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                     function $fname(self::$esc_struct, $(esc_args...))
                         RustCall.check_not_freed(self, $struct_name_str)
                         $(bindings...)
-                        return $(_in_callback_frame(frame, :(GC.@preserve self $(preserved...) _call_rust_owned_string(self.lib_name, $wrapper_name, $free_fn, self.ptr, $(expanded_call_args...); borrows = $borrows, slice_args = $(_uses_slice_ffi(m)), optional_owner_args = $(_uses_optional_owner_ffi(m)), option_scalar_args = $(_uses_option_scalar_ffi(m))))))
+                        return $(_in_callback_frame(frame, :(GC.@preserve self $(preserved...) _call_rust_owned_string(self.lib_name, $wrapper_name, $free_fn, self.ptr, $(expanded_call_args...); borrows = $borrows, slice_args = $(_uses_slice_ffi(m)), optional_owner_args = $(_uses_optional_owner_ffi(m))))))
                     end
                 end)
             elseif ffi_borrowed_string_return(mc)
@@ -1061,7 +1059,7 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                     function $fname(self::$esc_struct, $(esc_args...))
                         RustCall.check_not_freed(self, $struct_name_str)
                         $(bindings...)
-                        return $(_in_callback_frame(frame, :(GC.@preserve self $(preserved...) _call_rust_borrowed_string(self.lib_name, $wrapper_name, self.ptr, $(expanded_call_args...); borrows = $borrows, slice_args = $(_uses_slice_ffi(m)), optional_owner_args = $(_uses_optional_owner_ffi(m)), option_scalar_args = $(_uses_option_scalar_ffi(m))))))
+                        return $(_in_callback_frame(frame, :(GC.@preserve self $(preserved...) _call_rust_borrowed_string(self.lib_name, $wrapper_name, self.ptr, $(expanded_call_args...); borrows = $borrows, slice_args = $(_uses_slice_ffi(m)), optional_owner_args = $(_uses_optional_owner_ffi(m))))))
                     end
                 end)
             else
@@ -1084,10 +1082,10 @@ function emit_julia_definitions(info::RustStructInfo; colliding::Set{String} = S
                             # A `Self`-returning method allocates, so its result
                             # is bound to the generation that ran it, exactly
                             # like a constructor (#277).
-                            res, tgt = $(_in_callback_frame(frame, :(GC.@preserve self $(preserved...) _call_rust_constructor(self.lib_name, $wrapper_name, $struct_stem, self.ptr, $(expanded_call_args...); borrows = $borrows, slice_args = $(_uses_slice_ffi(m)), optional_owner_args = $(_uses_optional_owner_ffi(m)), option_scalar_args = $(_uses_option_scalar_ffi(m))))))
+                            res, tgt = $(_in_callback_frame(frame, :(GC.@preserve self $(preserved...) _call_rust_constructor(self.lib_name, $wrapper_name, $struct_stem, self.ptr, $(expanded_call_args...); borrows = $borrows, slice_args = $(_uses_slice_ffi(m)), optional_owner_args = $(_uses_optional_owner_ffi(m))))))
                             return $esc_struct(res, tgt.lib_name, tgt.free_ptr, tgt.alive, tgt.free_channel)
                         else
-                            return $(_in_callback_frame(frame, :(GC.@preserve self $(preserved...) _call_rust_method(self.lib_name, $wrapper_name, self.ptr, $jl_ret_type, $(expanded_call_args...); is_static = false, borrows = $borrows, slice_args = $(_uses_slice_ffi(m)), optional_owner_args = $(_uses_optional_owner_ffi(m)), option_scalar_args = $(_uses_option_scalar_ffi(m))))))
+                            return $(_in_callback_frame(frame, :(GC.@preserve self $(preserved...) _call_rust_method(self.lib_name, $wrapper_name, self.ptr, $jl_ret_type, $(expanded_call_args...); is_static = false, borrows = $borrows, slice_args = $(_uses_slice_ffi(m)), optional_owner_args = $(_uses_optional_owner_ffi(m))))))
                         end
                     end
                 end)
@@ -1310,7 +1308,7 @@ function _inline_method_payload_wrapper(info::RustStructInfo, m::RustMethod, fna
         $(_inline_method_target_bindings(bindings, frame,
             :($tgt = RustCall._check_inline_call_borrows(
                 RustCall.resolve_call_target($lib, $wrapper_name; free_symbol = $free_sym), $borrows;
-                slice_symbol = $(_uses_slice_ffi(m) ? wrapper_name : ""), optional_symbol = $(_uses_optional_owner_ffi(m) ? wrapper_name : ""), option_scalar_symbol = $(_uses_option_scalar_ffi(m) ? wrapper_name : ""))))...)
+                slice_symbol = $(_uses_slice_ffi(m) ? wrapper_name : ""), optional_symbol = $(_uses_optional_owner_ffi(m) ? wrapper_name : ""))))...)
         $c = $(_in_callback_frame(frame, :(GC.@preserve $(preserve...) RustCall.call_rust_function(
             $tgt.func_ptr, $aggregate, $(leading_args...), $(call_args...)))))
         # The `panicked()` sentinel carries an uninitialized payload, so the
@@ -1610,11 +1608,10 @@ pointer from the retired image to the replacement's `free` (#277).
 """
 function _call_rust_constructor(lib_name::String, func_name::String,
                                 struct_name::AbstractString, args...; borrows = (), slice_args::Bool = false,
-                                optional_owner_args::Bool = false, option_scalar_args::Bool = false)
+                                optional_owner_args::Bool = false)
     target = _check_inline_call_borrows(resolve_call_target(lib_name, func_name;
                                  free_symbol = ffi_struct_free_symbol(struct_name)), borrows;
-        slice_symbol = slice_args ? func_name : "", optional_symbol = optional_owner_args ? func_name : "",
-        option_scalar_symbol = option_scalar_args ? func_name : "")
+        slice_symbol = slice_args ? func_name : "", optional_symbol = optional_owner_args ? func_name : "")
     ptr = guard_rust_panic_ptr(call_rust_function(target.func_ptr, Ptr{Cvoid}, args...),
                                target.channel, func_name)
     return (ptr, target)
@@ -1641,7 +1638,7 @@ function _crust_str_to_julia(raw::CRustStr)
 end
 
 function _call_rust_owned_string(lib_name::String, func_name::String, free_func_name::String, args...; borrows = (), slice_args::Bool = false,
-                                 optional_owner_args::Bool = false, option_scalar_args::Bool = false)
+                                 optional_owner_args::Bool = false)
     # One snapshot, taken before the call: the wrapper, its panic channel and
     # the function that releases the buffer it returns. The release function
     # used to be resolved by library name *after* the wrapper had returned, so
@@ -1650,8 +1647,7 @@ function _call_rust_owned_string(lib_name::String, func_name::String, free_func_
     # what the allocator contract forbids (#277).
     target = _check_inline_call_borrows(
         resolve_call_target(lib_name, func_name; free_symbol = free_func_name), borrows;
-        slice_symbol = slice_args ? func_name : "", optional_symbol = optional_owner_args ? func_name : "",
-        option_scalar_symbol = option_scalar_args ? func_name : "")
+        slice_symbol = slice_args ? func_name : "", optional_symbol = optional_owner_args ? func_name : "")
     func_ptr = target.func_ptr
     channel = target.channel
     raw = call_rust_function(func_ptr, CRustString, args...)
@@ -1667,10 +1663,9 @@ function _call_rust_owned_string(lib_name::String, func_name::String, free_func_
 end
 
 function _call_rust_borrowed_string(lib_name::String, func_name::String, args...; borrows = (), slice_args::Bool = false,
-                                    optional_owner_args::Bool = false, option_scalar_args::Bool = false)
+                                    optional_owner_args::Bool = false)
     target = _check_inline_call_borrows(resolve_call_target(lib_name, func_name), borrows;
-        slice_symbol = slice_args ? func_name : "", optional_symbol = optional_owner_args ? func_name : "",
-        option_scalar_symbol = option_scalar_args ? func_name : "")
+        slice_symbol = slice_args ? func_name : "", optional_symbol = optional_owner_args ? func_name : "")
     func_ptr = target.func_ptr
     channel = target.channel
     raw = call_rust_function(func_ptr, CRustStr, args...)
@@ -1738,7 +1733,7 @@ end
 # not capture the method (#520 review).
 function _call_rust_method(lib_name::String, func_name::String, ptr::Ptr{Cvoid},
                            ret_type::Type, args...; borrows = (), slice_args::Bool = false,
-                           optional_owner_args::Bool = false, option_scalar_args::Bool = false,
+                           optional_owner_args::Bool = false,
                            is_static::Union{Nothing, Bool} = nothing)
     # Old direct callers use a null pointer to request a static call. Generated
     # wrappers state their intent, so a finalized receiver cannot change arity.
@@ -1747,8 +1742,7 @@ function _call_rust_method(lib_name::String, func_name::String, ptr::Ptr{Cvoid},
         throw(RustError("cannot call instance method `$func_name`: receiver is a freed Rust object (NULL pointer)"))
     end
     target = _check_inline_call_borrows(resolve_call_target(lib_name, func_name), borrows;
-        slice_symbol = slice_args ? func_name : "", optional_symbol = optional_owner_args ? func_name : "",
-        option_scalar_symbol = option_scalar_args ? func_name : "")
+        slice_symbol = slice_args ? func_name : "", optional_symbol = optional_owner_args ? func_name : "")
     if static_call
         return _call_resolved_typed(target, func_name, ret_type, args...)
     else

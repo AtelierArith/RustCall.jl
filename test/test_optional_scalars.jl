@@ -173,20 +173,6 @@ end
             @test RustCall.is_err(err) && err.value == "missing value"
             @test Base.invokelatest(bindings.optional_scalar_label, nothing, 2.0) == "0 x 2"
             @test Base.invokelatest(bindings.optional_scalar_label, Int32(3), 2.0) == "6 x 2"
-
-            # The producer marker is what lets a binding refuse an older shim
-            # before passing the two slots (which an older macro never
-            # generated). Check it is exported, and that a symbol without it is
-            # refused.
-            lib = Base.invokelatest(getproperty, bindings.module_ref, :_LIB_PATH)
-            handle = RustCall.Libdl.dlopen(lib)
-            try
-                RustCall._require_option_scalar_abi(handle, "rustcall_optional_scalar_label")
-                @test_throws ErrorException RustCall._require_option_scalar_abi(
-                    handle, "rustcall_OptionalScalarCounter_value")
-            finally
-                RustCall.Libdl.dlclose(handle)
-            end
         end
     end
 end

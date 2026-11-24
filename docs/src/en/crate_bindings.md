@@ -510,12 +510,11 @@ bindings.set_rtol(1e-9)     # 1e-9
 The wrapper takes two C slots — an `i32` presence tag followed by the value —
 and reconstructs a Rust `Option<T>` in the shim. Rust's native `Option` layout
 never crosses the ABI, and the manifest records `Arg.abi = "option_scalar"`
-with the element in `Arg.slice_element`. A producer exports
-`<symbol>_option_scalar_v1`; bindings require that marker before calling the
-shim, so an older producer cannot be called with the two-slot shape. Only
-absence and a value of the element type are accepted: `missing`, `Some(x)` and
-values that do not convert to `T` raise an `ArgumentError` (or a conversion
-error) before Rust is entered.
+with the element in `Arg.slice_element`. Macros that predate this ABI refuse
+the signature outright, so no older producer can be called with the two-slot
+shape. Only absence and a value of the element type are accepted: `missing`,
+`Some(x)` and values that do not convert to `T` raise an `ArgumentError` (or a
+conversion error) before Rust is entered.
 
 `Option<&Owner>` remains the optional-borrow form and `Option<String>` is not
 supported; return an owned `String` and let Julia map it.

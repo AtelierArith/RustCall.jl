@@ -114,9 +114,6 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
     slice_symbols = _slice_arg_symbols(info)
     slice_check = isempty(slice_symbols) ? nothing :
         @_emitted(:(name in $slice_symbols && RustCall._require_slice_args_abi(handle, name)))
-    option_scalar_symbols = _option_scalar_arg_symbols(info)
-    option_scalar_check = isempty(option_scalar_symbols) ? nothing :
-        @_emitted(:(name in $option_scalar_symbols && RustCall._require_option_scalar_abi(handle, name)))
     module_body = @_emitted quote
         # The bindings format this module was generated for, checked by the
         # RustCall that loads it (#489). Both emitters declare it, so the
@@ -229,7 +226,6 @@ function emit_crate_module(info::CrateInfo, lib_path::String;
 
         function _required_symbol(handle::Ptr{Cvoid}, name::String)::Ptr{Cvoid}
             $slice_check
-            $option_scalar_check
             $(isempty(_optional_owner_symbols(info)) ? nothing :
                 @_emitted(:(name in $(_optional_owner_symbols(info)) && RustCall._require_optional_owner_abi(handle, name))))
             $(isempty(_owned_return_symbols(info)) ? nothing :

@@ -1646,17 +1646,6 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
     }
     if args
         .iter()
-        .any(|(_, ty)| crate::optional_borrows::scalar_element(ty).is_some())
-    {
-        let marker = format_ident!("{}", optional_scalar_marker(&symbol.to_string()));
-        out.extend(quote! {
-            #(#cfg_attrs)*
-            #[no_mangle]
-            pub extern "C" fn #marker() -> u8 { 1 }
-        });
-    }
-    if args
-        .iter()
         .any(|(_, ty)| crate::optional_borrows::reference(ty).is_some())
     {
         let marker = format_ident!("{}", optional_owner_marker(&symbol.to_string()));
@@ -2872,12 +2861,6 @@ pub(crate) fn slice_args_marker(symbol: &str) -> String {
 /// with checked call-local reconstruction rather than Rust's Option ABI.
 pub(crate) fn optional_owner_marker(symbol: &str) -> String {
     format!("{symbol}_optional_owner_ptr_v1")
-}
-
-/// Producer proof that primitive `Option<T>` arguments use the two-slot
-/// presence-tag/value ABI rather than a Rust-native Option layout.
-pub(crate) fn optional_scalar_marker(symbol: &str) -> String {
-    format!("{symbol}_option_scalar_v1")
 }
 
 /// Whether the wrapper of a method returns a boxed `*mut Struct`: `new`, or any

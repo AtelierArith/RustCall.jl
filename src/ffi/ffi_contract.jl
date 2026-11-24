@@ -750,17 +750,6 @@ end
 
 _uses_slice_ffi(signature) = any(abi -> abi in ("slice", "slice_mut"), signature.arg_abis)
 
-# Producer proof for the `option_scalar` argument ABI (issue #609): an older
-# macro passes a Rust-native `Option<T>` instead of the presence-tag/value
-# pair, so a binding must refuse to call it rather than pass the wrong slots.
-function _require_option_scalar_abi(handle::Ptr{Cvoid}, symbol::AbstractString)
-    marker = Libdl.dlsym(handle, string(symbol, "_option_scalar_v1"); throw_error = false)
-    marker === nothing || marker == C_NULL || return nothing
-    error("incompatible optional scalar argument ABI for $symbol; rebuild the crate with a rustcall_julia_macros that emits `option_scalar` shims")
-end
-
-_uses_option_scalar_ffi(signature) = any(abi -> abi == "option_scalar", signature.arg_abis)
-
 # The manifest's finite element vocabulary. Primitive layouts come from the
 # same scalar table as every other FFI position; complex slices use the
 # repr(C) pair of matching re/im fields guaranteed by num_complex.

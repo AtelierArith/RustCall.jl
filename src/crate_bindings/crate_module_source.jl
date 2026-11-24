@@ -151,9 +151,6 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     if !isempty(_optional_owner_symbols(info))
         push!(lines, "    rustcall′Base.in(name, $(repr(_optional_owner_symbols(info)))) && rustcall′RustCall._require_optional_owner_abi(handle, name)")
     end
-    if !isempty(_option_scalar_arg_symbols(info))
-        push!(lines, "    rustcall′Base.in(name, $(repr(_option_scalar_arg_symbols(info)))) && rustcall′RustCall._require_option_scalar_abi(handle, name)")
-    end
     if !isempty(_owned_return_symbols(info))
         push!(lines, "    rustcall′Base.in(name, $(repr(_owned_return_symbols(info)))) && rustcall′RustCall._require_owned_return_abi(handle, name)")
     end

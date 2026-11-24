@@ -464,23 +464,6 @@ function _slice_arg_symbols(info::CrateInfo)
     return Tuple(sort!(unique!(symbols)))
 end
 
-# The `option_scalar` counterpart of `_slice_arg_symbols` (issue #609).
-function _option_scalar_arg_symbols(info::CrateInfo)
-    symbols = String[]
-    for func in info.julia_functions
-        _binds_julia_wrapper(func) && _uses_option_scalar_ffi(func) || continue
-        push!(symbols, func.symbol)
-    end
-    for owner in info.julia_structs
-        _binds_julia_struct(owner) && isempty(owner.type_params) || continue
-        for method in owner.methods
-            isempty(method.skip_reason) && _uses_option_scalar_ffi(method) || continue
-            push!(symbols, method_wrapper_symbol(owner.ffi_name, method))
-        end
-    end
-    return Tuple(sort!(unique!(symbols)))
-end
-
 function _owned_return_symbols(info::CrateInfo)
     symbols = String[]
     for func in info.julia_functions
