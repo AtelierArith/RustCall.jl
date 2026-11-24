@@ -59,6 +59,7 @@ function japanese_navigation(pages)
         "Errors" => "エラー", "Load policy" => "読み込みポリシー",
         "Project Status" => "プロジェクトの状況", "Developer" => "開発者向け",
         "How RustCall Calls Rust" => "RustCall が Rust を呼ぶ仕組み",
+        "Rust ASTs with syn" => "syn による Rust AST の解析と変換",
         "Project Guide" => "プロジェクトガイド", "Windows Development" => "Windows での開発",
         "Developer Pitfalls" => "開発時の注意点", "Platforms" => "プラットフォーム",
         "Windows" => "Windows",
