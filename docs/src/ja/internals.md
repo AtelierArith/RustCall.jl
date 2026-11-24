@@ -376,23 +376,23 @@ RustCall.load_crate_bindings("./my_crate"; target_module = @__MODULE__)
 
 ```text
 @rust_crate path
-    │  マクロ展開：呼び出し式を生成
+    │  macro expansion: emit a call
     ▼
 load_crate_bindings(path; ...)
-    │  式の評価
+    │  evaluation
     ▼
 generate_bindings
     ├── scan_crate → rustcall-extract manifest → TOML → CrateInfo
-    ├── 実際のビルド構成を解決して再走査
-    ├── compute_crate_hash → キャッシュ済みライブラリ？
-    │       ├── Yes → 再利用
-    │       └── No  → cdylib が指定済み？
-    │                  ├── Yes → 元のクレートを cargo build
-    │                  └── No  → ラッパークレートを生成 → cargo build
-    └── emit_crate_module → Julia モジュールの Expr
+    ├── resolve actual build configuration and rescan
+    ├── compute_crate_hash → cached library?
+    │       ├── yes → reuse
+    │       └── no  → cdylib already declared?
+    │                  ├── yes → cargo build (original crate)
+    │                  └── no  → generate wrapper crate → cargo build
+    └── emit_crate_module → Julia module Expr
              │
              ▼
-        Core.eval → モジュールの __init__ → load_artifact!
+        Core.eval → module __init__ → load_artifact!
              │
              ▼
         CrateBindings(module_ref)
@@ -474,9 +474,9 @@ B.add(a, b)
     → getproperty(B, :add)
     → CrateBindingMember
     → Base.invokelatest(generated_add, ...)
-    → 生成された Julia ラッパー
-    → キャッシュされた C ABI 呼び出し先 → ccall
-    → panic の確認
+    → generated Julia wrapper
+    → cached C-ABI call target → ccall
+    → panic check
 ```
 
 実際のプロキシは必要に応じて引数のラッパーを外し、返されたオブジェクトをラップします。
@@ -524,11 +524,11 @@ info = RustCall.scan_crate("./my_crate")
 info.julia_functions
 info.julia_structs
 
-# この段階ではクレートをビルドする場合があります。
+# This step may build the crate.
 expr = RustCall.generate_bindings("./my_crate")
 Base.remove_linenums!(expr)
 
-# 対応するバインディングを Julia ソースとして保存する場合。
+# Persist the corresponding bindings as Julia source instead.
 RustCall.write_bindings_to_file(
     "./my_crate",
     "./MyCrateBindings.jl";
