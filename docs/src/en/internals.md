@@ -47,6 +47,54 @@ automatic:
      ──► ccall(panic channel)   # did Rust panic?
 ```
 
+## Two entry points side by side
+
+Both entry points generate bindings to native Rust code, but they do their
+work at different stages of Julia execution.
+
+| | `rust"""` (`@rust_str`) | `@rust_crate` |
+|---|---|---|
+| Input | Rust source string | Path to a Cargo library crate |
+| When Julia wrapper expressions are generated | Macro expansion | Evaluation of the expanded call |
+| How Rust wrappers are generated | `rustcall-extract expand` before compilation | Rust's `#[julia]` procedural macro during Cargo compilation |
+| Rust build | Direct `rustc`, or Cargo for dependencies | Cargo |
+| Dependencies | `// cargo-deps:` or a Cargo doc comment | `Cargo.toml`, with Cargo features |
+| Julia namespace | Definitions in the calling module | A generated module, accessed through bindings or a named submodule |
+| Typical use | Experiments, small kernels, inline generic specialization | Existing Rust libraries and Julia packages backed by Rust |
+
+For example, the inline form defines a Julia function in the caller:
+
+```julia
+using RustCall
+
+rust"""
+#[julia]
+fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+"""
+
+add(10, 20) # 30
+```
+
+If the same function is marked with `#[julia]` in a Cargo crate (see the
+[crate walkthrough](crate_bindings.md)), the external form gives it a
+separate namespace:
+
+```julia
+using RustCall
+
+const B = @rust_crate "./my_crate"
+B.add(Int32(10), Int32(20)) # 30
+```
+
+The ordinary C-ABI paths converge on the same FFI contract: Rust source is the
+source of the signatures, `rustcall_julia_core` supplies the shared Rust-side
+code generation and manifest model, and Julia generates the corresponding
+wrappers. Neither requires users to write the `ccall` themselves. Only
+supported, exposed items are bound; a crate's entire Rust API does not
+automatically become a Julia API.
+
 ## The whole thing by hand
 
 The pipeline can be driven step by step from the REPL. This is the clearest way
@@ -161,6 +209,28 @@ organizational. The include order in `src/RustCall.jl` is the dependency order.
 
 The work is split between two moments, and the split matters.
 
+Julia's non-standard string literal syntax supplies the entry point:
+`rust"..."` and `rust"""..."""` are parsed as calls to the string macro
+`@rust_str` with the contents as a string. They are not a Rust interpreter
+or an embedded LLVM compilation path. For example, you can inspect the Julia
+expression without evaluating the resulting block:
+
+```julia
+using RustCall
+
+expr = @macroexpand rust"""
+#[julia]
+fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+"""
+Base.remove_linenums!(expr)
+```
+
+Macro expansion runs the extractor and may invoke configuration probes, but
+does not build the block's shared library. The returned expression contains
+the compilation/load call and the Julia function definitions.
+
 ### At macro-expansion time
 
 `@rust_str` (`src/macros/ruststr.jl`) runs when Julia *parses and lowers* the
@@ -193,9 +263,10 @@ function add(a, b) ... end        # the generated wrappers
 lib_name
 ```
 
-So the **Julia functions exist as soon as the macro is expanded**, and are part
-of the caller's precompiled image. The **library is produced when the block
-executes**.
+So the **Julia function definitions are emitted at macro expansion**, and are
+installed when the returned block is evaluated. They can be part of the
+caller's precompiled image. The **library is produced or reused when the
+block executes**.
 
 ### At run time
 
@@ -556,6 +627,91 @@ crate in place of a string. `generate_bindings` is the orchestrator:
    Julia function per `#[julia]` function and a type per struct, one submodule
    per Rust module.
 
+### From the macro to a module
+
+The macro itself is deliberately small. Unlike `@rust_str`, it does not
+scan the Rust source during macro expansion. It parses options and emits a
+call to `load_crate_bindings`, passing the caller's module (`__module__`).
+For the default options, the expansion is roughly equivalent to this
+(omitting defaults):
+
+```julia
+RustCall.load_crate_bindings("./my_crate"; target_module = @__MODULE__)
+```
+
+When Julia evaluates that call, the normal C-ABI path proceeds as follows:
+
+```text
+@rust_crate path
+    │  macro expansion: emit a call
+    ▼
+load_crate_bindings(path; ...)
+    │  evaluation
+    ▼
+generate_bindings
+    ├── scan_crate → rustcall-extract manifest → TOML → CrateInfo
+    ├── resolve actual build configuration and rescan
+    ├── compute_crate_hash → cached library?
+    │       ├── yes → reuse
+    │       └── no  → cdylib already declared?
+    │                  ├── yes → cargo build (original crate)
+    │                  └── no  → generate wrapper crate → cargo build
+    └── emit_crate_module → Julia module Expr
+             │
+             ▼
+        Core.eval → module __init__ → load_artifact!
+             │
+             ▼
+        CrateBindings(module_ref)
+```
+
+The initial scan is lenient about Cargo features. The subsequent scan
+resolves the configuration of the actual build, including `features`,
+`default_features`, target predicates and the profile. That prevents a
+Julia binding from naming a symbol which the Rust build has configured out.
+
+### Why two Cargo build paths?
+
+If `Cargo.toml` already requests a `cdylib`, RustCall builds the original
+crate with its own Cargo profile. If not, `create_wrapper_crate` creates a
+temporary Cargo project with a path dependency on the original crate. A
+simplified generated manifest looks like this:
+
+```toml
+[package]
+name = "my_crate_julia_wrapper"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+my_crate = { path = "/path/to/my_crate" }
+rustcall_julia_macros = { path = "/path/to/RustCall.jl/deps/rustcall_julia_macros" }
+
+[profile.release]
+opt-level = 3
+lto = true
+panic = "unwind"
+```
+
+Requested features are placed on the dependency entry for this wrapper path.
+The original crate must provide the compatible `#[julia]` runtime from
+the same source when using this path. The original crate's procedural macro
+already emits its C-ABI exports, so the wrapper crate does not generate a
+second copy of those exports. The compiled library is kept outside the
+temporary project before the latter is cleaned up.
+
+The scan and the procedural macro share the same Rust code-generation
+core, including the symbol naming scheme. For example, a supported
+annotated `a::run` is bound in a Julia submodule as `B.a.run(...)`; its
+exported symbol is module-qualified rather than just `rustcall_run`.
+
+PyO3-only crates have additional wrapper and Python-host paths; the latter
+uses a live interpreter through PythonCall rather than this C-ABI path.
+See [PyO3 Crates](pyo3.md) for those strategies.
+
 There are two emitters that must stay equivalent. `@rust_crate` uses the
 *expression* emitter and evaluates the module in memory.
 `write_bindings_to_file` uses the *source-text* emitter and writes a `.jl` file
@@ -588,6 +744,106 @@ The shape is that of the inline wrapper, with two differences in carriers:
   same reason generated code refers to `Base` and `RustCall` only through
   aliases spelled with a character Rust identifiers cannot contain
   (`src/ffi/emitted_names.jl`).
+
+### World age and direct calls
+
+The expression emitter constructs an `Expr(:module, ...)`, and
+`_instantiate_runtime_bindings` evaluates it via `Core.eval`. The return
+value of `@rust_crate` is not the module itself, but a `CrateBindings`
+containing a `module_ref::Module`. A function accessed through that object
+is represented by a callable `CrateBindingMember`.
+
+This matters in Julia because the dynamically defined methods may be newer
+than the world age of the function which asked for the bindings. For example:
+
+```julia
+function run_add(crate_path)
+    B = @rust_crate crate_path
+    B.add(Int32(1), Int32(2))
+end
+```
+
+In the ordinary function-call case, the proxy handles this through
+`Base.invokelatest`:
+
+```text
+B.add(a, b)
+    → getproperty(B, :add)
+    → CrateBindingMember
+    → Base.invokelatest(generated_add, ...)
+    → generated Julia wrapper
+    → cached C-ABI call target → ccall
+    → panic check
+```
+
+The real proxy also unwraps arguments and wraps returned objects as needed.
+`invokelatest` is useful for dynamic loading, but limits inference across the
+call and can add overhead. For a numerical kernel called repeatedly, use a
+named submodule defined at module top level:
+
+```julia
+module MyPackage
+using RustCall
+
+@rust_crate joinpath(@__DIR__, "..", "deps", "my_crate") submodule="Bindings"
+using .Bindings: add
+
+export add
+end
+```
+
+| Call after the bindings have been defined | Proxy / `invokelatest` for each function call |
+|---|---|
+| `B.add(a, b)` (returned bindings object) | Yes |
+| `Bindings.add(a, b)` (named module) | No |
+| `add(a, b)` (imported function) | No |
+
+The direct form still performs the generated wrapper's ABI conversions,
+cached target lookup and panic check. Avoid assuming either form has zero
+overhead; measure the intended workload.
+
+`name="Bindings"` only names the generated module, while
+`submodule="Bindings"` defines that module visibly in the caller. Do not
+assign the result to the same name as the submodule. During precompilation,
+the module (visible or hidden) belongs to the caller's module tree so Julia
+can serialize its definitions. The native handle is not serialized:
+`__init__` opens a private generation copy in the loading process, and
+`include_dependency` tracks the crate inputs and durable library for
+precompile invalidation. See [Precompilation](precompilation.md).
+
+### Inspecting the intermediate representations
+
+The individual stages can also be inspected from the REPL. Use a crate
+directory containing `Cargo.toml` and supported `#[julia]` items.
+
+```julia
+using RustCall
+
+@macroexpand @rust_crate "./my_crate"
+
+info = RustCall.scan_crate("./my_crate")
+info.julia_functions
+info.julia_structs
+
+# This step may build the crate.
+expr = RustCall.generate_bindings("./my_crate")
+Base.remove_linenums!(expr)
+
+# Persist the corresponding bindings as Julia source instead.
+RustCall.write_bindings_to_file(
+    "./my_crate",
+    "./MyCrateBindings.jl";
+    output_module_name = "MyCrate",
+)
+```
+
+The key implementation files are
+`src/crate_bindings/crate_runtime.jl` (macro, module evaluation and proxies),
+`crate_scan.jl` (manifest scan and wrapper project),
+`crate_build.jl` (build and cache),
+`crate_module_expr.jl` (module expression and initialization),
+`crate_wrappers_expr.jl` (FFI wrappers), and
+`crate_write.jl` / `crate_module_source.jl` (persisted bindings).
 
 ## Loading and lifetime
 
