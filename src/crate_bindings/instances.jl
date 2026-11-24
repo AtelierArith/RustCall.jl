@@ -195,3 +195,67 @@ function generate_crate_instances(instances::AbstractVector)
     end
     return String(take!(io))
 end
+
+"""
+    RustCall.generate_crate_functions(functions; header = true) -> String
+
+Generate Rust source for concrete `#[julia]` free functions, typically
+instantiations of a dependency's generic functions. Each entry is a named tuple
+with fields `name`, `args`, `return_type` and `expression`.
+
+- `name` is the Rust function name of the generated wrapper (and its Julia
+  binding).
+- `args` is a vector of `name => rust_type` pairs, as for a method's
+  arguments. The names are the parameters the `expression` sees.
+- `return_type` is the concrete Rust return type.
+- `expression` is trusted Rust source evaluated in the declared parameters'
+  scope. It must produce `return_type`, for example
+  `"specials::gamma::<f64>(x)"` or `"sample::twice::<f64>(x)"`.
+
+The output is Rust source to place in a facade crate that depends on both the
+original crate and `rustcall_julia_macros`, then load with `@rust_crate`.
+`header = false` omits the `use rustcall_julia_macros::julia;` line, for a file
+that already has it (for example when composing this output with
+[`generate_crate_instances`](@ref)):
+
+```julia
+functions = [(
+    name = "gamma_f64",
+    args = ["x" => "f64"],
+    return_type = "f64",
+    expression = "specials::gamma::<f64>(x)",
+)]
+write("specials_facade/src/lib.rs", RustCall.generate_crate_functions(functions))
+```
+
+`args` types, `return_type` and `expression` are **trusted Rust source**,
+checked by `cargo` rather than parsed or sanitized here. RustCall's normal
+crate binding rules decide which concrete signatures can cross the ABI. This
+API does not infer instantiations from the crate: every function is declared
+explicitly.
+"""
+function generate_crate_functions(functions::AbstractVector; header::Bool = true)
+    used = Set{String}()
+    plans = Any[]
+    for spec in functions
+        _instance_require(spec, (:name, :args, :return_type, :expression), "function")
+        _instance_fields(spec, (:name, :args, :return_type, :expression), "function")
+        name = _instance_ident(spec.name)
+        name in used && throw(ArgumentError("duplicate function $name"))
+        push!(used, name)
+        _, args, _ = _instance_params(spec.args)
+        return_type = _instance_source(spec.return_type, "return type")
+        expression = _instance_source(spec.expression, "function expression")
+        push!(plans, (; name, args, return_type, expression))
+    end
+    io = IOBuffer()
+    header && println(io, "use rustcall_julia_macros::julia;")
+    for plan in plans
+        header && println(io)
+        println(io, "#[julia]")
+        println(io, "pub fn ", plan.name, "(", join(plan.args, ", "), ") -> ", plan.return_type, " {")
+        println(io, "    ", plan.expression)
+        println(io, "}")
+    end
+    return String(take!(io))
+end
