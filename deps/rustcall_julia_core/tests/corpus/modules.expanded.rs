@@ -12,6 +12,8 @@ pub mod a {
         ::std::option::Option < ::std::string::String >> =
         ::std::cell::RefCell::new(::std::option::Option::None);
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_a__run_take_panic(out: *mut u8, cap: usize) -> usize {
         __RUSTCALL_PANIC_RUSTCALL_A__RUN
@@ -47,6 +49,7 @@ pub mod a {
                 }
             })
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_a__run() -> ::std::mem::MaybeUninit<i32> {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -93,6 +96,7 @@ pub mod a {
         ::std::option::Option < ::std::string::String >> =
         ::std::cell::RefCell::new(::std::option::Option::None);
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn a__C_free_take_panic(out: *mut u8, cap: usize) -> usize {
         __RUSTCALL_DROP_PANIC_615F5F435F66726565
@@ -128,6 +132,7 @@ pub mod a {
                 }
             })
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn a__C_free(ptr: *mut C) {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -172,6 +177,7 @@ pub mod a {
         pub len: usize,
         pub cap: usize,
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn a__C_free_rust_string(ptr: *mut u8, len: usize, cap: usize) {
         if !ptr.is_null() {
@@ -185,6 +191,7 @@ pub mod a {
         ::std::option::Option < ::std::string::String >> =
         ::std::cell::RefCell::new(::std::option::Option::None);
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn a__C_get_v_take_panic(out: *mut u8, cap: usize) -> usize {
         __RUSTCALL_HELPER_PANIC_615F5F435F6765745F76
@@ -220,6 +227,7 @@ pub mod a {
                 }
             })
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn a__C_get_v(ptr: *const C) -> ::std::mem::MaybeUninit<i32> {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -260,6 +268,7 @@ pub mod a {
         ::std::option::Option < ::std::string::String >> =
         ::std::cell::RefCell::new(::std::option::Option::None);
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn a__C_set_v_take_panic(out: *mut u8, cap: usize) -> usize {
         __RUSTCALL_HELPER_PANIC_615F5F435F7365745F76
@@ -295,6 +304,7 @@ pub mod a {
                 }
             })
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn a__C_set_v(ptr: *mut C, value: i32) {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -338,6 +348,7 @@ pub mod a {
         ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
         ::std::cell::RefCell::new(::std::option::Option::None);
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn a__C_get_label_take_panic(out: *mut u8, cap: usize) -> usize {
         __RUSTCALL_HELPER_PANIC_615F5F435F6765745F6C6162656C
@@ -373,6 +384,7 @@ pub mod a {
                 }
             })
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn a__C_get_label(
         ptr: *const C,
@@ -426,6 +438,7 @@ pub mod a {
         ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
         ::std::cell::RefCell::new(::std::option::Option::None);
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn a__C_set_label_take_panic(out: *mut u8, cap: usize) -> usize {
         __RUSTCALL_HELPER_PANIC_615F5F435F7365745F6C6162656C
@@ -461,6 +474,7 @@ pub mod a {
                 }
             })
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn a__C_set_label(
         ptr: *mut C,
@@ -512,6 +526,8 @@ pub mod a {
         ::std::option::Option < ::std::string::String >> =
         ::std::cell::RefCell::new(::std::option::Option::None);
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_a__C_new_take_panic(out: *mut u8, cap: usize) -> usize {
         __RUSTCALL_PANIC_RUSTCALL_A__C_NEW
@@ -547,6 +563,7 @@ pub mod a {
                 }
             })
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_a__C_new(v: i32) -> *mut C {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -588,6 +605,8 @@ pub mod a {
         ::std::option::Option < ::std::string::String >> =
         ::std::cell::RefCell::new(::std::option::Option::None);
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_a__C_get_take_panic(out: *mut u8, cap: usize) -> usize {
         __RUSTCALL_PANIC_RUSTCALL_A__C_GET
@@ -623,6 +642,7 @@ pub mod a {
                 }
             })
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_a__C_get(ptr: *const C) -> ::std::mem::MaybeUninit<i32> {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -664,6 +684,8 @@ pub mod a {
         ::std::option::Option < ::std::string::String >> =
         ::std::cell::RefCell::new(::std::option::Option::None);
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_a__C_describe_take_panic(
         out: *mut u8,
@@ -702,6 +724,7 @@ pub mod a {
                 }
             })
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_a__C_describe(ptr: *const C) -> a__C_RustCallOwnedString {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -756,6 +779,8 @@ pub mod a {
         ::std::option::Option < ::std::string::String >> =
         ::std::cell::RefCell::new(::std::option::Option::None);
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_a__C_checked_take_panic(
         out: *mut u8,
@@ -858,6 +883,7 @@ pub mod a {
             }
         }
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_a__C_checked(ptr: *const C) -> CResult_a__C_checked {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -936,6 +962,8 @@ pub mod a {
             ::std::option::Option < ::std::string::String >> =
             ::std::cell::RefCell::new(::std::option::Option::None);
         }
+        #[allow(clippy::not_unsafe_ptr_arg_deref)]
+        #[allow(clippy::not_unsafe_ptr_arg_deref)]
         #[no_mangle]
         pub extern "C" fn rustcall_a__deep_0er__run_take_panic(
             out: *mut u8,
@@ -974,6 +1002,7 @@ pub mod a {
                     }
                 })
         }
+        #[allow(clippy::not_unsafe_ptr_arg_deref)]
         #[no_mangle]
         pub extern "C" fn rustcall_a__deep_0er__run() -> ::std::mem::MaybeUninit<i32> {
             let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -1017,6 +1046,8 @@ pub mod a {
             ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
             ::std::cell::RefCell::new(::std::option::Option::None);
         }
+        #[allow(clippy::not_unsafe_ptr_arg_deref)]
+        #[allow(clippy::not_unsafe_ptr_arg_deref)]
         #[no_mangle]
         pub extern "C" fn rustcall_a__deep_0er__snake_0case_0fn_take_panic(
             out: *mut u8,
@@ -1055,6 +1086,7 @@ pub mod a {
                     }
                 })
         }
+        #[allow(clippy::not_unsafe_ptr_arg_deref)]
         #[no_mangle]
         pub extern "C" fn rustcall_a__deep_0er__snake_0case_0fn(
             x_1: i32,
@@ -1103,6 +1135,8 @@ pub mod b {
         ::std::option::Option < ::std::string::String >> =
         ::std::cell::RefCell::new(::std::option::Option::None);
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_b__run_take_panic(out: *mut u8, cap: usize) -> usize {
         __RUSTCALL_PANIC_RUSTCALL_B__RUN
@@ -1138,6 +1172,7 @@ pub mod b {
                 }
             })
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_b__run() -> ::std::mem::MaybeUninit<i32> {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -1183,6 +1218,7 @@ pub mod b {
         ::std::option::Option < ::std::string::String >> =
         ::std::cell::RefCell::new(::std::option::Option::None);
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn b__C_free_take_panic(out: *mut u8, cap: usize) -> usize {
         __RUSTCALL_DROP_PANIC_625F5F435F66726565
@@ -1218,6 +1254,7 @@ pub mod b {
                 }
             })
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn b__C_free(ptr: *mut C) {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -1261,6 +1298,7 @@ pub mod b {
         ::std::option::Option < ::std::string::String >> =
         ::std::cell::RefCell::new(::std::option::Option::None);
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn b__C_get_v_take_panic(out: *mut u8, cap: usize) -> usize {
         __RUSTCALL_HELPER_PANIC_625F5F435F6765745F76
@@ -1296,6 +1334,7 @@ pub mod b {
                 }
             })
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn b__C_get_v(ptr: *const C) -> ::std::mem::MaybeUninit<i32> {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -1336,6 +1375,7 @@ pub mod b {
         ::std::option::Option < ::std::string::String >> =
         ::std::cell::RefCell::new(::std::option::Option::None);
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn b__C_set_v_take_panic(out: *mut u8, cap: usize) -> usize {
         __RUSTCALL_HELPER_PANIC_625F5F435F7365745F76
@@ -1371,6 +1411,7 @@ pub mod b {
                 }
             })
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn b__C_set_v(ptr: *mut C, value: i32) {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -1414,6 +1455,8 @@ pub mod b {
         ::std::option::Option < ::std::string::String >> =
         ::std::cell::RefCell::new(::std::option::Option::None);
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_b__C_new_take_panic(out: *mut u8, cap: usize) -> usize {
         __RUSTCALL_PANIC_RUSTCALL_B__C_NEW
@@ -1449,6 +1492,7 @@ pub mod b {
                 }
             })
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_b__C_new(v: i32) -> *mut C {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -1490,6 +1534,8 @@ pub mod b {
         ::std::option::Option < ::std::string::String >> =
         ::std::cell::RefCell::new(::std::option::Option::None);
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_b__C_get_take_panic(out: *mut u8, cap: usize) -> usize {
         __RUSTCALL_PANIC_RUSTCALL_B__C_GET
@@ -1525,6 +1571,7 @@ pub mod b {
                 }
             })
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_b__C_get(ptr: *const C) -> ::std::mem::MaybeUninit<i32> {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -1577,6 +1624,8 @@ thread_local! {
     static __RUSTCALL_PANIC_RUSTCALL_RUN : ::std::cell::RefCell < ::std::option::Option <
     ::std::string::String >> = ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_run_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_RUN
@@ -1612,6 +1661,7 @@ pub extern "C" fn rustcall_run_take_panic(out: *mut u8, cap: usize) -> usize {
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_run() -> ::std::mem::MaybeUninit<i32> {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -1654,6 +1704,8 @@ pub mod a_b {
         ::std::option::Option < ::std::string::String >> =
         ::std::cell::RefCell::new(::std::option::Option::None);
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_a_0b__c_take_panic(out: *mut u8, cap: usize) -> usize {
         __RUSTCALL_PANIC_RUSTCALL_A_0B__C
@@ -1689,6 +1741,7 @@ pub mod a_b {
                 }
             })
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_a_0b__c() -> ::std::mem::MaybeUninit<i32> {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -1732,6 +1785,8 @@ pub mod a {
         ::std::option::Option < ::std::string::String >> =
         ::std::cell::RefCell::new(::std::option::Option::None);
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_a__b_0c_take_panic(out: *mut u8, cap: usize) -> usize {
         __RUSTCALL_PANIC_RUSTCALL_A__B_0C
@@ -1767,6 +1822,7 @@ pub mod a {
                 }
             })
     }
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     #[no_mangle]
     pub extern "C" fn rustcall_a__b_0c() -> ::std::mem::MaybeUninit<i32> {
         let _rustcall_boundary = crate::__RustCallBoundary::enter();

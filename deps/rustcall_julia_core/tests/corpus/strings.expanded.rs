@@ -6,6 +6,8 @@ thread_local! {
     static __RUSTCALL_PANIC_RUSTCALL_SHOUT : ::std::cell::RefCell < ::std::option::Option
     < ::std::string::String >> = ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_shout_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_SHOUT
@@ -47,6 +49,8 @@ pub struct shout_RustCallOwnedString {
     pub len: usize,
     pub cap: usize,
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn shout_free_rust_string(ptr: *mut u8, len: usize, cap: usize) {
     if !ptr.is_null() {
@@ -55,6 +59,7 @@ pub extern "C" fn shout_free_rust_string(ptr: *mut u8, len: usize, cap: usize) {
         }
     }
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_shout(
     input_ptr: *const u8,
@@ -122,6 +127,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_concat_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_CONCAT
@@ -163,6 +170,8 @@ pub struct concat_RustCallOwnedString {
     pub len: usize,
     pub cap: usize,
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn concat_free_rust_string(ptr: *mut u8, len: usize, cap: usize) {
     if !ptr.is_null() {
@@ -171,6 +180,7 @@ pub extern "C" fn concat_free_rust_string(ptr: *mut u8, len: usize, cap: usize) 
         }
     }
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_concat(
     a_ptr: *const u8,
@@ -238,6 +248,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_byte_len_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_BYTE_LEN
@@ -273,6 +285,7 @@ pub extern "C" fn rustcall_byte_len_take_panic(out: *mut u8, cap: usize) -> usiz
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_byte_len(
     s_ptr: *const u8,
@@ -322,6 +335,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_greeting_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_GREETING
@@ -362,6 +377,7 @@ pub struct greeting_RustCallBorrowedString {
     pub ptr: *const u8,
     pub len: usize,
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_greeting() -> greeting_RustCallBorrowedString {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -414,6 +430,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[cfg(unix)]
 #[no_mangle]
 pub extern "C" fn rustcall_unix_name_take_panic(out: *mut u8, cap: usize) -> usize {
@@ -457,6 +475,8 @@ pub struct unix_name_RustCallOwnedString {
     pub len: usize,
     pub cap: usize,
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[cfg(unix)]
 #[no_mangle]
 pub extern "C" fn unix_name_free_rust_string(ptr: *mut u8, len: usize, cap: usize) {
@@ -466,6 +486,7 @@ pub extern "C" fn unix_name_free_rust_string(ptr: *mut u8, len: usize, cap: usiz
         }
     }
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[cfg(unix)]
 #[no_mangle]
 pub extern "C" fn rustcall_unix_name(
@@ -529,6 +550,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_consume_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_CONSUME
@@ -564,6 +587,7 @@ pub extern "C" fn rustcall_consume_take_panic(out: *mut u8, cap: usize) -> usize
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_consume(
     s_ptr: *const u8,
@@ -614,6 +638,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_paren_ref_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_PAREN_REF
@@ -649,6 +675,7 @@ pub extern "C" fn rustcall_paren_ref_take_panic(out: *mut u8, cap: usize) -> usi
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_paren_ref(
     s_ptr: *const u8,
@@ -698,6 +725,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_collide_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_COLLIDE
@@ -733,6 +762,7 @@ pub extern "C" fn rustcall_collide_take_panic(out: *mut u8, cap: usize) -> usize
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_collide(
     s_ptr_: *const u8,
@@ -788,6 +818,7 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Greeter_free_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_DROP_PANIC_477265657465725F66726565
@@ -823,6 +854,7 @@ pub extern "C" fn Greeter_free_take_panic(out: *mut u8, cap: usize) -> usize {
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Greeter_free(ptr: *mut Greeter) {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -867,6 +899,7 @@ pub struct Greeter_RustCallOwnedString {
     pub len: usize,
     pub cap: usize,
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Greeter_free_rust_string(ptr: *mut u8, len: usize, cap: usize) {
     if !ptr.is_null() {
@@ -885,6 +918,7 @@ thread_local! {
     ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Greeter_get_count_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_HELPER_PANIC_477265657465725F6765745F636F756E74
@@ -920,6 +954,7 @@ pub extern "C" fn Greeter_get_count_take_panic(out: *mut u8, cap: usize) -> usiz
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Greeter_get_count(
     ptr: *const Greeter,
@@ -962,6 +997,7 @@ thread_local! {
     ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Greeter_set_count_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_HELPER_PANIC_477265657465725F7365745F636F756E74
@@ -997,6 +1033,7 @@ pub extern "C" fn Greeter_set_count_take_panic(out: *mut u8, cap: usize) -> usiz
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Greeter_set_count(ptr: *mut Greeter, value: u32) {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -1040,6 +1077,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Greeter_new_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_GREETER_NEW
@@ -1075,6 +1114,7 @@ pub extern "C" fn rustcall_Greeter_new_take_panic(out: *mut u8, cap: usize) -> u
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Greeter_new(count: u32) -> *mut Greeter {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -1116,6 +1156,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Greeter_shout_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_GREETER_SHOUT
@@ -1151,6 +1193,7 @@ pub extern "C" fn rustcall_Greeter_shout_take_panic(out: *mut u8, cap: usize) ->
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Greeter_shout(
     ptr: *const Greeter,
@@ -1213,6 +1256,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Greeter_label_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_GREETER_LABEL
@@ -1248,6 +1293,7 @@ pub extern "C" fn rustcall_Greeter_label_take_panic(out: *mut u8, cap: usize) ->
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Greeter_label(
     ptr: *const Greeter,
@@ -1298,6 +1344,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Greeter_take_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_GREETER_TAKE
@@ -1333,6 +1381,7 @@ pub extern "C" fn rustcall_Greeter_take_take_panic(out: *mut u8, cap: usize) -> 
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Greeter_take(
     ptr: *mut Greeter,

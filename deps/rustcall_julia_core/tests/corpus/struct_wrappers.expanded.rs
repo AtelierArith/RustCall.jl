@@ -12,6 +12,7 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Greeter_free_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_DROP_PANIC_477265657465725F66726565
@@ -47,6 +48,7 @@ pub extern "C" fn Greeter_free_take_panic(out: *mut u8, cap: usize) -> usize {
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Greeter_free(ptr: *mut Greeter) {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -91,6 +93,7 @@ pub struct Greeter_RustCallOwnedString {
     pub len: usize,
     pub cap: usize,
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Greeter_free_rust_string(ptr: *mut u8, len: usize, cap: usize) {
     if !ptr.is_null() {
@@ -109,6 +112,7 @@ thread_local! {
     ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Greeter_get_name_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_HELPER_PANIC_477265657465725F6765745F6E616D65
@@ -144,6 +148,7 @@ pub extern "C" fn Greeter_get_name_take_panic(out: *mut u8, cap: usize) -> usize
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Greeter_get_name(
     ptr: *const Greeter,
@@ -195,6 +200,7 @@ thread_local! {
     ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Greeter_set_name_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_HELPER_PANIC_477265657465725F7365745F6E616D65
@@ -230,6 +236,7 @@ pub extern "C" fn Greeter_set_name_take_panic(out: *mut u8, cap: usize) -> usize
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Greeter_set_name(
     ptr: *mut Greeter,
@@ -281,6 +288,7 @@ thread_local! {
     ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Greeter_get_visits_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_HELPER_PANIC_477265657465725F6765745F766973697473
@@ -316,6 +324,7 @@ pub extern "C" fn Greeter_get_visits_take_panic(out: *mut u8, cap: usize) -> usi
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Greeter_get_visits(
     ptr: *const Greeter,
@@ -358,6 +367,7 @@ thread_local! {
     ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Greeter_set_visits_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_HELPER_PANIC_477265657465725F7365745F766973697473
@@ -393,6 +403,7 @@ pub extern "C" fn Greeter_set_visits_take_panic(out: *mut u8, cap: usize) -> usi
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Greeter_set_visits(ptr: *mut Greeter, value: u32) {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -436,6 +447,7 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Greeter_clone_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_HELPER_PANIC_477265657465725F636C6F6E65
@@ -471,6 +483,7 @@ pub extern "C" fn Greeter_clone_take_panic(out: *mut u8, cap: usize) -> usize {
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Greeter_clone(
     ptr: *const Greeter,
@@ -515,6 +528,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Greeter_new_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_GREETER_NEW
@@ -550,6 +565,7 @@ pub extern "C" fn rustcall_Greeter_new_take_panic(out: *mut u8, cap: usize) -> u
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Greeter_new(
     name_ptr: *const u8,
@@ -598,6 +614,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Greeter_rename_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_GREETER_RENAME
@@ -633,6 +651,7 @@ pub extern "C" fn rustcall_Greeter_rename_take_panic(out: *mut u8, cap: usize) -
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Greeter_rename(
     ptr: *mut Greeter,
@@ -681,6 +700,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Greeter_greet_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_GREETER_GREET
@@ -716,6 +737,7 @@ pub extern "C" fn rustcall_Greeter_greet_take_panic(out: *mut u8, cap: usize) ->
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Greeter_greet(
     ptr: *const Greeter,
@@ -778,6 +800,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Greeter_name_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_GREETER_NAME
@@ -813,6 +837,7 @@ pub extern "C" fn rustcall_Greeter_name_take_panic(out: *mut u8, cap: usize) -> 
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Greeter_name(
     ptr: *const Greeter,
@@ -880,6 +905,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_checked_double_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_CHECKED_DOUBLE
@@ -979,6 +1006,7 @@ impl CResult_checked_double {
         }
     }
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_checked_double(value: i32) -> CResult_checked_double {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -1022,6 +1050,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_positive_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_POSITIVE
@@ -1103,6 +1133,7 @@ impl COption_positive {
         }
     }
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_positive(value: i32) -> COption_positive {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -1148,6 +1179,7 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Divider_free_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_DROP_PANIC_446976696465725F66726565
@@ -1183,6 +1215,7 @@ pub extern "C" fn Divider_free_take_panic(out: *mut u8, cap: usize) -> usize {
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Divider_free(ptr: *mut Divider) {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -1227,6 +1260,7 @@ pub struct Divider_RustCallOwnedString {
     pub len: usize,
     pub cap: usize,
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Divider_free_rust_string(ptr: *mut u8, len: usize, cap: usize) {
     if !ptr.is_null() {
@@ -1240,6 +1274,7 @@ thread_local! {
     ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Divider_get_scale_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_HELPER_PANIC_446976696465725F6765745F7363616C65
@@ -1275,6 +1310,7 @@ pub extern "C" fn Divider_get_scale_take_panic(out: *mut u8, cap: usize) -> usiz
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Divider_get_scale(
     ptr: *const Divider,
@@ -1317,6 +1353,7 @@ thread_local! {
     ::std::cell::RefCell < ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Divider_set_scale_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_HELPER_PANIC_446976696465725F7365745F7363616C65
@@ -1352,6 +1389,7 @@ pub extern "C" fn Divider_set_scale_take_panic(out: *mut u8, cap: usize) -> usiz
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn Divider_set_scale(ptr: *mut Divider, value: i32) {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -1395,6 +1433,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Divider_new_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_DIVIDER_NEW
@@ -1430,6 +1470,7 @@ pub extern "C" fn rustcall_Divider_new_take_panic(out: *mut u8, cap: usize) -> u
             }
         })
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Divider_new(scale: i32) -> *mut Divider {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
@@ -1471,6 +1512,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Divider_checked_div_take_panic(
     out: *mut u8,
@@ -1573,6 +1616,7 @@ impl CResult_Divider_checked_div {
         }
     }
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Divider_checked_div(
     ptr: *const Divider,
@@ -1636,6 +1680,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Divider_ratio_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_DIVIDER_RATIO
@@ -1717,6 +1763,7 @@ impl COption_Divider_ratio {
         }
     }
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Divider_ratio(
     ptr: *const Divider,
@@ -1761,6 +1808,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Divider_describe_take_panic(
     out: *mut u8,
@@ -1865,6 +1914,7 @@ impl CResult_Divider_describe {
         }
     }
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Divider_describe(
     ptr: *const Divider,
@@ -1943,6 +1993,8 @@ thread_local! {
     ::std::option::Option < ::std::string::String >> =
     ::std::cell::RefCell::new(::std::option::Option::None);
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Divider_label_take_panic(out: *mut u8, cap: usize) -> usize {
     __RUSTCALL_PANIC_RUSTCALL_DIVIDER_LABEL
@@ -2024,6 +2076,7 @@ impl COption_Divider_label {
         }
     }
 }
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn rustcall_Divider_label(ptr: *const Divider) -> COption_Divider_label {
     let _rustcall_boundary = crate::__RustCallBoundary::enter();
