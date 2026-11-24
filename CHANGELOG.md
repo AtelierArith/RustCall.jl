@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Non-generic `#[julia]` functions and methods accept `Option<T>` for a
+  primitive `T` (`bool`, `f32`, `f64`, the integer types, `isize`, `usize`),
+  passing a value or `nothing` from Julia. The wrapper lowers the argument to
+  an `i32` presence tag and the value and reconstructs `Option<T>` in the shim;
+  the manifest records `Arg.abi = "option_scalar"`
+  ([#609](https://github.com/AtelierArith/RustCall.jl/issues/609)).
+
 ## [0.10.2] - 2026-11-24
 
 ### Added

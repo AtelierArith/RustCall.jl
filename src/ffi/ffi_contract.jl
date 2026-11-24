@@ -727,6 +727,15 @@ function ffi_argument_contract(rust_type::AbstractString; abi::AbstractString = 
         return FFIContract(String(rust_type), :argument, :ptr_len, slots,
                            nothing, copy(slots), AbstractVector{T}, :borrowed, nothing, true)
     end
+    if abi == "option_scalar"
+        # `Option<T>` for a primitive `T` (issue #609): an `i32` presence tag
+        # followed by the value. The manifest carries `T` in `slice_element`,
+        # the same canonical primitive vocabulary slices use.
+        T = ffi_scalar_element_type(slice_element)
+        slots = Type[Int32, T]
+        return FFIContract(String(rust_type), :argument, :option_scalar, slots,
+                           nothing, copy(slots), Union{Nothing, T}, :none, nothing, true)
+    end
     return _ffi_contract(rust_type, :argument, abi, nothing, nothing, nothing)
 end
 
@@ -753,6 +762,13 @@ function ffi_slice_element_type(element::AbstractString)
     entry = ffi_lookup(element)
     entry === nothing && throw(ArgumentError("missing scalar layout for slice element: $element"))
     return entry.surface_type
+end
+
+# The `option_scalar` element vocabulary: the slice scalars plus `bool`, which
+# a numeric slice never admits.
+function ffi_scalar_element_type(element::AbstractString)
+    element == "bool" && return Bool
+    return ffi_slice_element_type(element)
 end
 
 """

@@ -389,7 +389,21 @@ function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
         # so the report, not a refusal, is what names it.
         _boundary_examined!(position, rust_type, abi,
                             c.known ? nothing : ffi_describe(rust_type; direction = :argument, abi = abi))
-        if abi in ("slice", "slice_mut")
+        if abi == "option_scalar"
+            # `Option<T>` for a primitive `T` (issue #609): an `i32` presence
+            # tag and the value, reconstructed as `Option<T>` by the shim.
+            T = _emitted_type(ffi_type_expr(ffi_scalar_element_type(slice_elements[index])))
+            # Position-indexed, in the emitter's own namespace: a name-derived
+            # temporary here would collide with the string buffer of another
+            # argument (`v` + `_value` vs an argument called `v_value`), and the
+            # two conversions would overwrite each other before the call.
+            present = Symbol(_EMITTER_LOCAL_PREFIX, "option_present′", index)
+            value = Symbol(_EMITTER_LOCAL_PREFIX, "option_value′", index)
+            push!(bindings, @_emitted(:( $present = $arg_sym === nothing ? Int32(0) : Int32(1) )))
+            push!(bindings, @_emitted(:( $value = $arg_sym === nothing ? zero($T) : convert($T, $arg_sym) )))
+            push!(call_args, present)
+            push!(call_args, value)
+        elseif abi in ("slice", "slice_mut")
             obj = Symbol(_EMITTER_LOCAL_PREFIX, "slice_owner′", index)
             span = Symbol(_EMITTER_LOCAL_PREFIX, "slice_span′", index)
             T = _emitted_type(ffi_type_expr(ffi_slice_element_type(slice_elements[index])))
@@ -687,7 +701,7 @@ rooted for the call (#296). The plain wrapper has no `GC.@preserve` region.
 function _uses_string_ffi(sig::RustFunctionSignature)
     _ffi_function_return(sig).aggregate_type === nothing || return true
     # A borrowed `#[julia]` struct keeps its handle rooted for the call (#565).
-    any(abi -> _is_handle_abi(abi) || abi in ("slice", "slice_mut", "optional_borrow", "borrow_unresolved"), sig.arg_abis) && return true
+    any(abi -> _is_handle_abi(abi) || abi in ("slice", "slice_mut", "option_scalar", "optional_borrow", "borrow_unresolved"), sig.arg_abis) && return true
     return any(zip(sig.arg_types, sig.arg_abis)) do (rust_type, abi)
         c = ffi_argument_contract(rust_type; abi = abi)
         c.abi === :ptr_len || c.abi === :ptr_len_cap || c.abi === :callback

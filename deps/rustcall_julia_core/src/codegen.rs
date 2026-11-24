@@ -463,6 +463,30 @@ fn string_arg_conversion(
                 };
             }),
         )
+    } else if let Some(element) = crate::optional_borrows::scalar_element(ty) {
+        // `Option<primitive>` crosses as two C slots: an `i32` presence tag
+        // and the value. Reconstructing `core::option::Option` here keeps the
+        // Rust-side ABI explicit, so the wrapper never passes a Rust-native
+        // Option layout through the C boundary.
+        let present = fresh_call_ident(&format!("{name}_present"), taken);
+        let value = fresh_call_ident(&format!("{name}_value"), taken);
+        let scalar = format_ident!("{}", element);
+        (
+            vec![
+                quote! { #present: ::std::primitive::i32 },
+                quote! { #value: ::std::primitive::#scalar },
+            ],
+            Some(quote! {
+                let #name: ::std::option::Option<::std::primitive::#scalar> = {
+                    let _: ::std::primitive::i32 = #present;
+                    if #present != 0 {
+                        ::std::option::Option::Some(#value)
+                    } else {
+                        ::std::option::Option::None
+                    }
+                };
+            }),
+        )
     } else if let Some((mutable, pointee)) = crate::optional_borrows::pointee(ty) {
         let p = fresh_call_ident(&format!("{name}_ptr"), taken);
         let core = fresh_call_ident("__rustcall_optional_core", taken);
@@ -1363,7 +1387,9 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
         }
     }
     for (name, ty) in &args {
-        if !crate::optional_borrows::is_option(ty) {
+        if !crate::optional_borrows::is_option(ty)
+            || crate::optional_borrows::scalar_element(ty).is_some()
+        {
             continue;
         }
         if matches!(

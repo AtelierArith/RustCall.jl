@@ -29,6 +29,39 @@ pub(crate) fn inner(ty: &Type) -> Option<&Type> {
     }
 }
 
+/// The canonical scalar representation of an `Option<T>` whose `T` is a
+/// primitive, or `None` for every other `Option` (an optional borrowed owner,
+/// an owned string, a slice, or an unsupported type). The wrapper lowers such
+/// an argument to two C slots: an `i32` presence tag and the value.
+pub(crate) fn scalar_element(ty: &Type) -> Option<&'static str> {
+    let Type::Path(p) = crate::types::unparen(inner(ty)?) else {
+        return None;
+    };
+    if p.qself.is_some() || p.path.leading_colon.is_some() || p.path.segments.len() != 1 {
+        return None;
+    }
+    let segment = p.path.segments.first()?;
+    if !segment.arguments.is_none() {
+        return None;
+    }
+    match segment.ident.to_string().as_str() {
+        "bool" => Some("bool"),
+        "f32" => Some("f32"),
+        "f64" => Some("f64"),
+        "i8" => Some("i8"),
+        "i16" => Some("i16"),
+        "i32" => Some("i32"),
+        "i64" => Some("i64"),
+        "u8" => Some("u8"),
+        "u16" => Some("u16"),
+        "u32" => Some("u32"),
+        "u64" => Some("u64"),
+        "isize" => Some("isize"),
+        "usize" => Some("usize"),
+        _ => None,
+    }
+}
+
 pub(crate) fn reference(ty: &Type) -> Option<&TypeReference> {
     match crate::types::unparen(inner(ty)?) {
         Type::Reference(r) => Some(r),

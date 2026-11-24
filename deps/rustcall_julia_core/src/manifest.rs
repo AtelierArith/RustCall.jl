@@ -461,7 +461,10 @@ pub struct Arg {
     /// `"handle"` / `"handle_mut"` (`&T` / `&mut T` of a `#[julia]` struct
     /// of this scan, [`Arg::handle`]; #565), `"handle_optional"` /
     /// `"handle_optional_mut"` (a nullable thin pointer for `Option<&T>` /
-    /// `Option<&mut T>`, explicitly reconstructed by the producer; #571).
+    /// `Option<&mut T>`, explicitly reconstructed by the producer; #571),
+    /// `"option_scalar"` (`Option<T>` for a primitive `T`: an `i32` presence
+    /// tag and the value, with [`Arg::slice_element`] naming the element;
+    /// #609).
     /// `"optional_borrow"` is an unresolved optional reference: consumers
     /// must refuse it rather than assume a concrete owner or native Option ABI.
     /// `"borrow_unresolved"` marks a required reference whose lexical scope cannot
@@ -480,7 +483,8 @@ pub struct Arg {
     /// stay unclassified. Optional producers export `_optional_owner_ptr_v1`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub handle: String,
-    /// Canonical initialized primitive representation for `slice` / `slice_mut`.
+    /// Canonical initialized primitive representation for `slice` /
+    /// `slice_mut`, and the element type for `option_scalar`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub slice_element: String,
     /// Length slot representation (`usize`, the C ABI's size_t).

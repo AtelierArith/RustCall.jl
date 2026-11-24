@@ -197,7 +197,8 @@ end
 # Out of line: the hot path above should be small enough to inline into the
 # generated wrapper, and this half runs only when the epoch moved.
 @noinline function _refresh_call_target!(cache::CallTargetCache, mod::Module,
-                                         func_name::String, slice_args::Bool = false, optional_owner_args::Bool = false)
+                                         func_name::String, slice_args::Bool = false,
+                                         optional_owner_args::Bool = false)
     # Sampled **before** resolving. A write landing between here and the
     # snapshot leaves this entry stamped with the older epoch, so the next call
     # re-resolves; sampling afterwards could stamp a pre-write snapshot with the

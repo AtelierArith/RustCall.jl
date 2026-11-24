@@ -543,7 +543,8 @@ function _inline_method_borrows(method; receiver = :self)
     return _uses_optional_owner_ffi(method) ? @_emitted(:(RustCall._present_call_borrows($tuple))) : tuple
 end
 
-function _check_inline_call_borrows(target, borrows; slice_symbol::AbstractString = "", optional_symbol::AbstractString = "")
+function _check_inline_call_borrows(target, borrows; slice_symbol::AbstractString = "",
+                                    optional_symbol::AbstractString = "")
     isempty(slice_symbol) || _require_slice_args_abi(target.handle, slice_symbol)
     isempty(optional_symbol) || _require_optional_owner_abi(target.handle, optional_symbol)
     for obj in borrows
@@ -1606,7 +1607,8 @@ afterwards — is a second lookup by library name, and a reload in between binds
 pointer from the retired image to the replacement's `free` (#277).
 """
 function _call_rust_constructor(lib_name::String, func_name::String,
-                                struct_name::AbstractString, args...; borrows = (), slice_args::Bool = false, optional_owner_args::Bool = false)
+                                struct_name::AbstractString, args...; borrows = (), slice_args::Bool = false,
+                                optional_owner_args::Bool = false)
     target = _check_inline_call_borrows(resolve_call_target(lib_name, func_name;
                                  free_symbol = ffi_struct_free_symbol(struct_name)), borrows;
         slice_symbol = slice_args ? func_name : "", optional_symbol = optional_owner_args ? func_name : "")
@@ -1635,7 +1637,8 @@ function _crust_str_to_julia(raw::CRustStr)
     return String(bytes)
 end
 
-function _call_rust_owned_string(lib_name::String, func_name::String, free_func_name::String, args...; borrows = (), slice_args::Bool = false, optional_owner_args::Bool = false)
+function _call_rust_owned_string(lib_name::String, func_name::String, free_func_name::String, args...; borrows = (), slice_args::Bool = false,
+                                 optional_owner_args::Bool = false)
     # One snapshot, taken before the call: the wrapper, its panic channel and
     # the function that releases the buffer it returns. The release function
     # used to be resolved by library name *after* the wrapper had returned, so
@@ -1659,7 +1662,8 @@ function _call_rust_owned_string(lib_name::String, func_name::String, free_func_
     return _take_owned_string(raw, target.free_ptr)
 end
 
-function _call_rust_borrowed_string(lib_name::String, func_name::String, args...; borrows = (), slice_args::Bool = false, optional_owner_args::Bool = false)
+function _call_rust_borrowed_string(lib_name::String, func_name::String, args...; borrows = (), slice_args::Bool = false,
+                                    optional_owner_args::Bool = false)
     target = _check_inline_call_borrows(resolve_call_target(lib_name, func_name), borrows;
         slice_symbol = slice_args ? func_name : "", optional_symbol = optional_owner_args ? func_name : "")
     func_ptr = target.func_ptr
@@ -1728,7 +1732,8 @@ end
 # name `@rust` resolves — a generic free function named like the wrapper must
 # not capture the method (#520 review).
 function _call_rust_method(lib_name::String, func_name::String, ptr::Ptr{Cvoid},
-                           ret_type::Type, args...; borrows = (), slice_args::Bool = false, optional_owner_args::Bool = false,
+                           ret_type::Type, args...; borrows = (), slice_args::Bool = false,
+                           optional_owner_args::Bool = false,
                            is_static::Union{Nothing, Bool} = nothing)
     # Old direct callers use a null pointer to request a static call. Generated
     # wrappers state their intent, so a finalized receiver cannot change arity.

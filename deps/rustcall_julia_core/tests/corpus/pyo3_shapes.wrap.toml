@@ -397,7 +397,8 @@ name = "i32"
 [[structs.methods.args]]
 name = "other"
 rust_type = "crate::Option<i32>"
-abi = ""
+abi = "option_scalar"
+slice_element = "i32"
 
 [structs.methods.args.py_shape]
 kind = "opaque"
@@ -432,7 +433,8 @@ name = "i32"
 [[structs.methods.args]]
 name = "other"
 rust_type = "Option<i32>"
-abi = ""
+abi = "option_scalar"
+slice_element = "i32"
 
 [structs.methods.args.py_shape]
 kind = "option"

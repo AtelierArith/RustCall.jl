@@ -71,8 +71,12 @@ pub fn typed_arg(pt: &syn::PatType) -> Arg {
         rust_type: type_to_string(&pt.ty),
         abi: arg_abi(&pt.ty).to_string(),
         handle: String::new(),
+        // `slice_element` is the canonical primitive representation for a
+        // numeric slice and for an `option_scalar` argument; `slice_length`
+        // belongs to the slice ABI alone.
         slice_element: crate::slices::shape(&pt.ty)
             .map(|s| s.2.to_string())
+            .or_else(|| crate::optional_borrows::scalar_element(&pt.ty).map(str::to_string))
             .unwrap_or_default(),
         slice_length: if crate::slices::shape(&pt.ty).is_some() {
             "usize".into()
@@ -201,6 +205,8 @@ pub fn arg_abi(ty: &syn::Type) -> &'static str {
         } else {
             "slice"
         }
+    } else if crate::optional_borrows::scalar_element(ty).is_some() {
+        "option_scalar"
     } else if crate::optional_borrows::reference(ty).is_some() {
         "optional_borrow"
     } else if is_string_type(ty) {
@@ -534,7 +540,7 @@ pub fn function_entry(
             let mut args = fn_args(&func.sig);
             if !wrapped {
                 for arg in &mut args {
-                    if matches!(arg.abi.as_str(), "slice" | "slice_mut") {
+                    if matches!(arg.abi.as_str(), "slice" | "slice_mut" | "option_scalar") {
                         arg.abi.clear();
                         arg.slice_element.clear();
                         arg.slice_length.clear();
