@@ -489,6 +489,37 @@ positions accept a correctly typed owner or `nothing`, never a raw pointer.
 Unsupported owner resolution does not provide a raw-pointer escape for an
 optional position.
 
+### Optional scalar values
+
+A non-generic `#[julia]` function or method can take `Option<T>` when `T` is a
+primitive (`bool`, `f32`, `f64`, `i8`–`i64`, `u8`–`u64`, `isize`, `usize`).
+Julia passes a value of `T`, or `nothing`:
+
+```rust
+#[julia]
+pub fn set_rtol(rtol: Option<f64>) -> f64 {
+    rtol.unwrap_or(1e-6)
+}
+```
+
+```julia
+bindings.set_rtol(nothing)  # 1e-6
+bindings.set_rtol(1e-9)     # 1e-9
+```
+
+The wrapper takes two C slots — an `i32` presence tag followed by the value —
+and reconstructs a Rust `Option<T>` in the shim. Rust's native `Option` layout
+never crosses the ABI, and the manifest records `Arg.abi = "option_scalar"`
+with the element in `Arg.slice_element`. A producer exports
+`<symbol>_option_scalar_v1`; bindings require that marker before calling the
+shim, so an older producer cannot be called with the two-slot shape. Only
+absence and a value of the element type are accepted: `missing`, `Some(x)` and
+values that do not convert to `T` raise an `ArgumentError` (or a conversion
+error) before Rust is entered.
+
+`Option<&Owner>` remains the optional-borrow form and `Option<String>` is not
+supported; return an owned `String` and let Julia map it.
+
 ### Optional borrowed owners
 
 A non-generic `#[julia]` function or method can accept an optional borrow of a

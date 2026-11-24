@@ -373,6 +373,11 @@ pub fn function_claims(f: &Function, policy: Policy) -> Vec<Claim> {
             &f.symbol,
         )));
     }
+    if f.args.iter().any(|a| a.abi == "option_scalar") {
+        out.push(Claim::exported(crate::codegen::optional_scalar_marker(
+            &f.symbol,
+        )));
+    }
     if f.args.iter().any(|a| {
         matches!(
             a.abi.as_str(),
@@ -497,6 +502,11 @@ pub fn struct_claims(s: &Struct, policy: Policy) -> Vec<Claim> {
                 .any(|a| matches!(a.abi.as_str(), "slice" | "slice_mut"))
             {
                 claims.push(Claim::exported(crate::codegen::slice_args_marker(
+                    &m.symbol,
+                )));
+            }
+            if m.args.iter().any(|a| a.abi == "option_scalar") {
+                claims.push(Claim::exported(crate::codegen::optional_scalar_marker(
                     &m.symbol,
                 )));
             }

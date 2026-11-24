@@ -463,6 +463,32 @@ fn string_arg_conversion(
                 };
             }),
         )
+    } else if let Some(element) = crate::optional_borrows::scalar_element(ty) {
+        // `Option<primitive>` crosses as two C slots: an `i32` presence tag
+        // and the value. Reconstructing `core::option::Option` here keeps the
+        // Rust-side ABI explicit, so the wrapper never passes a Rust-native
+        // Option layout through the C boundary.
+        let present = fresh_call_ident(&format!("{name}_present"), taken);
+        let value = fresh_call_ident(&format!("{name}_value"), taken);
+        let core = fresh_call_ident("__rustcall_option_core", taken);
+        let scalar = format_ident!("{}", element);
+        (
+            vec![
+                quote! { #present: ::std::primitive::i32 },
+                quote! { #value: ::std::primitive::#scalar },
+            ],
+            Some(quote! {
+                extern crate core as #core;
+                let #name: #core::option::Option<::std::primitive::#scalar> = {
+                    let _: ::std::primitive::i32 = #present;
+                    if #present != 0 {
+                        #core::option::Option::Some(#value)
+                    } else {
+                        #core::option::Option::None
+                    }
+                };
+            }),
+        )
     } else if let Some((mutable, pointee)) = crate::optional_borrows::pointee(ty) {
         let p = fresh_call_ident(&format!("{name}_ptr"), taken);
         let core = fresh_call_ident("__rustcall_optional_core", taken);
@@ -1363,7 +1389,9 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
         }
     }
     for (name, ty) in &args {
-        if !crate::optional_borrows::is_option(ty) {
+        if !crate::optional_borrows::is_option(ty)
+            || crate::optional_borrows::scalar_element(ty).is_some()
+        {
             continue;
         }
         if matches!(
@@ -1612,6 +1640,17 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
         // A newer consumer must never connect this pointer/length contract
         // to an older proc macro's native fat-pointer or unchecked layout.
         let marker = format_ident!("{}", slice_args_marker(&symbol.to_string()));
+        out.extend(quote! {
+            #(#cfg_attrs)*
+            #[no_mangle]
+            pub extern "C" fn #marker() -> u8 { 1 }
+        });
+    }
+    if args
+        .iter()
+        .any(|(_, ty)| crate::optional_borrows::scalar_element(ty).is_some())
+    {
+        let marker = format_ident!("{}", optional_scalar_marker(&symbol.to_string()));
         out.extend(quote! {
             #(#cfg_attrs)*
             #[no_mangle]
@@ -2835,6 +2874,12 @@ pub(crate) fn slice_args_marker(symbol: &str) -> String {
 /// with checked call-local reconstruction rather than Rust's Option ABI.
 pub(crate) fn optional_owner_marker(symbol: &str) -> String {
     format!("{symbol}_optional_owner_ptr_v1")
+}
+
+/// Producer proof that primitive `Option<T>` arguments use the two-slot
+/// presence-tag/value ABI rather than a Rust-native Option layout.
+pub(crate) fn optional_scalar_marker(symbol: &str) -> String {
+    format!("{symbol}_option_scalar_v1")
 }
 
 /// Whether the wrapper of a method returns a boxed `*mut Struct`: `new`, or any

@@ -132,14 +132,17 @@ lock, which is what lets `@rust` calls from several threads proceed at once
 instead of queueing on `REGISTRY_LOCK`.
 """
 function cached_call_target(cache::CallTargetCache, mod::Module, func_name::String;
-                            slice_args::Bool = false, optional_owner_args::Bool = false)
+                            slice_args::Bool = false, optional_owner_args::Bool = false,
+                            option_scalar_args::Bool = false)
     hit = cached_target_hit(cache)
     if hit !== nothing
         slice_args && _require_slice_args_abi(hit.handle, func_name)
         optional_owner_args && _require_optional_owner_abi(hit.handle, func_name)
+        option_scalar_args && _require_option_scalar_abi(hit.handle, func_name)
         return hit
     end
-    return _refresh_call_target!(cache, mod, func_name, slice_args, optional_owner_args)
+    return _refresh_call_target!(cache, mod, func_name, slice_args, optional_owner_args,
+                                 option_scalar_args)
 end
 
 """
@@ -197,7 +200,9 @@ end
 # Out of line: the hot path above should be small enough to inline into the
 # generated wrapper, and this half runs only when the epoch moved.
 @noinline function _refresh_call_target!(cache::CallTargetCache, mod::Module,
-                                         func_name::String, slice_args::Bool = false, optional_owner_args::Bool = false)
+                                         func_name::String, slice_args::Bool = false,
+                                         optional_owner_args::Bool = false,
+                                         option_scalar_args::Bool = false)
     # Sampled **before** resolving. A write landing between here and the
     # snapshot leaves this entry stamped with the older epoch, so the next call
     # re-resolves; sampling afterwards could stamp a pre-write snapshot with the
@@ -217,6 +222,7 @@ end
     target = resolve_call_target(module_symbol_library(mod, func_name), func_name)
     slice_args && _require_slice_args_abi(target.handle, func_name)
     optional_owner_args && _require_optional_owner_abi(target.handle, func_name)
+    option_scalar_args && _require_option_scalar_abi(target.handle, func_name)
     return publish_call_target!(cache, epoch, target)
 end
 
