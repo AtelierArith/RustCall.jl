@@ -1119,7 +1119,7 @@ struct SpecializedFunction
     symbol::String                    # exported C symbol, `rustcall_<ffi_name>` (#279, #300)
     arg_types::Vector{String}
     return_type::String
-    arg_abis::Vector{String}          # manifest `abi` per argument ("string", "str" or "")
+    arg_abis::Vector{String}          # manifest `abi` per argument ("string", "str", "option_str", ... or "")
     has_owned_string_helper::Bool     # returns `<ffi_name>_RustCallOwnedString`, freed by `<ffi_name>_free_rust_string`
     has_borrowed_string_helper::Bool  # returns `<ffi_name>_RustCallBorrowedString`
     ffi_name::String                  # the stem of those symbols: `name`, module-qualified (#300)

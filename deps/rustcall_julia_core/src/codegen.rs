@@ -267,7 +267,11 @@ pub fn function_returns_str_ref(sig: &syn::Signature) -> bool {
 /// Whether any argument is passed as a `(ptr, len)` byte pair.
 pub fn has_string_args(sig: &syn::Signature) -> bool {
     sig.inputs.iter().any(|a| match a {
-        FnArg::Typed(pt) => is_string_type(&pt.ty) || is_str_ref_type(&pt.ty),
+        FnArg::Typed(pt) => {
+            is_string_type(&pt.ty)
+                || is_str_ref_type(&pt.ty)
+                || crate::optional_borrows::str_element(&pt.ty)
+        }
         FnArg::Receiver(_) => false,
     })
 }
@@ -481,6 +485,35 @@ fn string_arg_conversion(
                     let _: ::std::primitive::i32 = #present;
                     if #present != 0 {
                         ::std::option::Option::Some(#value)
+                    } else {
+                        ::std::option::Option::None
+                    }
+                };
+            }),
+        )
+    } else if crate::optional_borrows::str_element(ty) {
+        // `Option<&str>` crosses as an `i32` presence tag followed by the
+        // `(ptr, len)` pair a required `&str` uses. The shim rebuilds a
+        // call-scoped `Option<&str>` from the decoded bytes, so no Rust
+        // reference outlives the synchronous call (#612).
+        let present = fresh_call_ident(&format!("{name}_present"), taken);
+        let p = fresh_call_ident(&format!("{name}_ptr"), taken);
+        let l = fresh_call_ident(&format!("{name}_len"), taken);
+        let b = fresh_call_ident(&format!("{name}_bytes"), taken);
+        let c = fresh_call_ident(&format!("{name}_cow"), taken);
+        (
+            vec![
+                quote! { #present: ::std::primitive::i32 },
+                quote! { #p: *const u8 },
+                quote! { #l: usize },
+            ],
+            Some(quote! {
+                let #b = unsafe { std::slice::from_raw_parts(#p, #l) };
+                let #c = String::from_utf8_lossy(#b);
+                let #name: ::std::option::Option<&str> = {
+                    let _: ::std::primitive::i32 = #present;
+                    if #present != 0 {
+                        ::std::option::Option::Some(&*#c)
                     } else {
                         ::std::option::Option::None
                     }
@@ -1390,6 +1423,20 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
         if !crate::optional_borrows::is_option(ty)
             || crate::optional_borrows::scalar_element(ty).is_some()
         {
+            continue;
+        }
+        if crate::optional_borrows::str_element(ty) {
+            // `Option<&str>` is rebuilt from a call-scoped `Cow`, exactly like
+            // a required `&str` (#612). It therefore inherits the lowered-string
+            // refusals: the lifetime may not outlive the call. A returned
+            // `&str` is copied by `has_string_args`/`returns_copied_str`.
+            let mut scope: syn::Signature = syn::parse_quote!(fn rustcall_optional_str_scope());
+            scope.generics = generics.clone();
+            if !crate::extract::borrow_is_call_scoped(ty, &scope) {
+                return Err(Refusal::over(crate::manifest::skip_reason::LOWERED_STR_LIFETIME,
+                    name.to_string(), ty,
+                    format!("`{julia_name}`: optional string argument `{name}` must end at the synchronous call boundary; retained and `'static` optional strings are unsupported. Pass an owned `String`, or relate the lifetime to nothing that outlives the call (#612)")));
+            }
             continue;
         }
         if matches!(

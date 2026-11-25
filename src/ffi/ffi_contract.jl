@@ -554,6 +554,7 @@ The column is a small closed vocabulary of strings:
 | `""`         | as written   | as written      |
 | `"string"`   | `:ptr_len`   | `:ptr_len_cap`  |
 | `"str"`      | `:ptr_len`   | `:ptr_len`      |
+| `"option_str"` | `:option_str` | *refused*   |
 | `"callback"` | `:callback`  | *refused*       |
 
 `""` means "the Rust type spelling decides", and is returned as `nothing`.
@@ -569,11 +570,14 @@ function ffi_manifest_abi_kind(abi::AbstractString, direction::Symbol)
         return direction === :return ? :ptr_len_cap : :ptr_len
     elseif column == "str"
         return :ptr_len
+    elseif column == "option_str"
+        direction === :argument && return :option_str
+        throw(ArgumentError("an optional string is supported in argument position only (#612)"))
     elseif column == "callback"
         direction === :argument && return :callback
         throw(ArgumentError("a callback (C-ABI function pointer) is supported in argument position only (#296)"))
     end
-    throw(ArgumentError("unknown manifest abi column \"$column\"; expected \"\", \"string\", \"str\" or \"callback\""))
+    throw(ArgumentError("unknown manifest abi column \"$column\"; expected \"\", \"string\", \"str\", \"option_str\" or \"callback\""))
 end
 
 function _ffi_check_direction(direction::Symbol)
@@ -735,6 +739,16 @@ function ffi_argument_contract(rust_type::AbstractString; abi::AbstractString = 
         slots = Type[Int32, T]
         return FFIContract(String(rust_type), :argument, :option_scalar, slots,
                            nothing, copy(slots), Union{Nothing, T}, :none, nothing, true)
+    end
+    if abi == "option_str"
+        # `Option<&str>` (issue #612): an `i32` presence tag followed by the
+        # same `(ptr, len)` pair a required `&str` uses. The producer rebuilds
+        # a call-scoped string, so the bytes are Julia's and rooted for the
+        # call.
+        slots = Type[Int32, Ptr{UInt8}, Csize_t]
+        return FFIContract(String(rust_type), :argument, :option_str, slots,
+                           nothing, copy(slots), Union{Nothing, String},
+                           :owned_by_julia, nothing, true)
     end
     return _ffi_contract(rust_type, :argument, abi, nothing, nothing, nothing)
 end
@@ -1730,6 +1744,24 @@ ffi_string_argument(value, arg_name::AbstractString, context::AbstractString) =
 
 ffi_string_argument(value, position::Integer, context::AbstractString) =
     _ffi_string_argument(value, string("#", position), context)
+
+"""
+    ffi_optional_string_argument(value, arg_name, context) -> String
+
+The bytes for an `Option<&str>` argument (#612): `nothing` becomes the empty
+byte buffer the shim ignores, and any `AbstractString` goes through
+`ffi_string_argument`. Any other value — `missing`, `Some("x")`, a
+number — is an `ArgumentError` before the pointer is handed to Rust, so
+absence cannot be confused with an ordinary conversion failure.
+"""
+function ffi_optional_string_argument(value, arg_name::AbstractString,
+                                      context::AbstractString)
+    value === nothing && return ""
+    value isa AbstractString || throw(ArgumentError(
+        "argument `$arg_name` of `$context` is an optional string: pass `nothing` " *
+        "or an `AbstractString`, got $(typeof(value))"))
+    return ffi_string_argument(value, arg_name, context)
+end
 
 function _ffi_string_argument(value, descriptor::AbstractString, context::AbstractString)
     s = String(value)

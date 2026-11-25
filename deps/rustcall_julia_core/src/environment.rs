@@ -639,6 +639,33 @@ pub(crate) fn lowered_lifetime_error(
                 }
                 if args
                     .iter()
+                    .any(|(name, ty)| name == arg && crate::optional_borrows::str_element(ty))
+                {
+                    let msg = if start == "static" {
+                        format!(
+                            "`{julia_name}`: optional string argument `{arg}` arrives from Julia \
+                             as a pointer and a length and is rebuilt into a string that lives only \
+                             for the call, so it cannot be borrowed for `'static`. Take an owned \
+                             `String` (#612)."
+                        )
+                    } else {
+                        format!(
+                            "`{julia_name}`: optional string argument `{arg}` arrives from Julia \
+                             as a pointer and a length and is rebuilt into a string that lives only \
+                             for the call, so `'{start}` cannot be required to outlive the call; \
+                             {why}. Take an owned `String`, or relate `'{start}` to nothing that \
+                             outlives the call (#612)."
+                        )
+                    };
+                    return Some(Refusal::new(
+                        skip_reason::LOWERED_STR_LIFETIME,
+                        arg.to_string(),
+                        lifetime.ident.span(),
+                        msg,
+                    ));
+                }
+                if args
+                    .iter()
                     .any(|(name, ty)| name == arg && crate::optional_borrows::is_option(ty))
                 {
                     return Some(Refusal::new(skip_reason::OPTIONAL_OWNER_SIGNATURE, arg.to_string(), lifetime.ident.span(),
@@ -871,6 +898,22 @@ pub(crate) fn name_elided_return(
                     if crate::slices::is_slice(ty) {
                         return ElidedReturn::Refused(Refusal::new(skip_reason::SLICE_SIGNATURE,
                             arg.to_string(), *span, format!("`{julia_name}`: a returned reference cannot borrow slice argument `{arg}`, whose scope ends at the synchronous call boundary (#570).")));
+                    }
+                    if crate::optional_borrows::str_element(ty) {
+                        let msg = format!(
+                            "`{julia_name}`: the returned reference borrows from optional string \
+                             argument `{arg}` by lifetime elision, but `{arg}` arrives from Julia \
+                             as a pointer and a length and is rebuilt into a string that lives only \
+                             for the call, so nothing borrowed from it can be returned. Return an \
+                             owned value, or give the returned reference a lifetime that does not \
+                             come from `{arg}` (#612)."
+                        );
+                        return ElidedReturn::Refused(Refusal::new(
+                            skip_reason::LOWERED_STR_BORROW,
+                            arg.to_string(),
+                            *span,
+                            msg,
+                        ));
                     }
                     if crate::optional_borrows::reference(ty).is_some() {
                         return ElidedReturn::Refused(Refusal::new(skip_reason::OPTIONAL_OWNER_SIGNATURE,

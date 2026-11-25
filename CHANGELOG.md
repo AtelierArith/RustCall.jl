@@ -5,6 +5,25 @@ All notable changes to RustCall.jl will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Non-generic `#[julia]` functions and methods accept `Option<&str>`, passing
+  `nothing` or an `AbstractString` from Julia. The wrapper lowers the argument
+  to an `i32` presence tag and the `(ptr, len)` pair of a required `&str`, and
+  rebuilds a call-scoped `Option<&str>` in the shim; the manifest records
+  `Arg.abi = "option_str"`. `nothing` is absence and `""` is a present, empty
+  string. Optional strings inherit the lowered `&str` lifetime refusals, and
+  `Option<String>` remains unsupported
+  ([#612](https://github.com/AtelierArith/RustCall.jl/issues/612)).
+
+### Rust crates
+- The published crates `rustcall_julia_core`, `rustcall_julia_macros_impl` and
+  `rustcall_julia_macros` move to 0.7.3. A crate must build against 0.7.3 to
+  accept `Option<&str>` arguments; earlier macros refuse them at compile time,
+  so existing binaries keep their current ABI and need no rebuild unless they
+  adopt the new argument form.
+
 ## [0.10.3] - 2026-11-24
 
 ### Added

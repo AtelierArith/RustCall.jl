@@ -332,7 +332,25 @@ bindings.set_rtol(1e-9)     # 1e-9
 
 生成されるラッパーは C の引数を2つ — `i32` の存在フラグと値 — に下げ、shim 側で Rust の `Option<T>` を再構成します。Rust の `Option` 配置が ABI を越えることはありません。マニフェストは `Arg.abi = "option_scalar"` と要素型（`Arg.slice_element`）を記録します。この ABI より前のマクロはシグネチャ自体を拒否するため、古い生成物が2スロット形式で呼ばれることはありません。省略と要素型の値だけを受け付け、`missing`、`Some(x)`、変換できない値は Rust に入る前にエラーになります。
 
-`Option<&Owner>` は従来どおり省略可能な借用で、`Option<String>` は未対応です。所有 `String` を返し、Julia 側で変換します。
+`Option<&Owner>` は従来どおり省略可能な借用で、`Option<&str>` は以下で扱い、`Option<String>` は未対応です。所有 `String` を返し、Julia 側で変換します。
+
+### [省略可能な文字列値](@id Optional-string-values)
+
+非ジェネリックな `#[julia]` 関数・メソッドは `Option<&str>` を受け取れます。Julia からは `nothing` か `AbstractString` を渡します。
+
+```rust
+#[julia]
+pub fn describe(value: Option<&str>) -> String {
+    value.unwrap_or("unset").to_string()
+}
+```
+
+```julia
+bindings.describe(nothing)  # "unset"
+bindings.describe("")       # ""
+```
+
+生成されるラッパーは C の引数を3つ — `i32` の存在フラグと、必須の `&str` と同じ `(ptr, len)` — に下げ、shim 側で `String::from_utf8_lossy` から呼び出し限りの `Option<&str>` を再構成します。`nothing` は省略、`""` は存在する空文字列です。マニフェストは `Arg.abi = "option_str"` を記録します。`'static` や保持される省略可能文字列は、対応する `&str` と同じ規則で拒否され、`&str` の戻り値は同じ理由で所有する Julia 文字列にコピーされます。`Option<String>` は引き続き未対応です。引数には `Option<&str>` を使うか、所有 `String` を返してください。
 
 ### [省略可能な借用対象](@id Optional-borrowed-owners)
 

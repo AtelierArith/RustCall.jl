@@ -202,9 +202,10 @@ end
     _is_string_abi(abi) -> Bool
 
 Whether an argument travels as a `(ptr, len)` byte pair (`Arg.abi` of the
-manifest is `"string"` or `"str"`; covers `&'a str` and other spellings).
+manifest is `"string"`, `"str"` or `"option_str"`; covers `&'a str`, `&str` and
+`Option<&str>` spellings).
 """
-_is_string_abi(abi::AbstractString) = abi in ("string", "str")
+_is_string_abi(abi::AbstractString) = abi in ("string", "str", "option_str")
 
 """
     _string_arg_plan(sig) -> (bindings, preserved, call_args, frame)
@@ -457,6 +458,20 @@ function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
             slot = :($(GlobalRef(@__MODULE__, :CallbackSlot)){$k, $ret_expr}())
             push!(call_args, Expr(:macrocall, GlobalRef(Base, Symbol("@cfunction")), nothing,
                                   slot, ret_expr, Expr(:tuple, arg_exprs...)))
+        elseif abi == "option_str"
+            # `Option<&str>` (issue #612): an `i32` presence tag and the
+            # `(ptr, len)` pair of a call-scoped byte buffer. The producer
+            # rebuilds `Option<&str>` from those bytes; `nothing` is absence,
+            # not an empty string.
+            present = Symbol(_EMITTER_LOCAL_PREFIX, "option_str_present′", index)
+            bytes = Symbol(prefix, name)
+            helper = GlobalRef(@__MODULE__, :ffi_optional_string_argument)
+            push!(bindings, @_emitted(:( $present = $arg_sym === nothing ? Int32(0) : Int32(1) )))
+            push!(bindings, :($bytes = $helper($arg_sym, $name, $context)))
+            push!(preserved, bytes)
+            push!(call_args, present)
+            push!(call_args, @_emitted(:(pointer($bytes))))
+            push!(call_args, @_emitted(:(sizeof($bytes) % Csize_t)))
         elseif c.abi === :ptr_len || c.abi === :ptr_len_cap
             # `(ptr, len)` — and, should an owned buffer ever be taken by
             # value, `(ptr, len, cap)`. Slot-count driven, so a new multi-word
@@ -701,10 +716,10 @@ rooted for the call (#296). The plain wrapper has no `GC.@preserve` region.
 function _uses_string_ffi(sig::RustFunctionSignature)
     _ffi_function_return(sig).aggregate_type === nothing || return true
     # A borrowed `#[julia]` struct keeps its handle rooted for the call (#565).
-    any(abi -> _is_handle_abi(abi) || abi in ("slice", "slice_mut", "option_scalar", "optional_borrow", "borrow_unresolved"), sig.arg_abis) && return true
+    any(abi -> _is_handle_abi(abi) || abi in ("slice", "slice_mut", "option_scalar", "option_str", "optional_borrow", "borrow_unresolved"), sig.arg_abis) && return true
     return any(zip(sig.arg_types, sig.arg_abis)) do (rust_type, abi)
         c = ffi_argument_contract(rust_type; abi = abi)
-        c.abi === :ptr_len || c.abi === :ptr_len_cap || c.abi === :callback
+        c.abi === :ptr_len || c.abi === :ptr_len_cap || c.abi === :option_str || c.abi === :callback
     end
 end
 

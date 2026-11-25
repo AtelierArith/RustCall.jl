@@ -62,6 +62,19 @@ pub(crate) fn scalar_element(ty: &Type) -> Option<&'static str> {
     }
 }
 
+/// Whether `ty` is `Option<&str>` (the optional-string ABI, #612). The inner
+/// reference may carry a call-scoped lifetime; `borrow_is_call_scoped` decides
+/// whether that lifetime is acceptable.
+pub(crate) fn str_element(ty: &Type) -> bool {
+    let Some(inner) = inner(ty) else {
+        return false;
+    };
+    let Type::Reference(reference) = crate::types::unparen(inner) else {
+        return false;
+    };
+    matches!(crate::types::unparen(&reference.elem), Type::Path(p) if p.qself.is_none() && p.path.is_ident("str"))
+}
+
 pub(crate) fn reference(ty: &Type) -> Option<&TypeReference> {
     match crate::types::unparen(inner(ty)?) {
         Type::Reference(r) => Some(r),
