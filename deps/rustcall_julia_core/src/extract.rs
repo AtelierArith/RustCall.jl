@@ -207,6 +207,8 @@ pub fn arg_abi(ty: &syn::Type) -> &'static str {
         }
     } else if crate::optional_borrows::scalar_element(ty).is_some() {
         "option_scalar"
+    } else if crate::optional_borrows::str_element(ty) {
+        "option_str"
     } else if crate::optional_borrows::reference(ty).is_some() {
         "optional_borrow"
     } else if is_string_type(ty) {
@@ -540,7 +542,10 @@ pub fn function_entry(
             let mut args = fn_args(&func.sig);
             if !wrapped {
                 for arg in &mut args {
-                    if matches!(arg.abi.as_str(), "slice" | "slice_mut" | "option_scalar") {
+                    if matches!(
+                        arg.abi.as_str(),
+                        "slice" | "slice_mut" | "option_scalar" | "option_str"
+                    ) {
                         arg.abi.clear();
                         arg.slice_element.clear();
                         arg.slice_length.clear();

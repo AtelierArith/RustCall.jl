@@ -516,8 +516,35 @@ shape. Only absence and a value of the element type are accepted: `missing`,
 `Some(x)` and values that do not convert to `T` raise an `ArgumentError` (or a
 conversion error) before Rust is entered.
 
-`Option<&Owner>` remains the optional-borrow form and `Option<String>` is not
-supported; return an owned `String` and let Julia map it.
+`Option<&Owner>` remains the optional-borrow form, `Option<&str>` is covered
+below, and `Option<String>` is not supported; return an owned `String` and let
+Julia map it.
+
+### Optional string values
+
+A non-generic `#[julia]` function or method can take `Option<&str>`. Julia
+passes `nothing` or an `AbstractString`:
+
+```rust
+#[julia]
+pub fn describe(value: Option<&str>) -> String {
+    value.unwrap_or("unset").to_string()
+}
+```
+
+```julia
+bindings.describe(nothing)  # "unset"
+bindings.describe("")       # ""
+```
+
+The wrapper takes three C slots — an `i32` presence tag followed by the
+`(ptr, len)` pair of a required `&str` — and rebuilds a call-scoped
+`Option<&str>` in the shim from `String::from_utf8_lossy`. `nothing` is absence;
+`""` is a present, empty string. The manifest records
+`Arg.abi = "option_str"`. A `'static` or otherwise retained optional string,
+and a returned reference that would borrow one, are refused exactly like the
+corresponding `&str` forms. `Option<String>` remains unsupported; take
+`Option<&str>` for an argument, or return an owned `String`.
 
 ### Optional borrowed owners
 

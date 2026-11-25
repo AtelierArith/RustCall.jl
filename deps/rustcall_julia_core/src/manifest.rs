@@ -464,7 +464,8 @@ pub struct Arg {
     /// `Option<&mut T>`, explicitly reconstructed by the producer; #571),
     /// `"option_scalar"` (`Option<T>` for a primitive `T`: an `i32` presence
     /// tag and the value, with [`Arg::slice_element`] naming the element;
-    /// #609).
+    /// #609), `"option_str"` (`Option<&str>`: an `i32` presence tag and the
+    /// `(ptr, len)` bytes of a call-scoped string; #612).
     /// `"optional_borrow"` is an unresolved optional reference: consumers
     /// must refuse it rather than assume a concrete owner or native Option ABI.
     /// `"borrow_unresolved"` marks a required reference whose lexical scope cannot
