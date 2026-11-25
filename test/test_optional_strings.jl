@@ -30,6 +30,11 @@ pub fn opt_str_result(v: Option<&str>) -> Result<String, String> {
 }
 
 #[julia]
+pub fn opt_str_borrowed<'a>(v: Option<&'a str>) -> &'a str {
+    v.unwrap_or("unset")
+}
+
+#[julia]
 pub fn opt_str_mixed(v: Option<&str>, scale: Option<f64>, xs: &[f64]) -> String {
     format!("{} {} {}",
         v.unwrap_or("none"),
@@ -83,6 +88,11 @@ impl OptStrBag {
     @test RustCall.is_ok(ok) && RustCall.unwrap(ok) == "ABC"
     missing = opt_str_result(nothing)
     @test RustCall.is_err(missing) && missing.value == "missing"
+
+    # A returned &str that borrows the optional argument is copied, as for a
+    # required &str argument.
+    @test opt_str_borrowed("abc") == "abc"
+    @test opt_str_borrowed(nothing) == "unset"
 
     @test opt_str_mixed(nothing, nothing, [1.0, 2.0]) == "none none 2"
     @test opt_str_mixed("x", 2.5, Float64[]) == "x 2.5 0"

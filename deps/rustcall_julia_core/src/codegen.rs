@@ -1428,19 +1428,8 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
         if crate::optional_borrows::str_element(ty) {
             // `Option<&str>` is rebuilt from a call-scoped `Cow`, exactly like
             // a required `&str` (#612). It therefore inherits the lowered-string
-            // refusals: nothing borrowed from the temporary may escape, and the
-            // lifetime may not outlive the call.
-            if matches!(
-                ret,
-                WrapperReturn::BorrowedStr {
-                    static_lifetime: false,
-                    ..
-                }
-            ) {
-                return Err(Refusal::over(crate::manifest::skip_reason::LOWERED_STR_BORROW,
-                    name.to_string(), ty,
-                    "Optional string arguments cannot be borrowed by the returned string view; return an owned String so the argument borrow ends at the synchronous call boundary (#612)"));
-            }
+            // refusals: the lifetime may not outlive the call. A returned
+            // `&str` is copied by `has_string_args`/`returns_copied_str`.
             let mut scope: syn::Signature = syn::parse_quote!(fn rustcall_optional_str_scope());
             scope.generics = generics.clone();
             if !crate::extract::borrow_is_call_scoped(ty, &scope) {

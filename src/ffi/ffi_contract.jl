@@ -1750,7 +1750,7 @@ ffi_string_argument(value, position::Integer, context::AbstractString) =
 
 The bytes for an `Option<&str>` argument (#612): `nothing` becomes the empty
 byte buffer the shim ignores, and any `AbstractString` goes through
-[`ffi_string_argument`](@ref). Any other value — `missing`, `Some("x")`, a
+`ffi_string_argument`. Any other value — `missing`, `Some("x")`, a
 number — is an `ArgumentError` before the pointer is handed to Rust, so
 absence cannot be confused with an ordinary conversion failure.
 """

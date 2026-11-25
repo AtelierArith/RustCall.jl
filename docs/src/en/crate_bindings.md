@@ -541,10 +541,10 @@ The wrapper takes three C slots — an `i32` presence tag followed by the
 `(ptr, len)` pair of a required `&str` — and rebuilds a call-scoped
 `Option<&str>` in the shim from `String::from_utf8_lossy`. `nothing` is absence;
 `""` is a present, empty string. The manifest records
-`Arg.abi = "option_str"`. A `'static` or otherwise retained optional string,
-and a returned reference that would borrow one, are refused exactly like the
-corresponding `&str` forms. `Option<String>` remains unsupported; take
-`Option<&str>` for an argument, or return an owned `String`.
+`Arg.abi = "option_str"`. A `'static` or otherwise retained optional string is
+refused exactly like the corresponding `&str` form, and a `&str` return is
+copied into an owned Julia string for the same reason. `Option<String>` remains
+unsupported; take `Option<&str>` for an argument, or return an owned `String`.
 
 ### Optional borrowed owners
 

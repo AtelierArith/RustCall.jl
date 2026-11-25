@@ -350,7 +350,7 @@ bindings.describe(nothing)  # "unset"
 bindings.describe("")       # ""
 ```
 
-生成されるラッパーは C の引数を3つ — `i32` の存在フラグと、必須の `&str` と同じ `(ptr, len)` — に下げ、shim 側で `String::from_utf8_lossy` から呼び出し限りの `Option<&str>` を再構成します。`nothing` は省略、`""` は存在する空文字列です。マニフェストは `Arg.abi = "option_str"` を記録します。`'static` や保持される省略可能文字列、それを借用して返す参照は、対応する `&str` と同じ規則で拒否されます。`Option<String>` は引き続き未対応です。引数には `Option<&str>` を使うか、所有 `String` を返してください。
+生成されるラッパーは C の引数を3つ — `i32` の存在フラグと、必須の `&str` と同じ `(ptr, len)` — に下げ、shim 側で `String::from_utf8_lossy` から呼び出し限りの `Option<&str>` を再構成します。`nothing` は省略、`""` は存在する空文字列です。マニフェストは `Arg.abi = "option_str"` を記録します。`'static` や保持される省略可能文字列は、対応する `&str` と同じ規則で拒否され、`&str` の戻り値は同じ理由で所有する Julia 文字列にコピーされます。`Option<String>` は引き続き未対応です。引数には `Option<&str>` を使うか、所有 `String` を返してください。
 
 ### [省略可能な借用対象](@id Optional-borrowed-owners)
 
