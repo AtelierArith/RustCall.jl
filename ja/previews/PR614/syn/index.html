@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><meta name="referrer" content="no-referrer"/><title>syn による Rust AST の解析と変換 · RustCall.jl 日本語</title><meta name="title" content="syn による Rust AST の解析と変換 · RustCall.jl 日本語"/><meta property="og:title" content="syn による Rust AST の解析と変換 · RustCall.jl 日本語"/><meta property="twitter:title" content="syn による Rust AST の解析と変換 · RustCall.jl 日本語"/><meta name="description" content="Documentation for RustCall.jl 日本語."/><meta property="og:description" content="Documentation for RustCall.jl 日本語."/><meta property="twitter:description" content="Documentation for RustCall.jl 日本語."/><meta property="og:url" content="https://atelierarith.github.io/RustCall.jl/ja/stable/syn/"/><meta property="twitter:url" content="https://atelierarith.github.io/RustCall.jl/ja/stable/syn/"/><link rel="canonical" href="https://atelierarith.github.io/RustCall.jl/ja/stable/syn/"/><script data-outdated-warner src="../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.63.2/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL=".."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../assets/documenter.js"></script><script src="../search_index.js"></script><script src="../siteinfo.js"></script><script src="../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../">RustCall.jl 日本語</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../">ホーム</a></li><li><span class="tocitem">はじめに</span><ul><li><a class="tocitem" href="../rust_primer/">Julia 利用者のための Rust 入門</a></li><li><a class="tocitem" href="../tutorial/">チュートリアル</a></li><li><a class="tocitem" href="../tutorial_new_features/">v0.9 と v0.10 の新機能</a></li><li><a class="tocitem" href="../examples/">使用例</a></li></ul></li><li><span class="tocitem">利用ガイド</span><ul><li><a class="tocitem" href="../integration_guide/">安全な Rust/Julia 連携</a></li><li><a class="tocitem" href="../type_contract/">FFI の型契約</a></li><li><a class="tocitem" href="../callbacks/">コールバック</a></li><li><a class="tocitem" href="../struct_mapping/">構造体の対応付け</a></li><li><a class="tocitem" href="../generics/">ジェネリクス</a></li><li><a class="tocitem" href="../crate_bindings/">外部クレートのバインディング</a></li><li><a class="tocitem" href="../hot_reload/">ホットリロード</a></li><li><a class="tocitem" href="../pyo3/">PyO3 クレート</a></li><li><a class="tocitem" href="../panics/">パニック・可視性・生存期間</a></li><li><a class="tocitem" href="../precompilation/">プリコンパイル</a></li><li><a class="tocitem" href="../performance/">性能</a></li><li><a class="tocitem" href="../troubleshooting/">トラブルシューティング</a></li><li><a class="tocitem" href="../migrating_from_irust/">@irust からの移行</a></li></ul></li><li><span class="tocitem">リファレンス</span><ul><li><input class="collapse-toggle" id="menuitem-4-1" type="checkbox"/><label class="tocitem" for="menuitem-4-1"><span class="docs-label">API リファレンス</span><i class="docs-chevron"></i></label><ul class="collapsed"><li><a class="tocitem" href="../api/">概要</a></li><li><a class="tocitem" href="../reference/artifacts/">成果物の識別とキャッシュ</a></li><li><a class="tocitem" href="../reference/ffi_contract/">FFI の型契約</a></li><li><a class="tocitem" href="../reference/compilation/">利用者向けの入口</a></li><li><a class="tocitem" href="../reference/codegen/">コンパイラとコード生成</a></li><li><a class="tocitem" href="../reference/manifest/">FFI マニフェスト</a></li><li><a class="tocitem" href="../reference/cargo/">Cargo プロジェクトと依存関係</a></li><li><a class="tocitem" href="../reference/crates/">外部クレート</a></li><li><a class="tocitem" href="../reference/hot_reload/">ホットリロード API</a></li><li><a class="tocitem" href="../reference/pyo3/">PyO3 クレート</a></li><li><a class="tocitem" href="../reference/ownership/">型・メモリ・所有権</a></li><li><a class="tocitem" href="../reference/generics/">ジェネリクスと #[julia] 関数</a></li><li><a class="tocitem" href="../reference/errors/">エラー</a></li><li><a class="tocitem" href="../reference/loading/">読み込みポリシー</a></li></ul></li><li><a class="tocitem" href="../status/">プロジェクトの状況</a></li></ul></li><li><span class="tocitem">開発者向け</span><ul><li><a class="tocitem" href="../internals/">RustCall が Rust を呼ぶ仕組み</a></li><li class="is-active"><a class="tocitem" href>syn による Rust AST の解析と変換</a><ul class="internal"><li><a class="tocitem" href="#From-source-to-AST"><span>ソースコードから AST へ</span></a></li><li><a class="tocitem" href="#The-principal-AST-types"><span>主な AST の型</span></a></li><li><a class="tocitem" href="#Extracting-signatures"><span>関数シグネチャの抽出</span></a></li><li><a class="tocitem" href="#Finding-annotated-items"><span>属性を持つ項目の抽出</span></a></li><li><a class="tocitem" href="#The-roles-of-syn-quote-and-proc-macro2"><span>syn、quote、proc-macro2 の役割</span></a></li><li><a class="tocitem" href="#Transforming-an-AST-and-generating-code"><span>AST の変更とコード生成</span></a></li><li><a class="tocitem" href="#Traversal-and-transformation-APIs"><span>AST の走査・変換 API</span></a></li><li><a class="tocitem" href="#How-RustCall-uses-syn"><span>RustCall における syn の利用</span></a></li><li><a class="tocitem" href="#Comparison-with-Julia-metaprogramming"><span>Julia のメタプログラミングとの比較</span></a></li><li><a class="tocitem" href="#What-syn-cannot-tell-you"><span>syn だけでは分からないこと</span></a></li><li><a class="tocitem" href="#Further-reading"><span>参考資料</span></a></li></ul></li><li><a class="tocitem" href="../project_guide/">プロジェクトガイド</a></li><li><a class="tocitem" href="../developer_windows/">Windows での開発</a></li><li><a class="tocitem" href="../developer_pitfalls/">開発時の注意点</a></li></ul></li><li><span class="tocitem">プラットフォーム</span><ul><li><a class="tocitem" href="../platforms/windows/">Windows</a></li></ul></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">開発者向け</a></li><li class="is-active"><a href>syn による Rust AST の解析と変換</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>syn による Rust AST の解析と変換</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/AtelierArith/RustCall.jl" title="View the repository on GitHub"><span class="docs-icon fa-brands"></span><span class="docs-label is-hidden-touch">GitHub</span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><nav aria-label="Language"><a class="language-en" lang="en">English</a> / <a class="language-ja" lang="ja">日本語</a></nav>
+<script>
+for (const lang of ['en', 'ja']) {
+    const url = new URL(location.href);
+    url.pathname = url.pathname.replace(/\/(en|ja)\//, '/' + lang + '/');
+    url.hash = '';
+    document.querySelector('.language-' + lang).href = url.href;
+}
+</script><p>&lt;!– Translation source: 960be32b16e7387ce39c1f3ca662c2e057d3b9c5; English counterpart: ../en/syn.md. –&gt;</p><h1 id="Rust-ASTs-with-syn"><a class="docs-heading-anchor" href="#Rust-ASTs-with-syn">syn による Rust AST の解析と変換</a><a id="Rust-ASTs-with-syn-1"></a><a class="docs-heading-anchor-permalink" href="#Rust-ASTs-with-syn" title="Permalink"></a></h1><p>RustCall.jl は Rust の構文を <strong>AST（Abstract Syntax Tree：抽象構文木）</strong> に変換する Rust クレート、<a href="https://docs.rs/syn/latest/syn/">syn</a> を利用しています。 <a href="https://docs.rs/quote/latest/quote/">quote</a> や <a href="https://docs.rs/proc-macro2/latest/proc_macro2/">proc-macro2</a> と組み合わせることで、 手続きマクロ（procedural macro）、ソースコード解析、コード生成の基盤になります。</p><p>このページでは小さな Rust プログラムを使って基本を学び、RustCall の FFI パイプラインとの関係を説明します。 Julia 側の内部構造については <a href="../internals/">RustCall が Rust を呼ぶ仕組み</a> を参照してください。</p><h2 id="From-source-to-AST"><a class="docs-heading-anchor" href="#From-source-to-AST">ソースコードから AST へ</a><a id="From-source-to-AST-1"></a><a class="docs-heading-anchor-permalink" href="#From-source-to-AST" title="Permalink"></a></h2><p>パーサーはソース文字列を構造化されたデータに変換します。 例えば <code>#[julia]</code> 属性のある Rust 関数は、属性、可視性、署名、本体を持つ <code>syn::ItemFn</code> で表現されます。</p><pre><code class="language-text hljs">ItemFn
+├── attrs: [#[julia]]
+├── vis: pub
+├── sig: Signature
+│   ├── ident: add
+│   ├── inputs
+│   │   ├── FnArg::Typed: a: i32
+│   │   └── FnArg::Typed: b: i32
+│   ├── generics: (none)
+│   └── output: ReturnType::Type → i32
+└── block
+    └── a + b</code></pre><p>図は簡略化した木構造であり、Debug の出力そのものではありません。 正規表現による文字列処理とは異なり、関数名、引数パターン、型、ライフタイム、属性を区別でき、 ネストした構文も Rust の文法に従って扱えます。</p><p>まず小さな Cargo プロジェクトを作ります。</p><pre><code class="language-bash hljs">cargo new syn-demo
+cd syn-demo</code></pre><p><code>Cargo.toml</code> の空の <code>[dependencies]</code> セクションを次のように置き換えます。</p><pre><code class="language-toml hljs">[dependencies]
+syn = { version = &quot;2&quot;, features = [&quot;full&quot;, &quot;extra-traits&quot;, &quot;visit&quot;, &quot;visit-mut&quot;] }
+quote = &quot;1&quot;
+proc-macro2 = &quot;1&quot;
+prettyplease = &quot;0.2&quot;</code></pre><p>次のコードを <code>src/main.rs</code> に保存してください。</p><pre><code class="language-rust hljs">use syn::ItemFn;
+
+fn main() {
+    let source = r#&quot;
+        #[julia]
+        pub fn add(a: i32, b: i32) -&gt; i32 {
+            a + b
+        }
+    &quot;#;
+
+    let ast: ItemFn = syn::parse_str(source).unwrap();
+    println!(&quot;{:#?}&quot;, ast);
+}</code></pre><p><code>cargo run</code> で AST 全体を確認できます。 <code>full</code> はこの例で扱うファイルや項目の構文を有効にし、<code>extra-traits</code> は Debug 実装を有効にします。 文字列中の属性はあくまで構文なので、解析のために RustCall の手続きマクロをインストールする必要はありません。</p><h2 id="The-principal-AST-types"><a class="docs-heading-anchor" href="#The-principal-AST-types">主な AST の型</a><a id="The-principal-AST-types-1"></a><a class="docs-heading-anchor-permalink" href="#The-principal-AST-types" title="Permalink"></a></h2><table><tr><th style="text-align: right">型</th><th style="text-align: right">対応する構文</th></tr><tr><td style="text-align: right"><code>syn::File</code></td><td style="text-align: right">ソースファイル</td></tr><tr><td style="text-align: right"><code>syn::Item</code></td><td style="text-align: right">トップレベルやモジュール内の項目（enum）</td></tr><tr><td style="text-align: right"><code>syn::ItemFn</code></td><td style="text-align: right">関数定義</td></tr><tr><td style="text-align: right"><code>syn::ItemStruct</code>、<code>ItemEnum</code></td><td style="text-align: right">構造体・列挙型の定義</td></tr><tr><td style="text-align: right"><code>syn::ItemImpl</code>、<code>ItemTrait</code></td><td style="text-align: right">impl ブロック・trait 定義</td></tr><tr><td style="text-align: right"><code>syn::ItemMod</code></td><td style="text-align: right">モジュール宣言・インラインモジュール</td></tr><tr><td style="text-align: right"><code>syn::Signature</code></td><td style="text-align: right">関数シグネチャ</td></tr><tr><td style="text-align: right"><code>syn::FnArg</code>、<code>ReturnType</code></td><td style="text-align: right">引数・戻り値の構文</td></tr><tr><td style="text-align: right"><code>syn::Expr</code>、<code>Type</code>、<code>Pat</code></td><td style="text-align: right">式・型・パターン</td></tr><tr><td style="text-align: right"><code>syn::Attribute</code>、<code>Generics</code></td><td style="text-align: right">属性・ジェネリックパラメータ</td></tr></table><p><code>ItemFn</code> の公開フィールドは <code>attrs: Vec&lt;Attribute&gt;</code>、<code>vis: Visibility</code>、 <code>sig: Signature</code>、<code>block: Box&lt;Block&gt;</code> の 4 つです。 <code>Signature</code> には識別子、ジェネリクス、引数、戻り値型、ABI、 <code>async</code>、<code>const</code>、<code>unsafe</code> などの修飾子が含まれます。 引数リストは <code>Punctuated&lt;FnArg, Token![,]&gt;</code> であり、区切りのトークンも表現されます。</p><h2 id="Extracting-signatures"><a class="docs-heading-anchor" href="#Extracting-signatures">関数シグネチャの抽出</a><a id="Extracting-signatures-1"></a><a class="docs-heading-anchor-permalink" href="#Extracting-signatures" title="Permalink"></a></h2><p>次の例で <code>src/main.rs</code> を置き換えます（このページの各プログラムは独立しています）。 関数本体を調べることなく署名を走査できます。</p><pre><code class="language-rust hljs">use quote::ToTokens;
+use syn::{FnArg, ItemFn, ReturnType};
+
+fn main() {
+    let f: ItemFn = syn::parse_str(
+        &quot;fn add(a: i32, b: i32) -&gt; i32 { a + b }&quot;
+    ).unwrap();
+
+    println!(&quot;Function: {}&quot;, f.sig.ident);
+
+    for arg in &amp;f.sig.inputs {
+        match arg {
+            FnArg::Typed(arg) =&gt; {
+                println!(&quot;Argument: {} : {}&quot;,
+                    arg.pat.to_token_stream(),
+                    arg.ty.to_token_stream());
+            }
+            FnArg::Receiver(_) =&gt; println!(&quot;Receiver&quot;),
+        }
+    }
+
+    match &amp;f.sig.output {
+        ReturnType::Default =&gt; println!(&quot;Return: ()&quot;),
+        ReturnType::Type(_, ty) =&gt;
+            println!(&quot;Return: {}&quot;, ty.to_token_stream()),
+    }
+}</code></pre><p>期待される出力：</p><pre><code class="language-text hljs">Function: add
+Argument: a : i32
+Argument: b : i32
+Return: i32</code></pre><p><code>ToTokens</code> は構文上の表現を出力します。 実際の FFI ジェネレーターでは、出力された型名が名前解決後の型そのものであると仮定せず、 AST の構造を照合して明示的な ABI の型契約を適用する必要があります。</p><h2 id="Finding-annotated-items"><a class="docs-heading-anchor" href="#Finding-annotated-items">属性を持つ項目の抽出</a><a id="Finding-annotated-items-1"></a><a class="docs-heading-anchor-permalink" href="#Finding-annotated-items" title="Permalink"></a></h2><p>単一の関数ではなくソースファイル全体を調べるには <code>syn::parse_file</code> を使います。 この例ではルート階層にある、単純な <code>#[julia]</code> 属性付きの関数を抽出します。</p><pre><code class="language-rust hljs">use syn::Item;
+
+fn main() {
+    let source = r#&quot;
+        #[julia]
+        fn add(a: i32, b: i32) -&gt; i32 { a + b }
+
+        fn internal_function() {}
+
+        #[julia]
+        fn square(x: f64) -&gt; f64 { x * x }
+    &quot;#;
+
+    let file = syn::parse_file(source).unwrap();
+    for item in &amp;file.items {
+        if let Item::Fn(f) = item {
+            if f.attrs.iter().any(|a| a.path().is_ident(&quot;julia&quot;)) {
+                println!(&quot;{}&quot;, f.sig.ident);
+            }
+        }
+    }
+}</code></pre><p>期待される出力：</p><pre><code class="language-text hljs">add
+square</code></pre><p>簡単な例なので、外部ファイルを指す <code>mod foo;</code> の探索、修飾された属性名や別名の解決、 <code>#[cfg]</code> の評価は行いません。RustCall はクレート解析において、 これらを扱うためのモジュールツリー走査と構成解決の処理を持っています。</p><h2 id="The-roles-of-syn-quote-and-proc-macro2"><a class="docs-heading-anchor" href="#The-roles-of-syn-quote-and-proc-macro2">syn、quote、proc-macro2 の役割</a><a id="The-roles-of-syn-quote-and-proc-macro2-1"></a><a class="docs-heading-anchor-permalink" href="#The-roles-of-syn-quote-and-proc-macro2" title="Permalink"></a></h2><table><tr><th style="text-align: right">クレート</th><th style="text-align: right">役割</th></tr><tr><td style="text-align: right"><code>proc-macro2</code></td><td style="text-align: right">手続きマクロの外でも使えるトークン列、識別子、Span</td></tr><tr><td style="text-align: right"><code>syn</code></td><td style="text-align: right">トークンや文字列から AST を生成し、走査・変換する</td></tr><tr><td style="text-align: right"><code>quote</code></td><td style="text-align: right">補間（<code>#value</code>）を使ってトークン列を構築する</td></tr><tr><td style="text-align: right"><code>prettyplease</code></td><td style="text-align: right"><code>syn::File</code> を読みやすい Rust ソースに整形する</td></tr></table><pre><code class="language-text hljs">Rust source string                 Compiler-provided tokens
+        │                                     │
+        ▼                                     │
+proc_macro2::TokenStream ◄─────────────────────┘
+        │
+        │ syn: parse_str / parse2 (or parse_file for a file)
+        ▼
+Typed Rust AST
+        │
+        ├── inspect → metadata / TOML manifest
+        │
+        └── transform / quote! → TokenStream
+                                     │
+                                     ├── procedural macro output
+                                     └── syn::parse2::&lt;syn::File&gt;
+                                              → prettyplease::unparse
+                                              → Rust source text</code></pre><p><code>syn::parse_str::&lt;T&gt;</code> は文字列を指定した構文型として解析し、 <code>syn::parse2::&lt;T&gt;</code> は <code>proc_macro2::TokenStream</code> を受け取ります。 <code>syn::parse::&lt;T&gt;</code> は手続きマクロ内でコンパイラの <code>proc_macro::TokenStream</code> を解析します。 Span はトークンとソース上の位置を関連付けて診断に役立ちますが、意味解析を行うものではありません。</p><p><code>proc-macro2</code> を利用すると通常の実行可能プログラムと手続きマクロで同じトークンベースの実装を共有できます。 extractor は CLI であり、クレート向け属性はコンパイラ内で動く RustCall にとって特に重要な性質です。</p><h2 id="Transforming-an-AST-and-generating-code"><a class="docs-heading-anchor" href="#Transforming-an-AST-and-generating-code">AST の変更とコード生成</a><a id="Transforming-an-AST-and-generating-code-1"></a><a class="docs-heading-anchor-permalink" href="#Transforming-an-AST-and-generating-code" title="Permalink"></a></h2><p>AST の各ノードは Rust の値です。関数の識別子を書き換え、変更したノードをトークン列に戻し、 整形することができます。</p><pre><code class="language-rust hljs">use quote::{format_ident, quote};
+use syn::ItemFn;
+
+fn main() {
+    let mut f: ItemFn = syn::parse_str(
+        &quot;fn add(a: i32, b: i32) -&gt; i32 { a + b }&quot;
+    ).unwrap();
+    f.sig.ident = format_ident!(&quot;renamed_add&quot;);
+
+    let tokens = quote! { #f };
+    let file: syn::File = syn::parse2(tokens).unwrap();
+    println!(&quot;{}&quot;, prettyplease::unparse(&amp;file));
+}</code></pre><p>期待される出力：</p><pre><code class="language-rust hljs">fn renamed_add(a: i32, b: i32) -&gt; i32 {
+    a + b
+}</code></pre><p><code>quote!</code> 内の <code>#f</code> は AST ノードのトークン列を補間します。 概念的には Julia の <code>quote</code> 内で式を補間する操作に似ています。 逆に、引用されたトークンから AST ノードを構築する <code>syn::parse_quote!</code> も便利です。</p><h3 id="A-minimal-FFI-wrapper-generator"><a class="docs-heading-anchor" href="#A-minimal-FFI-wrapper-generator">最小限の FFI ラッパー生成</a><a id="A-minimal-FFI-wrapper-generator-1"></a><a class="docs-heading-anchor-permalink" href="#A-minimal-FFI-wrapper-generator" title="Permalink"></a></h3><p>より RustCall に近い例として、元の Rust 関数をそのまま残し、C ABI の公開関数を追加します。 簡単のため、ここで示す 2 引数の <code>i32</code> 関数の署名に限定しています。</p><pre><code class="language-rust hljs">use quote::{format_ident, quote};
+use syn::ItemFn;
+
+fn main() {
+    let f: ItemFn = syn::parse_str(
+        &quot;fn add(a: i32, b: i32) -&gt; i32 { a + b }&quot;
+    ).unwrap();
+
+    let name = &amp;f.sig.ident;
+    let wrapper = format_ident!(&quot;rustcall_{}&quot;, name);
+
+    let generated = quote! {
+        #f
+
+        #[unsafe(no_mangle)]
+        pub extern &quot;C&quot; fn #wrapper(a: i32, b: i32) -&gt; i32 {
+            #name(a, b)
+        }
+    };
+
+    let file: syn::File = syn::parse2(generated).unwrap();
+    println!(&quot;{}&quot;, prettyplease::unparse(&amp;file));
+}</code></pre><p>期待される生成コード（整形は異なる場合があります）：</p><pre><code class="language-rust hljs">fn add(a: i32, b: i32) -&gt; i32 {
+    a + b
+}
+#[unsafe(no_mangle)]
+pub extern &quot;C&quot; fn rustcall_add(a: i32, b: i32) -&gt; i32 {
+    add(a, b)
+}</code></pre><p>公開属性には現代の Rust の構文（Rust 1.82 以降）を用いています。 このプログラムはソースコードを出力するだけで、ラッパーのコンパイルやロードは行いません。 教育用の例であり、RustCall の実際のラッパーとは異なります。 panic の境界、任意の署名に対する検証、借用や所有権の管理、複数スロットの戻り値処理などはありません。 RustCall は共通の FFI 型契約とコード生成によってこれらの処理を追加します。</p><h2 id="Traversal-and-transformation-APIs"><a class="docs-heading-anchor" href="#Traversal-and-transformation-APIs">AST の走査・変換 API</a><a id="Traversal-and-transformation-APIs-1"></a><a class="docs-heading-anchor-permalink" href="#Traversal-and-transformation-APIs" title="Permalink"></a></h2><table><tr><th style="text-align: right">Cargo feature</th><th style="text-align: right">用途</th></tr><tr><td style="text-align: right"><code>full</code></td><td style="text-align: right">ファイルや項目の AST</td></tr><tr><td style="text-align: right"><code>parsing</code></td><td style="text-align: right">トークンや文字列の構文解析</td></tr><tr><td style="text-align: right"><code>printing</code></td><td style="text-align: right">AST ノードからトークン列への変換</td></tr><tr><td style="text-align: right"><code>extra-traits</code></td><td style="text-align: right">Debug、等値比較、ハッシュなどの追加実装</td></tr><tr><td style="text-align: right"><code>clone-impls</code></td><td style="text-align: right">Clone の実装</td></tr><tr><td style="text-align: right"><code>visit</code></td><td style="text-align: right">共有参照による再帰的な走査</td></tr><tr><td style="text-align: right"><code>visit-mut</code></td><td style="text-align: right">AST の再帰的なインプレース変更</td></tr><tr><td style="text-align: right"><code>fold</code></td><td style="text-align: right">所有権を受け取る AST 変換</td></tr></table><p>既定で有効な feature もありますが、最初の例では必要な追加機能を明示しています。 <code>visit</code> を使うと、関心のあるノードだけの処理を実装し、既定の走査に委譲して子ノードを再帰的に処理できます。</p><pre><code class="language-rust hljs">use syn::{visit::Visit, ItemFn};
+
+#[derive(Default)]
+struct FunctionCollector {
+    names: Vec&lt;String&gt;,
+}
+
+impl&lt;&#39;ast&gt; Visit&lt;&#39;ast&gt; for FunctionCollector {
+    fn visit_item_fn(&amp;mut self, node: &amp;&#39;ast ItemFn) {
+        self.names.push(node.sig.ident.to_string());
+        // Delegate to the default visitor to recurse into children.
+        syn::visit::visit_item_fn(self, node);
+    }
+}
+
+fn main() {
+    let file = syn::parse_file(
+        &quot;fn top() {} mod nested { fn inner() {} }&quot;
+    ).unwrap();
+    let mut collector = FunctionCollector::default();
+    collector.visit_file(&amp;file);
+
+    assert_eq!(collector.names, vec![&quot;top&quot;, &quot;inner&quot;]);
+}</code></pre><p>この例はインラインモジュールを走査します。別ファイルのモジュールを読み込んだり、 マクロを展開したりするには visitor 以外の処理が必要です。</p><h2 id="How-RustCall-uses-syn"><a class="docs-heading-anchor" href="#How-RustCall-uses-syn">RustCall における syn の利用</a><a id="How-RustCall-uses-syn-1"></a><a class="docs-heading-anchor-permalink" href="#How-RustCall-uses-syn" title="Permalink"></a></h2><p>共通の Rust コアの <a href="https://github.com/AtelierArith/RustCall.jl/blob/main/deps/rustcall_julia_core/Cargo.toml">Cargo.toml</a> は次のような依存関係を宣言しています（関係する項目を抜粋）。</p><pre><code class="language-toml hljs">syn = { version = &quot;2.0&quot;, features = [
+    &quot;full&quot;, &quot;parsing&quot;, &quot;printing&quot;, &quot;extra-traits&quot;,
+    &quot;visit&quot;, &quot;visit-mut&quot;, &quot;clone-impls&quot;
+] }
+proc-macro2 = { version = &quot;1.0&quot;, features = [&quot;span-locations&quot;] }
+quote = &quot;1.0&quot;
+prettyplease = &quot;0.2&quot;</code></pre><p>さらにマニフェスト用の Serde と TOML なども利用しています。 インライン Rust と外部クレートの属性は共通のコアを使うため、 Rust 側のラッパー生成規則と署名の記述は同じ実装を基盤としています。</p><pre><code class="language-text hljs">rust&quot;&quot;&quot;...&quot;&quot;&quot;                   #[julia] in a Cargo crate
+      │                                  │
+      ▼                                  ▼
+rustcall-extract (CLI)           rustcall_julia_macros_impl
+      │                          (procedural macro)
+      └──────────────┬───────────────────┘
+                     ▼
+           rustcall_julia_core
+           syn-based AST / shared codegen
+              ├── extract.rs
+              ├── expand.rs
+              ├── codegen.rs
+              └── specialize.rs
+                     │
+      ┌──────────────┴──────────────┐
+      ▼                             ▼
+FFI manifest (extractor)      C-ABI wrapper code
+      │                             │
+Julia wrapper generation         rustc / Cargo
+      │                             │
+      └───────── ccall ─────────────┘</code></pre><p><code>deps/</code> 以下の主なソースファイルは次の通りです。</p><table><tr><th style="text-align: right">ファイル</th><th style="text-align: right">役割</th></tr><tr><td style="text-align: right"><a href="https://github.com/AtelierArith/RustCall.jl/blob/main/deps/rustcall_julia_core/src/extract.rs">rustcall<em>julia</em>core/src/extract.rs</a></td><td style="text-align: right">Rust 構文やクレートのモジュールツリーから FFI メタデータを抽出</td></tr><tr><td style="text-align: right"><a href="https://github.com/AtelierArith/RustCall.jl/blob/main/deps/rustcall_julia_core/src/expand.rs">rustcall<em>julia</em>core/src/expand.rs</a></td><td style="text-align: right">インラインの <code>#[julia]</code> 項目を展開</td></tr><tr><td style="text-align: right"><a href="https://github.com/AtelierArith/RustCall.jl/blob/main/deps/rustcall_julia_core/src/codegen.rs">rustcall<em>julia</em>core/src/codegen.rs</a></td><td style="text-align: right">C ABI ラッパーと関連ヘルパーを生成</td></tr><tr><td style="text-align: right"><a href="https://github.com/AtelierArith/RustCall.jl/blob/main/deps/rustcall_julia_core/src/specialize.rs">rustcall<em>julia</em>core/src/specialize.rs</a></td><td style="text-align: right">対応するインラインジェネリック項目を AST レベルで具体化</td></tr><tr><td style="text-align: right"><a href="https://github.com/AtelierArith/RustCall.jl/blob/main/deps/rustcall_julia_macros_impl/src/lib.rs">rustcall<em>julia</em>macros_impl/src/lib.rs</a></td><td style="text-align: right">手続きマクロの入口として共通コアに委譲</td></tr></table><p>extractor は <code>syn::parse_file(source)?</code> を使ってソースファイルを解析します。 一方、手続きマクロはコンパイラからトークン列を受け取り、 例えば <code>syn::parse::&lt;ItemFn&gt;(item.clone())</code> で解析します。 通常の外部クレートの場合、extractor が別途ソースを走査してマニフェストを取得し、 実際のラッパーはコンパイル時に手続きマクロが生成します。</p><p>Julia は別の Rust パーサーを実装するのではなく、TOML マニフェストを利用します。 Rust 構文を Rust 側だけで解析することは意図的な設計上の不変条件であり、 Julia 側での正規表現による Rust 構文解析を lint で検査しています。</p><h2 id="Comparison-with-Julia-metaprogramming"><a class="docs-heading-anchor" href="#Comparison-with-Julia-metaprogramming">Julia のメタプログラミングとの比較</a><a id="Comparison-with-Julia-metaprogramming-1"></a><a class="docs-heading-anchor-permalink" href="#Comparison-with-Julia-metaprogramming" title="Permalink"></a></h2><table><tr><th style="text-align: right">Julia</th><th style="text-align: right">Rust エコシステム（概念上の対応）</th></tr><tr><td style="text-align: right"><code>Meta.parse</code></td><td style="text-align: right"><code>syn::parse_str</code></td></tr><tr><td style="text-align: right"><code>Expr</code></td><td style="text-align: right"><code>syn::Expr</code>、<code>syn::Item</code> などの型付き AST</td></tr><tr><td style="text-align: right">識別子としての <code>Symbol</code></td><td style="text-align: right"><code>syn::Ident</code> / <code>proc_macro2::Ident</code></td></tr><tr><td style="text-align: right"><code>quote ... end</code></td><td style="text-align: right"><code>quote! { ... }</code>（トークン列）、<code>syn::parse_quote!</code>（AST）</td></tr><tr><td style="text-align: right">引用した式内でのドル記号による補間</td><td style="text-align: right"><code>quote!</code> の <code>#value</code> 補間</td></tr><tr><td style="text-align: right">MacroTools.jl の走査</td><td style="text-align: right"><code>syn::visit</code>、<code>visit_mut</code>、<code>fold</code> と Rust のパターンマッチ</td></tr><tr><td style="text-align: right">Julia マクロ</td><td style="text-align: right">Rust の手続きマクロ</td></tr></table><p>厳密に同じ仕組みというわけではありません。 Julia は通常の表層構文を汎用的な <code>Expr</code> で表現する一方、syn は Rust の文法に対応する型付き AST を定義します。 Rust の手続きマクロがコンパイラとやり取りするのは syn の AST そのものではなく、トークン列です。</p><h2 id="What-syn-cannot-tell-you"><a class="docs-heading-anchor" href="#What-syn-cannot-tell-you">syn だけでは分からないこと</a><a id="What-syn-cannot-tell-you-1"></a><a class="docs-heading-anchor-permalink" href="#What-syn-cannot-tell-you" title="Permalink"></a></h2><p>syn は <strong>構文解析器であり、Rust コンパイラではありません</strong>。</p><table><tr><th style="text-align: right">機能</th><th style="text-align: right">syn 単体</th></tr><tr><td style="text-align: right">Rust の構文解析と属性の取得</td><td style="text-align: right">可能</td></tr><tr><td style="text-align: right">AST の構築・変換</td><td style="text-align: right">可能</td></tr><tr><td style="text-align: right">記述された型・ライフタイム・ジェネリック構文の取得</td><td style="text-align: right">可能</td></tr><tr><td style="text-align: right">一般的な名前解決・型推論</td><td style="text-align: right">不可</td></tr><tr><td style="text-align: right">trait の解決・借用検査</td><td style="text-align: right">不可</td></tr><tr><td style="text-align: right">任意のマクロの展開・ビルド構成の評価</td><td style="text-align: right">不可</td></tr><tr><td style="text-align: right">一般的な型レイアウトや ABI 互換性の判定</td><td style="text-align: right">不可</td></tr><tr><td style="text-align: right">機械語の生成</td><td style="text-align: right">不可</td></tr></table><p>例えば次のコードを考えます。</p><pre><code class="language-rust hljs">type MyFloat = f64;
+
+fn compute(x: MyFloat) -&gt; MyFloat {
+    x * x
+}</code></pre><p>syn は <code>MyFloat</code> を型のパスとして取得し、型エイリアスの宣言を認識できます。 しかし、クレートグラフ全体にわたるエイリアス、import、関連型、実際の型レイアウトを一般的に解決するわけではありません。 利用側で限定的な名前解決や構成解析を実装することはできますが、コンパイルの最終的な判断は rustc が行います。 関数の構文を解析できても、任意の C ABI で安全に呼び出せるということにはなりません。</p><p>この違いが、RustCall が任意の Rust 型の自動バインディングを約束するのではなく、 対応する FFI 型契約を定めている理由です。 <a href="../type_contract/">FFI の型契約</a> と <a href="../crate_bindings/">外部クレートのバインディング</a> も参照してください。</p><h2 id="Further-reading"><a class="docs-heading-anchor" href="#Further-reading">参考資料</a><a id="Further-reading-1"></a><a class="docs-heading-anchor-permalink" href="#Further-reading" title="Permalink"></a></h2><p>これらの技術は FFI ジェネレーターのほか、構文ベースの静的解析、リファクタリング、 ドキュメント情報の抽出、DSL などにも利用できます。意味解析が必要な場合はコンパイラと連携するツールを使います。</p><ul><li><a href="https://docs.rs/syn/latest/syn/">syn API ドキュメント</a></li><li><a href="https://github.com/dtolnay/syn">syn リポジトリ</a></li><li><a href="https://docs.rs/quote/latest/quote/">quote API ドキュメント</a></li><li><a href="https://docs.rs/proc-macro2/latest/proc_macro2/">proc-macro2 API ドキュメント</a></li><li><a href="https://docs.rs/prettyplease/latest/prettyplease/">prettyplease API ドキュメント</a></li><li><a href="https://doc.rust-lang.org/reference/procedural-macros.html">Rust Reference: procedural macros</a></li></ul></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../internals/">« RustCall が Rust を呼ぶ仕組み</a><a class="docs-footer-nextpage" href="../project_guide/">プロジェクトガイド »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.20.0 on <span class="colophon-date" title="Wednesday 25 November 2026 11:51">Wednesday 25 November 2026</span>. Using Julia version 1.13.4.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
