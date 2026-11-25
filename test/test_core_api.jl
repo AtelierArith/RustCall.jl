@@ -167,6 +167,13 @@ using Test
         @test RustCall.is_none(none_opt)
         @test_throws ErrorException RustCall.unwrap(none_opt)
         @test RustCall.unwrap_or(none_opt, Int32(0)) == 0
+
+        # A `nothing` default yields the nullable value (#613).
+        @test RustCall.unwrap_or(some_opt, nothing) === Int32(42)
+        @test RustCall.unwrap_or(none_opt, nothing) === nothing
+        @test RustCall.unwrap_or(some_opt, nothing) isa Union{Nothing, Int32}
+        # The discriminant decides, even if the payload is present.
+        @test RustCall.unwrap_or(RustCall.RustOption{Int32}(false, Int32(7)), nothing) === nothing
     end
 
     @testset "String Conversions" begin

@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   string. Optional strings inherit the lowered `&str` lifetime refusals, and
   `Option<String>` remains unsupported
   ([#612](https://github.com/AtelierArith/RustCall.jl/issues/612)).
+- `RustCall.unwrap_or(option::RustOption{T}, nothing)` returns
+  `Union{Nothing, T}`, so a getter that returns `Result<Option<T>, E>` can
+  expose a nullable value without branching on `is_some`. The same-`T`
+  `unwrap_or` and `RustResult` behaviour are unchanged
+  ([#613](https://github.com/AtelierArith/RustCall.jl/issues/613)).
 
 ### Rust crates
 - The published crates `rustcall_julia_core`, `rustcall_julia_macros_impl` and

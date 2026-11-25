@@ -157,6 +157,18 @@ function unwrap_or(option::RustOption{T}, default::T) where {T}
 end
 
 """
+    unwrap_or(option::RustOption{T}, ::Nothing) -> Union{Nothing, T}
+
+Return the `Some` value, or `nothing` for `None`. This is the nullable form of
+`unwrap_or` for a Rust getter that returns `Result<Option<T>, E>`. The
+`is_some` discriminant decides, exactly as the same-`T` method does: the public
+constructor accepts a `false` discriminant with a payload, and that value is
+still `None`.
+"""
+unwrap_or(option::RustOption{T}, ::Nothing) where {T} =
+    option.is_some ? option.value::T : nothing
+
+"""
     is_some(option::RustOption)
 
 Check if a RustOption is Some.

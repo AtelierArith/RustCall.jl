@@ -256,6 +256,9 @@ none = first_positive([-1])
 RustCall.is_some(some), RustCall.unwrap(some), RustCall.is_none(none), RustCall.unwrap_or(none, 0)
 ```
 
+`RustCall.unwrap_or(option, nothing)` returns the `Some` value or `nothing`, the
+nullable shape a getter returning `Result<Option<T>, E>` wants (#613).
+
 (`|x| *x > 0` in the Rust above is a closure, Rust's `x -> x > 0`.)
 
 ### Panics

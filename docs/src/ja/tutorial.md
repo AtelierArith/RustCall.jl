@@ -218,6 +218,8 @@ none = first_positive([-1])
 RustCall.is_some(some), RustCall.unwrap(some), RustCall.is_none(none), RustCall.unwrap_or(none, 0)
 ```
 
+`RustCall.unwrap_or(option, nothing)` は `Some` の値か `nothing` を返します。`Result<Option<T>, E>` を返すゲッターが欲しい省略可能な形です（#613）。
+
 Rust の `|x| *x > 0` は Julia の `x -> x > 0` に似たクロージャです。
 
 ### [パニック](@id Panics)
