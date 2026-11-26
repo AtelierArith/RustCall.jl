@@ -6,6 +6,7 @@
 //! rustcall-extract expand     [--manifest FILE] [--cfg-file FILE] [--cfg-lenient] FILE
 //! rustcall-extract specialize --fn NAME --new-name NAME --bind T=TYPE... [--manifest FILE] FILE
 //! rustcall-extract specialize-many --spec FILE [--manifest FILE] FILE
+//! rustcall-extract validate-owned-return FILE
 //! rustcall-extract schema-version
 //! ```
 //!
@@ -34,6 +35,7 @@ const USAGE: &str = "usage:
   rustcall-extract expand     [--manifest FILE] [--cfg-file FILE] [--cfg-lenient] FILE
   rustcall-extract specialize --fn NAME --new-name NAME --bind PARAM=TYPE... [--manifest FILE] FILE
   rustcall-extract specialize-many --spec FILE [--manifest FILE] FILE
+  rustcall-extract validate-owned-return FILE
   rustcall-extract schema-version
 
 Use '-' as FILE to read from stdin.
@@ -979,6 +981,17 @@ fn run() -> Result<(), String> {
         Some("expand") => cmd_expand(rest),
         Some("specialize") => cmd_specialize(rest),
         Some("specialize-many") => cmd_specialize_many(rest),
+        Some("validate-owned-return") => {
+            let [file] = rest else {
+                return Err("validate-owned-return expects one FILE argument".into());
+            };
+            let source = read_source(&file.path())?;
+            println!(
+                "{}",
+                rustcall_julia_core::refusal::valid_owned_return_source(&source)
+            );
+            Ok(())
+        }
         Some("schema-version") => {
             println!("{SCHEMA_VERSION}");
             Ok(())

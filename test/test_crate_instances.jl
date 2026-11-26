@@ -484,7 +484,12 @@ end
         """
     @test RustCall.generate_crate_functions([owner]; header = false) == annotated
     @test RustCall.generate_crate_functions([functions[1], owner]) == golden * "\n" * annotated
-    for invalid in (nothing, true, "", " ", "Dd, Other", "&Dd", "owners::", "crate", "Dd)]")
+    for path in ("Owner<'static>", "crate::owners::r#type")
+        spec = merge(owner, (; return_type = path, owned_return = path))
+        @test occursin("#[rustcall_owned_return($path)]",
+                       RustCall.generate_crate_functions([spec]; header = false))
+    end
+    for invalid in (nothing, true, "", " ", "Dd, Other", "&Dd", "owners::", "crate", "Dd)]", "Dd // hides the closing delimiter", "Owner<u8>")
         @test_throws ArgumentError RustCall.generate_crate_functions([merge(owner, (; owned_return = invalid))])
     end
     @test_throws ArgumentError RustCall.generate_crate_functions([functions[1], functions[1]])

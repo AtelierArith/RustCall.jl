@@ -40,16 +40,8 @@ end
 
 function _instance_owner_path(value)
     source = strip(_instance_source(value, "owned return type"))
-    absolute = startswith(source, "::")
-    segments = split(absolute ? source[3:end] : source, "::")
-    for (i, segment) in enumerate(segments)
-        name = strip(segment)
-        if !absolute && i < length(segments)
-            i == 1 && name in ("crate", "self") && continue
-            name == "super" && all(s -> strip(s) == "super", @view(segments[1:i-1])) && continue
-        end
-        _instance_ident(name)
-    end
+    result = _run_extractor(["validate-owned-return", "-"]; stdin_data = String(source))
+    strip(result) == "true" || throw(ArgumentError("invalid owned return type: $(repr(source))"))
     return source
 end
 
