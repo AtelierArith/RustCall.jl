@@ -1041,14 +1041,27 @@ pub fn gamma_f64(x: f64) -> f64 {
 
 `header = false` は `julia` を既に import しているファイル（`generate_crate_instances` の出力に追記する場合など）で `use` 行を省略します。元クレートと `rustcall_julia_macros` に依存する `Cargo.toml` を用意し、`@rust_crate` で facade を読み込みます。
 
-### 生成する自由関数から所有権付きの値を返す
+#### [生成する自由関数から所有権付きの値を返す](@id Owned-returns-from-generated-functions)
 
 `generate_crate_functions` の仕様に `owned_return = "Dd"` を指定すると、
 生成した自由関数に `#[rustcall_owned_return(Dd)]` が付きます。`Dd` は
-ファサードで宣言した具体的な `#[julia]` 型です。`expression` に
-`"Dd { hi, lo }"` のような式を書いて、引数から戻り値を組み立てます。
-`Result<Dd, E>` を返す場合は、対応するエラー型 `E` を選び、式自体が
-その `Result` を返すようにします。
+ファサードで宣言した具体的な `#[julia]` 型です。
+
+```julia
+functions = [(
+    name = "pack_dd",
+    args = ["hi" => "f64", "lo" => "f64"],
+    return_type = "Dd",
+    expression = "Dd { hi, lo }",
+    owned_return = "Dd",
+)]
+source = RustCall.generate_crate_functions(functions; header = false)
+```
+
+宣言とインポートの後に生成したソースを追加します。`expression` は引数から
+戻り値を組み立てる Rust の式です。`Result<Dd, E>` を返す場合は、
+対応するエラー型 `E` を選び、式自体がその `Result` を返すようにします。
+途中の値が必要な場合は Rust のブロック式を使えます。
 
 ```@docs
 RustCall.with_numeric_buffer

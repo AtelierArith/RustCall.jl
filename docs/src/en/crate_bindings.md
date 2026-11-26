@@ -1764,7 +1764,9 @@ for example when this output is appended to `generate_crate_instances`. The
 user supplies a `Cargo.toml` depending on the original crate and
 `rustcall_julia_macros`, then loads the facade with `@rust_crate`.
 
-To return an [owned facade object](#owned-returns-from-free-functions), add
+#### Owned returns from generated functions
+
+To return an [owned facade object](@ref "Owned returns from free functions"), add
 `owned_return` to the specification. With a `#[julia]` struct `Dd`
 declared in the facade, a function can pack two inputs into that object.
 
