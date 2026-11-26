@@ -41,6 +41,7 @@ use proc_macro2::{
     Delimiter, Group, Literal, Punct, Spacing, Span, TokenStream as TokenStream2, TokenTree,
 };
 use quote::{quote, ToTokens};
+use syn::parse::Parser;
 use syn::spanned::Spanned;
 use syn::{Attribute, Ident, Item, ItemFn, ItemImpl, ItemMod, ItemStruct, ReturnType, Type};
 
@@ -341,6 +342,33 @@ fn inline_generic_function_refusal(func: &ItemFn) -> Option<Refusal> {
 /// `impl Trait` — and so gets no wrapper of its own where it is written.
 fn function_is_generic(func: &ItemFn) -> bool {
     crate::types::has_type_params(&func.sig.generics) || crate::types::has_impl_trait(&func.sig)
+}
+
+/// Check whether source can be inserted into a single owned-return attribute.
+///
+/// Uses the attribute parser and owner-resolution shape without requiring the
+/// declaration of the owner to be available yet.
+pub fn valid_owned_return_source(source: &str) -> bool {
+    use crate::owned_returns::{annotation, resolution_type, ATTRIBUTE};
+
+    let Ok(attrs) = Attribute::parse_outer.parse_str(&format!("#[{ATTRIBUTE}({source})]")) else {
+        return false;
+    };
+    if attrs.len() != 1 {
+        return false;
+    }
+    let Ok(Some(owner)) = annotation(&attrs) else {
+        return false;
+    };
+    let Some(Type::Path(owner)) = resolution_type(&owner) else {
+        return false;
+    };
+    owner.path.segments.last().is_some_and(|segment| {
+        !matches!(
+            segment.ident.to_string().as_str(),
+            "crate" | "self" | "super"
+        )
+    })
 }
 
 /// Why the codegen of `mode` refuses the `#[julia]` function `func` living

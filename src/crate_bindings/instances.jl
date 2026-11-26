@@ -38,6 +38,13 @@ function _instance_source(value, context)
     return source
 end
 
+function _instance_owner_path(value)
+    source = strip(_instance_source(value, "owned return type"))
+    result = _run_extractor(["validate-owned-return", "-"]; stdin_data = String(source))
+    strip(result) == "true" || throw(ArgumentError("invalid owned return type: $(repr(source))"))
+    return source
+end
+
 function _instance_params(params, wrappers = nothing)
     names = String[]
     typed = String[]
@@ -94,6 +101,10 @@ the native inner value (or its `Result`), not a generated wrapper. The generated
 specified associated function on the concrete type and wraps the returned value;
 methods forward to `&self` or `&mut self`. These Rust functions and types must
 be public and their concrete signatures must match the declarations.
+
+- `owned_return` optionally names a concrete `#[julia]` owner type by path.
+  It emits `#[rustcall_owned_return(Owner)]`. The expression must already
+  produce the owner or a `Result<Owner, E>` with a supported error type.
 
 The output is Rust source to place in a facade crate that depends on both the
 original crate and `rustcall_julia_macros`, then load with `@rust_crate`.
@@ -201,7 +212,7 @@ end
 
 Generate Rust source for concrete `#[julia]` free functions, typically
 instantiations of a dependency's generic functions. Each entry is a named tuple
-with fields `name`, `args`, `return_type` and `expression`.
+with required fields `name`, `args`, `return_type` and `expression`.
 
 - `name` is the Rust function name of the generated wrapper (and its Julia
   binding).
@@ -239,20 +250,22 @@ function generate_crate_functions(functions::AbstractVector; header::Bool = true
     plans = Any[]
     for spec in functions
         _instance_require(spec, (:name, :args, :return_type, :expression), "function")
-        _instance_fields(spec, (:name, :args, :return_type, :expression), "function")
+        _instance_fields(spec, (:name, :args, :return_type, :expression, :owned_return), "function")
         name = _instance_ident(spec.name)
         name in used && throw(ArgumentError("duplicate function $name"))
         push!(used, name)
         _, args, _ = _instance_params(spec.args)
         return_type = _instance_source(spec.return_type, "return type")
         expression = _instance_source(spec.expression, "function expression")
-        push!(plans, (; name, args, return_type, expression))
+        owner = hasproperty(spec, :owned_return) ? _instance_owner_path(spec.owned_return) : nothing
+        push!(plans, (; name, args, return_type, expression, owner))
     end
     io = IOBuffer()
     header && println(io, "use rustcall_julia_macros::julia;")
     for plan in plans
         header && println(io)
         println(io, "#[julia]")
+        plan.owner === nothing || println(io, "#[rustcall_owned_return(", plan.owner, ")]")
         println(io, "pub fn ", plan.name, "(", join(plan.args, ", "), ") -> ", plan.return_type, " {")
         println(io, "    ", plan.expression)
         println(io, "}")

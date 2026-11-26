@@ -225,6 +225,22 @@ end
         constructor=(name=:from_owner, args=["other"=>(wrapper=:Owner,)]),
         methods=[(name=:get, args=emptyargs, return_type="f64", mutable=false)])
     source = RustCall.generate_crate_instances([clone_owner, owner, factor])
+    source *= RustCall.generate_crate_functions([
+        (name = "pack_factor", args = ["hi" => "f64", "lo" => "f64"],
+         return_type = "Factor", owned_return = "Factor",
+         expression = "{ let value = hi + lo; Factor { inner: composed_native::Factor::new(value) } }"),
+        (name = "checked_factor", args = ["mode" => "i32"],
+         return_type = "Result<Factor, String>", owned_return = :Factor,
+         expression = raw"""{
+             let made = pack_factor(2.0, 0.5);
+             match mode {
+                 1 => Err("factor rejected".into()),
+                 2 => panic!("factor panic"),
+                 _ => Ok(made),
+             }
+         }"""),
+        (name = "scalar", args = emptyargs, return_type = "f64", expression = "1.0"),
+    ]; header = false)
     mktempdir() do root
         native = joinpath(root, "native")
         facade = joinpath(root, "facade")
@@ -343,6 +359,23 @@ end
                     @test RustCall.is_err(err)
                     @test occursin("factor failed",err.value)
                     @test Base.invokelatest(factor_drops) == before+1
+                    pack_factor = Base.invokelatest(getproperty, m, :pack_factor)
+                    checked_factor = Base.invokelatest(getproperty, m, :checked_factor)
+                    @test Base.invokelatest(Base.invokelatest(getproperty, m, :scalar)) == 1.0
+                    for packed in (RustCall._unwrap_crate_binding_value(Base.invokelatest(pack_factor, 2.0, 0.5)),
+                                   RustCall.unwrap(Base.invokelatest(checked_factor, Int32(0))))
+                        push!(made, packed)
+                        @test packed isa factor_type
+                        @test Base.invokelatest(factor_value, packed) == 2.5
+                        before = Base.invokelatest(factor_drops)
+                        finalize(packed)
+                        finalize(packed)
+                        @test Base.invokelatest(factor_drops) == before + 1
+                    end
+                    before = Base.invokelatest(factor_drops)
+                    @test RustCall.is_err(Base.invokelatest(checked_factor, Int32(1)))
+                    @test_throws RustCall.RustPanicError Base.invokelatest(checked_factor, Int32(2))
+                    @test Base.invokelatest(factor_drops) == before + 2
                     same = Base.invokelatest(try_duplicate,a,false)
                     @test RustCall.is_ok(same)
                     sameowner = RustCall.unwrap(same); push!(made,sameowner)
@@ -363,6 +396,23 @@ end
             for lib in unique(modules)
                 RustCall.unload_library(lib;close=true)
             end
+        end
+        facade_source = joinpath(facade, "src", "lib.rs")
+        write(facade_source, replace(read(facade_source, String),
+                                    "let value = hi + lo;" => "let value = hi - lo;"))
+        rebuilt = Core.eval(@__MODULE__, :(@rust_crate $facade))
+        rebuilt_lib = Base.invokelatest(getfield, getfield(rebuilt, :module_ref), :_LIB_NAME)
+        try
+            Base.invokelatest() do
+                packed = RustCall._unwrap_crate_binding_value(rebuilt.pack_factor(2.0, 0.5))
+                try
+                    @test rebuilt.value(packed) == 1.5
+                finally
+                    finalize(packed)
+                end
+            end
+        finally
+            RustCall.unload_library(rebuilt_lib; close = true)
         end
     end
 end
@@ -417,6 +467,30 @@ end
         (name = "missing", args = emptyargs, return_type = "i32"),
     ]
         @test_throws ArgumentError RustCall.generate_crate_functions([bad])
+    end
+    owner = (
+        name = "pack",
+        args = ["hi" => "f64", "lo" => "f64"],
+        return_type = "owners::Dd",
+        expression = "{ let hi = hi + lo; owners::Dd { hi, lo } }",
+        owned_return = Symbol("owners::Dd"),
+    )
+    annotated = """
+        #[julia]
+        #[rustcall_owned_return(owners::Dd)]
+        pub fn pack(hi: f64, lo: f64) -> owners::Dd {
+            { let hi = hi + lo; owners::Dd { hi, lo } }
+        }
+        """
+    @test RustCall.generate_crate_functions([owner]; header = false) == annotated
+    @test RustCall.generate_crate_functions([functions[1], owner]) == golden * "\n" * annotated
+    for path in ("Owner<'static>", "crate::owners::r#type")
+        spec = merge(owner, (; return_type = path, owned_return = path))
+        @test occursin("#[rustcall_owned_return($path)]",
+                       RustCall.generate_crate_functions([spec]; header = false))
+    end
+    for invalid in (nothing, true, "", " ", "Dd, Other", "&Dd", "owners::", "crate", "Dd)]", "Dd // hides the closing delimiter", "Owner<u8>")
+        @test_throws ArgumentError RustCall.generate_crate_functions([merge(owner, (; owned_return = invalid))])
     end
     @test_throws ArgumentError RustCall.generate_crate_functions([functions[1], functions[1]])
 end
