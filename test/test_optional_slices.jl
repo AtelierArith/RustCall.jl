@@ -349,6 +349,45 @@ function _write_optional_slice_crate(path; macro_path)
     return path
 end
 
+function _optional_slice_619_checks(bindings, symbols)
+    call(name::Symbol, args...) = Base.invokelatest(
+        Base.invokelatest(getfield, bindings, name), args...)
+    lib = Base.invokelatest(getfield, bindings, :_LIB_NAME)
+    for symbol in symbols
+        target = RustCall.resolve_call_target(lib, symbol)
+        @test RustCall.Libdl.dlsym(
+            target.handle,
+            symbol * "_slice_ptr_len_v1",
+        ) != C_NULL
+    end
+    @test call(:crate_slice_sum619, nothing) == -1.0
+    @test call(:crate_slice_sum619, Float64[]) == 0.0
+    @test call(:crate_slice_sum619, [1.0, 2.0]) == 3.0
+    xs = [1.0, 2.0]
+    @test call(:crate_slice_fill619, nothing, 1.0) == 0
+    @test call(:crate_slice_fill619, xs, 2.0) == 2
+    @test xs == [3.0, 4.0]
+    bag = call(:CrateSliceBag619, 10.0, nothing)
+    @test call(:value619, bag) == 10.0
+    from_absent = call(:CrateSliceBag619, 1.0, nothing)
+    from_some = call(:CrateSliceBag619, 1.0, [2.0, 3.0])
+    @test call(:value619, from_absent) == 1.0
+    @test call(:value619, from_some) == 6.0
+    out = zeros(3)
+    @test call(:add_into619, bag, out) == 3
+    @test out == fill(10.0, 3)
+    @test call(:add_into619, bag, nothing) == 0
+    @test_throws ArgumentError call(:crate_slice_sum619, Float32[1, 2])
+    return lib
+end
+
+function _unload_optional_slice_619!(bindings)
+    lib = Base.invokelatest(getfield, bindings, :_LIB_NAME)
+    haskey(RustCall.RUST_LIBRARIES, lib) &&
+        RustCall.unload_library(lib; close = true)
+    return nothing
+end
+
 @testset "crate optional slice arguments (#619)" begin
     if !RustCall.check_rustc_available()
         @test_skip "rustc is required"
@@ -364,40 +403,23 @@ end
             @test "rustcall_CrateSliceBag619_from_slice619" in symbols
             @test "rustcall_CrateSliceBag619_add_into619" in symbols
             proxy = Core.eval(@__MODULE__, :(@rust_crate $crate cache = false))
-            bindings = Base.invokelatest(getfield, proxy, :module_ref)
-            call(name::Symbol, args...) = Base.invokelatest(
-                Base.invokelatest(getfield, bindings, name), args...)
+            direct = Base.invokelatest(getfield, proxy, :module_ref)
+            written = nothing
             try
-                lib = Base.invokelatest(getfield, bindings, :_LIB_NAME)
-                for symbol in symbols
-                    target = RustCall.resolve_call_target(lib, symbol)
-                    @test RustCall.Libdl.dlsym(
-                        target.handle,
-                        symbol * "_slice_ptr_len_v1",
-                    ) != C_NULL
-                end
-                @test call(:crate_slice_sum619, nothing) == -1.0
-                @test call(:crate_slice_sum619, Float64[]) == 0.0
-                @test call(:crate_slice_sum619, [1.0, 2.0]) == 3.0
-                xs = [1.0, 2.0]
-                @test call(:crate_slice_fill619, nothing, 1.0) == 0
-                @test call(:crate_slice_fill619, xs, 2.0) == 2
-                @test xs == [3.0, 4.0]
-                bag = call(:CrateSliceBag619, 10.0, nothing)
-                @test call(:value619, bag) == 10.0
-                from_absent = call(:CrateSliceBag619, 1.0, nothing)
-                from_some = call(:CrateSliceBag619, 1.0, [2.0, 3.0])
-                @test call(:value619, from_absent) == 1.0
-                @test call(:value619, from_some) == 6.0
-                out = zeros(3)
-                @test call(:add_into619, bag, out) == 3
-                @test out == fill(10.0, 3)
-                @test call(:add_into619, bag, nothing) == 0
-                @test_throws ArgumentError call(:crate_slice_sum619, Float32[1, 2])
+                _optional_slice_619_checks(direct, symbols)
+                output = joinpath(root, "WrittenOptSlice619.jl")
+                RustCall.write_bindings_to_file(
+                    crate,
+                    output;
+                    output_module_name = "WrittenOptSlice619",
+                )
+                sandbox = Module(gensym(:WrittenOptSliceSandbox619))
+                Base.include(sandbox, output)
+                written = Base.invokelatest(getfield, sandbox, :WrittenOptSlice619)
+                _optional_slice_619_checks(written, symbols)
             finally
-                lib = Base.invokelatest(getfield, bindings, :_LIB_NAME)
-                haskey(RustCall.RUST_LIBRARIES, lib) &&
-                    RustCall.unload_library(lib; close = true)
+                _unload_optional_slice_619!(direct)
+                written === nothing || _unload_optional_slice_619!(written)
             end
         end
     end
