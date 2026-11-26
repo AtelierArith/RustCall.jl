@@ -21,6 +21,8 @@ Existing Rust crate and its internal types
 
 これにより内部表現を Julia API と独立に変更でき、Julia が借用チェッカーを再現せずに済み、境界を網羅的にテストできます。安定した API には `#[julia]`、明示的な C ABI が必要なら `@rust` を使います。削除済みの `@irust` は[移行ガイド](migrating_from_irust.md)に従って置き換えます。
 
+複数の依存 crate を扱う場合は、[複数の依存 crate を一つのファサードにまとめる](@ref Several-upstream-crates-one-facade)を参照してください。
+
 ## [実例：`examples/SafeLedger.jl`](@id Worked-example:-examples/SafeLedger.jl)
 
 [完全なパッケージ](https://github.com/AtelierArith/RustCall.jl/tree/main/examples/SafeLedger.jl)で、`test/test_integration_example.jl` と Examples ワークフローで検証します。

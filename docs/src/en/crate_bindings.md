@@ -819,7 +819,7 @@ Three things to know:
   with both locations instead of describing a library that cannot be built.
   Wrap the items in a `#[julia] pub mod` block inside the file, or rename one.
 
-### Several upstream crates, one facade
+### [Several upstream crates, one facade](@id Several-upstream-crates-one-facade)
 
 Use a single `cdylib` facade whose Cargo dependencies are the libraries you
 want to expose. Cargo builds their shared dependency graph in the facade's
@@ -1817,7 +1817,7 @@ not generate a `Cargo.toml`.
 
 ### Generic free functions
 
-To group exports from several dependencies, see [Several upstream crates, one facade](#several-upstream-crates-one-facade).
+To group exports from several dependencies, see [Several upstream crates, one facade](@ref Several-upstream-crates-one-facade).
 
 `generate_crate_functions` is the free-function counterpart of
 `generate_crate_instances`. A dependency whose API is generic over a scalar,
