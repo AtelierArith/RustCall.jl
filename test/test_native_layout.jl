@@ -113,6 +113,10 @@ _toolchain_required() =
         depot = mktempdir()
         pkg = joinpath(depot, "packages", "RustCall", "AbCdE")
         mkpath(joinpath(pkg, "src"))
+        # An installed tree carries its own Project.toml; the scratch space is
+        # recorded against it (#617).
+        write(joinpath(pkg, "Project.toml"),
+              "name = \"RustCall\"\nuuid = \"$(RustCall.RUSTCALL_UUID)\"\nversion = \"0.0.0\"\n")
         for kind in (:rustcall_helpers, :extractor)
             crate = joinpath(pkg, "deps", RustCall.NATIVE_PRODUCTS[kind].crate)
             mkpath(crate)
@@ -132,6 +136,8 @@ _toolchain_required() =
         Base.include(m, $(repr(joinpath(pkg, "src", "native_layout.jl"))))
         println(m.native_installed_slug())
         println(m.native_target_dir(:extractor; create = true))
+        # A second creation must not add a second record for the same copy.
+        m.native_target_dir(:extractor; create = true)
         println(m.native_target_dir(:rustcall_helpers))
         for c in m.native_product_candidates(:extractor)
             println("candidate: ", c)
@@ -170,6 +176,21 @@ _toolchain_required() =
         @test any(c -> c == joinpath(pkg, "deps", "rustcall_extract", "target",
                                      "release", RustCall.native_product_filename(:extractor)),
                   candidates)
+
+        # `create = true` records the space in the depot's usage log against
+        # this installed copy's Project.toml. `Pkg.gc` keeps a space only while
+        # a recorded parent project exists, and `Pkg.update` (like `Pkg.add` and
+        # `Pkg.rm`) runs it at the end; without this record it deletes the
+        # products the build just made (#617).
+        usage = joinpath(depot, "logs", "scratch_usage.toml")
+        @test isfile(usage)
+        space = joinpath(depot, "scratchspaces", string(RustCall.RUSTCALL_UUID),
+                         RustCall.NATIVE_SCRATCH_NAME)
+        records = get(TOML.parsefile(usage), space, [])
+        @test !isempty(records)
+        @test any(r -> joinpath(pkg, "Project.toml") in r["parent_projects"], records)
+        @test count(r -> joinpath(pkg, "Project.toml") in r["parent_projects"],
+                    records) == 1
     end
 
     @testset "the pre-v0.4 helper name is no longer looked for (#387 → #417)" begin
