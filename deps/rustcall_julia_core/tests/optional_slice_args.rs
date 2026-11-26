@@ -38,6 +38,14 @@ fn compile(label: &str, source: &str, main: &str) -> std::process::Output {
         .arg(input)
         .output()
         .unwrap();
+    // Compiling only proves the ABI shapes type-check; run the generated
+    // executable so the presence/payload assertions and the panic-channel
+    // check actually execute.
+    let out = if out.status.success() {
+        Command::new(&output).output().unwrap()
+    } else {
+        out
+    };
     fs::remove_dir_all(dir).ok();
     out
 }
