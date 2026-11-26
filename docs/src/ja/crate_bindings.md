@@ -1013,6 +1013,49 @@ write("facade/src/lib.rs", RustCall.generate_crate_instances(instances))
 
 失敗し得るコンストラクタには `error_type` を指定すると成功時に所有する `RustResult` を返します。任意の信頼済み `expression` でポインタ・長さから `Vec` を組み立てることもできますが、有効性と GC 保護は利用者の責任です。必要ならスコープ付きバッファを使います。未対応 ABI、借用戻り値、追加 import が必要なトレイトメソッドには手書きの窓口を使います。`Cargo.toml` は生成しません。
 
+### [複数のスカラー出力に同じバッファを使う](@id Reusing-a-buffer-for-multiple-scalar-outputs)
+
+ファサードの関数に `*mut f64` の出力引数を渡し、関数の戻り値を
+`()` にすると、結果を Rust 側でヒープに確保せずに返せます。
+`use rustcall_julia_macros::julia;` とともに `lib.rs` に次の関数を置きます。
+
+```rust
+#[julia]
+pub fn make_pair_into(x: f64, out: *mut f64) {
+    let hi = x;
+    let lo = x / 8.0;
+    // The caller supplies two aligned, writable f64 elements.
+    unsafe {
+        out.write(hi);
+        out.add(1).write(lo);
+    }
+}
+```
+
+Julia で `B = @rust_crate facade_path` を実行し、バッファを一度だけ確保します。
+
+```julia
+function make_pair!(bindings, out::Vector{Float64}, x::Float64)
+    length(out) == 2 || throw(ArgumentError("expected a two-element output buffer"))
+    GC.@preserve out bindings.make_pair_into(x, pointer(out))
+    return (out[1], out[2])
+end
+
+out = zeros(Float64, 2)
+make_pair!(B, out, 1.0)  # (1.0, 0.125)
+make_pair!(B, out, 2.0)  # (2.0, 0.25)
+```
+
+呼び出し側が、有効かつ整列済みの書き込み先を二つ用意します。
+呼び出し中の並行アクセスを避け、Rust 側にポインタを保持しないでください。
+パニックやエラーが起きると書き込みが途中で止まることがあるため、
+結果を読むのは成功した後です。
+
+ポインタの代わりに長さを確認する `&mut [f64]` や、
+再利用する `#[julia]` オブジェクトへの `&mut PairOwner` も使えます。
+`@register_ffi_struct` は集約型の引数を対象とします。
+構造体やタプルを値で返すには、戻り値用の ABI 対応が必要です。
+
 ### [ジェネリックな free function](@id Generic-free-functions)
 
 `generate_crate_functions` は `generate_crate_instances` の free function 版です。スカラー型でジェネリックな API（例：[tenferro-sci-rs](https://github.com/tensor4all/tenferro-sci-rs)）は直接バインドできません。`#[julia]` 項目は具体型でなければならず、`macro_rules!` が生成した項目はソース走査から見えないためです。具体化を明示します。
