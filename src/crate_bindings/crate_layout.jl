@@ -310,7 +310,7 @@ function _rename_crate_tree(tree::ModuleNode; strict::Symbol = _ffi_strict())
         _rename_tree_parameters(tree, (fs, ss) -> begin
             colliding = _static_method_collisions(fs, ss)
             text = join(vcat(String[_emit_function_code(f; strict = strict)
-                                    for f in fs if !_function_skipped!(f)],
+                                    for f in fs if !_function_skipped!(f; crate = true)],
                              String[_emit_struct_code(s; strict = strict, colliding = colliding)
                                     for s in ss]), "\n")
             Expr(:block, _function_wrappers_expr(fs), _struct_wrappers_expr(ss, colliding),
@@ -429,7 +429,7 @@ function _submodule_code(node::ModuleNode; strict::Symbol = _ffi_strict())
         push!(lines, "")
         append!(lines, _function_declarations_source(child))
         for func in child.functions
-            _function_skipped!(func) && continue
+            _function_skipped!(func; crate = true) && continue
             push!(lines, _emit_function_code(func; strict = strict))
             push!(lines, "")
         end

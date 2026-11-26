@@ -423,7 +423,7 @@ function _function_wrappers_expr(functions)
     for func in functions
         # A generic item gets no wrapper (the proc macro refuses it); one the
         # codegen refuses as `unsafe` is still recorded (#491).
-        _function_skipped!(func) && continue
+        _function_skipped!(func; crate = true) && continue
 
         wrapper = _generate_crate_function_wrapper(func)
         push!(exprs, wrapper)

@@ -1397,7 +1397,7 @@ _rust_refuses(skip_reason::AbstractString) =
     haskey(RUST_CODEGEN_REFUSALS, partition_skip_reason(skip_reason)[1])
 
 """
-    _rust_refused_item!(skip_reason, name) -> Bool
+    _rust_refused_item!(skip_reason, name; crate_item = nothing) -> Bool
 
 Whether the Rust codegen refuses the current item outright, as the manifest's
 `skip_reason` says (`_rust_refuses`) — a `#[julia]` function, method or struct
@@ -1412,12 +1412,23 @@ Outside it the refusal is the codegen's own — a `compile_error!` at the item,
 gated by the item's `#[cfg]` — so nothing is raised here: a crate is scanned
 leniently, and raising would refuse a build that configures the item away.
 """
-function _rust_refused_item!(skip_reason::AbstractString, name::AbstractString)
+function _rust_refused_item!(skip_reason::AbstractString, name::AbstractString; crate_item = nothing)
     _rust_refuses(skip_reason) || return false
-    _boundary_collecting() &&
-        _boundary_refuse("entry point",
-                         "$(RUST_CODEGEN_REFUSALS[partition_skip_reason(skip_reason)[1]]) $(name)",
-                         "", pyo3_skip_explanation(skip_reason))
+    if _boundary_collecting()
+        kind, _ = partition_skip_reason(skip_reason)
+        reason = pyo3_skip_explanation(skip_reason)
+        if crate_item !== nothing && kind in ("generic_signature", "impl_trait")
+            hint = if crate_item === :function
+                "Expose a concrete `#[julia]` facade. For a dependency's generic free function, use `RustCall.generate_crate_functions`, write the source into the facade crate, and bind it with `@rust_crate`."
+            elseif crate_item === :struct
+                "Expose a concrete `#[julia]` wrapper type. For a dependency's generic struct, see `RustCall.generate_crate_instances`."
+            else
+                "Expose concrete `#[julia]` wrapper types and methods."
+            end
+            reason = string(reason, ". ", hint)
+        end
+        _boundary_refuse("entry point", "$(RUST_CODEGEN_REFUSALS[kind]) $(name)", "", reason)
+    end
     return true
 end
 

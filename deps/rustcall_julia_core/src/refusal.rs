@@ -182,6 +182,14 @@ fn generic_param_detail(generics: &syn::Generics) -> String {
         .join(", ")
 }
 
+fn crate_facade_hint(what: &str) -> &'static str {
+    match what {
+        "function" => "Expose a concrete #[julia] facade. For a dependency's generic free function, use RustCall.generate_crate_functions, write the source into the facade crate, and bind it with @rust_crate.",
+        "struct" => "Expose a concrete #[julia] wrapper type. For a dependency's generic struct, see RustCall.generate_crate_instances.",
+        _ => "Expose concrete #[julia] wrapper types and methods.",
+    }
+}
+
 /// Refuse a generic `#[julia]` item in the crate flavour (#462).
 ///
 /// An `extern "C"` entry point needs concrete types, and the proc macro sees one
@@ -203,9 +211,9 @@ fn crate_generic_refusal(generics: &syn::Generics, what: &str, name: &Ident) -> 
     let msg = format!(
         "#[julia] {what} `{name}` is generic over {}: an `extern \"C\"` entry point needs \
          concrete types, and #[julia] cannot know which instantiations Julia will call. \
-         Write a non-generic `#[julia]` item that uses it, or define it in a `rust\"\"\"` block, where \
-         RustCall monomorphizes generics on demand.",
-        params.join(", ")
+         {} Supported definitions in an inline Rust block can be monomorphized on demand.",
+        params.join(", "),
+        crate_facade_hint(what)
     );
     Some(Refusal::over(
         skip_reason::GENERIC_SIGNATURE,
@@ -224,8 +232,9 @@ fn crate_signature_refusal(sig: &syn::Signature, what: &str) -> Option<Refusal> 
     if crate::types::has_impl_trait(sig) {
         let msg = format!(
             "#[julia] {what} `{}` uses `impl Trait` in its signature, which makes it generic: \
-             an `extern \"C\"` entry point needs concrete types. Name the concrete type instead.",
-            sig.ident
+             an `extern \"C\"` entry point needs concrete types. Name the concrete type instead. {}",
+            sig.ident,
+            crate_facade_hint(what)
         );
         return Some(Refusal::over(skip_reason::IMPL_TRAIT, "", sig, msg));
     }
