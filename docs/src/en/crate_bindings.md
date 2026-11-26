@@ -1764,6 +1764,28 @@ for example when this output is appended to `generate_crate_instances`. The
 user supplies a `Cargo.toml` depending on the original crate and
 `rustcall_julia_macros`, then loads the facade with `@rust_crate`.
 
+To return an [owned facade object](#owned-returns-from-free-functions), add
+`owned_return` to the specification. With a `#[julia]` struct `Dd`
+declared in the facade, a function can pack two inputs into that object.
+
+```julia
+functions = [(
+    name = "pack_dd",
+    args = ["hi" => "f64", "lo" => "f64"],
+    return_type = "Dd",
+    expression = "Dd { hi, lo }",
+    owned_return = "Dd",
+)]
+source = RustCall.generate_crate_functions(functions; header = false)
+```
+
+Append the generated source after the declarations and imports. RustCall
+adds `#[rustcall_owned_return(Dd)]` to the function. The expression supplies
+the actual return value. For a fallible function, use `Result<Dd, E>` as
+the return type and return that result from the expression, with a supported
+error type `E`. Use a Rust block expression if packing needs intermediate
+values.
+
 ```@docs
 RustCall.with_numeric_buffer
 RustCall.copy_owned_numeric_buffer

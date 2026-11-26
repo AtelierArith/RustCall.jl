@@ -1041,6 +1041,15 @@ pub fn gamma_f64(x: f64) -> f64 {
 
 `header = false` は `julia` を既に import しているファイル（`generate_crate_instances` の出力に追記する場合など）で `use` 行を省略します。元クレートと `rustcall_julia_macros` に依存する `Cargo.toml` を用意し、`@rust_crate` で facade を読み込みます。
 
+### 生成する自由関数から所有権付きの値を返す
+
+`generate_crate_functions` の仕様に `owned_return = "Dd"` を指定すると、
+生成した自由関数に `#[rustcall_owned_return(Dd)]` が付きます。`Dd` は
+ファサードで宣言した具体的な `#[julia]` 型です。`expression` に
+`"Dd { hi, lo }"` のような式を書いて、引数から戻り値を組み立てます。
+`Result<Dd, E>` を返す場合は、対応するエラー型 `E` を選び、式自体が
+その `Result` を返すようにします。
+
 ```@docs
 RustCall.with_numeric_buffer
 RustCall.copy_owned_numeric_buffer
