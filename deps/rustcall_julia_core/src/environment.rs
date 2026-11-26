@@ -630,10 +630,11 @@ pub(crate) fn lowered_lifetime_error(
                         steps.join(": ")
                     )
                 };
-                if args
-                    .iter()
-                    .any(|(name, ty)| name == arg && crate::slices::is_slice(ty))
-                {
+                if args.iter().any(|(name, ty)| {
+                    name == arg
+                        && (crate::slices::is_slice(ty)
+                            || crate::optional_borrows::is_optional_slice(ty))
+                }) {
                     return Some(Refusal::new(skip_reason::SLICE_SIGNATURE, arg.to_string(),
                         lifetime.ident.span(), format!("`{julia_name}`: slice argument `{arg}` must end at the synchronous call boundary; {why}. Retained borrows are unsupported (#570).")));
                 }
@@ -895,7 +896,8 @@ pub(crate) fn name_elided_return(
                 }
                 ([(i, span)], 0) => {
                     let (arg, ty) = &mut args[*i];
-                    if crate::slices::is_slice(ty) {
+                    if crate::slices::is_slice(ty) || crate::optional_borrows::is_optional_slice(ty)
+                    {
                         return ElidedReturn::Refused(Refusal::new(skip_reason::SLICE_SIGNATURE,
                             arg.to_string(), *span, format!("`{julia_name}`: a returned reference cannot borrow slice argument `{arg}`, whose scope ends at the synchronous call boundary (#570).")));
                     }

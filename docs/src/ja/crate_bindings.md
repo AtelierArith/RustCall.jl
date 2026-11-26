@@ -165,7 +165,7 @@ RustCall.boundary_report("/path/to/my_math")
 | `#[julia] mod geometry` 内の関数 | `MyMath.geometry.f(...)` |
 | `Result<T, E>` / `Option<T>` | `RustCall.RustResult{T, E}` / `RustCall.RustOption{T}` |
 
-対応型はインラインと共通で、整数、浮動小数、`bool`、`char`、`&str`、`String`、数値スライス、`Result`、`Option`、C 関数ポインタ、生ポインタ、`#[julia]` 構造体の参照です。[FFI の型契約](type_contract.md)が正式な一覧です。その他は `boundary_report` で報告し、生成時に拒否します（[未対応型](#Unsupported-types-in-a-crate)）。渡された Rust 値は Julia ラッパーが所有し、GC で破棄します。パニックは `RustCall.RustPanicError` です。
+対応型はインラインと共通で、整数、浮動小数、`bool`、`char`、`&str`、`String`、数値スライスとその省略可能形 `Option<&[T]>` / `Option<&mut [T]>`、`Result`、`Option`、C 関数ポインタ、生ポインタ、`#[julia]` 構造体の参照です。[FFI の型契約](type_contract.md)が正式な一覧です。その他は `boundary_report` で報告し、生成時に拒否します（[未対応型](#Unsupported-types-in-a-crate)）。渡された Rust 値は Julia ラッパーが所有し、GC で破棄します。パニックは `RustCall.RustPanicError` です。
 
 ### [`@rust_crate` のオプション](@id Options-of-@rust_crate)
 
@@ -351,6 +351,30 @@ bindings.describe("")       # ""
 ```
 
 生成されるラッパーは C の引数を3つ — `i32` の存在フラグと、必須の `&str` と同じ `(ptr, len)` — に下げ、shim 側で `String::from_utf8_lossy` から呼び出し限りの `Option<&str>` を再構成します。`nothing` は省略、`""` は存在する空文字列です。マニフェストは `Arg.abi = "option_str"` を記録します。`'static` や保持される省略可能文字列は、対応する `&str` と同じ規則で拒否され、`&str` の戻り値は同じ理由で所有する Julia 文字列にコピーされます。`Option<String>` は引き続き未対応です。引数には `Option<&str>` を使うか、所有 `String` を返してください。
+
+### [省略可能なスライス値](@id Optional-slice-values)
+
+非ジェネリックな `#[julia]` 関数・メソッドは、必須スライスと同じ要素型の語彙で `Option<&[T]>` / `Option<&mut [T]>` を受け取れます。Julia からは完全な要素型の連続ベクトルか `nothing` を渡します。
+
+```rust
+#[julia]
+pub fn scale(values: Option<&mut [f64]>, factor: f64) -> usize {
+    match values {
+        Some(xs) => {
+            for x in xs.iter_mut() { *x *= factor; }
+            xs.len()
+        }
+        None => 0,
+    }
+}
+```
+
+```julia
+bindings.scale(nothing, 2.0)      # 0
+bindings.scale(zeros(3), 2.0)     # 3
+```
+
+生成されるラッパーは `i32` の存在フラグに続けて、必須スライスと同じ型付きポインタと `usize` 長を受け取ります。shim はパニック境界の内側で呼び出し限りの `Option<&[T]>` / `Option<&mut [T]>` を再構成します。`nothing` は省略で、ポインタは無視され参照されません。実際の空配列は長さ0の `Some` なので、省略と空は区別されます。マニフェストは `Arg.abi = "option_slice"` / `"option_slice_mut"` と、必須スライスと同じ `Arg.slice_element`、`Arg.slice_length = "usize"` を記録し、ラッパーは同じ `<symbol>_slice_ptr_len_v1` マーカーを公開します。省略可能スライスは必須スライスの規則（要素型の有限な語彙、ストライド1の連続記憶、呼び出し限りのライフタイム、重複・別名検査）をすべて継承します。`Option<&str>` は省略可能文字列、`Option<Vec<T>>` は未対応です。
 
 ### [省略可能な借用対象](@id Optional-borrowed-owners)
 
@@ -891,6 +915,8 @@ bindings.transform(input, output)  # output now contains [2.0, 4.0, 6.0]
 ```
 
 生成 Julia 関数を使ってください。生の `@rust` / `ccall` は検査や長さスロットを自動生成しません。
+
+`Option<&[T]>` / `Option<&mut [T]>` は同じ変換の省略可能形です（[省略可能なスライス値](@ref Optional-slice-values)）。
 
 マニフェストは `abi = "slice"` / `"slice_mut"`、`slice_element`、`slice_length = "usize"` を記録します。Julia は実際の要素型と照合し、C ラッパーが基本型ポインタと `usize`（`size_t`）からパニック境界内でスライスを再構成します。Rust のファットポインタ ABI は渡しません。全戻り値形式やコンストラクタで `<symbol>_slice_ptr_len_v1` を取得済みイメージ上に要求します。古い生成側は `rustcall_julia_macros` を `0.7.0` 以降へ更新して再ビルド・再生成します。スライスなしの関数は不要です。
 

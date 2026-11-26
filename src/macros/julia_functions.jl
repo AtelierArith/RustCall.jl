@@ -38,8 +38,8 @@ source text.
   `"string"` for an owned `<fn>_RustCallOwnedString` buffer, `""` as written
   (manifest schema 6, #268)
 - `arg_slice_elements` / `arg_slice_lengths`: per argument, the manifest
-  representation and length slot for `slice` / `slice_mut` borrows (#570);
-  empty for every other argument
+  representation and length slot for `slice` / `slice_mut` / `option_slice` /
+  `option_slice_mut` borrows (#570, #619); empty for every other argument
 - `callback_args` / `callback_returns`: per argument, for an `arg_abis` entry
   of `"callback"`, the parameter and return spellings of the C-ABI function
   pointer (`Arg.callback_args` / `Arg.callback_return`, #296); empty otherwise
@@ -303,7 +303,7 @@ function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
     prefix = _string_temp_prefix(arg_names)
     trampolines = Any[]
     callbacks_seen = 0
-    has_mutable_slice = any(==("slice_mut"), arg_abis)
+    has_mutable_slice = any(abi -> abi in ("slice_mut", "option_slice_mut"), arg_abis)
     # Every Julia handle the call borrows from — `self` first — with the
     # pointer it lends and whether the borrow is `&mut`, for the checks after
     # the loop (#565).
@@ -415,6 +415,25 @@ function _string_arg_plan(arg_names::Vector{String}, arg_types::Vector{String},
             push!(call_args, @_emitted(:(getfield($span, :ptr))))
             push!(call_args, @_emitted(:(getfield($span, :len))))
             push!(buffer_borrows, (span, obj, abi == "slice_mut", name))
+        elseif abi in ("option_slice", "option_slice_mut")
+            # `Option<&[T]>` / `Option<&mut [T]>` (issue #619): an `i32`
+            # presence tag followed by the same `(ptr, len)` pair a required
+            # slice uses. `nothing` is absence; a real empty array is a
+            # present slice of length zero. The descriptor keeps the span so
+            # the shared overlap checks see an absent slice as empty.
+            obj = Symbol(_EMITTER_LOCAL_PREFIX, "option_slice_owner′", index)
+            desc = Symbol(_EMITTER_LOCAL_PREFIX, "option_slice_desc′", index)
+            span = Symbol(_EMITTER_LOCAL_PREFIX, "option_slice_span′", index)
+            T = _emitted_type(ffi_type_expr(ffi_slice_element_type(slice_elements[index])))
+            helper = GlobalRef(@__MODULE__, :ffi_optional_slice_argument)
+            push!(bindings, :($obj = $arg_sym))
+            push!(bindings, :($desc = $helper($obj, $T, $name, $context)))
+            push!(bindings, @_emitted(:( $span = getfield($desc, :span) )))
+            push!(preserved, obj)
+            push!(call_args, @_emitted(:(getfield($desc, :present))))
+            push!(call_args, @_emitted(:(getfield($span, :ptr))))
+            push!(call_args, @_emitted(:(getfield($span, :len))))
+            push!(buffer_borrows, (span, obj, abi == "option_slice_mut", name))
         elseif c.abi === :callback
             # A Julia function handed to Rust as `extern "C" fn` (#296). The
             # pointer's own signature comes from the manifest, and the
@@ -716,7 +735,7 @@ rooted for the call (#296). The plain wrapper has no `GC.@preserve` region.
 function _uses_string_ffi(sig::RustFunctionSignature)
     _ffi_function_return(sig).aggregate_type === nothing || return true
     # A borrowed `#[julia]` struct keeps its handle rooted for the call (#565).
-    any(abi -> _is_handle_abi(abi) || abi in ("slice", "slice_mut", "option_scalar", "option_str", "optional_borrow", "borrow_unresolved"), sig.arg_abis) && return true
+    any(abi -> _is_handle_abi(abi) || abi in ("slice", "slice_mut", "option_slice", "option_slice_mut", "option_scalar", "option_str", "optional_borrow", "borrow_unresolved"), sig.arg_abis) && return true
     return any(zip(sig.arg_types, sig.arg_abis)) do (rust_type, abi)
         c = ffi_argument_contract(rust_type; abi = abi)
         c.abi === :ptr_len || c.abi === :ptr_len_cap || c.abi === :option_str || c.abi === :callback

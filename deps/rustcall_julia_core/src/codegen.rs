@@ -467,6 +467,111 @@ fn string_arg_conversion(
                 };
             }),
         )
+    } else if let Some((mutable, elem, element)) = crate::optional_borrows::slice_element(ty) {
+        // `Option<&[T]>` / `Option<&mut [T]>` (#619) crosses as an `i32`
+        // presence tag followed by the same typed pointer and `usize` length a
+        // required slice uses. The shim rebuilds a call-scoped Option<&[T]>;
+        // an absent value's pointer is never dereferenced, and a present empty
+        // array is `Some` with length 0.
+        let present = fresh_call_ident(&format!("{name}_present"), taken);
+        let core_alias = fresh_call_ident("__rustcall_option_slice_core", taken);
+        let complex_alias = fresh_call_ident("__rustcall_option_slice_complex", taken);
+        let (imports, canonical) = match element {
+            "complex32" | "complex64" => {
+                let scalar =
+                    format_ident!("{}", if element == "complex32" { "f32" } else { "f64" });
+                (
+                    quote! { extern crate core as #core_alias; extern crate num_complex as #complex_alias; },
+                    quote! { #complex_alias::Complex<#core_alias::primitive::#scalar> },
+                )
+            }
+            scalar => {
+                let scalar = format_ident!("{}", scalar);
+                (
+                    quote! { extern crate core as #core_alias; },
+                    quote! { #core_alias::primitive::#scalar },
+                )
+            }
+        };
+        let p = fresh_call_ident(&format!("{name}_ptr"), taken);
+        let l = fresh_call_ident(&format!("{name}_len"), taken);
+        let identity = if mutable {
+            quote! { let _: *mut #canonical = #p; }
+        } else {
+            quote! { let _: *const #canonical = #p; }
+        };
+        let ptr_ty = if mutable {
+            quote! { *mut #elem }
+        } else {
+            quote! { *const #elem }
+        };
+        let ctor = if mutable {
+            quote! { #core_alias::slice::from_raw_parts_mut }
+        } else {
+            quote! { #core_alias::slice::from_raw_parts }
+        };
+        let construct = if let Some(scope) = call_scope {
+            let helper = fresh_call_ident("__rustcall_scoped_option_slice", taken);
+            let reference = if mutable {
+                quote! { &'scope mut [T] }
+            } else {
+                quote! { &'scope [T] }
+            };
+            let pointer = if mutable {
+                quote! { *mut T }
+            } else {
+                quote! { *const T }
+            };
+            quote! {
+                unsafe fn #helper<'scope, T: 'scope>(_: &'scope (), pointer @ _: #pointer,
+                    length @ _: #core_alias::primitive::usize) -> #reference {
+                    unsafe { #ctor(pointer, length) }
+                }
+                #helper(&#scope, rustcall_slice_ptr, #l)
+            }
+        } else {
+            quote! { #ctor(rustcall_slice_ptr, #l) }
+        };
+        let annotation = if mutable {
+            quote! { ::std::option::Option<&mut [#elem]> }
+        } else {
+            quote! { ::std::option::Option<&[#elem]> }
+        };
+        (
+            vec![
+                quote! { #present: ::std::primitive::i32 },
+                quote! { #p: #ptr_ty },
+                quote! { #l: ::std::primitive::usize },
+            ],
+            Some(quote! {
+                let #name: #annotation = {
+                    let _: ::std::primitive::i32 = #present;
+                    if #present != 0 {
+                        unsafe {
+                            // Compiler-checked identity, including validity, not just
+                            // size/alignment. Local aliases resolve actual crates even if a
+                            // module/type shadows a name.
+                            #imports
+                            #identity
+                            let _: #core_alias::primitive::usize = #l;
+                            // Validate before forming any reference, including empty slices.
+                            assert!(#l <= (#core_alias::primitive::isize::MAX as #core_alias::primitive::usize) / #core_alias::mem::size_of::<#elem>(), "slice byte span exceeds isize::MAX");
+                            let rustcall_slice_ptr = if #l == 0 {
+                                #core_alias::ptr::NonNull::<#elem>::dangling().as_ptr()
+                            } else {
+                                assert!(!#p.is_null(), "nonempty slice pointer is null");
+                                assert!((#p as #core_alias::primitive::usize) % #core_alias::mem::align_of::<#elem>() == 0, "misaligned slice pointer");
+                                assert!((#p as #core_alias::primitive::usize).checked_add(#l * #core_alias::mem::size_of::<#elem>()).is_some(), "slice address overflow");
+                                #p as *mut #elem
+                            };
+                            ::std::option::Option::Some(#construct)
+                        }
+                    } else {
+                        ::std::option::Option::None
+                    }
+                };
+            }),
+        )
     } else if let Some(element) = crate::optional_borrows::scalar_element(ty) {
         // `Option<primitive>` crosses as two C slots: an `i32` presence tag
         // and the value. Reconstructing `core::option::Option` here keeps the
@@ -1400,21 +1505,28 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
     // Refuse references escaping through any return, static/impl lifetimes,
     // bounds or other argument types before pointer/length lowering.
     for (name, ty) in &args {
-        if !crate::slices::is_slice(ty) {
+        // A required slice and an optional slice inherit the same element
+        // vocabulary and call-scope proof (#570, #619); the optional form
+        // only adds the presence tag.
+        if !crate::slices::is_slice(ty) && !crate::optional_borrows::is_optional_slice(ty) {
             continue;
         }
         let mut sig: syn::Signature = syn::parse_quote!(fn rustcall_slice_scope());
         sig.generics = generics.clone();
         let scoped = crate::extract::borrow_is_call_scoped(ty, &sig);
-        let lifetime = match crate::types::unparen(ty) {
-            Type::Reference(r) => r.lifetime.as_ref(),
-            _ => None,
-        };
+        let lifetime = crate::optional_borrows::reference(ty)
+            .or(match crate::types::unparen(ty) {
+                Type::Reference(r) => Some(r),
+                _ => None,
+            })
+            .and_then(|r| r.lifetime.as_ref());
         let returned = ret.passed_types();
         let mut returned_names = std::collections::BTreeSet::new();
         crate::environment::lifetime_names(quote! { #(#returned)* }, &mut returned_names);
         let escaping = lifetime.is_some_and(|l| returned_names.contains(&l.ident.to_string()));
-        if crate::slices::shape(ty).is_none() || !scoped || escaping {
+        let supported = crate::slices::shape(ty).is_some()
+            || crate::optional_borrows::slice_element(ty).is_some();
+        if !supported || !scoped || escaping {
             return Err(Refusal::over(crate::manifest::skip_reason::SLICE_SIGNATURE, name.to_string(), ty,
                 format!("`{julia_name}`: slice argument `{name}` requires a supported primitive layout and an unbounded call-scoped lifetime; retained/static borrows and borrowed returns are unsupported (#570)")));
         }
@@ -1422,6 +1534,7 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
     for (name, ty) in &args {
         if !crate::optional_borrows::is_option(ty)
             || crate::optional_borrows::scalar_element(ty).is_some()
+            || crate::optional_borrows::slice_element(ty).is_some()
         {
             continue;
         }
@@ -1619,7 +1732,11 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
     // No slice reference (or receiver dereference) exists before these checks.
     let mut slice_alias_checks = Vec::new();
     for (slice_name, slice_ty) in &args {
-        let Some((slice_mut, elem, _)) = crate::slices::shape(slice_ty) else {
+        // An optional slice is a slice borrow for this check too, so a
+        // `Some` slice never overlaps a borrowed receiver or handle (#619).
+        let Some((slice_mut, elem, _)) = crate::slices::shape(slice_ty)
+            .or_else(|| crate::optional_borrows::slice_element(slice_ty))
+        else {
             continue;
         };
         let p = fresh_call_ident(&format!("{slice_name}_ptr"), &call_taken);
@@ -1678,12 +1795,12 @@ fn wrapper_tokens(spec: WrapperSpec) -> Result<TokenStream2, Refusal> {
 
     let mut out = TokenStream2::new();
     out.extend(panic_channel(&cfg_attrs, &slot, &reader));
-    if args
-        .iter()
-        .any(|(_, ty)| crate::slices::shape(ty).is_some())
-    {
+    if args.iter().any(|(_, ty)| {
+        crate::slices::shape(ty).is_some() || crate::optional_borrows::slice_element(ty).is_some()
+    }) {
         // A newer consumer must never connect this pointer/length contract
         // to an older proc macro's native fat-pointer or unchecked layout.
+        // Optional slices use the same producer marker (#619).
         let marker = format_ident!("{}", slice_args_marker(&symbol.to_string()));
         out.extend(quote! {
             #(#cfg_attrs)*

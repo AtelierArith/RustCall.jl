@@ -380,7 +380,8 @@ pub fn function_refusal(func: &ItemFn, module_path: &[String], mode: Mode) -> Op
     if function_is_generic(func) {
         if let Some(syn::FnArg::Typed(pt)) = func.sig.inputs.iter().find(|a| {
             matches!(a,
-            syn::FnArg::Typed(pt) if crate::slices::is_slice(&pt.ty))
+            syn::FnArg::Typed(pt) if crate::slices::is_slice(&pt.ty)
+                || crate::optional_borrows::is_optional_slice(&pt.ty))
         }) {
             return Some(Refusal::over(skip_reason::SLICE_SIGNATURE, "generic", &pt.ty,
                 "Generic numeric slice wrappers are unsupported; write a concrete #[julia] adapter (#570)"));
@@ -547,7 +548,12 @@ fn receiver_refusal(struct_name: &Ident, m: &MethodModel) -> Option<Refusal> {
 fn async_slice_refusal(sig: &syn::Signature) -> Option<Refusal> {
     sig.asyncness.as_ref()?;
     let ty = sig.inputs.iter().find_map(|a| match a {
-        syn::FnArg::Typed(pt) if crate::slices::is_slice(&pt.ty) => Some(&pt.ty),
+        syn::FnArg::Typed(pt)
+            if crate::slices::is_slice(&pt.ty)
+                || crate::optional_borrows::is_optional_slice(&pt.ty) =>
+        {
+            Some(&pt.ty)
+        }
         _ => None,
     })?;
     Some(Refusal::over(skip_reason::SLICE_SIGNATURE, "async", ty,
@@ -596,7 +602,8 @@ pub fn method_refusal(site: MethodSite<'_>, m: &MethodModel) -> Option<Refusal> 
         MethodSite::InlineGeneric { struct_name } => {
             if let Some(syn::FnArg::Typed(pt)) = m.func.sig.inputs.iter().find(|a| {
                 matches!(a,
-                syn::FnArg::Typed(pt) if crate::slices::is_slice(&pt.ty))
+                syn::FnArg::Typed(pt) if crate::slices::is_slice(&pt.ty)
+                    || crate::optional_borrows::is_optional_slice(&pt.ty))
             }) {
                 return Some(Refusal::over(skip_reason::SLICE_SIGNATURE, "generic", &pt.ty,
                     "Generic numeric slice wrappers are unsupported; write a concrete #[julia] adapter (#570)"));

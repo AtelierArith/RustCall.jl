@@ -72,13 +72,16 @@ pub fn typed_arg(pt: &syn::PatType) -> Arg {
         abi: arg_abi(&pt.ty).to_string(),
         handle: String::new(),
         // `slice_element` is the canonical primitive representation for a
-        // numeric slice and for an `option_scalar` argument; `slice_length`
-        // belongs to the slice ABI alone.
+        // required or optional numeric slice and for an `option_scalar`
+        // argument; `slice_length` belongs to the slice ABIs alone.
         slice_element: crate::slices::shape(&pt.ty)
+            .or_else(|| crate::optional_borrows::slice_element(&pt.ty))
             .map(|s| s.2.to_string())
             .or_else(|| crate::optional_borrows::scalar_element(&pt.ty).map(str::to_string))
             .unwrap_or_default(),
-        slice_length: if crate::slices::shape(&pt.ty).is_some() {
+        slice_length: if crate::slices::shape(&pt.ty).is_some()
+            || crate::optional_borrows::slice_element(&pt.ty).is_some()
+        {
             "usize".into()
         } else {
             String::new()
@@ -204,6 +207,12 @@ pub fn arg_abi(ty: &syn::Type) -> &'static str {
             "slice_mut"
         } else {
             "slice"
+        }
+    } else if let Some((mutable, _, _)) = crate::optional_borrows::slice_element(ty) {
+        if mutable {
+            "option_slice_mut"
+        } else {
+            "option_slice"
         }
     } else if crate::optional_borrows::scalar_element(ty).is_some() {
         "option_scalar"
@@ -544,7 +553,12 @@ pub fn function_entry(
                 for arg in &mut args {
                     if matches!(
                         arg.abi.as_str(),
-                        "slice" | "slice_mut" | "option_scalar" | "option_str"
+                        "slice"
+                            | "slice_mut"
+                            | "option_slice"
+                            | "option_slice_mut"
+                            | "option_scalar"
+                            | "option_str"
                     ) {
                         arg.abi.clear();
                         arg.slice_element.clear();

@@ -457,6 +457,9 @@ pub struct Arg {
     /// `"str"` (`&str`, any lifetime: `(ptr, len)` bytes borrowed),
     /// `"slice"` / `"slice_mut"` (`&[T]` / `&mut [T]`: a typed pointer and
     /// `usize` length, with [`Arg::slice_element`] / [`Arg::slice_length`]; #570),
+    /// `"option_slice"` / `"option_slice_mut"` (`Option<&[T]>` /
+    /// `Option<&mut [T]>`: an `i32` presence tag followed by the same typed
+    /// pointer and `usize` length, rebuilt call-scoped; #619),
     /// `"callback"` (a C-ABI function pointer, passed as written; #296),
     /// `"handle"` / `"handle_mut"` (`&T` / `&mut T` of a `#[julia]` struct
     /// of this scan, [`Arg::handle`]; #565), `"handle_optional"` /
@@ -485,7 +488,8 @@ pub struct Arg {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub handle: String,
     /// Canonical initialized primitive representation for `slice` /
-    /// `slice_mut`, and the element type for `option_scalar`.
+    /// `slice_mut` / `option_slice` / `option_slice_mut`, and the element
+    /// type for `option_scalar`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub slice_element: String,
     /// Length slot representation (`usize`, the C ABI's size_t).

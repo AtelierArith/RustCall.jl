@@ -115,6 +115,34 @@ function ffi_slice_argument(
     return _ffi_slice_span(p, n, bytes)
 end
 
+# One call's optional slice descriptor (#619). `present` is the `i32` tag the
+# C wrapper receives; an absent value carries a zero-length span with a valid
+# aligned sentinel pointer that the Rust shim never dereferences. The span is
+# always present so the shared overlap checks see absence as an empty range.
+struct _FFIOptionalSliceSpan{T}
+    present::Int32
+    span::_FFISliceSpan{T}
+end
+
+# The descriptor for an `Option<&[T]>` / `Option<&mut [T]>` argument (#619).
+# `nothing` is absence; any other value goes through `ffi_slice_argument`, so
+# it must be a contiguous `StridedVector{T}` of the exact element type.
+# `Some(x)` and `missing` are rejected like any other non-array. An absent
+# value's sentinel pointer is never dereferenced by Rust, and a present empty
+# array is a slice of length zero.
+function ffi_optional_slice_argument(
+    value,
+    ::Type{T},
+    name::AbstractString,
+    context::AbstractString,
+) where {T}
+    value === nothing && return _FFIOptionalSliceSpan(
+        Int32(0),
+        _ffi_slice_span(Ptr{T}(Base.datatype_alignment(T)), 0, UInt(0)),
+    )
+    return _FFIOptionalSliceSpan(Int32(1), ffi_slice_argument(value, T, name, context))
+end
+
 function _ffi_slice_span(
     p::Ptr{T},
     n::Integer,

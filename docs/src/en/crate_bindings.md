@@ -195,8 +195,9 @@ functions and types. Rust names are kept.
 
 The types that may appear in a signature are the same as for inline blocks:
 integers, floats, `bool`, `char`, `&str`, `String`, numeric slices `&[T]` /
-`&mut [T]`, `Result`, `Option`, `extern "C" fn` callbacks, raw pointers, and
-`#[julia]` structs by reference. [The FFI Type Contract](type_contract.md) is
+`&mut [T]` and their optional forms `Option<&[T]>` / `Option<&mut [T]>`,
+`Result`, `Option`, `extern "C" fn` callbacks, raw pointers, and `#[julia]`
+structs by reference. [The FFI Type Contract](type_contract.md) is
 the authoritative list. A signature that uses anything else is reported by
 `boundary_report` and refused when the bindings are generated; see
 [Unsupported types in a crate](#Unsupported-types-in-a-crate).
@@ -545,6 +546,43 @@ The wrapper takes three C slots — an `i32` presence tag followed by the
 refused exactly like the corresponding `&str` form, and a `&str` return is
 copied into an owned Julia string for the same reason. `Option<String>` remains
 unsupported; take `Option<&str>` for an argument, or return an owned `String`.
+
+### Optional slice values
+
+A non-generic `#[julia]` function or method can take `Option<&[T]>` or
+`Option<&mut [T]>` for the same element vocabulary as a required slice. Julia
+passes a contiguous vector of the exact element type, or `nothing`:
+
+```rust
+#[julia]
+pub fn scale(values: Option<&mut [f64]>, factor: f64) -> usize {
+    match values {
+        Some(xs) => {
+            for x in xs.iter_mut() { *x *= factor; }
+            xs.len()
+        }
+        None => 0,
+    }
+}
+```
+
+```julia
+bindings.scale(nothing, 2.0)      # 0
+bindings.scale(zeros(3), 2.0)     # 3
+```
+
+The wrapper takes an `i32` presence tag and then the same typed pointer and
+`usize` length a required slice uses; the shim rebuilds a call-scoped
+`Option<&[T]>` or `Option<&mut [T]>` inside its panic boundary. `nothing` is
+absence: its pointer is ignored and never dereferenced. A real empty array is
+`Some` with length zero, so absence and emptiness stay distinct. The manifest
+records `Arg.abi = "option_slice"` or `"option_slice_mut"` with the same
+`Arg.slice_element` and `Arg.slice_length = "usize"` as a required slice, and
+the wrapper exports the same `<symbol>_slice_ptr_len_v1` producer marker.
+Optional slices inherit every required-slice rule: the finite element
+vocabulary, contiguous stride-one storage, call-scoped lifetimes, and the
+overlap and aliasing checks. `Option<&str>` remains the optional-string form,
+and `Option<Vec<T>>` is unsupported.
 
 ### Optional borrowed owners
 
@@ -1445,6 +1483,9 @@ input = [1.0, 2.0, 3.0]
 output = zeros(3)
 bindings.transform(input, output)  # output now contains [2.0, 4.0, 6.0]
 ```
+
+`Option<&[T]>` and `Option<&mut [T]>` are the optional form of the same
+lowering, described under [Optional slice values](@ref).
 
 Use the generated Julia function (`transform(input, output)`) for this checked
 lowering, including the functions emitted by `@rust_crate` and

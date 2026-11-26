@@ -75,6 +75,23 @@ pub(crate) fn str_element(ty: &Type) -> bool {
     matches!(crate::types::unparen(&reference.elem), Type::Path(p) if p.qself.is_none() && p.path.is_ident("str"))
 }
 
+/// Whether `ty` is syntactically `Option<&[T]>` / `Option<&mut [T]>` (#619),
+/// whatever its element type. [`slice_element`] additionally proves that the
+/// element is in the supported vocabulary.
+pub(crate) fn is_optional_slice(ty: &Type) -> bool {
+    inner(ty).is_some_and(crate::slices::is_slice)
+}
+
+/// The shape of `Option<&[T]>` / `Option<&mut [T]>` (#619): whether the
+/// inner slice is mutable, its element type as written, and the canonical
+/// representation [`crate::slices::shape`] assigns to that element. `None`
+/// for every other `Option` — including `Option<&str>`, `Option<Vec<T>>` and
+/// an `Option` whose inner reference is not a slice — and for an optional
+/// slice whose element layout is unsupported.
+pub(crate) fn slice_element(ty: &Type) -> Option<(bool, &Type, &'static str)> {
+    crate::slices::shape(inner(ty)?)
+}
+
 pub(crate) fn reference(ty: &Type) -> Option<&TypeReference> {
     match crate::types::unparen(inner(ty)?) {
         Type::Reference(r) => Some(r),
