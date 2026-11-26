@@ -352,20 +352,6 @@ bindings.describe("")       # ""
 
 生成されるラッパーは C の引数を3つ — `i32` の存在フラグと、必須の `&str` と同じ `(ptr, len)` — に下げ、shim 側で `String::from_utf8_lossy` から呼び出し限りの `Option<&str>` を再構成します。`nothing` は省略、`""` は存在する空文字列です。マニフェストは `Arg.abi = "option_str"` を記録します。`'static` や保持される省略可能文字列は、対応する `&str` と同じ規則で拒否され、`&str` の戻り値は同じ理由で所有する Julia 文字列にコピーされます。`Option<String>` は引き続き未対応です。引数には `Option<&str>` を使うか、所有 `String` を返してください。
 
-### 複数のスカラー出力に同じバッファを使う
-
-ファサードの関数に `*mut f64` の出力引数を渡し、関数の戻り値を
-`()` にすると、結果を Rust 側でヒープに確保せずに返せます。
-Julia で `zeros(Float64, 2)` を一度確保し、`GC.@preserve out` の
-範囲内で `pointer(out)` を渡します。Rust 側では二つの書き込み先が
-有効かつ整列済みであることを呼び出し側が保証します。呼び出し中の
-並行アクセスを避け、Rust 側にポインタを保持しないでください。
-値を読むのは呼び出しが成功した後です。
-
-ポインタの代わりに長さを確認する `&mut [f64]` や、再利用する
-`#[julia]` オブジェクトへの `&mut PairOwner` も使えます。
-`@register_ffi_struct` は集約型の引数を対象とします。
-
 ### [省略可能なスライス値](@id Optional-slice-values)
 
 非ジェネリックな `#[julia]` 関数・メソッドは、必須スライスと同じ要素型の語彙で `Option<&[T]>` / `Option<&mut [T]>` を受け取れます。Julia からは完全な要素型の連続ベクトルか `nothing` を渡します。
@@ -1026,6 +1012,49 @@ write("facade/src/lib.rs", RustCall.generate_crate_instances(instances))
 通常の finalizer で実体を破棄しますが、ロック・同期・数値方針は提供しません。別名参照や型のスレッド要件を利用者が守ります。順序付き仕様から決定的なソースを生成し、ファイル更新には通常の Cargo/RustCall の無効化が適用されます。依存先のメソッド・境界・型変換・ライフタイム・非公開配置は推論しません。
 
 失敗し得るコンストラクタには `error_type` を指定すると成功時に所有する `RustResult` を返します。任意の信頼済み `expression` でポインタ・長さから `Vec` を組み立てることもできますが、有効性と GC 保護は利用者の責任です。必要ならスコープ付きバッファを使います。未対応 ABI、借用戻り値、追加 import が必要なトレイトメソッドには手書きの窓口を使います。`Cargo.toml` は生成しません。
+
+### [複数のスカラー出力に同じバッファを使う](@id Reusing-a-buffer-for-multiple-scalar-outputs)
+
+ファサードの関数に `*mut f64` の出力引数を渡し、関数の戻り値を
+`()` にすると、結果を Rust 側でヒープに確保せずに返せます。
+`use rustcall_julia_macros::julia;` とともに `lib.rs` に次の関数を置きます。
+
+```rust
+#[julia]
+pub fn make_pair_into(x: f64, out: *mut f64) {
+    let hi = x;
+    let lo = x / 8.0;
+    // The caller supplies two aligned, writable f64 elements.
+    unsafe {
+        out.write(hi);
+        out.add(1).write(lo);
+    }
+}
+```
+
+Julia で `B = @rust_crate facade_path` を実行し、バッファを一度だけ確保します。
+
+```julia
+function make_pair!(bindings, out::Vector{Float64}, x::Float64)
+    length(out) == 2 || throw(ArgumentError("expected a two-element output buffer"))
+    GC.@preserve out bindings.make_pair_into(x, pointer(out))
+    return (out[1], out[2])
+end
+
+out = zeros(Float64, 2)
+make_pair!(B, out, 1.0)  # (1.0, 0.125)
+make_pair!(B, out, 2.0)  # (2.0, 0.25)
+```
+
+呼び出し側が、有効かつ整列済みの書き込み先を二つ用意します。
+呼び出し中の並行アクセスを避け、Rust 側にポインタを保持しないでください。
+パニックやエラーが起きると書き込みが途中で止まることがあるため、
+結果を読むのは成功した後です。
+
+ポインタの代わりに長さを確認する `&mut [f64]` や、
+再利用する `#[julia]` オブジェクトへの `&mut PairOwner` も使えます。
+`@register_ffi_struct` は集約型の引数を対象とします。
+構造体やタプルを値で返すには、戻り値用の ABI 対応が必要です。
 
 ### [ジェネリックな free function](@id Generic-free-functions)
 
