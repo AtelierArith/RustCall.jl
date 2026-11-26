@@ -27,9 +27,10 @@
 # This file is the single place that answers "where is it?". It is included by
 # `src/RustCall.jl` **and** by `deps/build.jl`, which runs in a bare Pkg build
 # environment before the module exists — so nothing here may reference any
-# RustCall binding, and its only dependencies are `Scratch` and `Base`.
+# RustCall binding, and its only dependencies are `Scratch`, `Dates` and `Base`.
 
 using Scratch: Scratch
+using Dates: Dates
 
 """
     RUSTCALL_UUID
@@ -223,6 +224,36 @@ native_scratch_dir(depot::AbstractString) =
     Scratch.scratch_dir(string(RUSTCALL_UUID), NATIVE_SCRATCH_NAME;
                         depot_path = String(depot))
 
+# A scratch space is kept by `Pkg.gc` for as long as one of the projects
+# recorded for it in `<depot>/logs/scratch_usage.toml` still exists, and
+# `Scratch.get_scratch!` writes that record when it can attribute the space to
+# the active project or to a loaded module's project. `Pkg.build` runs
+# `deps/build.jl` in a temporary sandbox project, before the RustCall module
+# exists, so neither holds: nothing is recorded, and the `Pkg.gc` that
+# `Pkg.update` (and `Pkg.add` / `Pkg.rm`) runs at the end deletes the products
+# the build made a moment earlier (#617). The installed copy's own
+# `Project.toml` is the right owner — the space is keyed by that copy's slug, so
+# it lives exactly as long as the copy does — and this writes the same record
+# `Scratch.track_scratch_access` would.
+const _REGISTERED_NATIVE_SCRATCHES = Set{String}()
+
+function _register_native_scratch!(root::AbstractString, depot::AbstractString)
+    project = joinpath(native_package_root(), "Project.toml")
+    isfile(project) || return nothing
+    key = abspath(root)
+    key in _REGISTERED_NATIVE_SCRATCHES && return nothing
+    usage = joinpath(depot, "logs", "scratch_usage.toml")
+    mkpath(dirname(usage))
+    open(usage, "a") do io
+        println(io, "[[\"", escape_string(key), "\"]]")
+        println(io, "time = ", Dates.now(Dates.UTC), "Z")
+        println(io, "parent_projects = [\"", escape_string(abspath(project)), "\"]")
+        println(io)
+    end
+    push!(_REGISTERED_NATIVE_SCRATCHES, key)
+    return nothing
+end
+
 """
     native_target_dir(kind::Symbol; depot = nothing, create = false) -> String
 
@@ -256,9 +287,13 @@ function _native_target_dir(crate::AbstractString; depot = nothing, create::Bool
         """)
         chosen = first(DEPOT_PATH)
     end
-    root = create ?
-        Scratch.get_scratch!(RUSTCALL_UUID, NATIVE_SCRATCH_NAME; depot_path = chosen) :
+    root = if create
+        path = Scratch.get_scratch!(RUSTCALL_UUID, NATIVE_SCRATCH_NAME; depot_path = chosen)
+        _register_native_scratch!(path, chosen)
+        path
+    else
         native_scratch_dir(chosen)
+    end
     dir = joinpath(root, slug, crate)
     create && mkpath(dir)
     return dir

@@ -5,6 +5,21 @@ All notable changes to RustCall.jl will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- `Pkg.gc` keeps the native build products of an installed copy instead of
+  reaping the ones `Pkg.build("RustCall")` just made. The `native-v1` scratch
+  space was never recorded in `<depot>/logs/scratch_usage.toml`: `Pkg.build`
+  runs `deps/build.jl` in a temporary sandbox project, before the module
+  exists, so `Scratch.get_scratch!` could not attribute the space and wrote
+  nothing, and `Pkg.gc` — which `Pkg.update`, `Pkg.add` and `Pkg.rm` run at the
+  end — deleted it. The `create = true` path now records the space against the
+  installed copy's own `Project.toml`, whose lifetime the space shares. No
+  lookup, path or ABI changes; a space built by an earlier release is registered
+  again by the next `Pkg.build("RustCall")`
+  ([#617](https://github.com/AtelierArith/RustCall.jl/issues/617)).
+
 ## [0.10.4] - 2026-11-25
 
 ### Added
