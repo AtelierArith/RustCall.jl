@@ -38,6 +38,8 @@ explicit C-ABI call is required. `@irust` was removed in 0.9 (#538); every
 snippet it took has a `#[julia]` equivalent (see
 [Migrating from `@irust`](migrating_from_irust.md)).
 
+For multiple upstream dependencies, see [Several upstream crates, one facade](crate_bindings.md#several-upstream-crates-one-facade).
+
 ## Worked example: `examples/SafeLedger.jl`
 
 [`examples/SafeLedger.jl`](https://github.com/AtelierArith/RustCall.jl/tree/main/examples/SafeLedger.jl)

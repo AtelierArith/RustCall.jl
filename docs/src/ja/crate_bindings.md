@@ -514,6 +514,23 @@ bindings.a.get(c)
 - 注釈のないインラインモジュール内の `#[julia]` は、マクロとマニフェストのシンボルが食い違うため拒否します。
 - 外部ファイルの `mod a;` に属性マクロは付けられません（E0658）。その中身はルートと同じシンボルになります。同名の `run` が複数ファイルにあれば、両方の場所を示して拒否します。ファイル内で `#[julia] pub mod` に包むか名前を変えます。
 
+### 複数の依存 crate を一つのファサードにまとめる
+
+複数のライブラリを一つの `cdylib` の Cargo 依存にすると、Cargo は
+そのファサードのターゲットディレクトリ内で依存グラフをビルドします。
+ファサードに `#[julia]` を付けたインラインモジュールを作り、公開する
+関数にも `#[julia]` を付けます。Julia では、たとえば
+`Bindings.special.run` と `Bindings.krylov.run` として呼び分けられます。
+
+Julia パッケージ内では、一度だけ `@rust_crate facade_path submodule="Bindings"`
+を実行し、必要に応じて `const Special = Bindings.special` のように
+別名を作ります。依存側の crate とローカルモジュールが同名の場合、
+Rust では `::special::run` のように外部 crate を明示します。
+
+別々にバインドした crate の直接ビルドでは、ターゲットディレクトリが
+分かれます。一つにまとめても、バージョン、機能、ターゲット、
+プロファイルが違えば Cargo は別の成果物を作ることがあります。
+
 ### [Julia の予約語](@id Names-Julia-reserves)
 
 Rust の `fn function`、`struct end`、`fn quote(&self)`、フィールド `begin` や、`r#for` などは Julia の予約語と衝突します。全項目・全生成経路で `RustCall.julia_binding_name` により次の規則を適用します（#514）。
