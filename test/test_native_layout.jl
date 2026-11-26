@@ -136,6 +136,8 @@ _toolchain_required() =
         Base.include(m, $(repr(joinpath(pkg, "src", "native_layout.jl"))))
         println(m.native_installed_slug())
         println(m.native_target_dir(:extractor; create = true))
+        # A second creation must not add a second record for the same copy.
+        m.native_target_dir(:extractor; create = true)
         println(m.native_target_dir(:rustcall_helpers))
         for c in m.native_product_candidates(:extractor)
             println("candidate: ", c)
@@ -187,6 +189,8 @@ _toolchain_required() =
         records = get(TOML.parsefile(usage), space, [])
         @test !isempty(records)
         @test any(r -> joinpath(pkg, "Project.toml") in r["parent_projects"], records)
+        @test count(r -> joinpath(pkg, "Project.toml") in r["parent_projects"],
+                    records) == 1
     end
 
     @testset "the pre-v0.4 helper name is no longer looked for (#387 → #417)" begin

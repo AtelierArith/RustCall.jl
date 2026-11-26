@@ -235,22 +235,50 @@ native_scratch_dir(depot::AbstractString) =
 # `Project.toml` is the right owner — the space is keyed by that copy's slug, so
 # it lives exactly as long as the copy does — and this writes the same record
 # `Scratch.track_scratch_access` would.
-const _REGISTERED_NATIVE_SCRATCHES = Set{String}()
+# `Scratch.track_scratch_access` already gates repeated writes per session; this
+# check gives the same idempotence to the standalone build path without a
+# mutable registry of its own. The usage log is read as text so that this file
+# keeps loading in the bare `Pkg.build` environment, including one whose first
+# depot is read-only.
+_toml_quote(value::AbstractString) = "\"" * escape_string(value) * "\""
+
+function _native_scratch_recorded(usage::AbstractString, key::AbstractString,
+                                  project::AbstractString)
+    isfile(usage) || return false
+    content = try
+        read(usage, String)
+    catch
+        return false
+    end
+    header = "[[" * _toml_quote(key) * "]]"
+    needle = "parent_projects = [" * _toml_quote(project) * "]"
+    offset = firstindex(content)
+    while true
+        found = findnext(header, content, offset)
+        found === nothing && return false
+        rest_start = nextind(content, last(found))
+        rest = rest_start <= lastindex(content) ? content[rest_start:end] : ""
+        next_header = findfirst("[[", rest)
+        block = next_header === nothing ? rest :
+            first(next_header) == 1 ? "" : rest[begin:prevind(rest, first(next_header))]
+        occursin(needle, block) && return true
+        offset = rest_start
+    end
+end
 
 function _register_native_scratch!(root::AbstractString, depot::AbstractString)
-    project = joinpath(native_package_root(), "Project.toml")
+    project = abspath(joinpath(native_package_root(), "Project.toml"))
     isfile(project) || return nothing
     key = abspath(root)
-    key in _REGISTERED_NATIVE_SCRATCHES && return nothing
     usage = joinpath(depot, "logs", "scratch_usage.toml")
+    _native_scratch_recorded(usage, key, project) && return nothing
     mkpath(dirname(usage))
     open(usage, "a") do io
         println(io, "[[\"", escape_string(key), "\"]]")
         println(io, "time = ", Dates.now(Dates.UTC), "Z")
-        println(io, "parent_projects = [\"", escape_string(abspath(project)), "\"]")
+        println(io, "parent_projects = [\"", escape_string(project), "\"]")
         println(io)
     end
-    push!(_REGISTERED_NATIVE_SCRATCHES, key)
     return nothing
 end
 
