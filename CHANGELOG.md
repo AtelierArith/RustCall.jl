@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Non-generic `#[julia]` functions and methods accept `Option<&[T]>` and
+  `Option<&mut [T]>` for the same element vocabulary required slices accept
+  (`f32`, `f64`, the fixed-width integers, `isize`, `usize`, and
+  `num_complex::Complex32` / `Complex64`). The wrapper lowers the argument to
+  an `i32` presence tag followed by the same typed pointer and `usize` length a
+  required slice uses, and rebuilds a call-scoped `Option<&[T]>` /
+  `Option<&mut [T]>` in the shim. `nothing` is absence (its pointer is ignored
+  and never dereferenced), and a real empty array is `Some` with length zero.
+  The manifest records `Arg.abi = "option_slice"` / `"option_slice_mut"` with
+  `slice_element` and `slice_length = "usize"`, and the wrapper exports the
+  existing `<symbol>_slice_ptr_len_v1` producer marker, so no manifest schema
+  or saved-bindings format changes
+  ([#619](https://github.com/AtelierArith/RustCall.jl/issues/619)).
+
 ### Fixed
 - `Pkg.gc` keeps the native build products of an installed copy instead of
   reaping the ones `Pkg.build("RustCall")` just made. The `native-v1` scratch
@@ -19,6 +34,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lookup, path or ABI changes; a space built by an earlier release is registered
   again by the next `Pkg.build("RustCall")`
   ([#617](https://github.com/AtelierArith/RustCall.jl/issues/617)).
+
+### Rust crates
+- The published crates `rustcall_julia_core`, `rustcall_julia_macros_impl` and
+  `rustcall_julia_macros` move to 0.7.4. A crate must build against 0.7.4 to
+  accept `Option<&[T]>` / `Option<&mut [T]>` arguments; earlier macros refuse
+  those signatures at compile time, so existing binaries keep their current
+  ABI and need no rebuild unless they adopt the new argument form.
 
 ## [0.10.4] - 2026-11-25
 
