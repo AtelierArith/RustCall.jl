@@ -514,6 +514,89 @@ bindings.a.get(c)
 - 注釈のないインラインモジュール内の `#[julia]` は、マクロとマニフェストのシンボルが食い違うため拒否します。
 - 外部ファイルの `mod a;` に属性マクロは付けられません（E0658）。その中身はルートと同じシンボルになります。同名の `run` が複数ファイルにあれば、両方の場所を示して拒否します。ファイル内で `#[julia] pub mod` に包むか名前を変えます。
 
+### [複数の依存 crate を一つのファサードにまとめる](@id Several-upstream-crates-one-facade)
+
+複数のライブラリを一つの `cdylib` の Cargo 依存にすると、Cargo は
+そのファサードのターゲットディレクトリ内で依存グラフをビルドします。
+ファサードに `#[julia]` を付けたインラインモジュールを作り、公開する
+関数にも `#[julia]` を付けます。Julia では、たとえば
+`Bindings.special.run` と `Bindings.krylov.run` として呼び分けられます。
+
+次の例では、4 つの crate からなるワークスペースを作り、
+両方のバインディングを呼び出します。
+
+```julia
+using RustCall
+ws = mktempdir()
+write(joinpath(ws, "Cargo.toml"), """
+[workspace]
+members = ["shared", "special", "krylov", "facade"]
+resolver = "2"
+""")
+for name in ("shared", "special", "krylov", "facade")
+    mkpath(joinpath(ws, name, "src"))
+    extra = name == "shared" ? "" : name == "facade" ? """
+[lib]
+crate-type = ["cdylib"]
+[dependencies]
+special = { path = "../special" }
+krylov = { path = "../krylov" }
+rustcall_julia_macros = "=0.7.3"
+""" : """
+[dependencies]
+shared = { path = "../shared" }
+"""
+    write(joinpath(ws, name, "Cargo.toml"), """
+[package]
+name = "$name"
+version = "0.1.0"
+edition = "2021"
+""" * extra)
+end
+write(joinpath(ws, "shared", "src", "lib.rs"),
+      "pub fn bump(x: i32) -> i32 { x + 1 }
+")
+for name in ("special", "krylov")
+    write(joinpath(ws, name, "src", "lib.rs"),
+          "pub fn run(x: i32) -> i32 { shared::bump(x) }
+")
+end
+write(joinpath(ws, "facade", "src", "lib.rs"), raw"""
+use rustcall_julia_macros::julia;
+#[julia]
+pub mod special {
+    use rustcall_julia_macros::julia;
+    #[julia]
+    pub fn run(x: i32) -> i32 { ::special::run(x) }
+}
+#[julia]
+pub mod krylov {
+    use rustcall_julia_macros::julia;
+    #[julia]
+    pub fn run(x: i32) -> i32 { ::krylov::run(x) }
+}
+""")
+B = @rust_crate joinpath(ws, "facade")
+@assert B.special.run(Int32(2)) == Int32(3)
+@assert B.krylov.run(Int32(7)) == Int32(8)
+```
+
+Julia パッケージでは、モジュールのトップレベルでファサードを一度バインドし、
+必要に応じて生成されたサブモジュールに別名を付けます。
+
+```julia
+@rust_crate facade_path submodule="Bindings"
+const Special = Bindings.special
+const Krylov = Bindings.krylov
+```
+
+依存側の crate とローカルモジュールが同名の場合、
+Rust では `::special::run` のように外部 crate を明示します。
+
+別々にバインドした crate の直接ビルドでは、ターゲットディレクトリが
+分かれます。一つにまとめても、バージョン、機能、ターゲット、
+プロファイルが違えば Cargo は別の成果物を作ることがあります。
+
 ### [Julia の予約語](@id Names-Julia-reserves)
 
 Rust の `fn function`、`struct end`、`fn quote(&self)`、フィールド `begin` や、`r#for` などは Julia の予約語と衝突します。全項目・全生成経路で `RustCall.julia_binding_name` により次の規則を適用します（#514）。
@@ -1057,6 +1140,8 @@ make_pair!(B, out, 2.0)  # (2.0, 0.25)
 構造体やタプルを値で返すには、戻り値用の ABI 対応が必要です。
 
 ### [ジェネリックな free function](@id Generic-free-functions)
+
+複数の依存 crate の関数をまとめる例は、[複数の依存 crate を一つのファサードにまとめる](@ref Several-upstream-crates-one-facade)を参照してください。
 
 `generate_crate_functions` は `generate_crate_instances` の free function 版です。スカラー型でジェネリックな API（例：[tenferro-sci-rs](https://github.com/tensor4all/tenferro-sci-rs)）は直接バインドできません。`#[julia]` 項目は具体型でなければならず、`macro_rules!` が生成した項目はソース走査から見えないためです。具体化を明示します。
 

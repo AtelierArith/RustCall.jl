@@ -819,6 +819,92 @@ Three things to know:
   with both locations instead of describing a library that cannot be built.
   Wrap the items in a `#[julia] pub mod` block inside the file, or rename one.
 
+### [Several upstream crates, one facade](@id Several-upstream-crates-one-facade)
+
+Use a single `cdylib` facade whose Cargo dependencies are the libraries you
+want to expose. Cargo builds their shared dependency graph in the facade's
+target directory. Mark both each inline Rust module and its exported
+functions with `#[julia]`. Julia gets a submodule per marked module, so
+`special::run` and `krylov::run` can share a name.
+
+This script creates a complete four-member workspace and calls both bindings.
+
+```julia
+using RustCall
+ws = mktempdir()
+write(joinpath(ws, "Cargo.toml"), """
+[workspace]
+members = ["shared", "special", "krylov", "facade"]
+resolver = "2"
+""")
+for name in ("shared", "special", "krylov", "facade")
+    mkpath(joinpath(ws, name, "src"))
+    extra = name == "shared" ? "" : name == "facade" ? """
+[lib]
+crate-type = ["cdylib"]
+[dependencies]
+special = { path = "../special" }
+krylov = { path = "../krylov" }
+rustcall_julia_macros = "=0.7.3"
+""" : """
+[dependencies]
+shared = { path = "../shared" }
+"""
+    write(joinpath(ws, name, "Cargo.toml"), """
+[package]
+name = "$name"
+version = "0.1.0"
+edition = "2021"
+""" * extra)
+end
+write(joinpath(ws, "shared", "src", "lib.rs"),
+      "pub fn bump(x: i32) -> i32 { x + 1 }
+")
+for name in ("special", "krylov")
+    write(joinpath(ws, name, "src", "lib.rs"),
+          "pub fn run(x: i32) -> i32 { shared::bump(x) }
+")
+end
+write(joinpath(ws, "facade", "src", "lib.rs"), raw"""
+use rustcall_julia_macros::julia;
+#[julia]
+pub mod special {
+    use rustcall_julia_macros::julia;
+    #[julia]
+    pub fn run(x: i32) -> i32 { ::special::run(x) }
+}
+#[julia]
+pub mod krylov {
+    use rustcall_julia_macros::julia;
+    #[julia]
+    pub fn run(x: i32) -> i32 { ::krylov::run(x) }
+}
+""")
+B = @rust_crate joinpath(ws, "facade")
+@assert B.special.run(Int32(2)) == Int32(3)
+@assert B.krylov.run(Int32(7)) == Int32(8)
+```
+
+Inside a Julia package, bind the facade at module scope and alias the generated
+modules if you want public names.
+
+```julia
+@rust_crate facade_path submodule="Bindings"
+const Special = Bindings.special
+const Krylov = Bindings.krylov
+```
+
+The leading `::` in `::special::run` and `::krylov::run` selects the
+dependency even when the facade defines an identically named local module.
+For namespace boundaries, mark inline module blocks. A plain `mod foo;`
+declaration is transparent for symbol names.
+
+One bound facade uses one Cargo build graph. Cargo can still compile separate
+artifacts for different versions, feature sets, compilation targets or
+profiles, and rebuilds affected artifacts when inputs change. Separately
+bound crates use isolated target directories for direct builds. Crates
+without a `cdylib` can use a separate generated wrapper build.
+
 ### Names Julia reserves
 
 Rust and Julia reserve different words. `fn function`, `struct end`,
@@ -1777,6 +1863,8 @@ would still need a matching Julia type and verified layout, ownership and
 platform return ABI. `@register_ffi_struct` covers aggregate arguments.
 
 ### Generic free functions
+
+To group exports from several dependencies, see [Several upstream crates, one facade](@ref Several-upstream-crates-one-facade).
 
 `generate_crate_functions` is the free-function counterpart of
 `generate_crate_instances`. A dependency whose API is generic over a scalar,
