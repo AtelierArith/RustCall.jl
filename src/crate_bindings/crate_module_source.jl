@@ -305,7 +305,7 @@ function emit_crate_module_code(info::CrateInfo, lib_path::String;
     tree = _rename_crate_tree(tree; strict = strict)
     append!(lines, _function_declarations_source(tree))
     for func in tree.functions
-        _function_skipped!(func) && continue
+        _function_skipped!(func; crate = true) && continue
         code = _emit_function_code(func; strict = strict)
         push!(lines, code)
         push!(lines, "")
@@ -391,7 +391,7 @@ function _emit_function_code(func::RustFunctionSignature; strict::Symbol = _ffi_
     # argument plan, which records first.
     _boundary_item!(_boundary_label(func))
     # An item the Rust codegen refuses gets no wrapper (#491).
-    _rust_refused_item!(func.skip_reason, func.name) && return ""
+    _rust_refused_item!(func.skip_reason, func.name; crate_item = :function) && return ""
     func.return_handle === nothing || return _emitted_source(_owned_return_wrapper(func; inline = false))
     func_name = julia_function_name(func)
     # The generated Julia function keeps the Rust name; the symbol it looks up
@@ -608,7 +608,7 @@ function _emit_struct_code(info::RustStructInfo; strict::Symbol = _ffi_strict(),
     # Julia type; the report names it at its entry point (#503).
     if !_binds_julia_struct(info)
         _boundary_item!(_boundary_label(info))
-        _rust_refused_item!(info.skip_reason, info.name)
+        _rust_refused_item!(info.skip_reason, info.name; crate_item = :struct)
         return ""
     end
     struct_name = julia_struct_name(info)
@@ -769,7 +769,7 @@ function _emit_method_code(struct_info::RustStructInfo, method::RustMethod;
     # argument plan, which records first.
     _boundary_item!(_boundary_label(struct_info, method))
     # A method the Rust codegen refuses gets no wrapper (#491).
-    _rust_refused_item!(method.skip_reason, method.name) && return ""
+    _rust_refused_item!(method.skip_reason, method.name; crate_item = :method) && return ""
     method.return_handle === nothing || return _emitted_source(_owned_return_wrapper(method, struct_info; inline = false, bare))
     struct_name = julia_struct_name(struct_info)
     method_name = julia_method_name(method)

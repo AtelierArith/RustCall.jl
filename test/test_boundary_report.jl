@@ -140,6 +140,12 @@ end
             use rustcall_julia_macros::julia;
 
             #[julia]
+            fn generic_identity<T: Copy>(x: T) -> T { x }
+
+            #[julia]
+            pub struct GenericBag<T> { pub item: T }
+
+            #[julia]
             fn total(values: Vec<f64>) -> f64 { values.iter().sum() }
 
             #[julia]
@@ -151,15 +157,26 @@ end
                 pub fn new() -> Self { Bag { items: Vec::new() } }
                 #[julia]
                 pub fn items(&self) -> Vec<i32> { self.items.clone() }
+                #[julia]
+                pub fn identity<T: Copy>(&self, x: T) -> T { x }
                 // Not attributed: `@rust_crate` does not wrap it.
                 pub fn raw(&self) -> Vec<i32> { self.items.clone() }
             }
             """)
-        report = RustCall.boundary_report(crate; io = devnull)
-        # The private `Vec` field `items` gets no getter (#453), so only the
-        # `#[julia]` method returning a `Vec` is listed.
+        output = IOBuffer()
+        report = RustCall.boundary_report(crate; io = output)
+        # The private Vec field has no getter and is absent from the report.
         @test _br_positions(report) == Set([("total", "argument `values`"),
-                                            ("Bag::items", "return")])
+                                            ("Bag::items", "return"),
+                                            ("generic_identity", "entry point"),
+                                            ("GenericBag", "entry point"),
+                                            ("Bag::identity", "entry point")])
+        findings = Dict(u.item => u.reason for u in report.unsupported)
+        @test occursin("generate_crate_functions", findings["generic_identity"])
+        @test occursin("generate_crate_instances", findings["GenericBag"])
+        @test occursin("concrete `#[julia]` wrapper types and methods", findings["Bag::identity"])
+        @test !occursin("generate_crate_", findings["total"])
+        @test occursin("generate_crate_functions", String(take!(output)))
     end
 end
 

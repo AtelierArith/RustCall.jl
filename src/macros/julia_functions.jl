@@ -816,16 +816,16 @@ and the layout checks skip it through this predicate.
 _binds_julia_struct(info::RustStructInfo) = !_rust_refuses(info.skip_reason)
 
 """
-    _function_skipped!(sig) -> Bool
+    _function_skipped!(sig; crate = false) -> Bool
 
 Whether a function emitter skips `sig` (`!_binds_julia_wrapper(sig)`). The
 emitter is still where a refusal the Rust codegen makes on its own is recorded
 (#491), a generic `#[julia] unsafe fn` included, so the report names it.
 """
-function _function_skipped!(sig::RustFunctionSignature)
+function _function_skipped!(sig::RustFunctionSignature; crate::Bool = false)
     _binds_julia_wrapper(sig) && return false
     _boundary_item!(_boundary_label(sig))
-    _rust_refused_item!(sig.skip_reason, sig.name)
+    _rust_refused_item!(sig.skip_reason, sig.name; crate_item = crate ? :function : nothing)
     return true
 end
 

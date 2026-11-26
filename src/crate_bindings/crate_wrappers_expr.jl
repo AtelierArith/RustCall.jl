@@ -26,7 +26,7 @@ function _generate_crate_function_wrapper(func::RustFunctionSignature)
     # argument plan, which records first.
     _boundary_item!(_boundary_label(func))
     # An item the Rust codegen refuses gets no wrapper (#491).
-    _rust_refused_item!(func.skip_reason, func.name) && return Expr(:block)
+    _rust_refused_item!(func.skip_reason, func.name; crate_item = :function) && return Expr(:block)
     func.return_handle === nothing || return _owned_return_wrapper(func; inline = false)
     func_name = Symbol(julia_function_name(func))
     func_name_str = String(func_name)
@@ -390,7 +390,7 @@ function _generate_crate_struct_wrapper(info::RustStructInfo;
     # Julia type; the report names it at its entry point (#503).
     if !_binds_julia_struct(info)
         _boundary_item!(_boundary_label(info))
-        _rust_refused_item!(info.skip_reason, info.name)
+        _rust_refused_item!(info.skip_reason, info.name; crate_item = :struct)
         return Expr(:block)
     end
     struct_name_str = julia_struct_name(info)
@@ -754,7 +754,7 @@ function _generate_crate_method_wrapper(info::RustStructInfo, method::RustMethod
     # argument plan, which records first.
     _boundary_item!(_boundary_label(info, method))
     # A method the Rust codegen refuses gets no wrapper (#491).
-    _rust_refused_item!(method.skip_reason, method.name) && return Expr(:block)
+    _rust_refused_item!(method.skip_reason, method.name; crate_item = :method) && return Expr(:block)
     method.return_handle === nothing || return _owned_return_wrapper(method, info; inline = false, bare)
     struct_name_str = julia_struct_name(info)
     struct_name = Symbol(struct_name_str)
