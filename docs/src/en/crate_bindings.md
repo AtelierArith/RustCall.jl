@@ -1729,6 +1729,53 @@ buffer helper where appropriate. Unsupported ABI types, borrowed results
 and trait methods needing extra imports require a hand-written facade. It does
 not generate a `Cargo.toml`.
 
+### Reusing a buffer for multiple scalar outputs
+
+A facade can return two scalars without allocating a Rust object for the
+result. Give the facade a caller-provided output pointer and return unit.
+Place this function in the facade's `lib.rs` alongside the
+`use rustcall_julia_macros::julia;` import.
+
+```rust
+#[julia]
+pub fn make_pair_into(x: f64, out: *mut f64) {
+    let hi = x;
+    let lo = x / 8.0;
+    // The caller supplies two aligned, writable f64 elements.
+    unsafe {
+        out.write(hi);
+        out.add(1).write(lo);
+    }
+}
+```
+
+Bind the facade once with `B = @rust_crate facade_path`. Allocate the
+buffer once and pass it to each call.
+
+```julia
+function make_pair!(bindings, out::Vector{Float64}, x::Float64)
+    length(out) == 2 || throw(ArgumentError("expected a two-element output buffer"))
+    GC.@preserve out bindings.make_pair_into(x, pointer(out))
+    return (out[1], out[2])
+end
+
+out = zeros(Float64, 2)
+make_pair!(B, out, 1.0)  # (1.0, 0.125)
+make_pair!(B, out, 2.0)  # (2.0, 0.25)
+```
+
+Keep the pointer valid for the synchronous call, prevent concurrent access to
+the output storage, and never retain the pointer in Rust. Read the output
+only after success. A panic or an error can leave partial writes. A facade
+can also accept a checked `&mut [f64]` and verify its length, or accept a
+checked `&mut PairOwner` using a reusable opaque `#[julia]` object. The
+owner is allocated once and can be reused across calls.
+
+General by-value struct and Rust tuple returns would need a return-side ABI
+mapping. A Rust tuple has no guaranteed C layout. A `#[repr(C)]` struct
+would still need a matching Julia type and verified layout, ownership and
+platform return ABI. `@register_ffi_struct` covers aggregate arguments.
+
 ### Generic free functions
 
 `generate_crate_functions` is the free-function counterpart of
