@@ -120,7 +120,6 @@ fn optional_owner_lifetimes_and_unsupported_shapes_are_precise_refusals() {
         "pub fn f(v: Option<Option<&Owner>>) -> i32 { 0 }",
         "pub fn f(v: Option<Box<Owner>>) -> i32 { 0 }",
         "pub fn f(v: Option<*const Owner>) -> i32 { 0 }",
-        "pub fn f(v: Option<&[i32]>) -> i32 { 0 }",
     ] {
         let source = format!("#[julia] pub struct Owner {{ pub value: i32 }} pub struct Holder<'a>(std::marker::PhantomData<&'a i32>); #[julia] {signature}");
         for m in [

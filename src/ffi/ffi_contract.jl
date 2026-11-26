@@ -705,9 +705,11 @@ them.
 the ABI derived from the Rust spelling, which is what makes the manifest
 normative (#270). It is also the *only* thing that selects the lowered string
 form: `ffi_argument_contract("String")` is unknown, `abi = "string"` makes it
-`:ptr_len`. A `slice` / `slice_mut` manifest entry additionally requires its
-`slice_element` representation and `slice_length = "usize"`; its pointer slot
-is typed by that representation, never inferred from the Rust spelling.
+`:ptr_len`. A `slice` / `slice_mut` / `option_slice` / `option_slice_mut`
+manifest entry additionally requires its `slice_element` representation and
+`slice_length = "usize"`; its pointer slot is typed by that representation,
+never inferred from the Rust spelling. An optional slice adds an `Int32`
+presence slot in front of the same `(ptr, len)` pair.
 
 When the position cannot be described the returned contract has `known = false`,
 empty `ccall_types` and `:unknown` ownership — callers must raise rather than
@@ -730,6 +732,19 @@ function ffi_argument_contract(rust_type::AbstractString; abi::AbstractString = 
         slots = Type[Ptr{T}, Csize_t]
         return FFIContract(String(rust_type), :argument, :ptr_len, slots,
                            nothing, copy(slots), AbstractVector{T}, :borrowed, nothing, true)
+    end
+    if abi in ("option_slice", "option_slice_mut")
+        # `Option<&[T]>` / `Option<&mut [T]>` (issue #619): an `i32` presence
+        # tag followed by the same typed pointer and `usize` length a required
+        # slice uses. `nothing` is absence; a real empty array is a present
+        # slice of length zero.
+        slice_length == "usize" || throw(ArgumentError(
+            "optional slice manifest must declare slice_length = usize"))
+        T = ffi_slice_element_type(slice_element)
+        slots = Type[Int32, Ptr{T}, Csize_t]
+        return FFIContract(String(rust_type), :argument, :ptr_len, slots,
+                           nothing, copy(slots), Union{Nothing, AbstractVector{T}},
+                           :borrowed, nothing, true)
     end
     if abi == "option_scalar"
         # `Option<T>` for a primitive `T` (issue #609): an `i32` presence tag
@@ -762,7 +777,8 @@ function _require_slice_args_abi(handle::Ptr{Cvoid}, symbol::AbstractString)
     error("incompatible numeric slice argument ABI for $symbol; rebuild the crate with rustcall_julia_macros >= 0.7.0")
 end
 
-_uses_slice_ffi(signature) = any(abi -> abi in ("slice", "slice_mut"), signature.arg_abis)
+_uses_slice_ffi(signature) = any(abi -> abi in ("slice", "slice_mut", "option_slice", "option_slice_mut"),
+                                 signature.arg_abis)
 
 # The manifest's finite element vocabulary. Primitive layouts come from the
 # same scalar table as every other FFI position; complex slices use the

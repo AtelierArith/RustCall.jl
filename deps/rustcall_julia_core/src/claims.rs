@@ -365,10 +365,12 @@ pub fn function_claims(f: &Function, policy: Policy) -> Vec<Claim> {
         return vec![Claim::exported(f.symbol.clone())];
     }
     let mut out = wrapper_claims(&f.symbol);
-    if f.args
-        .iter()
-        .any(|a| matches!(a.abi.as_str(), "slice" | "slice_mut"))
-    {
+    if f.args.iter().any(|a| {
+        matches!(
+            a.abi.as_str(),
+            "slice" | "slice_mut" | "option_slice" | "option_slice_mut"
+        )
+    }) {
         out.push(Claim::exported(crate::codegen::slice_args_marker(
             &f.symbol,
         )));
@@ -492,10 +494,12 @@ pub fn struct_claims(s: &Struct, policy: Policy) -> Vec<Claim> {
             // `COption_<Struct>_<m>` next to its wrapper, whichever buffers it
             // uses (`codegen::method_spec`, `crate::wrap`).
             let mut claims = wrapper_claims(&m.symbol);
-            if m.args
-                .iter()
-                .any(|a| matches!(a.abi.as_str(), "slice" | "slice_mut"))
-            {
+            if m.args.iter().any(|a| {
+                matches!(
+                    a.abi.as_str(),
+                    "slice" | "slice_mut" | "option_slice" | "option_slice_mut"
+                )
+            }) {
                 claims.push(Claim::exported(crate::codegen::slice_args_marker(
                     &m.symbol,
                 )));
