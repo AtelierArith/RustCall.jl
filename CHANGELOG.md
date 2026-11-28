@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.6] - 2026-11-28
+
+### Added
+- `RustCall.generate_crate_functions` accepts an optional `owned_return`
+  type path for functions that return an owned facade object or a supported
+  `Result` containing one. The generator validates the path through the
+  bundled extractor and emits the existing ownership annotation
+  ([#622](https://github.com/AtelierArith/RustCall.jl/issues/622)).
+
+### Improved
+- The crate binding diagnostics and boundary report guide users from generic
+  exports to concrete facades
+  ([#625](https://github.com/AtelierArith/RustCall.jl/issues/625)).
+- The binding guides cover reusable output buffers and a single facade for
+  several Rust crates, with runnable regression tests
+  ([#623](https://github.com/AtelierArith/RustCall.jl/issues/623),
+  [#624](https://github.com/AtelierArith/RustCall.jl/issues/624)).
+
 ## [0.10.5] - 2026-11-26
 
 ### Added
@@ -3496,7 +3514,9 @@ rebuilt and a file written by `write_bindings_to_file` must be regenerated.
 - Integration tests for Rust helpers library
 - Documentation examples tests
 
-[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.10.4...HEAD
+[Unreleased]: https://github.com/atelierarith/RustCall.jl/compare/v0.10.6...HEAD
+[0.10.6]: https://github.com/atelierarith/RustCall.jl/compare/v0.10.5...v0.10.6
+[0.10.5]: https://github.com/atelierarith/RustCall.jl/compare/v0.10.4...v0.10.5
 [0.10.4]: https://github.com/atelierarith/RustCall.jl/compare/v0.10.3...v0.10.4
 [0.10.3]: https://github.com/atelierarith/RustCall.jl/compare/v0.10.2...v0.10.3
 [0.10.2]: https://github.com/atelierarith/RustCall.jl/compare/v0.10.1...v0.10.2
