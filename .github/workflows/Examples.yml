@@ -55,9 +55,12 @@ jobs:
           version: '1'
           arch: x64
       - uses: dtolnay/rust-toolchain@master
+        id: rust
         with:
           toolchain: stable
       - uses: julia-actions/cache@v2
+        with:
+          cache-name: julia-cache;workflow=Examples;job=${{ github.job }};rust=${{ steps.rust.outputs.cachekey }}
       # The example builds this checkout's helper library and extractor.
       - uses: Swatinem/rust-cache@v2
         with:
@@ -91,9 +94,12 @@ jobs:
           version: '1'
           arch: x64
       - uses: dtolnay/rust-toolchain@master
+        id: rust
         with:
           toolchain: stable
       - uses: julia-actions/cache@v2
+        with:
+          cache-name: julia-cache;workflow=Examples;job=${{ github.job }};rust=${{ steps.rust.outputs.cachekey }}
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
