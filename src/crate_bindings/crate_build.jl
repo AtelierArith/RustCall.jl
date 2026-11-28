@@ -248,8 +248,6 @@ function generate_bindings(crate_path::String;
                                             kind = plain_kind),
         snapshot = snapshot)
     build_env = _record_build_subprocess_env(record, snapshot)
-    info = _plain_scan_info(crate_path, info, features, default_features, build_release;
-                            env = build_env)
 
     # Check cache. The feature set is part of the identity on this path too:
     # a build the caller asked for with `features` / `default_features` is
@@ -268,8 +266,28 @@ function generate_bindings(crate_path::String;
                                    features = features, default_features = default_features,
                                    build_env = build_env_snapshot, snapshot = snapshot)
     cached_lib = cache_enabled ? get_cargo_cached_library(cache_key) : nothing
+    cache_hit = cached_lib !== nothing && isfile(cached_lib)
 
-    lib_path = if cached_lib !== nothing && isfile(cached_lib)
+    # The key is decided by the crate's content, never by the cfg probe, so the
+    # lookup runs first. A hit whose entry recorded the probe it was built
+    # under is scanned with that text: those are the items the cached library
+    # exports, and no Cargo runs — the probe compiles every dependency into
+    # `crate_target_directory(crate_path)`, which is keyed by the path, so an
+    # identical crate at a new path paid a full dependency build only to be
+    # handed the cached library afterwards (#635). Anything else — a miss, or
+    # an entry an older RustCall wrote — probes the crate as before.
+    stored_cfg = cache_hit ? get_cargo_cached_cfg(cache_key) : nothing
+    probed_cfg = ""
+    if stored_cfg === nothing
+        probed_cfg = _plain_probe_cfg_text(crate_path, features, default_features,
+                                           build_release; env = build_env)
+        info = _plain_scan_from_cfg(crate_path, info, probed_cfg; env = build_env)
+    else
+        @debug "Using the cfg recorded with the cached library"
+        info = _plain_scan_from_cfg(crate_path, info, stored_cfg; env = build_env)
+    end
+
+    lib_path = if cache_hit
         @debug "Using cached library"
         cached_lib
     else
@@ -289,7 +307,9 @@ function generate_bindings(crate_path::String;
             # the module names the cache copy instead — which is what a module
             # precompiled into a package needs when its `__init__` runs in a
             # later session (#339).
-            _cache_built_library(cache_key, built, cache_enabled)
+            kept = _cache_built_library(cache_key, built, cache_enabled)
+            _cache_built_cfg(cache_key, kept, built, probed_cfg)
+            kept
         else
             # Create wrapper crate and build
             @info "Creating wrapper crate..."
@@ -321,6 +341,8 @@ function generate_bindings(crate_path::String;
                 kept = _cache_built_library(cache_key, built, cache_enabled)
                 if kept == built
                     kept = _uncached_library_home(built)
+                else
+                    _cache_built_cfg(cache_key, kept, built, probed_cfg)
                 end
                 kept
             finally
@@ -389,8 +411,17 @@ unresolvable crate); the build then fails on its own terms.
 function _plain_scan_info(crate_path::AbstractString, info::CrateInfo,
                           features::Vector{String}, default_features::Bool, release::Bool;
                           env::Union{Nothing, AbstractDict} = nothing)
+    cfg_text = _plain_probe_cfg_text(crate_path, features, default_features, release; env = env)
+    return _plain_scan_from_cfg(crate_path, info, cfg_text; env = env)
+end
+
+# The probe half of `_plain_scan_info`: the cfg text of the build, `""` when
+# Cargo will not answer.
+function _plain_probe_cfg_text(crate_path::AbstractString, features::Vector{String},
+                               default_features::Bool, release::Bool;
+                               env::Union{Nothing, AbstractDict} = nothing)
     path = String(crate_path)
-    cfg_text = if crate_has_cdylib(path)
+    return if crate_has_cdylib(path)
         # Under the environment the build runs under, when the caller has one
         # (`_record_build_subprocess_env`).
         _crate_build_cfg_text(path; profile = release ? "release" : "debug",
@@ -405,8 +436,30 @@ function _plain_scan_info(crate_path::AbstractString, info::CrateInfo,
             _wrapper_probe_cfg_text(path, env; features = features,
                                     default_features = default_features, release = release)
     end
+end
+
+# The scan half: `info` rescanned under `cfg_text`, or unchanged when there is
+# no text (the build then fails on its own terms).
+function _plain_scan_from_cfg(crate_path::AbstractString, info::CrateInfo,
+                              cfg_text::AbstractString;
+                              env::Union{Nothing, AbstractDict} = nothing)
     isempty(cfg_text) && return info
-    return scan_crate(path; cfg = :cargo, cfg_text = cfg_text, cargo_env = env)
+    return scan_crate(String(crate_path); cfg = :cargo, cfg_text = cfg_text, cargo_env = env)
+end
+
+# Record the probe next to a library that was just built and published under
+# `cache_key` (`kept` is the cache copy, not Cargo's own `built`). Never for a
+# hit, an uncached build or an empty probe; a failure costs the next load one
+# probe, never the build (#635).
+function _cache_built_cfg(cache_key::String, kept::AbstractString, built::AbstractString,
+                          cfg_text::AbstractString)
+    (kept == built || isempty(cfg_text)) && return nothing
+    try
+        save_cargo_cached_cfg(cache_key, cfg_text)
+    catch e
+        @debug "Failed to record the cfg of a cached library" exception = e
+    end
+    return nothing
 end
 
 """

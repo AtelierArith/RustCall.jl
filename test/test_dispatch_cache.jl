@@ -590,5 +590,86 @@ const CRATE_SHAPE = Tuple{Ptr{Cvoid}, Ptr{Cvoid}}
                 RustCall.close_retired_handles!(RustCall.retired_handles(name))
             end
         end
+
+        @testset "a warm crate call is type-stable and allocation-free (#632, #633, #634)" begin
+            # `_call_target` and its siblings used to be inferred with an
+            # `Any` field (the miss branch read `gen.alive` off an untyped
+            # `StateView` deref), so destructuring the snapshot boxed both
+            # pointers: 2 allocations on every scalar call (#633). A
+            # `Result`-returning call also ran the whole runtime by-value check
+            # although its `CResult_*` is an `FFIByValue` (#632). Measured
+            # through a `submodule=` module, the path the performance guide
+            # recommends for hot calls (#634).
+            check_module(mod) = begin
+                cache = RustCall.CrateTargetCache
+                for (helper, args, shape) in (
+                        (:_call_target, (cache, String), :_CALL_TARGET),
+                        (:_call_target, (cache, String, String), :_STRING_TARGET),
+                        (:_vec_target, (cache, String, String), :_VEC_TARGET),
+                        (:_ctor_target, (cache, String, String), :_CTOR_TARGET),
+                        (:_ctor_result_target, (cache, String, String, String),
+                         :_CTOR_RESULT_TARGET),
+                        (:_struct_generation, (cache, String), :_FREE_TARGET))
+                    f = RustCall._module_binding(mod, helper)
+                    T = RustCall._module_binding(mod, shape)
+                    @test Base.invokelatest(Base.return_types, f, args) == Any[T]
+                end
+            end
+
+            scope = Module(gensym(:DispatchCacheAlloc))
+            Core.eval(scope, :(using RustCall))
+            bindings = RustCall.load_crate_bindings(crate_fixture;
+                submodule_name = "DispatchCacheAlloc", target_module = scope)
+            mod = getfield(bindings, :module_ref)
+            name = RustCall._module_binding(mod, :_LIB_NAME)
+            try
+                check_module(mod)
+                # Defined in the module's own world, so the calls below are
+                # static, exactly as in a package that `using`s the module.
+                Core.eval(scope, quote
+                    const C = DispatchCacheAlloc.Counter(Int32(1))
+                    probe_add() = DispatchCacheAlloc.add(Int32(2), Int32(3))
+                    probe_get() = DispatchCacheAlloc.get(C)
+                    probe_increment() = DispatchCacheAlloc.increment(C)
+                    probe_divide() = DispatchCacheAlloc.safe_divide(10.0, 2.0)
+                    function allocated(f)
+                        for _ in 1:3
+                            f()
+                        end
+                        return @allocated f()
+                    end
+                end)
+                allocated = RustCall._module_binding(scope, :allocated)
+                for probe in (:probe_add, :probe_get, :probe_increment, :probe_divide)
+                    f = RustCall._module_binding(scope, probe)
+                    @test Base.invokelatest(allocated, f) == 0
+                end
+                @test Base.invokelatest(RustCall._module_binding(scope, :probe_add)) == 5
+                ok = Base.invokelatest(RustCall._module_binding(scope, :probe_divide))
+                @test RustCall.unwrap(ok) == 5.0
+            finally
+                RustCall.unload_library(name; close = true)
+                RustCall.close_retired_handles!(RustCall.retired_handles(name))
+            end
+
+            # The written-source emitter is the other implementation of the
+            # same module and must give the same types.
+            mktempdir() do dir
+                written_name = "DispatchCacheWritten"
+                output = joinpath(dir, "bindings.jl")
+                RustCall.write_bindings_to_file(crate_fixture, output;
+                                                output_module_name = written_name)
+                host = Module(:DispatchCacheWrittenHost)
+                Base.include(host, output)
+                written = Base.invokelatest(getfield, host, Symbol(written_name))
+                written_lib = Base.invokelatest(getfield, written, :_LIB_NAME)
+                try
+                    check_module(written)
+                finally
+                    RustCall.unload_library(written_lib; close = true)
+                    RustCall.close_retired_handles!(RustCall.retired_handles(written_lib))
+                end
+            end
+        end
     end
 end

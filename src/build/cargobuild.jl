@@ -899,6 +899,49 @@ function save_cargo_cached_library(cache_key::String, lib_path::String)
 end
 
 """
+    get_cargo_cached_cfg(cache_key::String) -> Union{String, Nothing}
+
+The `--print cfg` text the library cached under `cache_key` was probed with,
+or `nothing` when that entry has none (it was written by an older RustCall, or
+the probe had nothing to say).
+
+The sidecar is keyed exactly as the library is, and written only next to a
+library that was just built, so it is the configuration *that* binary was
+compiled under. A cache hit rescans with it instead of probing the crate again,
+which is what lets an identical crate at a new path — a git worktree, a copy —
+skip the probe's full dependency build in a fresh target directory (#635).
+"""
+function get_cargo_cached_cfg(cache_key::String)
+    path = _cargo_cached_cfg_path(cache_key)
+    isfile(path) || return nothing
+    text = read(path, String)
+    return isempty(text) ? nothing : text
+end
+
+"""
+    save_cargo_cached_cfg(cache_key::String, cfg_text::AbstractString)
+
+Record `cfg_text` as the probe of the library cached under `cache_key`
+(`get_cargo_cached_cfg`). Published like the library: an existing sidecar is
+never overwritten.
+"""
+function save_cargo_cached_cfg(cache_key::String, cfg_text::AbstractString)
+    isempty(cfg_text) && return nothing
+    dst = _cargo_cached_cfg_path(cache_key)
+    isfile(dst) && return dst
+    staging = tempname(get_cargo_cache_dir())
+    try
+        write(staging, cfg_text)
+        return _publish_cache_file(staging, dst).path
+    finally
+        rm(staging; force = true)
+    end
+end
+
+_cargo_cached_cfg_path(cache_key::String) =
+    joinpath(get_cargo_cache_dir(), "$(cache_key).cfg")
+
+"""
     clear_cargo_cache()
 
 Clear all cached Cargo-built libraries.

@@ -1181,3 +1181,102 @@ end
     @test startswith(lib, "rust_cargo_")
     @test @rust(rc278_warm_probe(Int32(41))::Int32) == Int32(42)
 end
+
+@testset "an identical crate at a new path is not probed again (#635)" begin
+    # The library cache is keyed by content, but the cfg probe ran before the
+    # lookup and built every dependency into `crate_target_directory(path)`,
+    # which is keyed by the path — so a byte-identical copy (a git worktree)
+    # paid a full dependency build only to be handed the cached library. The
+    # probe's text is now recorded with the library it was built under.
+    if !RustCall.check_rustc_available()
+        @test_skip "needs cargo"
+    else
+        macros = joinpath(dirname(@__DIR__), "deps", "rustcall_julia_macros")
+        function make_crate(dir)
+            mkpath(joinpath(dir, "src"))
+            write(joinpath(dir, "Cargo.toml"), """
+                [package]
+                name = "rc635_twin"
+                version = "0.1.0"
+                edition = "2021"
+
+                [features]
+                default = []
+                extra = []
+
+                [lib]
+                crate-type = ["cdylib"]
+
+                [dependencies]
+                rustcall_julia_macros = { path = $(repr(macros)) }
+
+                [workspace]
+                """)
+            write(joinpath(dir, "src", "lib.rs"), """
+                use rustcall_julia_macros::julia;
+
+                #[julia]
+                pub fn rc635_base() -> i32 { 635 }
+
+                #[cfg(feature = "extra")]
+                #[julia]
+                pub fn rc635_extra() -> i32 { 636 }
+                """)
+        end
+        exports(b) = names(getfield(b, :module_ref); all = true)
+        sidecars() = filter(f -> endswith(f, ".cfg"), readdir(RustCall.get_cargo_cache_dir()))
+        loaded = String[]
+        load(path; kw...) = begin
+            b = RustCall.load_crate_bindings(path; kw...)
+            push!(loaded, Base.invokelatest(getfield, getfield(b, :module_ref), :_LIB_NAME))
+            b
+        end
+        with_isolated_cargo_cache() do
+            mktempdir() do root
+                first_path = joinpath(root, "first")
+                make_crate(first_path)
+                try
+                    first = load(first_path)
+                    @test Base.invokelatest(first.rc635_base) == 635
+                    @test !(:rc635_extra in exports(first))
+                    # The probe of the build that was just cached is kept.
+                    @test length(sidecars()) == 1
+                    @test isdir(RustCall.crate_target_directory(first_path))
+
+                    # A byte-identical copy (its `Cargo.lock` included) at a new
+                    # path: answered from the cache with no Cargo run in a
+                    # target directory of its own.
+                    twin_path = joinpath(root, "twin")
+                    cp(first_path, twin_path)
+                    twin = load(twin_path)
+                    @test !isdir(RustCall.crate_target_directory(twin_path))
+                    @test Base.invokelatest(twin.rc635_base) == 635
+                    @test !(:rc635_extra in exports(twin))
+                    @test length(sidecars()) == 1
+
+                    # The cfg still follows the feature set: another set is
+                    # another key, so it is probed and built under that set.
+                    extra = load(twin_path; features = ["extra"])
+                    @test Base.invokelatest(extra.rc635_extra) == 636
+                    @test isdir(RustCall.crate_target_directory(twin_path))
+                    @test length(sidecars()) == 2
+
+                    # An entry without a record (an older RustCall's) is probed
+                    # as before.
+                    foreach(f -> rm(joinpath(RustCall.get_cargo_cache_dir(), f)), sidecars())
+                    legacy_path = joinpath(root, "legacy")
+                    cp(first_path, legacy_path)
+                    legacy = load(legacy_path)
+                    @test isdir(RustCall.crate_target_directory(legacy_path))
+                    @test Base.invokelatest(legacy.rc635_base) == 635
+                    @test isempty(sidecars())
+                finally
+                    for name in unique(loaded)
+                        RustCall.unload_library(name; close = true)
+                        RustCall.close_retired_handles!(RustCall.retired_handles(name))
+                    end
+                end
+            end
+        end
+    end
+end

@@ -2329,6 +2329,13 @@ function ffi_check_by_value(@nospecialize(R::Type), arg_types)
     return nothing
 end
 
+# Whether `ffi_by_value_allowed(T)` can only be answered by the registration
+# table — the one part of it that changes at run time. A non-aggregate and an
+# `FFIByValue` mirror (`CResult_*` / `COption_*`) are allowed by a static
+# property of the type (#632).
+_ffi_by_value_needs_registry(@nospecialize(T::Type)) =
+    ffi_is_aggregate(T) && !(T <: FFIByValue)
+
 """
     ffi_check_by_value_signature(R, A)
 
@@ -2339,24 +2346,35 @@ Same decision, taken at compile time in the case where it cannot depend on
 runtime state (#253). `ffi_by_value_allowed` is
 `!ffi_is_aggregate(T) || T <: FFIByValue || ffi_by_value_registered(T)`, and only
 the last of those three reads state `register_ffi_struct` may add to later — it
-is reached only for an *aggregate*. So when no type in the signature is an
-aggregate, the answer is `true` for every element, unconditionally and for the
-whole session; a signature that does contain one keeps the runtime check in
-full, which is what makes a later `register_ffi_struct` still take effect.
+is reached only for an aggregate that is not an `FFIByValue` mirror. The first
+two are static properties of the type, so they are decided here once per
+signature; only the positions that fail both keep the runtime registry read,
+which is what makes a later `register_ffi_struct` still take effect for them.
 
-This is not a second copy of the policy: the predicate it branches on is
-`ffi_is_aggregate`, the same one `ffi_by_value_allowed` consults.
+This is not a second copy of the policy: the predicates it branches on are
+`ffi_is_aggregate` and `<: FFIByValue`, the same ones `ffi_by_value_allowed`
+consults.
 
 Scalar calls paid 128 ns per call for this, against the 5.1 ns `ccall` it
-guards.
+guards (#253). A `Result`-returning call (its `CResult_*` return is an
+`FFIByValue` aggregate) still paid 150–400 ns for the full runtime check until
+the `FFIByValue` half was decided statically as well.
 """
 @generated function ffi_check_by_value_signature(::Type{R}, ::Type{A}) where {R, A <: Tuple}
-    if !ffi_is_aggregate(R) && !any(ffi_is_aggregate, A.parameters)
-        return :(nothing)
+    checks = Expr[]
+    if _ffi_by_value_needs_registry(R)
+        push!(checks, :(ffi_by_value_registered($R) ||
+                        throw(ffi_by_value_error($R, "the return type"))))
     end
-    # An aggregate is in play, so the registration table decides and must be
-    # read on every call.
-    return :(ffi_check_by_value($R, $(A.parameters)))
+    for (i, T) in enumerate(A.parameters)
+        _ffi_by_value_needs_registry(T) || continue
+        position = "argument $i"
+        push!(checks, :(ffi_by_value_registered($T) ||
+                        throw(ffi_by_value_error($T, $position))))
+    end
+    # Every position left needs the registration table, and reads it on every
+    # call; a signature with none of them compiles to `nothing`.
+    return Expr(:block, checks..., :(nothing))
 end
 
 # An optional owner is passed as an explicit nullable C pointer, never through

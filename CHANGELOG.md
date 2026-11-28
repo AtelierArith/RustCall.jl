@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Improved
+- A `#[julia]` function or method returning `Result` or `Option` no longer runs
+  the by-value check at run time on every call: its `CResult_*` / `COption_*`
+  mirror is a `RustCall.FFIByValue`, which `ffi_check_by_value_signature` now
+  decides at compile time. Only an aggregate that is neither keeps the runtime
+  registry read, so `register_ffi_struct` still takes effect for it. A
+  `Result`-returning crate call went from 183 ns to 25 ns
+  ([#632](https://github.com/AtelierArith/RustCall.jl/issues/632)).
+- Generated `@rust_crate` wrappers are allocation-free again. The target
+  helpers (`_call_target` and its siblings) declare their `_*_TARGET` return
+  type and assert the generation's liveness flag, so a scalar call no longer
+  boxes its pointers (2 allocations and ~35 ns per call before), in both the
+  in-memory module and a `write_bindings_to_file` file
+  ([#633](https://github.com/AtelierArith/RustCall.jl/issues/633)).
+- A cache hit for a plain `@rust_crate` build no longer runs the cfg probe: the
+  probe's `--print cfg` text is stored beside the cached library under the
+  same key and reused, so an identical crate at a new path (a git worktree, a
+  copied checkout) loads from the cache without building its dependencies in a
+  fresh target directory. Misses and cache entries without the record probe as
+  before ([#635](https://github.com/AtelierArith/RustCall.jl/issues/635)).
+
+### Documentation
+- The performance guide covers the cost of the `CrateBindings` proxy and
+  recommends `submodule=` (or `X.module_ref`) for hot paths
+  ([#634](https://github.com/AtelierArith/RustCall.jl/issues/634)).
+
 ## [0.10.6] - 2026-11-28
 
 ### Added
