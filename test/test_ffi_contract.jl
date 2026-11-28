@@ -970,13 +970,20 @@ const ALL_SPELLINGS = vcat(
         # must compile to no check at all, not the runtime registry walk.
         sig_body(R, A) = only(code_typed(RustCall.ffi_check_by_value_signature,
                                          (Type{R}, Type{A}))).first
+        # No call of any kind survives — in particular no registry read. Not
+        # "one statement": a coverage run adds `code_coverage_effect` markers.
+        calls(body) = count(x -> x isa Expr && x.head in (:call, :invoke, :foreigncall),
+                            body.code)
+        returns_nothing(body) = any(x -> x isa Core.ReturnNode && isdefined(x, :val) &&
+                                         (x.val === nothing || x.val == GlobalRef(RustCall, :nothing)),
+                                    body.code)
         for (R, A) in ((Rc245Mirror, Tuple{Int64}),
                        (Rc245Mirror, Tuple{Ptr{Cvoid}, UInt, UInt, UInt}),
                        (Int64, Tuple{Rc245Mirror}),
                        (Int64, Tuple{Int64, Float64}))
             body = sig_body(R, A)
-            @test length(body.code) == 1                  # just `return nothing`
-            @test body.code[end] == Core.ReturnNode(nothing)
+            @test calls(body) == 0
+            @test returns_nothing(body)
             @test RustCall.ffi_check_by_value_signature(R, A) === nothing
         end
         @test (RustCall.ffi_check_by_value_signature(Rc245Mirror, Tuple{Int64});
@@ -1005,6 +1012,8 @@ const ALL_SPELLINGS = vcat(
             RustCall.unregister_ffi_struct(Rc245ByValue)
         end
         @test_throws RustCall.RustError check()
+        # ...and that position's body does read the registry.
+        @test calls(sig_body(Rc245Mirror, Tuple{Int64, Rc245ByValue})) > 0
     end
 
     @testset "a generated mirror survives precompilation (#245 review)" begin
