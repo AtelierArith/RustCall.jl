@@ -247,9 +247,10 @@ happened since. Four rules hold this together:
 
 Three smaller costs were on the same path and are gone: `normalize_arg_types` is
 `@generated` (pure type arithmetic, 529 ns per call); `ffi_check_by_value_signature`
-decides at compile time for any signature with no aggregate in it, and falls back
-to the runtime check for one that has (so a later `register_ffi_struct` still
-takes effect); and every cached entry point takes `args::Vararg{Any, N}) where {N}`
+decides at compile time every position that is not an aggregate or is an
+`FFIByValue` mirror (`CResult_*` / `COption_*`, #632), and keeps the runtime
+registry read only for the other aggregates (so a later `register_ffi_struct`
+still takes effect for them); and every cached entry point takes `args::Vararg{Any, N}) where {N}`
 rather than `args...`, because a plain vararg method shares one specialisation
 across arities and left the `ccall` behind a dynamic dispatch (590 ns).
 
@@ -287,7 +288,11 @@ work:
   memo is a `StateView` and hands back an `Any`; without the declaration every
   snapshot is a tuple of `Any`, and the cached fast path still boxes the
   pointer and the channel — 64 bytes and 150 ns a call, against 0 and 17 ns
-  with it (measured).
+  with it (measured). For the same reason every target helper declares its
+  `_*_TARGET` return type and asserts `gen.alive::Base.RefValue{Bool}`: the
+  miss branch reads the untyped `_LIB_GEN[]`, and without the assertions the
+  result widened to `Tuple{..., Any}` and each call boxed its pointers again
+  (2 allocations per scalar call, #633; pinned by `test/test_dispatch_cache.jl`).
 * **The generation mirror bumps the epoch itself.** `_update_handle_mirrors!` /
   `_retire_handle_mirrors!` write a `Ref` rather than going through
   `_state_mutate_storage!`, so they are the one write a kept crate snapshot

@@ -48,6 +48,14 @@ RustCall.jl automatically caches compiled Rust libraries. This eliminates the ne
   library names, temporary Cargo project directories, log lines.
 - **Automatic verification**: cached libraries carry a SHA-256 checksum, checked
   before loading.
+- **The cfg probe travels with the library**: a `@rust_crate` build probes the
+  crate's `rustc --print cfg` to decide which `#[cfg]`-gated items to bind, and
+  that probe compiles the crate's dependencies in a target directory keyed by
+  the crate's *path*. The text is stored beside the cached library under the
+  same key, and a cache hit is scanned with it instead of probing again, so an
+  identical crate at a new path — a git worktree, a copied checkout — loads from
+  the cache without running Cargo (#635). A miss, an entry written by an older
+  RustCall, hot reload and `write_bindings_to_file` probe as before.
 
 ### What is not in the key
 
@@ -266,6 +274,55 @@ result = add(Int32(10), Int32(20))                # 1.9× a raw ccall
 
 This is the same advice as before #253 — it is just no longer "slightly
 slower", it is thirty times slower, and now measured.
+
+### `Result` / `Option` returns cost the same as scalars
+
+A `#[julia]` function returning `Result` or `Option` crosses the boundary as a
+`CResult_*` / `COption_*` mirror struct. Those are aggregates, so the by-value
+check used to fall back to its run-time form on every call; since #632 it
+decides them at compile time (`<: RustCall.FFIByValue` is a property of the
+type), and since #633 a warm `@rust_crate` wrapper allocates nothing. Measured
+on one `#[julia]` crate (macOS x86_64, Julia 1.13, raw `ccall` floor 3 ns):
+
+| call (generated module) | before #632 / #633 | now |
+| --- | --- | --- |
+| `f1(a::Int64) -> i64` | 54.5 ns, 2 allocs | 19.2 ns, 0 allocs |
+| `fres(a::Int64) -> Result<i64, String>` (`Ok`) | 183.5 ns, 3 allocs | 24.7 ns, 0 allocs |
+| `&mut self` method `-> i64` | 51.2 ns, 2 allocs | 19.3 ns, 0 allocs |
+| `&mut self` method `(3 × usize) -> Result` + `result_to_exception` | 408.4 ns, 3 allocs | 24.9 ns, 0 allocs |
+
+Turning an `Err` into a Julia exception is a `throw` / `catch` and costs what
+one costs in Julia (tens of µs); that is not a boundary cost.
+
+### Bind with `submodule=` on hot paths
+
+`const X = @rust_crate path` returns a `CrateBindings` **proxy**. `X.f(args...)`
+looks `f` up with `invokelatest` and calls it with `invokelatest` again, so it
+works even for a module created after the caller was compiled — and that world-
+age safety is what it costs: about 85 ns for the property access alone, and
+150–500 ns per call in total, with the arguments boxed.
+
+A package that calls Rust in a loop should bind the crate as a real module:
+
+```julia
+module MyPkg
+using RustCall
+@rust_crate joinpath(@__DIR__, "..", "deps", "mycrate") submodule="MyCrate"
+# MyCrate.f(args...) is an ordinary, statically dispatched call
+end
+```
+
+or hoist the module out of the proxy once, `const M = X.module_ref`, and call
+`M.f(args...)`. On the crate above:
+
+| call | proxy `X.f` | `submodule=` / `X.module_ref` |
+| --- | --- | --- |
+| `f0()` | 157.7 ns | 16.7 ns |
+| `f3(i64, i64, i64)` | 477.6 ns, 3 allocs | 16.7 ns, 0 allocs |
+| `fres(i64)` (`Result`) | 378.6 ns, 4 allocs | 24.7 ns, 0 allocs |
+
+The proxy remains the right choice at the REPL and for a crate loaded at run
+time with `load_crate_bindings`.
 
 ### No registration step
 

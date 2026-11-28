@@ -964,6 +964,58 @@ const ALL_SPELLINGS = vcat(
         @test RustCall.ffi_by_value_allowed(Rc245ByValue) == false
     end
 
+    @testset "an FFIByValue signature is decided at compile time (#632)" begin
+        # `CResult_*` / `COption_*` are aggregates, but `<: FFIByValue` is a
+        # static property of the type: a signature of them and non-aggregates
+        # must compile to no check at all, not the runtime registry walk.
+        sig_body(R, A) = only(code_typed(RustCall.ffi_check_by_value_signature,
+                                         (Type{R}, Type{A}))).first
+        # No call of any kind survives — in particular no registry read. Not
+        # "one statement": a coverage run adds `code_coverage_effect` markers.
+        calls(body) = count(x -> x isa Expr && x.head in (:call, :invoke, :foreigncall),
+                            body.code)
+        returns_nothing(body) = any(x -> x isa Core.ReturnNode && isdefined(x, :val) &&
+                                         (x.val === nothing || x.val == GlobalRef(RustCall, :nothing)),
+                                    body.code)
+        for (R, A) in ((Rc245Mirror, Tuple{Int64}),
+                       (Rc245Mirror, Tuple{Ptr{Cvoid}, UInt, UInt, UInt}),
+                       (Int64, Tuple{Rc245Mirror}),
+                       (Int64, Tuple{Int64, Float64}))
+            body = sig_body(R, A)
+            @test calls(body) == 0
+            @test returns_nothing(body)
+            @test RustCall.ffi_check_by_value_signature(R, A) === nothing
+        end
+        @test (RustCall.ffi_check_by_value_signature(Rc245Mirror, Tuple{Int64});
+               @allocated RustCall.ffi_check_by_value_signature(Rc245Mirror, Tuple{Int64})) == 0
+
+        # An `FFIByValue` return does not license an unregistered aggregate
+        # argument: that position keeps the runtime read, so a registration
+        # made after the method was compiled still takes effect.
+        check() = RustCall.ffi_check_by_value_signature(Rc245Mirror,
+                                                        Tuple{Int64, Rc245ByValue})
+        err = try
+            check()
+            nothing
+        catch e
+            e
+        end
+        @test err isa RustCall.RustError
+        @test occursin("argument 2", sprint(showerror, err))
+        @test_throws RustCall.RustError RustCall.ffi_check_by_value_signature(
+            Rc245ByValue, Tuple{Int64})
+        try
+            RustCall.register_ffi_struct(Rc245ByValue)
+            @test check() === nothing
+            @test RustCall.ffi_check_by_value_signature(Rc245ByValue, Tuple{Int64}) === nothing
+        finally
+            RustCall.unregister_ffi_struct(Rc245ByValue)
+        end
+        @test_throws RustCall.RustError check()
+        # ...and that position's body does read the registry.
+        @test calls(sig_body(Rc245Mirror, Tuple{Int64, Rc245ByValue})) > 0
+    end
+
     @testset "a generated mirror survives precompilation (#245 review)" begin
         # A `register_ffi_struct` call in a generated `@rust_crate` module — or
         # in a `#[julia]` wrapper expanded inside a downstream package — mutates

@@ -23,6 +23,7 @@
 - **計算費用**：毎回全入力バイトを読みます。mtime とサイズだけでは内容を区別できないためメモ化しません。高価な Cargo 依存グラフだけを保持し、各クレートとワークスペースのマニフェスト内容変更で無効化します。
 - **短縮**：完全なキーは短縮しません。`artifact_short_id` は名前や一時パス、ログ用です。
 - **検証**：読み込み前に SHA-256 を照合します。
+- **cfg 調査結果の保存**：`@rust_crate` のビルドは束縛する `#[cfg]` 項目を決めるため `rustc --print cfg` でクレートを調べます。この調査は依存クレートを、クレートの**パス**で決まるターゲットディレクトリにビルドします。調査結果は同じキーでキャッシュ済みライブラリの隣に保存し、キャッシュに当たったときはそれを使います。そのため、git worktree やコピーなど別パスにある同一クレートは Cargo を実行せずにキャッシュから読み込みます（#635）。キャッシュにない場合、旧版 RustCall が書いた項目、ホットリロード、`write_bindings_to_file` は従来どおり調査します。
 
 ### [キーに含めきれないもの](@id What-is-not-in-the-key)
 
@@ -136,6 +137,43 @@ result = add(Int32(10), Int32(20))                # 1.9× a raw ccall
 ```
 
 この測定では注釈なしは約30倍遅くなります。
+
+### [Result と Option の戻り値もスカラーと同じ費用](@id Result-/-Option-returns-cost-the-same-as-scalars)
+
+`Result` や `Option` を返す `#[julia]` 関数は `CResult_*` / `COption_*` という構造体で境界を渡ります。これは集約型なので、以前は値渡し検査が毎回実行時に走っていました。#632 以降は `<: RustCall.FFIByValue` という型の性質からコンパイル時に判定し、#633 以降は温まった `@rust_crate` ラッパーが割り当てを行いません。1つの `#[julia]` クレートでの測定（macOS x86_64、Julia 1.13、生の `ccall` は 3 ns）:
+
+| 呼び出し（生成モジュール） | #632 / #633 以前 | 現在 |
+|------|------:|-----:|
+| `f1(a::Int64) -> i64` | 54.5 ns、2 割り当て | 19.2 ns、0 割り当て |
+| `fres(a::Int64) -> Result<i64, String>`（`Ok`） | 183.5 ns、3 割り当て | 24.7 ns、0 割り当て |
+| `&mut self` メソッド `-> i64` | 51.2 ns、2 割り当て | 19.3 ns、0 割り当て |
+| `&mut self` メソッド `(3 × usize) -> Result` と `result_to_exception` | 408.4 ns、3 割り当て | 24.9 ns、0 割り当て |
+
+`Err` を Julia の例外にする費用は Julia の `throw` / `catch` そのもの（数十 µs）で、境界の費用ではありません。
+
+### [頻繁に呼ぶなら submodule= で束縛する](@id Bind-with-submodule-on-hot-paths)
+
+`const X = @rust_crate path` が返すのは `CrateBindings` という**プロキシ**です。`X.f(args...)` は `f` を `invokelatest` で探し、さらに `invokelatest` で呼びます。呼び出し元より後に作られたモジュールでも動くための仕組みで、その分の費用がかかります。プロパティ参照だけで約 85 ns、呼び出し全体で 150–500 ns で、引数もボックス化されます。
+
+Rust をループで呼ぶパッケージは、クレートを実際のモジュールとして束縛してください。
+
+```julia
+module MyPkg
+using RustCall
+@rust_crate joinpath(@__DIR__, "..", "deps", "mycrate") submodule="MyCrate"
+# MyCrate.f(args...) is an ordinary, statically dispatched call
+end
+```
+
+または `const M = X.module_ref` でモジュールを一度取り出し、`M.f(args...)` と呼びます。上のクレートでの測定:
+
+| 呼び出し | プロキシ `X.f` | `submodule=` / `X.module_ref` |
+|------|------:|-----:|
+| `f0()` | 157.7 ns | 16.7 ns |
+| `f3(i64, i64, i64)` | 477.6 ns、3 割り当て | 16.7 ns、0 割り当て |
+| `fres(i64)`（`Result`） | 378.6 ns、4 割り当て | 24.7 ns、0 割り当て |
+
+REPL や、実行時に `load_crate_bindings` で読み込むクレートには、引き続きプロキシが適しています。
 
 ### [事前登録は不要](@id No-registration-step)
 
